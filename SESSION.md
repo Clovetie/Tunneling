@@ -194,7 +194,9 @@ typical, worst 10). They need a real playtest to confirm end to end.
 
 **Open items for the next agent:**
 - `Whisperer` is written but disabled: it needs audio asset IDs. **Ask the user,
-  never invent IDs.**
+  never invent IDs.** The moment they arrive it is two commands and no code:
+  paste them into the two lists at the top of `jobs/set_whisperer_ids.lua`,
+  commit, then the user runs that and `jobs/whisperer_check.lua`.
 - `Config.Hud.ShowPhase` must go to `false` when testing ends. Keep the bar.
 - `Breathless` and `TickingMan` are stubs. They need room volumes, and nothing
   in the place marks rooms yet.
@@ -223,6 +225,8 @@ typical, worst 10). They need a real playtest to confirm end to end.
 | `preview_climb.lua` | run ONE real climb on the real house, animated in the viewport, then a clip score and cleanup. **Run in Edit mode, not during a playtest** - it spawns a second rig that the live entity cannot see. |
 | `night_watch.lua` | run DURING a playtest. Samples the live monster for 20s at 2 Hz and reports a trace (height, knee pitch, visibility, strikes) plus whether the climb pose was seen. The entity objects are a local inside Director.lua, so this watches the model instead. |
 | `set_config_flag.lua` | flip one indented flag in Config.lua in place (built for `Hud.ShowPhase = false`). Edits `.Source`, so it only takes effect on the next playtest / reload - the require cache is per Instance. |
+| `set_whisperer_ids.lua` | fill `Whisperer.WhisperSoundIds` / `FakeGlassSoundIds` from lists at the top of the file. Counts matches first and writes nothing unless each is found exactly once. |
+| `whisperer_check.lua` | preloads every Whisperer ID and reports `TimeLength`, so a bad/private ID is caught before a night is played. |
 | `baseline_survey.lua` | the package inventory. |
 | `drift_audit.lua` | FNV-1a hashes of every live script. Only re-run if drift is suspected for a NEW reason (the 22/22 result was a bug in an older version of this job). |
 
