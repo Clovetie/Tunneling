@@ -86,23 +86,27 @@ local function climbCycle(phase, intensity)
 		Jaw = ang(3 + effort * 7, 0, 0),
 
 		ShoulderR = ang(24 + 142 * upR, 0, 11),
-		ElbowR = ang(8 + 38 * upR, 0, 0),
+		-- the elbow EXTENDS into the reach and flexes through the pull, which
+		-- is the difference between climbing and waving
+		ElbowR = ang(6 + 42 * (1 - upR), 0, 0),
 		FingerR1 = ang(14 + 34 * (1 - upR), 0, 0),
 		FingerR2 = ang(18 + 38 * (1 - upR), 0, 0),
 		FingerR3 = ang(14 + 34 * (1 - upR), 0, 0),
 
 		ShoulderL = ang(24 + 142 * upL, 0, -11),
-		ElbowL = ang(8 + 38 * upL, 0, 0),
+		ElbowL = ang(6 + 42 * (1 - upL), 0, 0),
 		FingerL1 = ang(14 + 34 * (1 - upL), 0, 0),
 		FingerL2 = ang(18 + 38 * (1 - upL), 0, 0),
 		FingerL3 = ang(14 + 34 * (1 - upL), 0, 0),
 
-		HipR = ang(10 + 56 * kneeR, 0, 0),
-		KneeR = ang(-16 - 88 * kneeR, 0, 0),
+		-- the knee drives up high and the foot follows: 1.5 studs of travel
+		-- per stride, measured from the rig geometry
+		HipR = ang(8 + 72 * kneeR, 0, 0),
+		KneeR = ang(-14 - 104 * kneeR, 0, 0),
 		AnkleR = ang(8 + 24 * kneeR, 0, 0),
 
-		HipL = ang(10 + 56 * kneeL, 0, 0),
-		KneeL = ang(-16 - 88 * kneeL, 0, 0),
+		HipL = ang(8 + 72 * kneeL, 0, 0),
+		KneeL = ang(-14 - 104 * kneeL, 0, 0),
 		AnkleL = ang(8 + 24 * kneeL, 0, 0),
 	}
 end
