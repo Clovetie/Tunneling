@@ -98,8 +98,28 @@ Config.Entities = {
 		-- Set false to go back to cloning ServerStorage.<Template> instead.
 		UseBuiltInRig = true,
 		TurnSpeed = 2.0,        -- how fast the body swivels to keep facing you
-		RequireGround = true,   -- never spawn at a spot with no floor under it
+		-- Never spawn at a spot with nothing under it. A spot qualifies if it
+		-- has a floor within GroundSearch (it walks there) OR a surface it can
+		-- climb (see Climbing, below).
+		RequireGround = true,
 		GroundSearch = 14,      -- how far below a spot to look for that floor
+
+		-- Climbing: a spot with no floor used to be skipped outright, which is
+		-- why the upper-floor windows stayed empty. With this on the Watcher
+		-- scales the wall to reach them instead, in the open, where you can
+		-- watch it coming. Needs UseBuiltInRig — a template model has no climb
+		-- pose to play.
+		Climbing = {
+			Enabled = true,
+			Speed = 3.2,        -- studs/sec up the wall
+			MinTime = 0.9,      -- a climb is never shorter than this
+			MaxTime = 7,        -- ...nor longer; long climbs just go faster
+			Search = 40,        -- how far below a spot to look for a way up
+			Probe = 2.5,        -- how far sideways to look for the wall itself
+			VoidRise = 9,       -- nothing below at all: it climbs this far up
+			Grip = 0.4,         -- min gap kept between body and wall, stops clipping
+			Stride = 2.4,       -- studs climbed per full arm/leg cycle
+		},
 		Template = "jumpscare",        -- ServerStorage.<name>, used when UseBuiltInRig = false
 		-- beam repel
 		RepelTimeEasy = 0.8,           -- seconds of light at intensity 0

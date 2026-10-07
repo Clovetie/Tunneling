@@ -137,7 +137,21 @@ intensity-scaled tremor layered on top so it never holds perfectly still.
 | `twitch` | single hard jerk, auto-returns (fires more often as intensity rises) |
 | `recoil` | flashed: throws back, forearms up across the face |
 | `lunge` | breaching: drives forward, arms reaching, jaw wide |
+| `climb` | **cycle, not a pose** — scaling a wall. Driven by `SetCycle(phase)` |
 | `retreat` | folds down and away |
+
+`climb` is the odd one out. Every other state is a fixed table of joint
+offsets; a climb has to loop, and it has to keep time with the body. It is a
+function `cycle(phase, intensity) -> joint offsets`, and the owner feeds it
+the distance actually climbed:
+
+```lua
+anim:SetCycle(distanceClimbed / Config.Entities.WindowMonster.Climbing.Stride)
+```
+
+not the clock. A clock-driven cycle visibly slides as soon as the climb eases
+in, eases out, or changes speed — the hands end up grabbing at air well after
+the body has moved on.
 
 See `monster-posesheet.svg` — rendered from the live rig geometry, not concept
 art. A preview copy stands beside the front door in Workspace.
@@ -178,10 +192,54 @@ offsets the pivot by however far the model extends below its own pivot
 (measured from `GetBoundingBox`, so it works for the rig *and* for a template
 model). Measured result: feet at **−0.00 studs** from the floor.
 
-`RequireGround = true` also makes it skip any spot with no floor within
-`GroundSearch` studs — the Watcher walks, it does not climb. If *no* spot is
-grounded, `Validate` fails with a clear reason instead of spawning it in
-mid-air. All 8 of your spots currently pass.
+`RequireGround = true` also makes it check what is under a spot before it will
+use it. If *no* spot qualifies, `Validate` fails with a clear reason instead of
+spawning it in mid-air.
+
+### It climbs
+
+A spot with a floor within `GroundSearch` is walked to. A spot with nothing but
+wall under it used to be **skipped outright** — which is why the upper-floor
+windows stayed empty all night. Now it is climbed to: the Watcher blinks to the
+foot of the wall and hauls itself up in plain sight. The climb is the tell —
+you see it coming and you have those seconds to find it with the flash.
+
+```lua
+Config.Entities.WindowMonster.Climbing = {
+    Enabled = true,
+    Speed = 3.2,    -- studs/sec up the wall
+    MinTime = 0.9,  -- a climb is never shorter than this
+    MaxTime = 7,    -- ...nor longer; long climbs just go faster
+    Search = 40,    -- how far below a spot to look for a way up
+    Probe = 2.5,    -- how far sideways to look for the wall itself
+    VoidRise = 9,   -- nothing below at all: it climbs this far up
+    Grip = 0.4,     -- min gap kept between body and wall, stops clipping
+    Stride = 2.4,   -- studs climbed per full arm/leg cycle
+}
+```
+
+How a spot is classified (cached per spot, `WindowMonster:_classify`):
+
+| Result | Meaning |
+|---|---|
+| `mode = "ground"` | floor within `GroundSearch`. Walks there, as before. |
+| `mode = "climb"` | no floor, but there is something to scale. `pos` is where the climb starts, `wall` is `{ normal, dist }` for the surface it clings to. |
+| `nil` | nothing under it and climbing off — skipped. It walks or climbs, it does not hover. |
+
+Details that matter:
+
+- **The wall probe finds the facing.** Eight horizontal raycasts out to
+  `Probe` studs find the nearest vertical surface. Its normal points away from
+  the wall, so the body can be turned to face *into* it — at a window, that is
+  facing the room. `Grip` only nudges the body outward when the spot sits
+  closer to the wall than `Grip`; a sensibly placed spot is left alone.
+- **The breach clock pauses for the climb.** A slow climb should not cost the
+  player patience they never had a chance to spend.
+- **You can hit it mid-climb.** `_flashHits` accepts the `climbing` state, so
+  catching it halfway up knocks it off the wall like any other repel.
+- Needs `UseBuiltInRig` — a template model has no climb pose to play.
+- `RequireGround = false` keeps its old meaning: no checking, just place it
+  there. Climbing never fires for it.
 
 **It stared past you.** Three separate causes:
 

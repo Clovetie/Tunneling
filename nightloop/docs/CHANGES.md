@@ -86,3 +86,44 @@ Beam reach is **not** in the script any more — change `Angle` / `Range` on
 - The design doc lives in a disabled Script (`ServerScriptService.List`). Should be a
   ModuleScript or a file in the repo.
 - Entities 2–6 (Whisperer, Knocker, Crawl, Breathless, Ticking Man) not started.
+
+---
+
+# 2026-10-07 (session 3) — the Watcher climbs
+
+Pushed to the live place as `jobs/push_climb.lua`, verified by
+`jobs/climb_check.lua`.
+
+**Why.** `RequireGround` skipped any spot with no floor within 14 studs, so the
+upper-floor windows were dead all night. The user approved a climbing animation
+as the trade: the Watcher scales the outside wall instead of teleporting past
+those spots.
+
+**What changed**
+
+- `Config.Entities.WindowMonster.Climbing` — new tuning block (speed, min/max
+  duration, search reach, wall probe, grip, stride).
+- `MonsterAnimator` — new `climb` state. It is the first **cycling** pose:
+  `cycle(phase, intensity)` returns joint offsets, driven by
+  `MonsterAnimator:SetCycle(phase)`. `Play(..., snap)` and `Update` both route
+  through a new `_goals()` so cycling and static poses are handled the same
+  way.
+- `WindowMonster` — `_groundUnder` became `_classify`, which answers "floor,
+  wall, or nothing" and caches it. `_placeAt` became `_feetAt` + `_poseCFrame`
+  (standing vs clinging). New `_startClimb` / `_updateClimb` / `_cancelClimb` /
+  `_goTo`. `_flashHits` now accepts the `climbing` state.
+- `setHidden` no longer turns a rig's limbs collidable when it reappears. The
+  body is dragged around by `PivotTo` during a climb and solid limbs would
+  shove the player standing at the window.
+
+**Delivery.** `jobs/make_push.py` generates an ASCII-only job that carries the
+three module sources and installs them as new ModuleScript instances. Two traps
+it exists to beat: PowerShell mangles non-ASCII (so sources are tokenised and
+restored with byte escapes, then asserted with byte counts), and `write_script`
+leaves Studio serving the cached module (so it creates new instances).
+
+**Still outstanding** — unchanged from session 2, plus the new build target:
+
+- `Whisperer` is coded but disabled: it needs audio asset IDs **from the user**.
+- `Config.Hud.ShowPhase` must go to `false` when testing ends. Keep the bar.
+- `Breathless` / `TickingMan` need room volumes; nothing in the place marks rooms.
