@@ -270,7 +270,14 @@ Behaviour notes:
 5. Every push follows the AGENTS.md workflow: write → `tools/luau-compile
    --binary` → `tools/check_globals.sh` → push → verify with `run_luau`
    returning JSON. Run `bash tools/fix-perms.sh` before the toolchain
-   (workspace snapshots drop the exec bits).
+   (workspace snapshots drop the exec bits). **Toolchain gotcha (verified
+   2026-10-07):** the checked-in `luau-compile`/`luau-analyze` binaries
+   predate Luau's bitwise operators — `~`, `|`, `&` fail local compilation
+   (they work fine in Studio). Avoid bitwise ops in jobs (table-based XOR
+   pattern: `jobs/drift_audit.lua`) or refresh the binaries from a machine
+   with internet (GitHub release assets redirect to
+   `objects.githubusercontent.com`, which is not on the sandbox egress
+   allowlist).
 6. After work: update `SESSION.md` state; if the session is done, the user
    rotates the token (`python setup.py --rotate`) and kills the tunnel.
 

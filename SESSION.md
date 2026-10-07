@@ -32,6 +32,16 @@ here-string + `runfile`. Plugin v2.0 (auto-connect on load, `pluginVersion`
 in ping, survey Lighting.Technology fix) is committed 2026-10-07; user
 install pending — verify with `.\ab.ps1 ping` → `"pluginVersion": "2.0"`.
 
+**Live baseline 2026-10-07 (this sandbox, session 2):** package intact —
+14 `NightLoop` entries + `Entities` (7), spots "1"–"8" (8), no
+`MonsterPreview`, both client scripts. Live Config: `showPhase=true`,
+`night=900`, WindowMonster `{on, ground, rig}` **but `turn` (TurnSpeed) is
+nil live** (repo has 2.0 from phase 8) → live↔repo drift suspected. Drift
+audit in flight: `jobs/drift_audit.lua` (FNV-1a hashes of all 22 live
+scripts; table-based XOR, see CONNECT.md §8 toolchain gotcha) vs
+`jobs/repo_hashes_2026-10-07.txt`. Next: diff → fetch first-diff context for
+mismatched files → push fixes as one `build` job (one Ctrl+Z).
+
 > **Track state of this file changed.** In this checkout (`Tunneling`,
 > commit 5303da6) `SESSION.md` is *tracked* — the "not committed / gitignored"
 > header above no longer holds. Token therefore sits in repo history. Rotate
