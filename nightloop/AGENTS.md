@@ -9,6 +9,12 @@ scoped and are kept in an uncommitted `SESSION.md` in the workspace root. If it
 is missing or the URL 404s, ask the user for a fresh one — quick tunnels die
 whenever their machine restarts the process.
 
+**The connection itself is documented in `CONNECT.md` at the repo root** —
+how to reach the bridge, what each failure mode means (including the sandbox
+egress allowlist), HANDS MODE for when the sandbox cannot reach the tunnel,
+and the plugin (v2.0: auto-connect on load). Read it before debugging any
+connection problem; it exists so you never have to re-derive this.
+
 ---
 
 ## What the connector is
@@ -44,9 +50,14 @@ python setup.py --tunnel          # installs the plugin, starts server + tunnel
 `server.py`. Flags: `--port` (default 8077), `--tunnel`, `--install-only`,
 `--rotate` (new token), `--plugins-dir`.
 
-In Studio the plugin must be enabled and the place open. Every mutating job is
-wrapped in one `ChangeHistoryService` recording, so **Ctrl+Z undoes a whole
-job** — including a multi-file push.
+Since plugin v2.0 the plugin **auto-connects on load** if `server.py` is
+already running (local plugins execute whenever the DataModel loads; the poll
+loop latches on the moment the bridge comes up) — no toolbar click after a
+Studio restart. Opt out: `plugin:SetSetting("AutoConnect", false)`; the
+"Arena" toolbar button still toggles. `ping` returns `pluginVersion`, so
+verify which build the user has installed. Every mutating job is wrapped in
+one `ChangeHistoryService` recording, so **Ctrl+Z undoes a whole job** —
+including a multi-file push.
 
 ### Talking to it
 
@@ -106,6 +117,11 @@ Test geometry in an isolated rig at `y = 2000+` and destroy it afterwards.
 session. A "fixed" module can test byte-identical to the broken one. Either
 push with `build` (which makes new instances) or clone the package into a
 sandbox folder and require the clone — see `tools/capture_poses.lua`.
+Observed 2026-10-07: a probe returning a module's config read a key as `nil`
+hours after the package was first loaded in the session, while the module
+source was correct on disk and in the place — the session was serving the
+pre-patch cached module. Restarting Studio (or reloading the place) is the
+fast way to clear it; a `build` push that replaces the instances works too.
 
 **Undefined globals compile clean.** Luau in non-strict mode reads an unknown
 global as `nil`. Deleting a local function and missing one call site produces

@@ -9,26 +9,85 @@
 
 ## Credentials
 
+**Working connection (2026-10-07): local HANDS MODE, not a tunnel.** The
+cloudflare tunnels (`conditions-regard-qualifications-suppliers` /
+`programs-lots-grow-further.trycloudflare.com`) are dead and unreachable from
+the sandbox anyway (egress allowlist). The live bridge is the **local server
+on the user's machine** at `http://127.0.0.1:8077`; the token lives in
+`bridge.token` in their `roblox-bridge` dir (do not paste it into a tracked
+file — `.\ab.ps1` reads it automatically). To sanity-check from the sandbox
+you can't (sandbox cannot reach the user's localhost); the user runs jobs and
+pastes output back.
+
+**2026-10-08:** the user's active working copy is a branch ZIP download at
+`C:\Users\Gamef\Downloads\Tunneling-arena-6d7d4b8a-tunneling\Tunneling-arena-6d7d4b8a-tunneling`
+— `bridge.token` was copied into its `roblox-bridge` folder (the ZIP doesn't
+ship it; it's gitignored). The running server process is still the one
+started from the original workspace folder
+(`C:\Users\Gamef\Downloads\workspace-01a115c6-25b3-719b-a117-f3400625cd10\roblox-bridge`);
+both folders now hold the same token, so `ab.ps1` works from either. The
+PowerShell execution-policy prompt on `ab.ps1` was cleared with
+`Unblock-File`.
+
 ```bash
-export BRIDGE_URL="https://programs-lots-grow-further.trycloudflare.com"
-export TOK="13bbda5372ab06c90cc84d7e"
+# user's machine (PowerShell):
+$env:BRIDGE_URL   = "http://127.0.0.1:8077"
+$env:BRIDGE_TOKEN = (Get-Content bridge.token).Trim()
+.\ab.ps1 ping            # -> pluginVersion 2.0, studio connected
 ```
 
-Last confirmed alive: 2026-10-07, by a `run_luau` round trip that returned
-real data from the open place.
+Reachability: 2026-10-07 — bridge + Studio LIVE from the user's machine:
+`studio_connected: true`, place "scary monster test 3"
+(placeId 110457957229133), Studio 0.741.19.7411056. **Protocol:
+`CONNECT.md` §4 (HANDS MODE)** — `.\ab.ps1 <cmd>` is the standard one-liner,
+longer jobs ship as `jobs/*.lua` + here-string + `runfile`. Plugin v2.0
+(auto-connect on load, `pluginVersion` in ping, survey Lighting.Technology
+fix) is committed 2026-10-07 and installed on the user's machine — verify
+with `.\ab.ps1 ping` → `"pluginVersion": "2.0"`.
 
-## Check it in one call
+**Live baseline 2026-10-07 (this sandbox, session 2):** package intact —
+14 `NightLoop` entries + `Entities` (7), spots "1"–"8" (8), no
+`MonsterPreview`, both client scripts. Live Config: `showPhase=true`,
+`night=900`, WindowMonster `{on, ground, rig}` **but `turn` (TurnSpeed) was
+nil live** (repo has 2.0 from phase 8) → drift suspected, then DISPROVEN:
+the 2026-10-07-07 drift audit ("22/22 hashes differ") was a tool bug — Studio's
+Luau rounds the naive FNV multiply through double (>2^53 products); the
+live Config.lua byte sample was identical to the repo file. Corrected audit
+`jobs/drift_audit.lua` v3 (exact decomposed multiply — CONNECT.md §8 items
+5–6 gotchas) is the one to run. **`turn` nil = stale require cache** (AGENTS.md
+pitfall #1, now observed live) — clearing it is a Studio restart / place
+reload, not a code fix. After restart, verify with the smoke script that
+`wm.turn == 2.0`.
 
-```bash
-curl -s -m 15 "$BRIDGE_URL/api/health?token=$TOK" | jq .
+> **Track state of this file changed.** In this checkout (`Tunneling`,
+> commit 5303da6) `SESSION.md` is *tracked* — the "not committed / gitignored"
+> header above no longer holds. Token therefore sits in repo history. Rotate
+> with `python setup.py --rotate` when this session ends, and consider
+> `git filter-repo` if the repo is ever public.
+
+## Check it in one call (HANDS MODE — user's PC)
+
+```powershell
+# in roblox-bridge on the user's PC (PowerShell: use the CLI, not curl —
+# PS aliases curl to Invoke-WebRequest):
+.\ab.ps1 health        # -> ok: true, studio_connected: true
+.\ab.ps1 ping          # -> place "scary monster test 3 ", placeId
+                       #    110457957229133, pluginVersion "2.0"
 ```
 
-If that fails, or jobs start timing out, the tunnel is dead — **this is
-normal**, quick tunnels do not survive a restart. Ask the user to run:
+The sandbox itself cannot reach the user's localhost (egress allowlist), so
+these checks always run on the user's machine and the output comes back
+pasted. (`/api/health` also exists over HTTP. There is no `/api/status` —
+it returns `{"error":"not found"}`. `studio_connected: false` means the
+local server is up but Studio is closed or the plugin is off.)
+
+If that fails, or jobs start timing out: the **local server** on the
+user's machine has stopped (it dies with the machine/terminal, and there is
+no tunnel to fall back on). Ask the user to start it again:
 
 ```bash
-cd path/to/bridge          # the real path on their machine
-python setup.py --tunnel
+cd path/to/roblox-bridge  # the real path on their machine
+python server.py          # serves http://127.0.0.1:8077
 ```
 
 ...and to paste the new `https://<words>.trycloudflare.com` URL. The token
