@@ -234,6 +234,19 @@ Install: `python setup.py --install-only` — re-bakes URL+token from
 Keep `roblox-bridge/ArenaBridge.lua` and `nightloop/bridge/ArenaBridge.lua`
 **in sync** (they were identical; diff before pushing).
 
+**Token trap (bitten 2026-10-08):** `setup.py` run in a folder that has **no
+`bridge.token`** silently generates a *fresh* token, writes it there, and
+reinstalls the Studio plugin with the new token baked in. If a different
+server is still running with the old token, the plugin then polls with HTTP
+401 and nothing works — while `ab.ps1` (which was pointed at the old token
+file) looks perfectly fine. Symptoms: Studio console
+`[Arena] poll HTTP 401 (xN)`, `/api/health` → `studio_connected: false` with
+a stale `last_seen`. Fix: run `python setup.py --install-only` from a folder
+whose `bridge.token` matches the **running server's** token, then restart
+Studio (the plugin reads its token at startup). Rule: never run `setup.py`
+in a fresh copy before copying `bridge.token` into it — and remember a
+token change requires a Studio restart to take effect in the plugin.
+
 **v2.0 changes (2026-10-07):**
 - **Auto-connect on load.** Local plugins are executed automatically whenever
   the DataModel loads, so the plugin now connects by itself if
