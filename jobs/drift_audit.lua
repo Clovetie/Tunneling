@@ -31,8 +31,8 @@ local X4 = {
 }
 
 local function xor8(a, b)
-	local hi = X4[(a // 16) * 16 + (b // 16)]
-	local lo = X4[(a % 16) * 16 + (b % 16)]
+	local hi = X4[(a // 16) * 16 + (b // 16) + 1]
+	local lo = X4[(a % 16) * 16 + (b % 16) + 1]
 	return hi * 16 + lo
 end
 
