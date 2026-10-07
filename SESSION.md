@@ -10,17 +10,56 @@
 ## Credentials
 
 ```bash
-export BRIDGE_URL="https://programs-lots-grow-further.trycloudflare.com"
+export BRIDGE_URL="https://conditions-regard-qualifications-suppliers.trycloudflare.com"
 export TOK="13bbda5372ab06c90cc84d7e"
 ```
 
-Last confirmed alive: 2026-10-07, by a `run_luau` round trip that returned
-real data from the open place.
+Tunnel restarted 2026-10-07 15:41 (user's machine, Windows, Python 3.14,
+cloudflared 2026.10.0). Token unchanged. Previously:
+`programs-lots-grow-further.trycloudflare.com` (now dead).
+
+Reachability: 2026-10-07 ~16:00 — bridge + Studio CONFIRMED LIVE from the
+user's machine: `studio_connected: true`, place "scary monster test 3"
+(placeId 110457957229133), Studio 0.741.19.7411056, 90 jobs served. The
+Arena sandbox still cannot reach `*.trycloudflare.com` at all (TLS dropped
+by the sandbox egress allowlist; allowlisted hosts like github.com work).
+Working mode until egress is fixed: agent writes + validates in the repo;
+user runs jobs on their own PC against `http://127.0.0.1:8077` and pastes
+output back. **Protocol: `CONNECT.md` §4 (HANDS MODE)** — `.\ab.ps1 <cmd>`
+is the standard one-liner (reads the token from bridge.token; it was added to
+the user's roblox-bridge 2026-10-07), longer jobs ship as `jobs/*.lua` +
+here-string + `runfile`. Plugin v2.0 (auto-connect on load, `pluginVersion`
+in ping, survey Lighting.Technology fix) is committed 2026-10-07; user
+install pending — verify with `.\ab.ps1 ping` → `"pluginVersion": "2.0"`.
+
+> **Track state of this file changed.** In this checkout (`Tunneling`,
+> commit 5303da6) `SESSION.md` is *tracked* — the "not committed / gitignored"
+> header above no longer holds. Token therefore sits in repo history. Rotate
+> with `python setup.py --rotate` when this session ends, and consider
+> `git filter-repo` if the repo is ever public.
 
 ## Check it in one call
 
 ```bash
-curl -s -m 15 "$BRIDGE_URL/api/health?token=$TOK" | jq .
+curl -s -m 15 "$BRIDGE_URL/api/state?token=$TOK" | jq '{studio_connected, place: .studio.place}'
+```
+
+Expected: `studio_connected: true`, place `"scary monster test 3 "`.
+(`/api/health` also exists. There is no `/api/status` — it returns
+`{"error":"not found"}`. `studio_connected: false` means the tunnel is up
+but Studio is closed or the plugin toolbar button is off.)
+
+If the sandbox cannot reach the tunnel at all (see egress caveat above),
+the user's own machine can always talk to the bridge directly — no tunnel
+involved:
+
+```powershell
+# in roblox-bridge on the user's PC (PowerShell: use the CLI, not curl —
+# PS aliases curl to Invoke-WebRequest):
+$env:BRIDGE_URL = "http://127.0.0.1:8077"
+$env:BRIDGE_TOKEN = "13bbda5372ab06c90cc84d7e"
+python arena_studio.py health
+python arena_studio.py ping
 ```
 
 If that fails, or jobs start timing out, the tunnel is dead — **this is

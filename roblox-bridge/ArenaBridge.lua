@@ -6,8 +6,9 @@
 	Install:
 	  1. Run the bridge on your computer:  python3 server.py --token YOURTOKEN
 	  2. Studio -> Plugins tab -> Plugins Folder
-	  3. Drop this file (ArenaBridge.lua) in that folder
-	  4. Restart Studio. A new "Arena" toolbar button appears. Click it.
+  3. Drop this file (ArenaBridge.lua) in that folder (or: python setup.py --install-only)
+  4. Restart Studio. A new "Arena" toolbar button appears.
+     v2+ auto-connects if server.py is already running — no click needed.
 
 	The plugin polls the LOCAL bridge for jobs, runs them inside Studio, and posts
 	results back. Roblox explicitly allows plugins to talk to localhost / 127.0.0.1,
@@ -23,6 +24,8 @@
 local BRIDGE_URL = "http://127.0.0.1:8077"  -- the bridge on YOUR machine
 local BRIDGE_TOKEN = "arena-demo-7f3a"      -- must match the server's --token
 local POLL_INTERVAL = 1.0                   -- seconds between polls when idle
+local AUTO_CONNECT = true                   -- v2: connect on load if the bridge is up
+local PLUGIN_VERSION = "2.0"
 ------------------------------------------------------------------------------
 
 local HttpService = game:GetService("HttpService")
@@ -382,6 +385,7 @@ handlers["ping"] = function(_)
 		place = game.Name,
 		placeId = game.PlaceId,
 		studio = okVer and ver or "unknown",
+		pluginVersion = PLUGIN_VERSION,
 	}
 end
 
@@ -566,6 +570,11 @@ handlers["survey"] = function(p)
 	local okTerrain, terrain = pcall(function()
 		return workspace.Terrain
 	end)
+	-- Known defect fixed in v2: Lighting.Technology throws
+	-- "lacking capability RobloxScript" on a plugin thread. Guard it.
+	local okTech, tech = pcall(function()
+		return lighting.Technology
+	end)
 
 	return {
 		place = {
@@ -585,7 +594,7 @@ handlers["survey"] = function(p)
 			streamingEnabled = tostring(workspace.StreamingEnabled),
 			clockTime = tostring(lighting.ClockTime),
 			ambient = tostring(lighting.Ambient),
-			technology = tostring(lighting.Technology),
+			technology = okTech and tostring(tech) or "n/a (plugin thread)",
 			hasTerrain = okTerrain and terrain ~= nil,
 		},
 		totals = {
@@ -803,4 +812,18 @@ plugin.Unloading:Connect(function()
 	running = false
 end)
 
-log("ArenaBridge loaded. Click the Arena button to connect.")
+------------------------------------------------------------------------------
+-- v2: auto-connect on load, so a Studio restart no longer requires the
+-- toolbar click. Safe even if server.py is not up yet: the poll loop
+-- tolerates a down bridge (retries every few seconds) and latches on the
+-- moment it starts. Multiple Studio windows are fine — the server hands a
+-- job to exactly one poller.
+-- Opt out (persisted): plugin:SetSetting("AutoConnect", false)
+-- Toggle any time: click the Arena button.
+------------------------------------------------------------------------------
+local autoConnect = plugin:GetSetting("AutoConnect")
+if autoConnect ~= false then
+	setRunning(true)
+else
+	log("ArenaBridge loaded (auto-connect off). Click the Arena button to connect.")
+end
