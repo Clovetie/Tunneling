@@ -1,11 +1,20 @@
 --!nonstrict
 -- jobs/drift_audit.lua — READ ONLY. Safe to re-run any time.
 --
--- Hashes every script in the live NightLoop package (FNV-1a 32; the XOR step
--- uses a nibble table because the repo toolchain binary predates the bitwise
--- operators) and returns {name, hash, bytes} so the agent can diff live vs
--- repo in one shot. Expected: 23 entries — 14 under NightLoop (incl. the
--- Entities folder marker), 7 under NightLoop.Entities, 2 client scripts.
+-- Hashes every script in the live NightLoop package (FNV-1a 32) and returns
+-- {checks, files} so the agent can diff live vs repo in one shot.
+--
+-- IMPLEMENTATION NOTES (do not "simplify" these):
+--  * The FNV multiply uses the decomposition 16777619 = 2^24 + 2^8 + 147 so
+--    every intermediate stays under 2^41: h*prime mod 2^32 ==
+--    (h*147 + h*256 + (h % 256)*16777216) % 2^32. A naive `h * 16777619`
+--    with h < 2^32 exceeds 2^53 and Studio's Luau rounds it through double
+--    (verified 2026-10-07: off-by-one/three on the test products), which
+--    silently hashes differently than the repo-side Python.
+--  * The XOR step uses the X4 nibble table (1-based lookups) because the repo
+--    toolchain binary predates Luau bitwise operators (CONNECT.md section 8).
+--  * Checks are a separate `checks` field: JSONEncode drops named keys from
+--    mixed (named + array) tables, which hid the self-checks in v1.
 local H = game:GetService("HttpService")
 local nl = game:GetService("ServerScriptService"):FindFirstChild("NightLoop")
 local spp = game:GetService("StarterPlayer"):FindFirstChild("StarterPlayerScripts")
@@ -41,12 +50,12 @@ local function fnv(s)
 	for i = 1, #s do
 		local lo = h % 256
 		h = h - lo + xor8(lo, s:byte(i))
-		h = (h * 16777619) % 4294967296
+		h = (h * 147 + h * 256 + (h % 256) * 16777216) % 4294967296
 	end
 	return h
 end
 
-local out = { selfCheckA = fnv("a") == 3826002220, selfCheckHello = fnv("hello") == 1335831723 }
+local files = {}
 local function hashDir(parent, prefix)
 	for _, c in ipairs(parent:GetChildren()) do
 		local entry = { name = prefix .. c.Name }
@@ -63,7 +72,7 @@ local function hashDir(parent, prefix)
 		elseif c:IsA("Folder") then
 			entry.folder = true
 		end
-		table.insert(out, entry)
+		table.insert(files, entry)
 	end
 end
 
@@ -74,7 +83,7 @@ if nl then
 		hashDir(ents, "NightLoop.Entities.")
 	end
 else
-	table.insert(out, { name = "NightLoop", missing = true })
+	table.insert(files, { name = "NightLoop", missing = true })
 end
 if spp then
 	for _, name in ipairs({ "NightLoopClient", "NightLoopFirstPerson" }) do
@@ -84,12 +93,15 @@ if spp then
 				return c.Source
 			end)
 			if ok then
-				table.insert(out, { name = name, hash = fnv(src), bytes = #src })
+				table.insert(files, { name = name, hash = fnv(src), bytes = #src })
 			end
 		else
-			table.insert(out, { name = name, missing = true })
+			table.insert(files, { name = name, missing = true })
 		end
 	end
 end
 
-return H:JSONEncode(out)
+return H:JSONEncode({
+	checks = { a = fnv("a") == 3826002220, hello = fnv("hello") == 1335831723 },
+	files = files,
+})

@@ -117,6 +117,11 @@ Test geometry in an isolated rig at `y = 2000+` and destroy it afterwards.
 session. A "fixed" module can test byte-identical to the broken one. Either
 push with `build` (which makes new instances) or clone the package into a
 sandbox folder and require the clone — see `tools/capture_poses.lua`.
+Observed 2026-10-07: a probe returning a module's config read a key as `nil`
+hours after the package was first loaded in the session, while the module
+source was correct on disk and in the place — the session was serving the
+pre-patch cached module. Restarting Studio (or reloading the place) is the
+fast way to clear it; a `build` push that replaces the instances works too.
 
 **Undefined globals compile clean.** Luau in non-strict mode reads an unknown
 global as `nil`. Deleting a local function and missing one call site produces

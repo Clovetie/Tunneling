@@ -278,8 +278,21 @@ Behaviour notes:
    with internet (GitHub release assets redirect to
    `objects.githubusercontent.com`, which is not on the sandbox egress
    allowlist).
-6. After work: update `SESSION.md` state; if the session is done, the user
-   rotates the token (`python setup.py --rotate`) and kills the tunnel.
+6. **Studio's Luau rounds large multiplies through double — decompose 32-bit
+   hashes in jobs.** `(h * 16777619) % 2^32` with `h < 2^32` gives products
+   ~3.6e16..7.2e16 (> 2^53): Studio rounds them to the nearest double before
+   the mod. Measured 2026-10-07 (`jobs/hash_diagnostic.lua`): results
+   off-by-one / off-by-three vs the exact integer values, so a naive FNV-1a in
+   a job hashes live files differently than Python on the identical bytes —
+   the first drift audit ("22 files drifted") was this, not real drift.
+   `jobs/drift_audit.lua` uses the exact, still-fast decomposition
+   `16777619 = 2^24 + 2^8 + 147`:
+   `h = (h * 147 + h * 256 + (h % 256) * 16777216) % 4294967296` (intermediates
+   < 2^41, exact in double). Rule of thumb: in any job, keep multiply products
+   < 2^53.
+7. After work: update `SESSION.md` state; if the session is done, the user
+   rotates the token (`python setup.py --rotate`) and stops the local server
+   (or tunnel, if one is ever back).
 
 ---
 
