@@ -1,0 +1,5 @@
+# Selene linting config for BRINE Luau scripts.
+std = "roblox"
+
+[selene]
+# Keep global lookups simple for Roblox Luau.

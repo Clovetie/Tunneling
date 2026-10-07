@@ -1,0 +1,14 @@
+[
+  {
+    "id": "fixture-known-good",
+    "description": "Deterministic rule-based demo adapter (tools/fixture-model.js). Demonstrates a green ADMIT without network/credentials.",
+    "command": "node",
+    "args": ["tools/fixture-model.js"]
+  },
+  {
+    "id": "candidate-local",
+    "description": "Points at a missing adapter on purpose: exercises the fail-closed REJECT path.",
+    "command": "python3",
+    "args": ["my_model_adapter.py"]
+  }
+]

@@ -1,0 +1,25 @@
+{
+	"name": "brine-tools",
+	"private": true,
+	"description": "Local tooling for checking BRINE Luau scripts.",
+	"scripts": {
+		"check": "node check-syntax.js ../code",
+		"audit": "bash audit.sh",
+		"audit:json": "bash audit.sh --json",
+		"quality-gate": "node vitriol-quality-gate.js --src ../code",
+		"call-graph": "node call-graph.js --src ../code",
+		"metrics": "node metrics.js --src ../code",
+		"validate-project": "node validate-project.js",
+		"dead-config": "node find-dead-config.js --src ../code",
+		"hot-loop": "node hot-loop-scan.js --src ../code",
+		"evaluate": "node evaluate-models.js --models models.example.json --suite evaluation-suite.example.json",
+		"workbench": "node workbench.js"
+	},
+	"dependencies": {
+		"luaparse": "0.3.1"
+	},
+	"devDependencies": {
+		"@johnnymorganz/stylua-bin": "^2.5.2",
+		"fengari": "^0.1.5"
+	}
+}
