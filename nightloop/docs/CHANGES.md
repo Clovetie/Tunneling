@@ -127,3 +127,11 @@ leaves Studio serving the cached module (so it creates new instances).
 - `Whisperer` is coded but disabled: it needs audio asset IDs **from the user**.
 - `Config.Hud.ShowPhase` must go to `false` when testing ends. Keep the bar.
 - `Breathless` / `TickingMan` need room volumes; nothing in the place marks rooms.
+
+**Watching it without playing a night.** `jobs/preview_climb.lua` classifies the
+real spots, picks the climb spot with the biggest drop (or `WANTED = "3"`), and
+runs the entity's own `_startClimb` / `_updateClimb` under a Heartbeat loop with
+a real rig in the viewport, then holds the arrival pose and scores how much of
+the body is inside the house. Run it in **Edit mode** — it spawns a second rig
+that the live entity cannot see, so running it mid-playtest would confuse the
+night.
