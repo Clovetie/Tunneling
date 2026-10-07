@@ -1,0 +1,38 @@
+{
+  "parent": "Workspace",
+  "tree": [
+    {
+      "className": "Model",
+      "name": "ArenaCoins",
+      "replaceExisting": true,
+      "children": [
+        {
+          "className": "Part",
+          "name": "Coin",
+          "properties": {
+            "Shape": {"__t": "Enum", "v": "PartType.Cylinder"},
+            "Size": {"__t": "Vector3", "v": [0.4, 4, 4]},
+            "Position": {"__t": "Vector3", "v": [0, 4, 0]},
+            "Orientation": {"__t": "Vector3", "v": [0, 0, 90]},
+            "Color": {"__t": "Color3", "v": [1, 0.82, 0.25]},
+            "Material": {"__t": "Enum", "v": "Material.Metal"},
+            "Anchored": true,
+            "CanCollide": false
+          },
+          "attributes": {"Value": 10},
+          "children": [
+            {
+              "className": "PointLight",
+              "name": "Glow",
+              "properties": {
+                "Color": {"__t": "Color3", "v": [1, 0.85, 0.3]},
+                "Brightness": 2,
+                "Range": 12
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
