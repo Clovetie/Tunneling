@@ -19,6 +19,16 @@ file — `.\ab.ps1` reads it automatically). To sanity-check from the sandbox
 you can't (sandbox cannot reach the user's localhost); the user runs jobs and
 pastes output back.
 
+**2026-10-08:** the user's active working copy is a branch ZIP download at
+`C:\Users\Gamef\Downloads\Tunneling-arena-6d7d4b8a-tunneling\Tunneling-arena-6d7d4b8a-tunneling`
+— `bridge.token` was copied into its `roblox-bridge` folder (the ZIP doesn't
+ship it; it's gitignored). The running server process is still the one
+started from the original workspace folder
+(`C:\Users\Gamef\Downloads\workspace-01a115c6-25b3-719b-a117-f3400625cd10\roblox-bridge`);
+both folders now hold the same token, so `ab.ps1` works from either. The
+PowerShell execution-policy prompt on `ab.ps1` was cleared with
+`Unblock-File`.
+
 ```bash
 # user's machine (PowerShell):
 $env:BRIDGE_URL   = "http://127.0.0.1:8077"
