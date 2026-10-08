@@ -373,7 +373,8 @@ python arena_studio.py runfile push_all.lua       REM publish</pre>
 <script>
 const $ = (s) => document.querySelector(s);
 const KEY = 'arena-relay-token';
-const BRIDGE = 'http://127.0.0.1:8077';
+const BRIDGE_CANDIDATES = ['http://127.0.0.1:8077', 'http://localhost:8077'];
+let BRIDGE = BRIDGE_CANDIDATES[0];   // whichever answers first (set by checkBridge)
 const params = new URLSearchParams(location.search);
 
 // The preview gate's token is not always in this frame's query string, and the
@@ -448,10 +449,31 @@ async function bridgeCall(path, opts) {
   return readJSON(await fetch(url, opts));
 }
 
+async function bridgeProbe(url) {
+  const saved = BRIDGE;
+  BRIDGE = url;
+  try {
+    const r = await bridgeCall('/api/health');
+    return {url, r};
+  } finally {
+    BRIDGE = saved;
+  }
+}
+
 async function checkBridge(quiet) {
   if (!token) return;
   try {
-    const r = await bridgeCall('/api/health');
+    // browsers are fussy: one spelling of loopback can be blocked while the
+    // other is not, so ask both and keep the one that answers.
+    let r = null, lastError = null;
+    for (const candidate of BRIDGE_CANDIDATES) {
+      try {
+        const probe = await bridgeProbe(candidate);
+        if (probe.r.status === 200) { r = probe.r; BRIDGE = candidate; break; }
+        r = probe.r;
+      } catch (err) { lastError = err; }
+    }
+    if (!r) throw (lastError || new Error('no loopback address answered'));
     if (r.status !== 200) {
       setLine('bridge', 'bad', `local bridge: HTTP ${r.status} ${JSON.stringify(r.data).slice(0, 120)}`);
       if (!quiet) log(`local bridge said HTTP ${r.status}: ${esc(JSON.stringify(r.data))}`, 'err');
@@ -469,14 +491,18 @@ async function checkBridge(quiet) {
     const detail = (err && (err.name ? err.name + ': ' : '') + (err.message || err)) || String(err);
     setLine('bridge', 'bad', `local bridge: unreachable from this page (${detail})`);
     if (!quiet) {
-      log(`cannot reach ${BRIDGE} from the browser -- ${esc(detail)}`, 'err');
+      log(`cannot reach ${BRIDGE_CANDIDATES.join(' or ')} from the browser -- ${esc(detail)}`, 'err');
       log('a failed fetch cannot say which of these is wrong, so check both:', 'warn');
       log('  1. is server.py running on that machine?  (python server.py, leave it running)', 'warn');
+      log('     it prints "[bridge] ... (token disabled)" when started without a token - that is fine', 'warn');
       log('  2. is this page top-level? ' + (IS_TOP
         ? 'yes - and if server.py is up, the browser is blocking local requests: allow it, or use '
           + 'the command-line client instead.'
         : 'no - this page is inside the Arena frame, which browsers often forbid from calling '
           + 'localhost. Click Open in a new tab above, then press Connect there.'), 'warn');
+      log('  3. Chrome may be asking permission to reach devices on your network - if a prompt', 'warn');
+      log('     appeared, click Allow. Otherwise: chrome://settings/content/localNetworkAccess', 'warn');
+      log('     and add this site. In Edge: edge://settings (search "local network").', 'warn');
     }
     report({ok: false, error: detail, page_top_level: IS_TOP});
     return null;
@@ -795,6 +821,38 @@ class Handler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, json.JSONDecodeError):
             return {"_raw": raw[:500].decode("utf-8", "replace")}
 
+    def _note_page_request(self):
+        """Record how the browser reached us, so the agent can see how the
+        preview gate authenticates it.
+
+        Header *names* only, never values: the whole point is to learn whether
+        the gate forwards a traffic token, passes a cookie, or nothing at all.
+        """
+        names = sorted(self.headers.keys())
+        traffic_header = any("traffic" in n.lower() for n in names)
+        cookie_names = []
+        for raw in self.headers.get_all("cookie") or []:
+            for part in raw.split(";"):
+                name = part.split("=")[0].strip()
+                if name:
+                    cookie_names.append(name)
+        referer = self.headers.get("referer") or ""
+        if "?" in referer:
+            referer = referer.split("?", 1)[0] + "?<redacted>"
+        with LOCK:
+            STATE["last_page_request"] = {
+                "at": now(),
+                "host": self.headers.get("host"),
+                "header_names": names,
+                "traffic_header_present": traffic_header,
+                "cookie_names": sorted(set(cookie_names)),
+                "referer": referer or None,
+                "forwarded_for": self.headers.get("x-forwarded-for"),
+            }
+        print(f"[relay] page request: {len(names)} header(s), "
+              f"traffic_header={traffic_header}, cookies={sorted(set(cookie_names)) or 'none'}",
+              flush=True)
+
     # -- verbs -------------------------------------------------------------
     def do_OPTIONS(self):
         self._send(200, b"")
@@ -808,6 +866,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "version": VERSION})
 
         if path == "/":
+            self._note_page_request()
             html = (PAGE
                     .replace("__RELAY_URL__", STATE.get("url") or self.headers.get("host", ""))
                     .replace("__TOKEN_HINT__", (TOKEN[:6] + "\u2026") if TOKEN else "(none)")
@@ -1028,6 +1087,7 @@ class Handler(BaseHTTPRequestHandler):
             "counts": counts,
             "last_report": report,
             "preview_token": STATE.get("traffic") or None,
+            "last_page_request": STATE.get("last_page_request"),
             "jobs": jobs[:40],
         }
 
