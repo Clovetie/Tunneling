@@ -26,6 +26,9 @@ token above rather than looking for the file.
 Steps: start the relay, give me the ONE PowerShell line to run, verify with
 health + ping + the baseline survey, then run the publish pipeline (drift ->
 push dry -> review -> push --apply) and tell me what changed.
+
+If my client prints 403, it needs the preview token - tell me to click
+"Copy preview token" on the relay page and paste it back to you.
 ```
 
 The token line matters: `bridge.token` is gitignored, so a fresh ZIP of the
@@ -61,6 +64,20 @@ python3 relay/relay_server.py --port 8787 --token "$TOK" \
 cd "C:\Users\Gamef\Downloads\Tunneling-arena-8673c420-tunneling\Tunneling-arena-8673c420-tunneling"
 python .\relay\poll_local.py --url https://8787-<SANDBOX_ID>.e2b.app --token <24-hex token>
 ```
+
+**Expect a 403 the first time on a preview URL.** That is E2B's proxy, not the
+relay: every non-browser client needs the preview's `e2b-traffic-access-token`.
+Have the user open the relay page → *Troubleshooting* → **Copy preview token**
+and paste it once:
+
+```powershell
+python .\relay\poll_local.py --url https://8787-<SANDBOX_ID>.e2b.app `
+       --token <24-hex> --traffic-token <paste>
+```
+
+`poll_local.py` caches it in `relay/.arena-traffic-token` (mode 600, gitignored)
+and reuses it, so this happens **once per sandbox**, not per run. `--forget-traffic-token`
+clears it. (The browser page does not need it — Arena's iframe carries it.)
 
 **Variant B — give the checkout a token file first** (then A's `--token` is
 optional, and `server.py` started from that folder finds it too):
@@ -141,7 +158,7 @@ and `nightloop/AGENTS.md`. The two things that need the user:
 | trap | fact |
 |---|---|
 | Sandbox egress | allowlist only (github/pypi/npm). The sandbox can **never** reach the user's machine; the relay inverts the direction. `CONNECT.md` §5. |
-| Preview downloads | the preview URL is **traffic-token gated**: `curl.exe` gets 157 bytes of gate JSON instead of a file. Downloads must happen in the browser (or carry `?e2b-traffic-access-token=…`). That is why the page embeds the files and has **Save** buttons. |
+| Preview gate | the preview URL is **traffic-token gated** for everything that is not the browser: `curl.exe` gets 157 bytes of gate JSON, and `poll_local.py`/`relay.ps1` get **HTTP 403** until they are given `--traffic-token <value>` (or `-TrafficToken`). The value is in the preview's address bar and on the page (**Copy preview token**); `poll_local.py` caches it after the first use. Downloads must happen in the browser — that is why the page embeds the files and has **Save** buttons. |
 | PowerShell 5.1 | it decodes `.ps1` as ANSI unless the file starts with a UTF-8 BOM → mojibake → parse errors. All our `.ps1` files are ASCII-only **and** served with a BOM. It also has no PowerShell 7 syntax (`$x = if (…) {…} else {…}`, `??`, `&&`). Prefer `poll_local.py`. |
 | Filenames | `python poll_local` (no extension) and pasted markdown links (`poll_[local.py](http://local.py)`) both fail. Always give `python .\poll_local.py`. |
 | Missing `bridge.token` | It is **gitignored**, so a branch ZIP never contains it. Symptom: `Get-Content .\roblox-bridge\bridge.token` -> PathNotFound, then `no token: keep this script next to bridge.token, or pass --token`. Fix: `--token <24-hex>` (variant A above) or copy the file from the user's other working copy (variant B). Never commit it. |

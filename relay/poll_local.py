@@ -13,9 +13,13 @@ PowerShell 5.1 to mis-decode, no quoting rules, and no execution policy.
     # or from the bridge folder, next to bridge.token:
     python .\poll_local.py --url https://8787-<sandbox>.e2b.app
 
-    # if the preview URL is token-gated (HTTP 403), copy the
-    # e2b-traffic-access-token value out of the preview's address bar and:
+    # if the preview URL is token-gated (HTTP 403), get the value from the
+    # relay page: Troubleshooting box -> "Copy preview token", then:
     python poll_local.py --url https://8787-<sandbox>.e2b.app --traffic-token <value>
+
+    # you only do that once: the value is cached next to this script
+    # (.arena-traffic-token) and reused automatically. --forget-traffic-token
+    # clears it.
 
 It finds the token by itself, in this order (the first hit wins):
     --token / --bridge-token, $BRIDGE_TOKEN, <script dir>\bridge.token,
@@ -72,6 +76,33 @@ def token_candidates():
     ]
 
 
+TRAFFIC_CACHE = HERE / ".arena-traffic-token"
+
+
+def load_traffic_token():
+    try:
+        if TRAFFIC_CACHE.is_file():
+            text = TRAFFIC_CACHE.read_text(encoding="utf-8").strip()
+            if text:
+                return text, str(TRAFFIC_CACHE)
+    except OSError:
+        pass
+    return "", ""
+
+
+def save_traffic_token(value):
+    try:
+        TRAFFIC_CACHE.write_text(value.strip(), encoding="utf-8")
+        try:
+            TRAFFIC_CACHE.chmod(0o600)
+        except OSError:
+            pass
+        return True
+    except OSError as exc:
+        log(f"could not cache the preview token: {exc}")
+        return False
+
+
 def find_token_file():
     for candidate in token_candidates():
         try:
@@ -126,9 +157,12 @@ class Bridge:
 def explain(exc, url):
     code = getattr(exc, "code", None)
     if code == 403:
-        log("403 - the preview URL is token-gated.")
-        log("Open the preview in a browser tab, copy e2b-traffic-access-token")
-        log("from the address bar, then re-run with --traffic-token <value>.")
+        log("403 - the preview URL is token-gated (this is E2B's proxy, not the relay).")
+        log("Get the value from the relay page: open the preview, expand")
+        log("'Troubleshooting - and using the bridge without Arena', click")
+        log("'Copy preview token', then re-run this command with")
+        log("  --traffic-token <paste>")
+        log("It is cached next to this script afterwards, so that is a one-time step.")
     elif code == 401:
         log("401 - the relay rejected the token. It wants the 24-hex token Arena")
         log("showed you; check bridge.token (it is usually the same value).")
@@ -147,14 +181,33 @@ def main():
     ap.add_argument("--bridge", default=os.environ.get("BRIDGE_URL", "http://127.0.0.1:8077"))
     ap.add_argument("--bridge-token", default=None)
     ap.add_argument("--traffic-token", default=os.environ.get("E2B_TRAFFIC_TOKEN"))
+    ap.add_argument("--forget-traffic-token", action="store_true",
+                    help="drop the cached preview token and exit")
     ap.add_argument("--interval", type=float, default=2.0)
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
 
+    if args.forget_traffic_token:
+        try:
+            TRAFFIC_CACHE.unlink()
+            print(f"removed {TRAFFIC_CACHE}")
+        except OSError:
+            print(f"nothing to remove at {TRAFFIC_CACHE}")
+        return 0
+
     if not args.url:
         print("no --url: pass the relay URL Arena gave you (https://<port>-<sandbox>.e2b.app)")
         return 1
+
+    traffic_cached, traffic_source = load_traffic_token()
+    if args.traffic_token:
+        traffic_source = "--traffic-token"
+        if not traffic_cached or traffic_cached != args.traffic_token.strip():
+            if save_traffic_token(args.traffic_token):
+                log(f"cached the preview token in {TRAFFIC_CACHE} (reused next time)")
+    else:
+        args.traffic_token = traffic_cached
 
     file_token, token_source = find_token_file()
     relay_token = args.token or os.environ.get("BRIDGE_TOKEN") or file_token or ""
@@ -175,6 +228,8 @@ def main():
     bridge = Bridge(args.bridge, bridge_token)
 
     # 1. relay reachable?
+    if args.traffic_token and traffic_source and not args.quiet:
+        log(f"using preview token from {traffic_source}")
     try:
         state = relay.call("/api/state", timeout=30)
     except Exception as exc:                                 # noqa: BLE001

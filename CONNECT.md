@@ -460,8 +460,12 @@ Full chain with **no user**: `server.py` (fake local bridge) + `mock_studio.py`
 - **Preview gate.** If the preview URL needs `?e2b-traffic-access-token=…`, a
   bare `curl`/`Invoke-WebRequest` from the user's PowerShell gets **403** and
   the browser page is the path that works (Arena's iframe carries the token) —
-  or the user copies the value out of the address bar and passes `-TrafficToken`.
-  `relay.ps1` detects 403 and says exactly that.
+  or the user copies the value out of the address bar and passes `-TrafficToken`
+  (`--traffic-token` for `poll_local.py`). Both clients detect 403 and say
+  exactly that. **`poll_local.py` caches the value** in
+  `relay/.arena-traffic-token` (mode 600, gitignored) and reuses it, so a typical
+  session has exactly one paste; `--forget-traffic-token` clears it. Expect this
+  403 on every fresh sandbox.
 - **Chrome PNA/LNA** can gate public → loopback requests; `server.py` now sends
   `Access-Control-Allow-Private-Network: true` on the preflight (both copies,
   kept in sync). An already-running old server won't have it — restart from an

@@ -1,5 +1,6 @@
 # live session state + secrets — never commit these
 .relay-state/
+.arena-traffic-token
 bridge.token
 *.token
 dist/

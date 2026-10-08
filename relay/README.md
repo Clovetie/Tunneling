@@ -50,7 +50,7 @@ python3 relay/relay.py state        # clients attached?
 | `relay_server.py` | the relay: job queue, SSE, control-panel page, `/relay.ps1`, `/api/*` |
 | `relay.py` | **agent-side CLI** — `state`, `ping`, `run`, `runfile`, `survey`, `job`, `wait`, `tail` |
 | `relay.ps1` | user-side PowerShell client (served at `/relay.ps1`, ASCII + BOM) |
-| `poll_local.py` | user-side Python client (served at `/poll_local.py`) - the one to reach for. Finds `bridge.token` next to itself, in `..\roblox-bridge\`, in the cwd, and in `cwd\roblox-bridge`; `--once` checks both hops and exits |
+| `poll_local.py` | user-side Python client (served at `/poll_local.py`) - the one to reach for. Finds `bridge.token` next to itself, in `..\roblox-bridge\`, in the cwd, and in `cwd\roblox-bridge`; `--once` checks both hops and exits; caches the preview token in `.arena-traffic-token` after the first `--traffic-token` |
 | `selftest.py` | plays the user's machine so the whole chain can be tested with no user |
 
 Runtime state (token, event log) lives in `../.relay-state/` — **gitignored**,
@@ -84,6 +84,10 @@ one of them through the relay, and prints per-file `unchanged / replaced /
 created` with old -> new byte counts, the `require()` result of the key
 modules, and the live tuning values from `Config`. Exit code is non-zero if the
 job reported anything less than `ok`.
+
+Everything past the preview proxy needs `e2b-traffic-access-token` once per
+sandbox (403 without it) — the page's **Copy preview token** button is the
+source, `--traffic-token` is the input, and the client caches it.
 
 Job files are also served by the relay for browser download —
 `https://<preview>/jobs/` lists them, `https://<preview>/jobs/push_all.lua`
