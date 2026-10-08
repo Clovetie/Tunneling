@@ -54,6 +54,27 @@ python3 relay/relay.py run "return game.Name"
 python3 relay/relay.py tail                          # follow .relay-state/events.jsonl
 ```
 
+## Publishing the game code
+
+```bash
+python3 relay/relay.py drift            # live place vs repo, per file (read-only)
+python3 relay/relay.py push             # generate + run the DRY pass, print the diff
+python3 relay/relay.py push --apply     # publish what actually differs
+```
+
+`push` regenerates `jobs/push_all.lua` / `push_all_dry.lua` from
+`nightloop/src/**` + `nightloop/client/**` (via `jobs/make_push_all.py`, which
+verifies its own payload decodes byte-identically before the job exists), runs
+one of them through the relay, and prints per-file `unchanged / replaced /
+created` with old -> new byte counts, the `require()` result of the key
+modules, and the live tuning values from `Config`. Exit code is non-zero if the
+job reported anything less than `ok`.
+
+Job files are also served by the relay for browser download —
+`https://<preview>/jobs/` lists them, `https://<preview>/jobs/push_all.lua`
+fetches one — which sidesteps the private GitHub repo and the gated preview
+(browser downloads carry the token; `curl.exe` does not).
+
 The preview URL is `https://<port>-<E2B_SANDBOX_ID>.e2b.app`; the port is fixed
 by `--port`, so the URL is stable for the life of the sandbox.
 

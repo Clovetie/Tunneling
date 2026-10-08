@@ -14,6 +14,12 @@ http://127.0.0.1:8787), reading the shared token from .relay-state/relay.json
     python3 relay/relay.py wait <job-id>
     python3 relay/relay.py tail            # follow the relay's event log
 
+Publishing the game code (the reason this exists):
+
+    python3 relay/relay.py drift           # live vs repo, per file, read-only
+    python3 relay/relay.py push            # generate the job, run the DRY pass
+    python3 relay/relay.py push --apply    # actually publish what differs
+
 The value returned by run_luau is `result.result.returned` — a string; if the
 Luau returned JSON, it is parsed here automatically.
 """
@@ -103,6 +109,123 @@ def show_result(job):
                       "error": resp.get("error") or job.get("error"),
                       "response": resp}, indent=2, ensure_ascii=False)[:4000])
     return 1
+
+
+def run_job(cfg, kind, payload, note=None, wait=90):
+    """Submit a job and return its full record once it is finished."""
+    job = submit(cfg, kind, payload, note, wait)
+    if job.get("status") in ("done", "error", "accepted"):
+        return job
+    if "id" in job:                       # still queued: wait for it
+        return call(cfg, "GET", f"/api/result/{job['id']}")
+    return job
+
+
+def returned_json(job):
+    """The `returned` string, parsed if it is JSON."""
+    resp = job.get("response") or {}
+    value = (resp.get("result") or {}).get("returned")
+    if not isinstance(value, str):
+        return None, job
+    try:
+        return json.loads(value), job
+    except json.JSONDecodeError:
+        return None, job
+
+
+def cmd_drift(cfg, args):
+    """Live place vs this repo, per file - read-only."""
+    sys.path.insert(0, str(HERE.parent / "jobs"))
+    from repo_hashes import digest, MANIFEST  # noqa: E402
+
+    source = Path(args.file) if args.file else HERE.parent / "jobs" / "drift_audit.lua"
+    job = run_job(cfg, "run_luau", {"code": source.read_text(encoding="utf-8")},
+                  "drift audit", args.wait)
+    data, job = returned_json(job)
+    if data is None:
+        print(json.dumps(job, indent=2)[:1500])
+        return 1
+
+    checks = data.get("checks") or {}
+    live = {entry.get("name"): entry for entry in data.get("files") or []}
+    repo = {key: digest(rel) for rel, key in MANIFEST}
+
+    rows, same, diff = [], 0, 0
+    for key, (want_hash, want_bytes) in repo.items():
+        entry = live.pop(key, None)
+        if entry is None:
+            rows.append(("MISSING", key, "-", f"{want_bytes}"))
+            diff += 1
+        elif entry.get("error"):
+            rows.append(("ERROR", key, entry["error"], f"{want_bytes}"))
+            diff += 1
+        elif entry.get("hash") == want_hash and entry.get("bytes") == want_bytes:
+            same += 1
+        else:
+            rows.append(("differs", key,
+                         f"live {entry.get('bytes')}B/{entry.get('hash')}",
+                         f"repo {want_bytes}B/{want_hash}"))
+            diff += 1
+    for key, entry in live.items():
+        rows.append(("EXTRA", key, entry.get("className") or "in the place", "not in the repo"))
+
+    print(f"hash function self-check: {checks}  (both must be true)")
+    for status, key, live_s, repo_s in rows:
+        print(f"  {status:8} {key:36} {live_s:28} {repo_s}")
+    print(f"{len(repo) - diff}/{len(repo)} files identical, {diff} difference(s)")
+    if not (checks.get("a") and checks.get("hello")):
+        print("WARNING: the job's hash self-check failed - treat these results as noise")
+        return 1
+    return 0 if diff == 0 else 2
+
+
+def cmd_push(cfg, args):
+    """Publish the repo's game code into the live place."""
+    import subprocess
+    jobs_dir = HERE.parent / "jobs"
+    gen = subprocess.run([sys.executable, str(jobs_dir / "make_push_all.py"), "--both"],
+                         capture_output=True, text=True)
+    sys.stdout.write(gen.stdout)
+    if gen.returncode != 0:
+        sys.stderr.write(gen.stderr)
+        return gen.returncode
+
+    stage = jobs_dir / ("push_all.lua" if args.apply else "push_all_dry.lua")
+    note = ("publish: nightloop -> place" if args.apply
+            else "dry run: what would change in the place")
+    job = run_job(cfg, "run_luau", {"code": stage.read_text(encoding="utf-8")}, note, args.wait)
+    data, job = returned_json(job)
+    if data is None:
+        print(json.dumps(job, indent=2)[:1500])
+        return 1
+
+    summary = data.get("summary") or {}
+    print(f"{'APPLIED' if args.apply else 'DRY RUN'} - summary: {summary}")
+    for row in data.get("files") or []:
+        if not isinstance(row, dict) or row.get("action") in ("unchanged",):
+            continue
+        detail = f"{row.get('action')}"
+        if row.get("oldBytes") is not None:
+            detail += f"  {row['oldBytes']}B -> {row.get('liveBytes')}B"
+        if row.get("keptDisabled"):
+            detail += "  (stayed Disabled)"
+        if row.get("error"):
+            detail += f"  ! {row['error']}"
+        if row.get("bytesOk") is False or row.get("hashOk") is False:
+            detail += f"  ! verify bytes={row.get('bytesOk')} hash={row.get('hashOk')}"
+        print(f"  {str(row.get('key')):38} {detail}")
+    if data.get("tuning"):
+        print("live tuning:", json.dumps(data["tuning"], ensure_ascii=False))
+    if isinstance(data.get("require"), dict):
+        bad = {k: v for k, v in data["require"].items()
+               if not (isinstance(v, dict) and v.get("ok"))}
+        print("require: all ok" if not bad else f"require FAILED: {bad}")
+    if not data.get("ok"):
+        print("the job did not report ok - read the detail above before trusting the place")
+        return 1
+    if not args.apply:
+        print("\nthat was the dry run. Re-run with --apply to publish.")
+    return 0
 
 
 def cmd_state(cfg, args):
@@ -209,6 +332,17 @@ def main():
     p.add_argument("--wait", type=float, default=90)
     p.set_defaults(fn=lambda cfg, a: show_result(
         submit(cfg, "survey", {"depth": a.depth}, "relay survey", a.wait)))
+
+    p = sub.add_parser("drift", help="live place vs repo, per file (read-only)")
+    p.add_argument("--file", default=None, help="audit job to run (default jobs/drift_audit.lua)")
+    p.add_argument("--wait", type=float, default=90)
+    p.set_defaults(fn=cmd_drift)
+
+    p = sub.add_parser("push", help="publish nightloop/** into the live place")
+    p.add_argument("--apply", action="store_true",
+                   help="actually publish (without it, only the dry pass runs)")
+    p.add_argument("--wait", type=float, default=120)
+    p.set_defaults(fn=cmd_push)
 
     p = sub.add_parser("wait")
     p.add_argument("id")

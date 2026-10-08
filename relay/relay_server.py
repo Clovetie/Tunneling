@@ -666,6 +666,21 @@ class Handler(BaseHTTPRequestHandler):
                     .replace("__TOKEN_HINT__", (TOKEN[:6] + "\u2026") if TOKEN else "(none)"))
             return self._send(200, html, "text/html; charset=utf-8")
 
+        # serve the repo's job files (browser download, no GitHub auth needed)
+        if path.startswith("/jobs"):
+            rel = path.lstrip("/")
+            jobs_root = (HERE.parent / "jobs").resolve()
+            target = (jobs_root / rel[len("jobs/"):]).resolve() if rel != "jobs" else jobs_root
+            if rel == "jobs":
+                listing = sorted(f.name for f in jobs_root.glob("*.lua"))
+                body = "\n".join(f'<li><a href="/jobs/{name}">{name}</a></li>' for name in listing)
+                return self._send(200, f"<html><body><h3>jobs/</h3><ul>{body}</ul></body></html>",
+                                  "text/html; charset=utf-8")
+            if jobs_root in target.parents and target.is_file():
+                ctype = "text/plain; charset=utf-8" if target.suffix == ".lua" else "application/octet-stream"
+                return self._send(200, target.read_bytes(), ctype)
+            return self._send(404, {"error": "no such job file"})
+
         if path in ("/relay.ps1", "/ab.ps1"):
             script = (HERE / path.lstrip("/")) if path != "/ab.ps1" else \
                      (HERE.parent / "roblox-bridge" / "ab.ps1")
