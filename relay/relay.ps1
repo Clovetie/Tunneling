@@ -96,6 +96,10 @@ try {
   Report ('{"where":"powershell","ok":true,"health":' + $healthRaw + '}')
 } catch {
   Write-Host "[relay] local bridge NOT reachable at $Bridge — start it (python server.py)." -ForegroundColor Red
+  if ("$($_.Exception.Message)" -match '401') {
+    Write-Host "[relay] ...401 means the token in bridge.token does not match the RUNNING" -ForegroundColor Yellow
+    Write-Host "[relay] server (reinstall the plugin from the same folder, or restart it)." -ForegroundColor Yellow
+  }
   Report ('{"where":"powershell","ok":false,"error":"' + ($_.Exception.Message -replace '"', "'") + '"}')
 }
 if ($Once) { exit 0 }

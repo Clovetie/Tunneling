@@ -271,6 +271,10 @@ PAGE = r"""<!doctype html>
       padding:8px 10px;white-space:pre-wrap;word-break:break-word}
  .ok{color:#3fb950}.err{color:#f85149}.dim{color:#8b949e}.warn{color:#d29922}
  .hidden{display:none}
+ pre{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:9px 11px;
+     margin:8px 0;white-space:pre-wrap;word-break:break-all;font-size:12.5px}
+ a.dl{color:#58a6ff;text-decoration:none;border:1px solid #30363d;border-radius:6px;padding:7px 12px}
+ a.dl:hover{background:#30363d}
 </style></head><body><div class="wrap">
 <h1>Arena ↔ Roblox Studio relay</h1>
 <div class="sub">Keeps this tab as the wire between Arena and your local bridge
@@ -282,8 +286,17 @@ PAGE = r"""<!doctype html>
     <button class="primary" id="start">Connect</button>
     <button id="stop" class="hidden">Disconnect</button>
   </div>
-  <div class="dim" style="margin-top:8px">Same token as <code>bridge.token</code> in your
-    <code>roblox-bridge</code> folder (and the one Arena showed you).</div>
+  <div class="dim" style="margin-top:8px">The 24-hex token Arena gave you (the relay's token —
+    <em>not</em> necessarily the <code>bridge.token</code> file).</div>
+  <details style="margin-top:10px">
+    <summary class="k" style="cursor:pointer">Browser can't reach your bridge? Use the PowerShell client instead</summary>
+    <div class="dim" style="margin-top:8px">Run this from your <code>roblox-bridge</code> folder
+      (it reads <code>bridge.token</code> for the local hop itself):</div>
+    <pre id="pscmds">curl.exe -L -o relay.ps1 __RELAY_URL__/relay.ps1
+.\relay.ps1 -Url __RELAY_URL__ -Token &lt;the 24-hex token&gt;</pre>
+    <div class="row"><button id="copyps">Copy commands</button>
+      <a class="dl" id="dllink" href="/relay.ps1" download="relay.ps1">Download relay.ps1</a></div>
+  </details>
 </div>
 
 <div class="card">
@@ -328,6 +341,7 @@ function withTraffic(url) {
   return url + (url.includes('?') ? '&' : '?') + 'e2b-traffic-access-token=' + encodeURIComponent(TRAFFIC);
 }
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function mask(t) { return !t ? '(none)' : (t.length <= 8 ? t : t.slice(0, 6) + '\u2026' + t.slice(-2)) + ` (${t.length} chars)`; }
 
 async function readJSON(res) {
   const text = await res.text();
@@ -361,7 +375,9 @@ async function checkBridge(quiet) {
   } catch (err) {
     setLine('bridge', 'bad', `local bridge: unreachable from this page (${err})`);
     if (!quiet) log(`cannot reach ${BRIDGE} from the browser: ${esc(err && err.message || err)}` +
-      ' — the PowerShell client (relay.ps1) does not have this limitation.', 'err');
+      ' — browsers block public pages from calling loopback (Chrome Local Network Access),' +
+      ' and it also means server.py is not answering. The PowerShell client (relay.ps1) has' +
+      ' no such limit: see the commands in the box above.', 'err');
     report({ok: false, error: String(err && err.message || err)});
     return null;
   }
@@ -417,14 +433,28 @@ function counters() {
 }
 
 // --- relay link ------------------------------------------------------------
-function connect() {
+async function connect() {
   if (!token || running) return;
   running = true;
   sessionStorage.setItem(KEY, token);
   $('#gate').classList.add('hidden');
   $('#stop').classList.remove('hidden');
   setLine('relay', 'wait', 'relay: connecting…');
-  log('connecting to the Arena relay…');
+  log(`using token ${mask(token)}`);
+  try {
+    const probe = await readJSON(await fetch(withTraffic('/api/state?token=' + encodeURIComponent(token))));
+    if (probe.status === 401) {
+      setLine('relay', 'bad', 'relay: token rejected (401)');
+      log(`the relay rejected this token (HTTP 401). It wants the 24-hex token Arena showed you; this tab has ${mask(token)}.`, 'err');
+      $('#gate').classList.remove('hidden');
+      $('#stop').classList.add('hidden');
+      running = false;
+      return;
+    }
+    log('relay accepted the token.');
+  } catch (err) {
+    log('token check failed (relay unreachable?): ' + esc(err && err.message || err), 'err');
+  }
   checkBridge(false);
   openStream();
   if (poll) clearInterval(poll);
@@ -457,6 +487,10 @@ async function pollJobs() {
   try {
     const r = await readJSON(await fetch(withTraffic('/api/jobs?token=' +
       encodeURIComponent(token) + '&client=browser-poll')));
+    if (r.status === 401) {
+      setLine('relay', 'bad', 'relay: token rejected (401)');
+      return;
+    }
     setLine('relay', 'on', 'relay: connected to Arena (polling)');
     (r.data.jobs || []).forEach(runJob);
   } catch (err) {
@@ -483,6 +517,12 @@ $('#start').onclick = () => {
   connect();
 };
 $('#stop').onclick = disconnect;
+$('#copyps').onclick = () => {
+  const txt = $('#pscmds').textContent;
+  navigator.clipboard.writeText(txt).then(
+    () => log('PowerShell commands copied.', 'ok'),
+    () => log('copy failed — select the text manually.', 'err'));
+};
 $('#check').onclick = () => checkBridge(false);
 $('#test').onclick = async () => {
   if (!token) { log('connect first.', 'err'); return; }
@@ -493,12 +533,26 @@ $('#test').onclick = async () => {
       method: 'POST', headers: {'content-type': 'application/json'},
       body: JSON.stringify({type: 'ping', note: 'relay self-test', wait: 30}),
     }));
+    if (r.status === 401) {
+      log(`the relay rejected this token (401) — this tab has ${mask(token)}.`, 'err');
+      return;
+    }
     const t = r.data.result && r.data.result.returned;
     log(r.data.status === 'done'
       ? `ping ok: ${esc(String(t || JSON.stringify(r.data.result || {})).slice(0, 200))}` 
       : `ping failed: ${esc(JSON.stringify(r.data).slice(0, 200))}`, r.data.status === 'done' ? 'ok' : 'err');
   } catch (err) { log('self-test failed: ' + esc(err && err.message || err), 'err'); }
 };
+// the PowerShell fallback commands, filled in for this environment
+(function fillPS() {
+  const sep = TRAFFIC ? '?e2b-traffic-access-token=' + encodeURIComponent(TRAFFIC) : '';
+  const trafficArg = TRAFFIC ? ` -TrafficToken ${TRAFFIC}` : '';
+  const tok = /^[0-9a-f]{24}$/.test(params.get('token') || '') ? params.get('token') : '<the 24-hex token>';
+  $('#pscmds').textContent =
+    `curl.exe -L -o relay.ps1 "${location.origin}/relay.ps1${sep}"\n` +
+    `.\\relay.ps1 -Url ${location.origin} -Token ${tok}${trafficArg}`;
+  $('#dllink').href = '/relay.ps1' + sep;
+})();
 $('#token').value = params.get('token') || '';
 if (token) { connect(); } else { log('waiting for the bridge token…', 'dim'); }
 window.addEventListener('beforeunload', () => { running = false; if (es) es.close(); });
@@ -577,7 +631,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "version": VERSION})
 
         if path == "/":
-            return self._send(200, PAGE, "text/html; charset=utf-8")
+            html = PAGE.replace("__RELAY_URL__", STATE.get("url") or self.headers.get("host", ""))
+            return self._send(200, html, "text/html; charset=utf-8")
 
         if path == "/relay.ps1":
             script = (HERE / "relay.ps1")
