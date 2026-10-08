@@ -79,14 +79,25 @@ def token_candidates():
 TRAFFIC_CACHE = HERE / ".arena-traffic-token"
 
 
+def traffic_candidates():
+    """Where a saved preview token can be, best guess first."""
+    cwd = Path.cwd()
+    return [
+        HERE / ".arena-traffic-token",
+        cwd / ".arena-traffic-token",
+        Path.home() / "Downloads" / ".arena-traffic-token",
+    ]
+
+
 def load_traffic_token():
-    try:
-        if TRAFFIC_CACHE.is_file():
-            text = TRAFFIC_CACHE.read_text(encoding="utf-8").strip()
-            if text:
-                return text, str(TRAFFIC_CACHE)
-    except OSError:
-        pass
+    for candidate in traffic_candidates():
+        try:
+            if candidate.is_file():
+                text = candidate.read_text(encoding="utf-8").strip()
+                if text:
+                    return text, str(candidate)
+        except OSError:
+            continue
     return "", ""
 
 

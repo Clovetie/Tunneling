@@ -55,7 +55,20 @@ python3 relay/relay_server.py --port 8787 --token "$TOK" \
   (`.relay-state/` is gitignored; `SESSION.md` holds no token).
 * `python3 relay/relay.py state` → `clients: []` means nobody is attached yet.
 
-### 2. Give the user ONE line (their folder, their Python)
+### 2. Ask the user to reload the preview page once (5 seconds)
+
+The page sees the preview gate's token in its own URL and reports it to the
+relay, so after one reload the agent **knows it** and can hand over a command
+that already carries `--traffic-token` — no copy-paste hunt:
+
+```bash
+python3 relay/relay.py state | grep preview_token     # null until they reload
+```
+
+If it stays `null` (framed pages sometimes hide the query string), the fallback
+is the page's **Copy preview token** button — ask for one paste.
+
+### 3. Give the user ONE line (their folder, their Python)
 
 **Variant A — always works (token passed inline; also fine with an older
 `poll_local.py` that has no token search):**
@@ -76,8 +89,13 @@ python .\relay\poll_local.py --url https://8787-<SANDBOX_ID>.e2b.app `
 ```
 
 `poll_local.py` caches it in `relay/.arena-traffic-token` (mode 600, gitignored)
-and reuses it, so this happens **once per sandbox**, not per run. `--forget-traffic-token`
-clears it. (The browser page does not need it — Arena's iframe carries it.)
+and reuses it, so this happens **once per sandbox**, not per run — and it also
+looks for that file in the cwd and in `~/Downloads`, so wherever the page saved
+it is fine. `--forget-traffic-token` clears it. (The browser page does not need
+it — Arena's iframe carries it.)
+
+The page can also hand it over as a file: **Save .arena-traffic-token**
+(disabled when the tab cannot see the token).
 
 **Variant B — give the checkout a token file first** (then A's `--token` is
 optional, and `server.py` started from that folder finds it too):
@@ -121,7 +139,7 @@ If the relay is not reachable at all, the *browser page* is the fallback
 client: open the preview, paste the token, **Connect** — it does the same job
 over SSE + `fetch`.
 
-### 3. Verify (agent side, after the user is attached)
+### 4. Verify (agent side, after the user is attached)
 
 ```bash
 python3 relay/relay.py state          # clients: [{id: py-…}], studio.connected: true
@@ -141,7 +159,7 @@ Both print per-file `unchanged / replaced / created`, old → new bytes, the
 tuning. A non-zero exit means something did not verify — read it, do not
 hand-wave.
 
-### 4. Then do the work
+### 5. Then do the work
 
 Backlog, priorities and the state of play are in `SESSION.md` ("Open items")
 and `nightloop/AGENTS.md`. The two things that need the user:

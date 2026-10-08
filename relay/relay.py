@@ -240,6 +240,7 @@ def cmd_state(cfg, args):
         "last_report": {"ago_s": round(time.time() - report["at"], 1) if report.get("at") else None,
                         "where": report.get("where"), "ok": report.get("ok"),
                         "error": report.get("error")},
+        "preview_token": st.get("preview_token"),
         "studio": {"connected": health.get("studio_connected"),
                    "place": studio.get("place"),
                    "plugin": studio.get("client"),

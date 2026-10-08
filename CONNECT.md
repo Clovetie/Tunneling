@@ -462,8 +462,11 @@ Full chain with **no user**: `server.py` (fake local bridge) + `mock_studio.py`
   the browser page is the path that works (Arena's iframe carries the token) —
   or the user copies the value out of the address bar and passes `-TrafficToken`
   (`--traffic-token` for `poll_local.py`). Both clients detect 403 and say
-  exactly that. **`poll_local.py` caches the value** in
-  `relay/.arena-traffic-token` (mode 600, gitignored) and reuses it, so a typical
+  exactly that. **The page reports the token to the relay** when it can see it
+  (`relay.py state` -> `preview_token`), so the agent can hand over a command
+  that already includes it; **`poll_local.py` caches the value** in
+  `relay/.arena-traffic-token` (mode 600, gitignored; also looked for in the cwd
+  and `~/Downloads`) and reuses it, so a typical
   session has exactly one paste; `--forget-traffic-token` clears it. Expect this
   403 on every fresh sandbox.
 - **Chrome PNA/LNA** can gate public → loopback requests; `server.py` now sends

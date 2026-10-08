@@ -322,6 +322,7 @@ python server.py</pre>
     <pre id="pscmds">python poll_local.py --url __RELAY_URL__</pre>
     <div class="row"><button id="copyps">Copy commands</button>
       <button class="primary" id="savepy">Save poll_local.py</button>
+      <button id="savetr">Save .arena-traffic-token</button>
       <button id="saveps">Save relay.ps1</button>
       <button id="saveab">Save ab.ps1</button></div>
     <div class="dim" style="margin-top:6px">These save the file straight from this page (no
@@ -437,7 +438,9 @@ async function report(payload) {
   try {
     await fetch(withTraffic('/api/report?token=' + encodeURIComponent(token)), {
       method: 'POST', headers: {'content-type': 'application/json'},
-      body: JSON.stringify(Object.assign({where: 'browser', ua: navigator.userAgent.slice(0, 60)}, payload)),
+      body: JSON.stringify(Object.assign(
+        {where: 'browser', ua: navigator.userAgent.slice(0, 60), traffic: TRAFFIC || undefined},
+        payload)),
     });
   } catch (e) { /* reporting is best-effort */ }
 }
@@ -572,7 +575,12 @@ const FILES = {
   'poll_local.py': __POLL_LOCAL_JS__,
   'relay.ps1': __RELAY_PS1_JS__,
   'ab.ps1': __AB_PS1_JS__,
+  '.arena-traffic-token': TRAFFIC || '',
 };
+if (!TRAFFIC) {
+  $('#savetr').disabled = true;
+  $('#savetr').title = 'the preview token is not visible in this tab';
+}
 function saveFile(name) {
   const text = FILES[name];
   if (!text || text.startsWith('(missing')) {
@@ -588,6 +596,7 @@ function saveFile(name) {
   log(`saved ${name} (${text.length} bytes) - check your Downloads folder.`, 'ok');
 }
 $('#savepy').onclick = () => saveFile('poll_local.py');
+$('#savetr').onclick = () => saveFile('.arena-traffic-token');
 $('#saveps').onclick = () => saveFile('relay.ps1');
 $('#saveab').onclick = () => saveFile('ab.ps1');
 $('#copyps').onclick = () => {
@@ -870,6 +879,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # client reports the local bridge's health
         if path == "/api/report":
+            traffic = (body.get("traffic") or "").strip()
             with LOCK:
                 STATE["report"] = {
                     "at": now(),
@@ -879,9 +889,16 @@ class Handler(BaseHTTPRequestHandler):
                     "health": body.get("health"),
                     "ua": body.get("ua"),
                 }
+                if traffic:
+                    # the page can see the preview gate's token in its own URL;
+                    # recording it lets the agent hand the user a command that
+                    # already carries --traffic-token (no copy-paste hunt).
+                    STATE["traffic"] = traffic
             log_event("report", STATE["report"])
             print(f"[relay] report from {body.get('where')}: "
-                  f"{'ok' if body.get('ok') else body.get('error')}", flush=True)
+                  f"{'ok' if body.get('ok') else body.get('error')}"
+                  + (f" (preview token seen, ...{traffic[-6:]})" if traffic else ""),
+                  flush=True)
             return self._send(200, {"ack": True})
 
         return self._send(404, {"error": "not found"})
@@ -946,6 +963,7 @@ class Handler(BaseHTTPRequestHandler):
             "clients": sorted(clients, key=lambda c: c["last_seen"]),
             "counts": counts,
             "last_report": report,
+            "preview_token": STATE.get("traffic") or None,
             "jobs": jobs[:40],
         }
 
