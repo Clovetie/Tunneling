@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""
+poll_local.py  -  the Arena relay client for YOUR PC (no PowerShell involved).
+
+Same job as relay.ps1, in Python: poll Arena's relay, run each job against your
+local bridge, post the answer back. Python is already on your machine (it runs
+server.py), and this file is plain ASCII, so there is nothing for Windows
+PowerShell 5.1 to mis-decode, no quoting rules, and no execution policy.
+
+    cd <your roblox-bridge folder>            # where bridge.token and server.py live
+    python poll_local.py --url https://8787-<sandbox>.e2b.app
+
+    # if the preview URL is token-gated (HTTP 403), copy the
+    # e2b-traffic-access-token value out of the preview's address bar and:
+    python poll_local.py --url https://8787-<sandbox>.e2b.app --traffic-token <value>
+
+Options:
+    --url URL             the relay (Arena preview) URL. Required.
+    --token TOKEN         relay token. Defaults to bridge.token / $BRIDGE_TOKEN.
+    --bridge URL          local bridge. Default http://127.0.0.1:8077
+    --bridge-token TOKEN  local bridge token. Default: bridge.token / relay token.
+    --traffic-token TOK   the preview's e2b-traffic-access-token, when gated.
+    --interval SECONDS    poll interval (default 2).
+    --once                check both hops and exit (no polling).
+    --quiet               only print job lines.
+
+Ctrl+C stops it. Nothing is written to disk.
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+TOKEN_FILE = HERE / "bridge.token"
+
+
+def log(msg):
+    print(f"[relay] {msg}", flush=True)
+
+
+def http(url, method="GET", payload=None, timeout=140):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    if data:
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", "replace")
+    return json.loads(body or "{}")
+
+
+class Relay:
+    def __init__(self, url, token, traffic=None):
+        self.base = url.rstrip("/")
+        self.token = token
+        self.traffic = traffic
+
+    def call(self, path, method="GET", payload=None, timeout=140):
+        url = f"{self.base}{path}"
+        sep = "&" if "?" in url else "?"
+        url += f"{sep}token={urllib.parse.quote(self.token)}"
+        if self.traffic:
+            url += "&e2b-traffic-access-token=" + urllib.parse.quote(self.traffic)
+        return http(url, method, payload, timeout)
+
+
+class Bridge:
+    def __init__(self, url, token):
+        self.base = url.rstrip("/")
+        self.token = token
+
+    def health(self):
+        url = f"{self.base}/api/health?token={urllib.parse.quote(self.token)}"
+        return http(url, timeout=15)
+
+    def job(self, body):
+        url = f"{self.base}/api/jobs?token={urllib.parse.quote(self.token)}"
+        return http(url, "POST", body, timeout=140)
+
+
+def explain(exc, url):
+    code = getattr(exc, "code", None)
+    if code == 403:
+        log("403 - the preview URL is token-gated.")
+        log("Open the preview in a browser tab, copy e2b-traffic-access-token")
+        log("from the address bar, then re-run with --traffic-token <value>.")
+    elif code == 401:
+        log("401 - the relay rejected the token. It wants the 24-hex token Arena")
+        log("showed you; check bridge.token (it is usually the same value).")
+    elif isinstance(exc, urllib.error.URLError):
+        log(f"cannot reach {url}: {exc.reason}")
+        log("Check the URL, or use the browser page instead.")
+    else:
+        log(f"{type(exc).__name__}: {exc}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--url", default=os.environ.get("RELAY_URL"))
+    ap.add_argument("--token", default=None)
+    ap.add_argument("--bridge", default=os.environ.get("BRIDGE_URL", "http://127.0.0.1:8077"))
+    ap.add_argument("--bridge-token", default=None)
+    ap.add_argument("--traffic-token", default=os.environ.get("E2B_TRAFFIC_TOKEN"))
+    ap.add_argument("--interval", type=float, default=2.0)
+    ap.add_argument("--once", action="store_true")
+    ap.add_argument("--quiet", action="store_true")
+    args = ap.parse_args()
+
+    if not args.url:
+        print("no --url: pass the relay URL Arena gave you (https://<port>-<sandbox>.e2b.app)")
+        return 1
+
+    file_token = ""
+    if TOKEN_FILE.exists():
+        file_token = TOKEN_FILE.read_text().strip()
+
+    relay_token = args.token or file_token or os.environ.get("BRIDGE_TOKEN") or ""
+    bridge_token = args.bridge_token or file_token or relay_token
+    if not relay_token:
+        print("no token: keep this script next to bridge.token, or pass --token")
+        return 1
+
+    relay = Relay(args.url, relay_token, args.traffic_token)
+    bridge = Bridge(args.bridge, bridge_token)
+
+    # 1. relay reachable?
+    try:
+        state = relay.call("/api/state", timeout=30)
+    except Exception as exc:                                 # noqa: BLE001
+        log(f"CANNOT reach the relay at {args.url}")
+        explain(exc, args.url)
+        return 2
+    log(f"relay v{state.get('version')} reachable - {state.get('sse_clients', 0)} browser client(s) attached")
+
+    # 2. local bridge + Studio
+    health = {}
+    try:
+        health = bridge.health()
+        studio = health.get("studio") or {}
+        if health.get("studio_connected"):
+            log(f"local bridge ok - Studio CONNECTED, place \"{studio.get('place')}\", "
+                f"plugin {studio.get('client')}")
+        else:
+            log("local bridge ok, but Studio has not polled (Studio closed, or plugin off)")
+        relay.call("/api/report", "POST",
+                   {"where": "python", "ok": True, "health": health}, timeout=20)
+    except Exception as exc:                                 # noqa: BLE001
+        log(f"local bridge NOT reachable at {args.bridge}: {exc}")
+        log("start it with:  python server.py")
+        try:
+            relay.call("/api/report", "POST",
+                       {"where": "python", "ok": False, "error": str(exc)}, timeout=20)
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    if args.once:
+        return 0
+
+    # 3. the loop
+    log("attached. Leave this window open; Ctrl+C to stop.")
+    done = failed = polls = ticks = 0
+    client = "py-%d" % (os.getpid())
+    while True:
+        polls += 1
+        ticks += 1
+        try:
+            batch = relay.call(f"/api/jobs?client={client}&kind=powershell", timeout=30)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:                             # noqa: BLE001
+            log(f"poll failed: {exc}")
+            time.sleep(5)
+            continue
+
+        for job in batch.get("jobs") or []:
+            t0 = time.time()
+            log(f"job {job['id']} {job['type']} ...")
+            result, error = None, None
+            try:
+                result = bridge.job(json.loads(job["body"]))
+            except Exception as exc:                         # noqa: BLE001
+                error = str(exc)
+            ms = int((time.time() - t0) * 1000)
+            if error is None and (result or {}).get("status") == "done":
+                done += 1
+                log(f"job {job['id']} done in {ms} ms")
+            else:
+                failed += 1
+                log(f"job {job['id']} FAILED: {error or (result or {}).get('error') or result}")
+            try:
+                relay.call("/api/result", "POST",
+                           {"id": job["id"], "response": result, "error": error, "ms": ms},
+                           timeout=30)
+            except Exception as exc:                         # noqa: BLE001
+                log(f"could not return the result: {exc}")
+
+        if ticks >= 8:
+            ticks = 0
+            if not args.quiet:
+                log(f"watching - {polls} poll(s), {done} job(s) ok, {failed} failed")
+            try:                                             # keep the sandbox's view fresh
+                relay.call("/api/report", "POST",
+                           {"where": "python", "ok": True, "health": bridge.health()}, timeout=20)
+            except Exception:                                # noqa: BLE001
+                pass
+
+        if not (batch.get("jobs") or []):
+            time.sleep(args.interval)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\n[relay] stopped.", flush=True)
+        sys.exit(0)

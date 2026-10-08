@@ -1,4 +1,4 @@
-# ab.ps1 — one-liner for the Arena bridge. No env vars, no visible token.
+# ab.ps1 - one-liner for the Arena bridge. No env vars, no visible token.
 #
 #   .\ab.ps1 health
 #   .\ab.ps1 ping

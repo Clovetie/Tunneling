@@ -21,8 +21,9 @@ Two interchangeable clients, both shipped here:
 
 | client | where it runs | how | notes |
 |---|---|---|---|
-| the page at `GET /` | the user's **browser**, on the Arena preview tab | SSE stream down, `fetch` to `127.0.0.1:8077` up | zero install; needs `server.py`'s CORS (`*`, it has it) and the token pasted once |
-| `relay.ps1` | the user's **PowerShell** | polls `/api/jobs`, POSTs to the local bridge, POSTs the answer back | no browser quirks; needs the same preview URL to be reachable, plus `-TrafficToken` if the preview is token-gated |
+| the page at `GET /` | the user's **browser**, on the Arena preview tab | SSE stream down, `fetch` to `127.0.0.1:8077` up | zero install; needs `server.py`'s CORS (`*`, it has it) and the token pasted once; Chrome's loopback gating can block it |
+| `poll_local.py` | the user's **PC**, `python poll_local.py --url …` | polls `/api/jobs`, POSTs to the local bridge, POSTs the answer back | **the recommended one**: plain ASCII, no PowerShell quoting, no execution policy, 8.7 KB, verified end to end |
+| `relay.ps1` | the user's **PowerShell** | same as above | ASCII-only **and** served with a UTF-8 BOM, because Windows PowerShell 5.1 reads `.ps1` as ANSI without one (bitten 2026-10-08: mojibake -> parse errors). Prefer the Python client |
 
 Both deliver the *exact* job envelope the bridge already speaks
 (`{type, payload, note, wait}`) and return the local server's answer verbatim,
@@ -35,7 +36,8 @@ so a caller sees `result.result.returned` — identical to talking to
 |---|---|
 | `relay_server.py` | the relay: job queue, SSE, control-panel page, `/relay.ps1`, `/api/*` |
 | `relay.py` | **agent-side CLI** — `state`, `ping`, `run`, `runfile`, `survey`, `job`, `wait`, `tail` |
-| `relay.ps1` | user-side PowerShell client (also served at `/relay.ps1`) |
+| `relay.ps1` | user-side PowerShell client (served at `/relay.ps1`, ASCII + BOM) |
+| `poll_local.py` | user-side Python client (served at `/poll_local.py`) - the one to reach for |
 | `selftest.py` | plays the user's machine so the whole chain can be tested with no user |
 
 Runtime state (token, event log) lives in `../.relay-state/` — **gitignored**,

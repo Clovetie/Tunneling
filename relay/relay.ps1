@@ -1,22 +1,26 @@
 <#
-  relay.ps1 — Arena <-> Roblox Studio relay client. Runs on YOUR PC.
+  relay.ps1 - Arena <-> Roblox Studio relay client. Runs on YOUR PC.
 
   Arena's sandbox cannot reach your machine, so the wire is inverted: this
   script polls Arena's relay, runs each job against your local bridge
   (http://127.0.0.1:8077), and posts the answer back. Leave it running while
-  we work — that is the whole connection.
+  we work - that is the whole connection.
 
   Usage (from your roblox-bridge folder, next to bridge.token):
 
       .\relay.ps1 -Url https://8787-<sandbox>.e2b.app
 
-      # if that gives HTTP 403, the preview is token-gated: open the preview
-      # in a browser tab, copy the ?e2b-traffic-access-token=... value out of
-      # the address bar, and pass it:
+      # if that fails with a token-gate message, pass the preview token.
+      # Open the preview in a browser tab, copy the e2b-traffic-access-token
+      # value out of the address bar, and pass it:
       .\relay.ps1 -Url https://8787-<sandbox>.e2b.app -TrafficToken <value>
 
-  The token is read from .\bridge.token (or -Token / -BridgeToken / $env vars).
-  Nothing is written to disk; Ctrl+C stops it.
+  The bridge token is read from .\bridge.token (or -Token / -BridgeToken /
+  $env vars). Nothing is written to disk; Ctrl+C stops it.
+
+  ASCII-only on purpose: Windows PowerShell 5.1 decodes .ps1 files as ANSI
+  unless they carry a UTF-8 BOM, so a stray em dash turns into three
+  characters and the parser dies on it.
 #>
 param(
   [string]$Url = $env:RELAY_URL,
@@ -26,8 +30,7 @@ param(
   [string]$TrafficToken = $env:E2B_TRAFFIC_TOKEN,
   [int]$Interval = 2,
   [int]$Wait = 60,
-  [switch]$Once,
-  [switch]$Once_ReportOnly
+  [switch]$Once
 )
 
 $ErrorActionPreference = 'Continue'
@@ -46,12 +49,16 @@ $Headers = @{}
 if ($TrafficToken) { $Headers['e2b-traffic-access-token'] = $TrafficToken }
 
 function Relay([string]$path, [string]$method = 'GET', [string]$body = '') {
-  $sep = if ($path.Contains('?')) { '&' } else { '?' }
+  $sep = '?'
+  if ($path.Contains('?')) { $sep = '&' }
   $uri = "$Url$path$sep" + "token=" + [uri]::EscapeDataString($Token)
   if ($TrafficToken) { $uri += "&e2b-traffic-access-token=" + [uri]::EscapeDataString($TrafficToken) }
   $a = @{ Uri = $uri; Method = $method; TimeoutSec = 140; UseBasicParsing = $true }
   if ($Headers.Count) { $a.Headers = $Headers }
-  if ($body) { $a.Body = [Text.Encoding]::UTF8.GetBytes($body); $a.ContentType = 'application/json; charset=utf-8' }
+  if ($body) {
+    $a.Body = [Text.Encoding]::UTF8.GetBytes($body)
+    $a.ContentType = 'application/json; charset=utf-8'
+  }
   return Invoke-WebRequest @a
 }
 
@@ -61,13 +68,15 @@ function LocalBridge([string]$body) {
     -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ContentType 'application/json; charset=utf-8'
 }
 
-function Report([string]$json) { try { Relay '/api/report' 'POST' $json | Out-Null } catch {} }
+function Report([string]$json) {
+  try { Relay '/api/report' 'POST' $json | Out-Null } catch {}
+}
 
 # ---- 1. can we see Arena's relay? -----------------------------------------
 Write-Host "[relay] polling $Url ..."
 try {
   $st = (Relay '/api/state').Content | ConvertFrom-Json
-  Write-Host ("[relay] Arena relay v{0} reachable — {1} client(s) attached." -f $st.version, $st.sse_clients) -ForegroundColor Green
+  Write-Host ("[relay] Arena relay v{0} reachable - {1} client(s) attached." -f $st.version, $st.sse_clients) -ForegroundColor Green
 } catch {
   $code = ''
   try { $code = [int]$_.Exception.Response.StatusCode } catch {}
@@ -89,13 +98,13 @@ try {
       -UseBasicParsing -TimeoutSec 10).Content
   $h = $healthRaw | ConvertFrom-Json
   if ($h.studio_connected) {
-    Write-Host "[relay] local bridge ok — Studio CONNECTED, place `"$($h.studio.place)`", plugin $($h.studio.client)" -ForegroundColor Green
+    Write-Host "[relay] local bridge ok - Studio CONNECTED, place `"$($h.studio.place)`", plugin $($h.studio.client)" -ForegroundColor Green
   } else {
     Write-Host "[relay] local bridge ok, but Studio has not polled (closed, or plugin off)." -ForegroundColor Yellow
   }
   Report ('{"where":"powershell","ok":true,"health":' + $healthRaw + '}')
 } catch {
-  Write-Host "[relay] local bridge NOT reachable at $Bridge — start it (python server.py)." -ForegroundColor Red
+  Write-Host "[relay] local bridge NOT reachable at $Bridge - start it (python server.py)." -ForegroundColor Red
   if ("$($_.Exception.Message)" -match '401') {
     Write-Host "[relay] ...401 means the token in bridge.token does not match the RUNNING" -ForegroundColor Yellow
     Write-Host "[relay] server (reinstall the plugin from the same folder, or restart it)." -ForegroundColor Yellow
@@ -119,24 +128,30 @@ while ($true) {
   foreach ($job in $jobs) {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     Write-Host ("[relay] job {0} {1} ..." -f $job.id, $job.type)
+    $result = ''
     try {
       $resp = LocalBridge $job.body
       $sw.Stop()
       $result = '{"id":"' + $job.id + '","response":' + $resp.Content + ',"ms":' + $sw.ElapsedMilliseconds + '}'
-      $ok = ($resp.Content -match '"status"\s*:\s*"done"')
-      if ($ok) { $done++; Write-Host ("[relay] job {0} done in {1} ms" -f $job.id, $sw.ElapsedMilliseconds) -ForegroundColor Green }
-      else     { $failed++; Write-Host ("[relay] job {0} FAILED" -f $job.id) -ForegroundColor Red }
+      if ($resp.Content -match '"status"\s*:\s*"done"') {
+        $done++
+        Write-Host ("[relay] job {0} done in {1} ms" -f $job.id, $sw.ElapsedMilliseconds) -ForegroundColor Green
+      } else {
+        $failed++
+        Write-Host ("[relay] job {0} returned a non-done status" -f $job.id) -ForegroundColor Red
+      }
     } catch {
       $sw.Stop(); $failed++
       $msg = ($_.Exception.Message -replace '"', "'") -replace '[\r\n]', ' '
       Write-Host ("[relay] job {0} error: {1}" -f $job.id, $msg) -ForegroundColor Red
       $result = '{"id":"' + $job.id + '","error":"' + $msg + '","ms":' + $sw.ElapsedMilliseconds + '}'
     }
-    try { Relay '/api/result' 'POST' $result | Out-Null } catch { Write-Host "[relay] could not return result: $($_.Exception.Message)" -ForegroundColor Red }
+    try { Relay '/api/result' 'POST' $result | Out-Null }
+    catch { Write-Host "[relay] could not return result: $($_.Exception.Message)" -ForegroundColor Red }
   }
   if ($tick -ge 8) {
     $tick = 0
-    Write-Host ("[relay] watching — {0} poll(s), {1} job(s) ok, {2} failed." -f $polls, $done, $failed) -ForegroundColor DarkGray
+    Write-Host ("[relay] watching - {0} poll(s), {1} job(s) ok, {2} failed." -f $polls, $done, $failed) -ForegroundColor DarkGray
     try {   # keep Arena's view of Studio fresh
       $raw = (Invoke-WebRequest -Uri "$Bridge/api/health?token=" + [uri]::EscapeDataString($BridgeToken) `
         -UseBasicParsing -TimeoutSec 10).Content

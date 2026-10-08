@@ -402,16 +402,22 @@ So don't send jobs to the user's PC — let the user's PC come and get them.
 
 Two interchangeable clients, both in `relay/`:
 
-1. **The browser page** at `GET /` on the preview URL — zero install. The user
+1. **`poll_local.py`** — `python poll_local.py --url <preview>`, next to
+   `bridge.token`. **This is the one to hand the user** (verified end to end
+   2026-10-08): plain ASCII, no PowerShell quoting, no execution policy, no
+   browser. Served at `/poll_local.py`.
+2. **The browser page** at `GET /` on the preview URL — zero install. The user
    opens the Arena preview, pastes the bridge token once, and leaves the tab
-   open. It holds an SSE stream (live, no polling needed) and does
-   `fetch('http://127.0.0.1:8077/…')` directly — legal because `server.py`
-   already sends `Access-Control-Allow-Origin: *`, and because loopback is a
-   secure context, an HTTPS page may talk to it. Fallback to 2 s polling if the
-   proxy kills the stream.
-2. **`relay.ps1`** — PowerShell polling client, served at `/relay.ps1`. No
-   browser, no CORS, no PNA; the boring reliable one. It reads `bridge.token`
-   itself.
+   open. SSE stream down, `fetch('http://127.0.0.1:8077/…')` up — legal because
+   `server.py` sends `Access-Control-Allow-Origin: *` and loopback is a secure
+   context. Chrome's Local Network Access can still block it; if it does, use 1
+   or 3.
+3. **`relay.ps1`** — PowerShell polling client, served at `/relay.ps1`.
+   **Trap (bitten 2026-10-08):** Windows PowerShell 5.1 decodes `.ps1` as ANSI
+   unless the file starts with a UTF-8 BOM, so a single em dash became `â€”` and
+   the whole script failed to parse. It is now ASCII-only *and* served with a
+   BOM — keep both properties if you edit it. Also avoid PS7-only syntax
+   (`$x = if (…) {…} else {…}`, `??`, `&&`); the user is on 5.1.
 
 ### Operating it (agent side)
 
@@ -462,5 +468,11 @@ Full chain with **no user**: `server.py` (fake local bridge) + `mock_studio.py`
   never commit it.** Check `git status` before any `git add -A`.
 - A job is delivered to exactly one client; if that client goes silent for 20 s
   the job is requeued. Clients dedupe by job id.
-- PowerShell: `relay.ps1` is ~7 KB — fine as a here-string paste, but prefer
+- PowerShell: `relay.ps1` is ~7.6 KB — fine as a here-string paste, but prefer
   downloading it from the relay (`/relay.ps1`) or opening it in the browser.
+- **Downloads from the preview must happen in the browser.** `curl.exe` gets
+  the traffic-gate JSON (157 bytes) instead of the file unless the user appends
+  `?e2b-traffic-access-token=…` copied from the preview's address bar. The
+  page's buttons carry the token automatically; that is why the page now
+  offers every file (`/poll_local.py`, `/relay.ps1`, `/ab.ps1`,
+  `/arena_studio.py`, `/jobs/*.lua`).

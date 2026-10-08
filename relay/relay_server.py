@@ -298,18 +298,34 @@ PAGE = r"""<!doctype html>
     <pre id="srccmds">$env:BRIDGE_TOKEN = (Get-Content .\bridge.token -Raw).Trim()
 python server.py</pre>
 
-    <div class="dim" style="margin-top:10px"><b>2.</b> If the browser still cannot reach it
-      (Chrome blocks public pages from calling loopback), run the PowerShell client instead —
+    <div class="dim" style="margin-top:10px"><b>2.</b> If the browser cannot reach it (Chrome blocks public
+      pages from calling loopback) or PowerShell gave you parse errors, run the Python client
+      instead. Download it next to <code>bridge.token</code> and run —
       from the same folder:</div>
-    <pre id="pscmds">.\relay.ps1 -Url __RELAY_URL__</pre>
+    <pre id="pscmds">python poll_local.py --url __RELAY_URL__</pre>
     <div class="row"><button id="copyps">Copy commands</button>
+      <a class="dl" id="dlpoll" href="/poll_local.py" download="poll_local.py">Download poll_local.py</a>
       <a class="dl" id="dllink" href="/relay.ps1" download="relay.ps1">Download relay.ps1</a>
       <a class="dl" id="dlab" href="/ab.ps1" download="ab.ps1">Download ab.ps1</a></div>
+    <div class="dim" style="margin-top:6px">The Python client is plain ASCII and needs no
+      PowerShell quoting, so it cannot hit the encoding traps <code>relay.ps1</code> can.</div>
 
-    <div class="dim" style="margin-top:10px"><b>3.</b> Downloads/downloads above must happen
+    <div class="dim" style="margin-top:10px"><b>3.</b> Downloads above must happen
       <em>in the browser</em>: this preview URL is token-gated, so <code>curl.exe</code> from
       PowerShell gets the gate JSON instead of the file. The PowerShell client needs the preview
-      token: <span id="trafficline">checking…</span></div>
+      token: <span id="trafficline">checking&#8230;</span></div>
+
+    <div class="dim" style="margin-top:14px"><b>4. Publishing the game code</b> (if you are doing
+      it by hand instead of letting the relay run it). Download both jobs in the browser, then:</div>
+    <pre id="pubcmds">python arena_studio.py runfile push_all_dry.lua   REM look first (read-only)
+python arena_studio.py runfile push_all.lua       REM publish</pre>
+    <div class="row">
+      <a class="dl" href="/jobs/push_all_dry.lua" download>push_all_dry.lua</a>
+      <a class="dl" href="/jobs/push_all.lua" download>push_all.lua</a>
+      <a class="dl" href="/jobs" target="_blank" rel="noopener">all job files</a>
+    </div>
+    <div class="dim" style="margin-top:6px">Both are ASCII-only; run them in Edit mode, not during
+      a playtest.</div>
   </details>
 </div>
 
@@ -562,9 +578,19 @@ $('#test').onclick = async () => {
   const sep = TRAFFIC ? '?e2b-traffic-access-token=' + encodeURIComponent(TRAFFIC) : '';
   const trafficArg = TRAFFIC ? ` -TrafficToken ${TRAFFIC}` : '';
   $('#pscmds').textContent =
-    `.\\relay.ps1 -Url ${location.origin}${trafficArg}`;
+    `python poll_local.py --url ${location.origin}${trafficArg}` +
+    `\n\nREM PowerShell alternative (same job, ASCII-only):` +
+    `\n.\\relay.ps1 -Url ${location.origin}${trafficArg}`;
   $('#dllink').href = '/relay.ps1' + sep;
+  $('#dlpoll').href = '/poll_local.py' + sep;
   $('#dlab').href = '/ab.ps1' + sep;
+  const tok = /^[0-9a-f]{24}$/.test(params.get('token') || '') ? params.get('token') : '<token>';
+  $('#pubcmds').textContent =
+    `$env:BRIDGE_URL = "${BRIDGE}"\n` +
+    `$env:BRIDGE_TOKEN = (Get-Content .\\bridge.token -Raw).Trim()\n` +
+    'python arena_studio.py health\n' +
+    'python arena_studio.py runfile push_all_dry.lua\n' +
+    'python arena_studio.py runfile push_all.lua';
   const line = $('#trafficline');
   if (TRAFFIC) {
     line.textContent = '';
@@ -681,11 +707,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, target.read_bytes(), ctype)
             return self._send(404, {"error": "no such job file"})
 
-        if path in ("/relay.ps1", "/ab.ps1"):
-            script = (HERE / path.lstrip("/")) if path != "/ab.ps1" else \
-                     (HERE.parent / "roblox-bridge" / "ab.ps1")
+        if path in ("/relay.ps1", "/poll_local.py", "/ab.ps1", "/arena_studio.py"):
+            if path in ("/relay.ps1", "/poll_local.py"):
+                script = HERE / path.lstrip("/")
+            else:
+                script = HERE.parent / "roblox-bridge" / path.lstrip("/")
             if script.exists():
-                return self._send(200, script.read_bytes(), "text/plain; charset=utf-8")
+                data = script.read_bytes()
+                if script.suffix == ".ps1":
+                    # BOM on purpose: Windows PowerShell 5.1 decodes .ps1 as
+                    # ANSI unless it starts with one, which turns any
+                    # non-ASCII byte into mojibake and hard parse errors
+                    # (bitten 2026-10-08). Python files do not need it.
+                    data = b"\xef\xbb\xbf" + data
+                return self._send(200, data, "text/plain; charset=utf-8")
             return self._send(404, {"error": path + " not found"})
 
         if path == "/favicon.ico":
