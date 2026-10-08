@@ -93,6 +93,23 @@ def new_id(prefix="j"):
     return prefix + uuid.uuid4().hex[:8]
 
 
+def inline_file(path):
+    """A file's text as a JS string literal, so the page can hand it to the
+    user directly.
+
+    Downloading from the preview URL needs the traffic token, and the token is
+    not always visible in the framed page - which left the user with a 157-byte
+    gate JSON saved as `poll_local` and nothing to run. Generating the file in
+    the browser removes the download, the token and the filename from the
+    equation: it is a Blob with the exact name and the exact bytes.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return '"(missing: ' + path.name + ')"'
+    return json.dumps(text).replace("</", "<\\/")
+
+
 def log_event(kind, payload):
     if EVENT_LOG is None:
         return
@@ -304,9 +321,12 @@ python server.py</pre>
       from the same folder:</div>
     <pre id="pscmds">python poll_local.py --url __RELAY_URL__</pre>
     <div class="row"><button id="copyps">Copy commands</button>
-      <a class="dl" id="dlpoll" href="/poll_local.py" download="poll_local.py">Download poll_local.py</a>
-      <a class="dl" id="dllink" href="/relay.ps1" download="relay.ps1">Download relay.ps1</a>
-      <a class="dl" id="dlab" href="/ab.ps1" download="ab.ps1">Download ab.ps1</a></div>
+      <button class="primary" id="savepy">Save poll_local.py</button>
+      <button id="saveps">Save relay.ps1</button>
+      <button id="saveab">Save ab.ps1</button></div>
+    <div class="dim" style="margin-top:6px">These save the file straight from this page (no
+      download, no preview token, no filename guessing). Put <code>poll_local.py</code> next to
+      <code>bridge.token</code>, then run the command above.</div>
     <div class="dim" style="margin-top:6px">The Python client is plain ASCII and needs no
       PowerShell quoting, so it cannot hit the encoding traps <code>relay.ps1</code> can.</div>
 
@@ -547,6 +567,29 @@ $('#start').onclick = () => {
   connect();
 };
 $('#stop').onclick = disconnect;
+// --- hand the user the client files, generated in the browser -------------
+const FILES = {
+  'poll_local.py': __POLL_LOCAL_JS__,
+  'relay.ps1': __RELAY_PS1_JS__,
+  'ab.ps1': __AB_PS1_JS__,
+};
+function saveFile(name) {
+  const text = FILES[name];
+  if (!text || text.startsWith('(missing')) {
+    log('this relay build does not have ' + name + ' embedded.', 'err');
+    return;
+  }
+  const blob = new Blob([text], {type: 'text/plain;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  log(`saved ${name} (${text.length} bytes) - check your Downloads folder.`, 'ok');
+}
+$('#savepy').onclick = () => saveFile('poll_local.py');
+$('#saveps').onclick = () => saveFile('relay.ps1');
+$('#saveab').onclick = () => saveFile('ab.ps1');
 $('#copyps').onclick = () => {
   const txt = $('#pscmds').textContent;
   navigator.clipboard.writeText(txt).then(
@@ -578,7 +621,8 @@ $('#test').onclick = async () => {
   const sep = TRAFFIC ? '?e2b-traffic-access-token=' + encodeURIComponent(TRAFFIC) : '';
   const trafficArg = TRAFFIC ? ` -TrafficToken ${TRAFFIC}` : '';
   $('#pscmds').textContent =
-    `python poll_local.py --url ${location.origin}${trafficArg}` +
+    `REM in your roblox-bridge folder (next to bridge.token):` +
+    `\npython .\\poll_local.py --url ${location.origin}${trafficArg}` +
     `\n\nREM PowerShell alternative (same job, ASCII-only):` +
     `\n.\\relay.ps1 -Url ${location.origin}${trafficArg}`;
   $('#dllink').href = '/relay.ps1' + sep;
@@ -689,7 +733,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             html = (PAGE
                     .replace("__RELAY_URL__", STATE.get("url") or self.headers.get("host", ""))
-                    .replace("__TOKEN_HINT__", (TOKEN[:6] + "\u2026") if TOKEN else "(none)"))
+                    .replace("__TOKEN_HINT__", (TOKEN[:6] + "\u2026") if TOKEN else "(none)")
+                    .replace("__POLL_LOCAL_JS__", inline_file(HERE / "poll_local.py"))
+                    .replace("__RELAY_PS1_JS__", inline_file(HERE / "relay.ps1"))
+                    .replace("__AB_PS1_JS__", inline_file(HERE.parent / "roblox-bridge" / "ab.ps1")))
             return self._send(200, html, "text/html; charset=utf-8")
 
         # serve the repo's job files (browser download, no GitHub auth needed)
