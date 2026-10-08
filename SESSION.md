@@ -206,15 +206,40 @@ typical, worst 10). They need a real playtest to confirm end to end.
   `Climbing.Speed` / `Stride` / `Grip` after watching one.
 - `tools/fix-perms.sh` - workspace snapshots drop the executable bit on the
   toolchain. Run it before `luau-compile` or `check_globals.sh`.
-- Pushing code: run `python3 jobs/make_push.py` after editing
-  `nightloop/src/*`, commit, and have the user fetch the job as one line:
-  ```powershell
-  curl.exe -L -o push_climb.lua https://raw.githubusercontent.com/Clovetie/Tunneling/<branch>/jobs/push_climb.lua
-  .\ab.ps1 runfile push_climb.lua
-  ```
-  Do not paste 50 KB of job into chat, and do not hand-edit `push_climb.lua`.
-  (`curl.exe` with the .exe: plain `curl` is aliased to `Invoke-WebRequest`
-  in PowerShell and `Invoke-WebRequest` may need TLS 1.2 forced.)
+- **Pushing code: the repo is PRIVATE (verified 2026-10-07 via the API), so
+  `raw.githubusercontent.com` 404s for anonymous requests.** `curl.exe -L -o
+  push_climb.lua https://raw.githubusercontent.com/...` downloads a 14-byte
+  `404: Not Found`, and running that as a job fails with a syntax error. Do
+  not hand it to the user as a one-liner. Delivery that works, in order of
+  preference:
+  1. **Branch ZIP** (the user already does this - that is where the
+     `Tunneling-arena-<id>-tunneling` folders come from). In a logged-in
+     browser:
+     `https://github.com/Clovetie/Tunneling/archive/refs/heads/<branch>.zip`
+     Extract, **copy `bridge.token` into the extracted `roblox-bridge`**, run
+     from there.
+  2. **Single raw file via the browser** (the session cookie authenticates
+     it): `https://github.com/Clovetie/Tunneling/raw/refs/heads/<branch>/jobs/push_climb.lua`
+     - save it into the `roblox-bridge` folder that already has the token.
+  3. Last resort: paste the file into chat. It is ~50 KB.
+  Every generated job is ASCII-only precisely so routes 1 and 2 cannot
+  corrupt it (PowerShell's `Set-Content -Encoding ascii` and the CLI's
+  default-encoding read both mangle non-ASCII - see `jobs/make_push.py`).
+  Do not hand-edit `push_climb.lua`; regenerate with `make_push.py`.
+
+- **The folder has to contain `bridge.token`, or `ab.ps1` refuses to run**
+  ("No token found. Set BRIDGE_TOKEN or put a bridge.token file next to
+  ab.ps1"). Folders on the user's machine:
+  | path | what |
+  |---|---|
+  | `C:\Users\Gamef\Downloads\Tunneling-arena-6d7d4b8a-tunneling\Tunneling-arena-6d7d4b8a-tunneling\roblox-bridge` | token copied here; the successful Config probe ran from it |
+  | `C:\Users\Gamef\Downloads\workspace-01a115c6-25b3-719b-a117-f3400625cd10\roblox-bridge` | the original workspace; **the running server process was started from here** |
+  | `C:\Users\Gamef\Downloads\Tunneling-arena-8673c420-tunneling\...\roblox-bridge` | a DIFFERENT Arena session's branch, no token - this is the folder that tripped the user twice |
+
+  Copying `bridge.token` into a new folder is safe and is the fix. What is
+  NOT safe is running `setup.py` in a folder that has no token: it mints a
+  fresh one and bakes it into the plugin, and the running server then
+  rejects the plugin with HTTP 401 (CONNECT.md section 7).
 
 ### Jobs in `jobs/`
 

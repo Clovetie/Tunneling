@@ -162,6 +162,26 @@ The user's terminal is at `roblox-bridge` on their PC (Windows PowerShell).
   are verbatim.
 - Command line limit is ~8191 chars — another reason for `runfile`.
 
+### Getting a job FILE onto the user's machine (bitten 2026-10-07)
+
+Small jobs are pasted as here-strings, but a generated push job is ~50 KB and
+has to travel as a file. **The repo is private, so `raw.githubusercontent.com`
+returns a 14-byte `404: Not Found` to anything unauthenticated** - verified
+against the API, which lists the file at 51,224 bytes on the same ref. A
+`curl.exe -o push_climb.lua <raw url>` looks like it worked (`100 14`) and
+leaves a file that fails to parse.
+
+What works, because the user's browser is logged into GitHub:
+
+1. Branch ZIP - the route they already use:
+   `https://github.com/Clovetie/Tunneling/archive/refs/heads/<branch>.zip`
+2. One raw file through the browser (the session cookie authenticates it):
+   `https://github.com/Clovetie/Tunneling/raw/refs/heads/<branch>/jobs/<file>.lua`
+
+Either way, **run `ab.ps1` from a folder that holds `bridge.token`** - copy it
+in if needed. `ab.ps1` with no token next to it prints `No token found. Set
+BRIDGE_TOKEN or put a bridge.token file next to ab.ps1.`
+
 ### Verification triad (first five minutes, any new session)
 
 ```powershell
