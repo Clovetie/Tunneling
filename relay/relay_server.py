@@ -307,6 +307,11 @@ PAGE = r"""<!doctype html>
   <div class="dim" style="margin-top:8px">The token Arena gave you — the relay expects one starting
     with <code id="tokenhint">__TOKEN_HINT__</code>. The local hop uses <code>bridge.token</code>
     (usually the same value).</div>
+  <div class="row" style="margin-top:10px">
+    <span class="k">this page:</span> <span id="ctxline" class="dim">checking&#8230;</span>
+    <span class="k">preview token:</span> <span id="tkline" class="dim">checking&#8230;</span>
+    <button id="opennew">Open in a new tab</button>
+  </div>
   <details style="margin-top:10px">
     <summary class="k" style="cursor:pointer">Troubleshooting — and using the bridge without Arena</summary>
 
@@ -370,7 +375,44 @@ const $ = (s) => document.querySelector(s);
 const KEY = 'arena-relay-token';
 const BRIDGE = 'http://127.0.0.1:8077';
 const params = new URLSearchParams(location.search);
-const TRAFFIC = params.get('e2b-traffic-access-token') || '';
+
+// The preview gate's token is not always in this frame's query string, and the
+// user has no address bar to read it from. Look everywhere a browser can.
+function discoverTraffic() {
+  const hits = [];
+  const add = (value, where) => { if (value) hits.push({value: String(value), where}); };
+
+  add(params.get('e2b-traffic-access-token'), 'this URL');
+  try {
+    add(new URLSearchParams(location.hash.replace(/^#/, '')).get('e2b-traffic-access-token'), 'URL hash');
+  } catch (e) {}
+  try {
+    document.cookie.split(';').forEach((c) => {
+      const i = c.indexOf('=');
+      if (i < 0) return;
+      const k = c.slice(0, i).trim(), v = c.slice(i + 1).trim();
+      if (v && /traffic|access.token|e2b/i.test(k)) add(decodeURIComponent(v), 'cookie ' + k);
+    });
+  } catch (e) {}
+  try {
+    for (const store of [sessionStorage, localStorage]) {
+      for (let i = 0; i < store.length; i++) {
+        const k = store.key(i), v = store.getItem(k);
+        if (v && /traffic/i.test(k)) add(v, 'storage ' + k);
+      }
+    }
+  } catch (e) {}
+  try {
+    const ref = document.referrer || '';
+    const fromRef = new URL(ref).searchParams.get('e2b-traffic-access-token');
+    add(fromRef, 'the Arena page containing this frame');
+  } catch (e) {}
+  return hits;
+}
+const FOUND = discoverTraffic();
+const TRAFFIC = FOUND.length ? FOUND[0].value : '';
+const TRAFFIC_WHERE = FOUND.length ? FOUND[0].where : '';
+const IS_TOP = (() => { try { return window.top === window; } catch (e) { return false; } })();
 let token = params.get('token') || sessionStorage.getItem(KEY) || '';
 let es = null, poll = null, healthTimer = null, running = false, seen = new Set();
 let stats = {ok: 0, bad: 0, n: 0};
@@ -424,12 +466,19 @@ async function checkBridge(quiet) {
     report({ok: true, health: d});
     return d;
   } catch (err) {
-    setLine('bridge', 'bad', `local bridge: unreachable from this page (${err})`);
-    if (!quiet) log(`cannot reach ${BRIDGE} from the browser: ${esc(err && err.message || err)}` +
-      ' — browsers block public pages from calling loopback (Chrome Local Network Access),' +
-      ' and it also means server.py is not answering. The PowerShell client (relay.ps1) has' +
-      ' no such limit: see the commands in the box above.', 'err');
-    report({ok: false, error: String(err && err.message || err)});
+    const detail = (err && (err.name ? err.name + ': ' : '') + (err.message || err)) || String(err);
+    setLine('bridge', 'bad', `local bridge: unreachable from this page (${detail})`);
+    if (!quiet) {
+      log(`cannot reach ${BRIDGE} from the browser -- ${esc(detail)}`, 'err');
+      log('a failed fetch cannot say which of these is wrong, so check both:', 'warn');
+      log('  1. is server.py running on that machine?  (python server.py, leave it running)', 'warn');
+      log('  2. is this page top-level? ' + (IS_TOP
+        ? 'yes - and if server.py is up, the browser is blocking local requests: allow it, or use '
+          + 'the command-line client instead.'
+        : 'no - this page is inside the Arena frame, which browsers often forbid from calling '
+          + 'localhost. Click Open in a new tab above, then press Connect there.'), 'warn');
+    }
+    report({ok: false, error: detail, page_top_level: IS_TOP});
     return null;
   }
 }
@@ -439,7 +488,9 @@ async function report(payload) {
     await fetch(withTraffic('/api/report?token=' + encodeURIComponent(token)), {
       method: 'POST', headers: {'content-type': 'application/json'},
       body: JSON.stringify(Object.assign(
-        {where: 'browser', ua: navigator.userAgent.slice(0, 60), traffic: TRAFFIC || undefined},
+        {where: 'browser', ua: navigator.userAgent.slice(0, 60),
+         traffic: TRAFFIC || undefined, traffic_where: TRAFFIC_WHERE || undefined,
+         page_top_level: IS_TOP},
         payload)),
     });
   } catch (e) { /* reporting is best-effort */ }
@@ -595,6 +646,11 @@ function saveFile(name) {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
   log(`saved ${name} (${text.length} bytes) - check your Downloads folder.`, 'ok');
 }
+$('#opennew').onclick = () => {
+  const w = window.open(location.href, '_blank', 'noopener');
+  if (!w) { log('the browser blocked the popup - allow popups for this site.', 'err'); }
+  else { log('opened a new tab: use that one (it has an address bar and is top-level).', 'ok'); }
+};
 $('#savepy').onclick = () => saveFile('poll_local.py');
 $('#savetr').onclick = () => saveFile('.arena-traffic-token');
 $('#saveps').onclick = () => saveFile('relay.ps1');
@@ -652,19 +708,27 @@ $('#test').onclick = async () => {
   if (TRAFFIC) {
     line.textContent = '';
     const code = document.createElement('code');
-    code.textContent = TRAFFIC.length > 12 ? TRAFFIC.slice(0, 8) + '\u2026' : TRAFFIC;
+    code.textContent = (TRAFFIC.length > 14 ? TRAFFIC.slice(0, 8) + '\u2026' + TRAFFIC.slice(-4) : TRAFFIC);
     const btn = document.createElement('button');
     btn.textContent = 'Copy preview token';
     btn.onclick = () => navigator.clipboard.writeText(TRAFFIC).then(
       () => log('preview token copied.', 'ok'),
-      () => log('copy failed — select it manually.', 'err'));
-    line.append(code, ' ', btn);
+      () => log('copy failed - select it manually.', 'err'));
+    line.append('found in ' + TRAFFIC_WHERE + ': ', code, ' ', btn);
   } else {
-    line.innerHTML = '<b>not visible in this tab</b>. Open this preview in its own browser tab ' +
-      '(the \u2197 button on the Arena preview) and copy the <code>e2b-traffic-access-token</code> ' +
-      'value out of the address bar, then pass it as <code>-TrafficToken &lt;value&gt;</code>. ' +
-      'Or skip the PowerShell client and stay in this page.';
+    line.innerHTML = '<b>not visible from this page</b>. Click ' +
+      '<b>Open in a new tab</b> above: the new tab has an address bar, so you can copy the ' +
+      '<code>e2b-traffic-access-token</code> value from it (or press F12 there and run ' +
+      '<code>copy(location.href)</code>). You do not need it for the browser client - ' +
+      'only for the command-line ones.';
   }
+  $('#ctxline').innerHTML = IS_TOP
+    ? '<span class="ok">top-level tab</span> (localhost requests allowed)'
+    : '<span class="warn">inside the Arena frame</span> (localhost requests can be blocked; ' +
+      'use Open in a new tab if the bridge line below is red)';
+  $('#tkline').innerHTML = TRAFFIC
+    ? '<span class="ok">found</span> in ' + TRAFFIC_WHERE
+    : '<span class="warn">not visible here</span>';
 })();
 $('#token').value = params.get('token') || '';
 if (token) { connect(); } else { log('waiting for the bridge token…', 'dim'); }
