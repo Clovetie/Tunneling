@@ -282,20 +282,34 @@ PAGE = r"""<!doctype html>
 
 <div class="card" id="gate">
   <div class="row"><span class="k">Bridge token</span>
-    <input id="token" type="password" placeholder="paste the token from bridge.token" autocomplete="off">
+    <input id="token" type="text" spellcheck="false" autocapitalize="off" autocomplete="off"
+           placeholder="paste the 24-hex token here">
     <button class="primary" id="start">Connect</button>
     <button id="stop" class="hidden">Disconnect</button>
   </div>
-  <div class="dim" style="margin-top:8px">The 24-hex token Arena gave you (the relay's token —
-    <em>not</em> necessarily the <code>bridge.token</code> file).</div>
+  <div class="dim" style="margin-top:8px">The token Arena gave you — the relay expects one starting
+    with <code id="tokenhint">__TOKEN_HINT__</code>. The local hop uses <code>bridge.token</code>
+    (usually the same value).</div>
   <details style="margin-top:10px">
-    <summary class="k" style="cursor:pointer">Browser can't reach your bridge? Use the PowerShell client instead</summary>
-    <div class="dim" style="margin-top:8px">Run this from your <code>roblox-bridge</code> folder
-      (it reads <code>bridge.token</code> for the local hop itself):</div>
-    <pre id="pscmds">curl.exe -L -o relay.ps1 __RELAY_URL__/relay.ps1
-.\relay.ps1 -Url __RELAY_URL__ -Token &lt;the 24-hex token&gt;</pre>
+    <summary class="k" style="cursor:pointer">Troubleshooting — and using the bridge without Arena</summary>
+
+    <div class="dim" style="margin-top:10px"><b>1.</b> If the <b>local bridge</b> line is red it is
+      usually not running. In your <code>roblox-bridge</code> folder (leave it running):</div>
+    <pre id="srccmds">$env:BRIDGE_TOKEN = (Get-Content .\bridge.token -Raw).Trim()
+python server.py</pre>
+
+    <div class="dim" style="margin-top:10px"><b>2.</b> If the browser still cannot reach it
+      (Chrome blocks public pages from calling loopback), run the PowerShell client instead —
+      from the same folder:</div>
+    <pre id="pscmds">.\relay.ps1 -Url __RELAY_URL__</pre>
     <div class="row"><button id="copyps">Copy commands</button>
-      <a class="dl" id="dllink" href="/relay.ps1" download="relay.ps1">Download relay.ps1</a></div>
+      <a class="dl" id="dllink" href="/relay.ps1" download="relay.ps1">Download relay.ps1</a>
+      <a class="dl" id="dlab" href="/ab.ps1" download="ab.ps1">Download ab.ps1</a></div>
+
+    <div class="dim" style="margin-top:10px"><b>3.</b> Downloads/downloads above must happen
+      <em>in the browser</em>: this preview URL is token-gated, so <code>curl.exe</code> from
+      PowerShell gets the gate JSON instead of the file. The PowerShell client needs the preview
+      token: <span id="trafficline">checking…</span></div>
   </details>
 </div>
 
@@ -547,11 +561,27 @@ $('#test').onclick = async () => {
 (function fillPS() {
   const sep = TRAFFIC ? '?e2b-traffic-access-token=' + encodeURIComponent(TRAFFIC) : '';
   const trafficArg = TRAFFIC ? ` -TrafficToken ${TRAFFIC}` : '';
-  const tok = /^[0-9a-f]{24}$/.test(params.get('token') || '') ? params.get('token') : '<the 24-hex token>';
   $('#pscmds').textContent =
-    `curl.exe -L -o relay.ps1 "${location.origin}/relay.ps1${sep}"\n` +
-    `.\\relay.ps1 -Url ${location.origin} -Token ${tok}${trafficArg}`;
+    `.\\relay.ps1 -Url ${location.origin}${trafficArg}`;
   $('#dllink').href = '/relay.ps1' + sep;
+  $('#dlab').href = '/ab.ps1' + sep;
+  const line = $('#trafficline');
+  if (TRAFFIC) {
+    line.textContent = '';
+    const code = document.createElement('code');
+    code.textContent = TRAFFIC.length > 12 ? TRAFFIC.slice(0, 8) + '\u2026' : TRAFFIC;
+    const btn = document.createElement('button');
+    btn.textContent = 'Copy preview token';
+    btn.onclick = () => navigator.clipboard.writeText(TRAFFIC).then(
+      () => log('preview token copied.', 'ok'),
+      () => log('copy failed — select it manually.', 'err'));
+    line.append(code, ' ', btn);
+  } else {
+    line.innerHTML = '<b>not visible in this tab</b>. Open this preview in its own browser tab ' +
+      '(the \u2197 button on the Arena preview) and copy the <code>e2b-traffic-access-token</code> ' +
+      'value out of the address bar, then pass it as <code>-TrafficToken &lt;value&gt;</code>. ' +
+      'Or skip the PowerShell client and stay in this page.';
+  }
 })();
 $('#token').value = params.get('token') || '';
 if (token) { connect(); } else { log('waiting for the bridge token…', 'dim'); }
@@ -631,14 +661,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "version": VERSION})
 
         if path == "/":
-            html = PAGE.replace("__RELAY_URL__", STATE.get("url") or self.headers.get("host", ""))
+            html = (PAGE
+                    .replace("__RELAY_URL__", STATE.get("url") or self.headers.get("host", ""))
+                    .replace("__TOKEN_HINT__", (TOKEN[:6] + "\u2026") if TOKEN else "(none)"))
             return self._send(200, html, "text/html; charset=utf-8")
 
-        if path == "/relay.ps1":
-            script = (HERE / "relay.ps1")
+        if path in ("/relay.ps1", "/ab.ps1"):
+            script = (HERE / path.lstrip("/")) if path != "/ab.ps1" else \
+                     (HERE.parent / "roblox-bridge" / "ab.ps1")
             if script.exists():
                 return self._send(200, script.read_bytes(), "text/plain; charset=utf-8")
-            return self._send(404, {"error": "relay.ps1 not found"})
+            return self._send(404, {"error": path + " not found"})
 
         if path == "/favicon.ico":
             return self._send(200, b"", "image/x-icon")
