@@ -822,14 +822,18 @@ class Handler(BaseHTTPRequestHandler):
             return {"_raw": raw[:500].decode("utf-8", "replace")}
 
     def _note_page_request(self):
-        """Record how the browser reached us, so the agent can see how the
-        preview gate authenticates it.
+        """Record how the browser reached us.
 
-        Header *names* only, never values: the whole point is to learn whether
-        the gate forwards a traffic token, passes a cookie, or nothing at all.
+        Two jobs: keep the preview gate's token when the proxy hands it over
+        (it arrives as the E2b-Traffic-Access-Token request header on
+        gate-satisfied requests, which is how the user gets a command-line
+        client without ever seeing an address bar), and record the *shape* of
+        the request - header names, cookie names, a redacted referer - so the
+        agent can tell how the gate authenticates without logging secrets.
         """
         names = sorted(self.headers.keys())
-        traffic_header = any("traffic" in n.lower() for n in names)
+        traffic_value = (self.headers.get("e2b-traffic-access-token") or "").strip()
+        traffic_header = bool(traffic_value) or any("traffic" in n.lower() for n in names)
         cookie_names = []
         for raw in self.headers.get_all("cookie") or []:
             for part in raw.split(";"):
@@ -839,6 +843,14 @@ class Handler(BaseHTTPRequestHandler):
         referer = self.headers.get("referer") or ""
         if "?" in referer:
             referer = referer.split("?", 1)[0] + "?<redacted>"
+        if traffic_value:
+            # The E2B proxy hands the preview token to us as a request header on
+            # every gate-satisfied request. Storing it means the user never has
+            # to hunt for it: the agent can hand over a command line that
+            # already carries --traffic-token.
+            with LOCK:
+                STATE["traffic"] = traffic_value
+                STATE["traffic_from"] = "request header on page load"
         with LOCK:
             STATE["last_page_request"] = {
                 "at": now(),
@@ -850,8 +862,9 @@ class Handler(BaseHTTPRequestHandler):
                 "forwarded_for": self.headers.get("x-forwarded-for"),
             }
         print(f"[relay] page request: {len(names)} header(s), "
-              f"traffic_header={traffic_header}, cookies={sorted(set(cookie_names)) or 'none'}",
-              flush=True)
+              f"traffic_token={'CAPTURED' if traffic_value else 'absent'}"
+              + (f" (...{traffic_value[-4:]})" if traffic_value else "")
+              + f", cookies={sorted(set(cookie_names)) or 'none'}", flush=True)
 
     # -- verbs -------------------------------------------------------------
     def do_OPTIONS(self):
@@ -1087,6 +1100,7 @@ class Handler(BaseHTTPRequestHandler):
             "counts": counts,
             "last_report": report,
             "preview_token": STATE.get("traffic") or None,
+            "preview_token_source": STATE.get("traffic_from"),
             "last_page_request": STATE.get("last_page_request"),
             "jobs": jobs[:40],
         }

@@ -126,11 +126,13 @@ def find_token_file():
     return "", ""
 
 
-def http(url, method="GET", payload=None, timeout=140):
+def http(url, method="GET", payload=None, timeout=140, headers=None):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     if data:
         req.add_header("Content-Type", "application/json")
+    for name, value in (headers or {}).items():
+        req.add_header(name, value)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = resp.read().decode("utf-8", "replace")
     return json.loads(body or "{}")
@@ -146,9 +148,13 @@ class Relay:
         url = f"{self.base}{path}"
         sep = "&" if "?" in url else "?"
         url += f"{sep}token={urllib.parse.quote(self.token)}"
+        headers = {}
         if self.traffic:
+            # the preview gate accepts the token as a query parameter or as this
+            # header; send both, since we cannot see which one it checks.
             url += "&e2b-traffic-access-token=" + urllib.parse.quote(self.traffic)
-        return http(url, method, payload, timeout)
+            headers["E2b-Traffic-Access-Token"] = self.traffic
+        return http(url, method, payload, timeout, headers)
 
 
 class Bridge:

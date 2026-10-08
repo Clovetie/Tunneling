@@ -241,6 +241,7 @@ def cmd_state(cfg, args):
                         "where": report.get("where"), "ok": report.get("ok"),
                         "error": report.get("error")},
         "preview_token": st.get("preview_token"),
+        "preview_token_source": st.get("preview_token_source"),
         "last_page_request": st.get("last_page_request"),
         "studio": {"connected": health.get("studio_connected"),
                    "place": studio.get("place"),
