@@ -12,6 +12,21 @@ Credentials live in `SESSION.md` (repo root). They never live here.
 
 ## 0. The 30-second version
 
+> **2026-10-08 — check §11 first.** There is now a **RELAY MODE**: the *sandbox*
+> serves the wire on a public preview URL (`https://<port>-<sandboxId>.e2b.app`)
+> and the user's **browser** (zero install) or `relay/relay.ps1` polls it and
+> drives their local bridge. That inverts the direction that made HANDS MODE
+> necessary and needs no tunnel at all. Use it; HANDS MODE (§4) is the fallback
+> when the preview URL is not reachable from the user's machine.
+>
+> ```bash
+> python3 relay/relay_server.py --port 8787 --token <shared secret> --url <preview url>
+> python3 relay/relay.py state      # clients attached? Studio connected?
+> python3 relay/relay.py ping       # health through the whole chain
+> ```
+>
+> Read `relay/README.md` for the mechanics, the test rig, and the endpoints.
+
 1. Get `BRIDGE_URL` + `TOK` from `SESSION.md`.
 2. One call: `curl -s -m 15 "$BRIDGE_URL/api/state?token=$TOK"`
 3. Branch on the result:
@@ -320,6 +335,8 @@ Behaviour notes:
 | `nightloop/bridge/` | export-repo copy of the bridge (`ArenaBridge.lua`, `server.py`, `setup.py`, `arena_studio.py`, `ab.ps1`) — keep in sync with `roblox-bridge/`. |
 | `nightloop/src/` | the NightLoop game package (Rojo tree in `default.project.json` → `ServerScriptService.NightLoop` + `StarterPlayerScripts`). |
 | `jobs/` | paste-ready Luau jobs for HANDS MODE (`baseline_survey.lua` …). |
+| `relay/` | RELAY MODE (§11): `relay_server.py` (the wire), `relay.py` (agent CLI), `relay.ps1` + the page at `/` (user clients), `selftest.py` (fake user's PC). |
+| `.relay-state/` | relay runtime: `relay.json` (token/port/url), `events.jsonl`. **Gitignored.** |
 | `nightloop/AGENTS.md` | workflow, traps, dead ends, security, entity status. |
 
 One-time HANDS MODE setup the user pastes into their `roblox-bridge` terminal
@@ -359,3 +376,91 @@ mkdir jobs -ErrorAction SilentlyContinue
 - `ChangeHistoryService` `TryBeginRecording`/`FinishRecording` is the
   documented plugin undo pattern:
   <https://create.roblox.com/docs/studio/plugins>
+
+---
+
+## 11. RELAY MODE — the sandbox serves the wire (2026-10-08)
+
+**Status: built and proven inside the sandbox; the first live user connection
+is the open item.** Files: `relay/` (see `relay/README.md`). Mode of record is
+now this, not §4 — HANDS MODE remains the fallback.
+
+### The idea, in one line
+
+Egress out of the sandbox is a fixed allowlist, but **ingress to a sandbox port
+is served for us**: any process listening on `0.0.0.0:<port>` gets
+`https://<port>-<sandboxId>.e2b.app`, and the *user's* machine can reach it.
+So don't send jobs to the user's PC — let the user's PC come and get them.
+
+```
+  agent (sandbox)          relay :8787 (sandbox, public URL)        user's PC
+  ───────────────          ─────────────────────────────────        ─────────
+  relay.py POST /api/jobs ─▶ queue ─┬─ SSE push ─▶ browser page ─┐
+                                    └─ polling ──▶ relay.ps1 ─────┴─▶ POST /api/jobs
+     ◀────────── POST /api/result ───────────────────────────────────  on 127.0.0.1:8077
+```
+
+Two interchangeable clients, both in `relay/`:
+
+1. **The browser page** at `GET /` on the preview URL — zero install. The user
+   opens the Arena preview, pastes the bridge token once, and leaves the tab
+   open. It holds an SSE stream (live, no polling needed) and does
+   `fetch('http://127.0.0.1:8077/…')` directly — legal because `server.py`
+   already sends `Access-Control-Allow-Origin: *`, and because loopback is a
+   secure context, an HTTPS page may talk to it. Fallback to 2 s polling if the
+   proxy kills the stream.
+2. **`relay.ps1`** — PowerShell polling client, served at `/relay.ps1`. No
+   browser, no CORS, no PNA; the boring reliable one. It reads `bridge.token`
+   itself.
+
+### Operating it (agent side)
+
+```bash
+# start the wire (token = the user's bridge token, so one secret does both hops)
+python3 relay/relay_server.py --port 8787 --token <tok> \
+      --url https://8787-<sandboxId>.e2b.app
+python3 relay/relay.py state     # attached clients + Studio health + counts
+python3 relay/relay.py ping      # round trip through the whole chain
+python3 relay/relay.py runfile jobs/baseline_survey.lua --wait 90
+python3 relay/relay.py tail      # follow .relay-state/events.jsonl
+```
+
+The port is fixed by `--port`, so the preview URL is stable for the life of the
+sandbox; if the sandbox restarts, the URL changes and the user must re-point
+(their client prints the failure, they don't have to guess).
+
+### Proven, not assumed (2026-10-08, inside this sandbox)
+
+Full chain with **no user**: `server.py` (fake local bridge) + `mock_studio.py`
+(fake plugin) + `relay_server.py` + `selftest.py` (fake user's PC).
+
+| check | result |
+|---|---|
+| `ping` round trip | **251 ms**, `done`, correct place name |
+| `runfile jobs/baseline_survey.lua` (7.9 KB, 77 lines) | `done`, byte-exact payload |
+| SSE push to a second client | instant, `data: {"type":"job"…}` |
+| client killed mid-job | janitor requeued after 20 s → other client completed it |
+| fire-and-forget (`wait: 0`) | `accepted` (local bridge took it, no answer awaited) |
+| auth gate | 401 without / with wrong token, on every `/api/*` |
+| sandbox reaching its own preview URL | **still blocked** (curl exit 35) — only the user's machine needs to reach it |
+
+### Traps
+
+- **Preview gate.** If the preview URL needs `?e2b-traffic-access-token=…`, a
+  bare `curl`/`Invoke-WebRequest` from the user's PowerShell gets **403** and
+  the browser page is the path that works (Arena's iframe carries the token) —
+  or the user copies the value out of the address bar and passes `-TrafficToken`.
+  `relay.ps1` detects 403 and says exactly that.
+- **Chrome PNA/LNA** can gate public → loopback requests; `server.py` now sends
+  `Access-Control-Allow-Private-Network: true` on the preflight (both copies,
+  kept in sync). An already-running old server won't have it — restart from an
+  updated folder if the page reports a private-network error.
+- **The token is one secret for both hops** (relay + `bridge.token`), so a
+  mismatch shows up as HTTP 401 *from the local bridge* while the relay itself
+  looks healthy. The page and `relay.ps1` both relay that error verbatim.
+- `.relay-state/` holds the token (mode 600) and the event log. **Gitignored —
+  never commit it.** Check `git status` before any `git add -A`.
+- A job is delivered to exactly one client; if that client goes silent for 20 s
+  the job is requeued. Clients dedupe by job id.
+- PowerShell: `relay.ps1` is ~7 KB — fine as a here-string paste, but prefer
+  downloading it from the relay (`/relay.ps1`) or opening it in the browser.

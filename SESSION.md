@@ -9,6 +9,27 @@
 
 ## Credentials
 
+**2026-10-08 — RELAY MODE is the mode of record** (see `CONNECT.md` §11 and
+`relay/README.md`). The sandbox serves the wire itself:
+
+```
+relay (sandbox, running now)   http://127.0.0.1:8787  →  https://8787-i9pfa1g4i0ly7j09arkjg.e2b.app
+relay token                    = the user's bridge token (one secret, both hops)
+bridge (user's PC)             http://127.0.0.1:8077   (unchanged)
+agent CLI                      python3 relay/relay.py state | ping | runfile …
+```
+
+The token is intentionally **not** written into this tracked file; it lives in
+`.relay-state/relay.json` (gitignored, mode 600) and in the user's
+`bridge.token`. The user connected on 2026-10-08 with the token they pasted in
+chat (`13bbda…`); rotate with `python setup.py --rotate` when the session ends
+and remember a token change needs a Studio restart (CONNECT.md §7).
+
+Verified end-to-end inside the sandbox with the fake rig (`relay/README.md`):
+`ping` 251 ms, `survey`, a 7.9 KB `runfile`, SSE push, janitor requeue — all
+good. What has *not* happened yet is the first real round trip to the user's
+Studio; that is the open item for the next agent.
+
 **Working connection (2026-10-07): local HANDS MODE, not a tunnel.** The
 cloudflare tunnels (`conditions-regard-qualifications-suppliers` /
 `programs-lots-grow-further.trycloudflare.com`) are dead and unreachable from

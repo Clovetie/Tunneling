@@ -1,0 +1,11 @@
+# live session state + secrets — never commit these
+.relay-state/
+bridge.token
+*.token
+dist/
+
+# python / tooling noise
+__pycache__/
+*.pyc
+.venv/
+node_modules/
