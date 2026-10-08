@@ -12,6 +12,10 @@ Credentials live in `SESSION.md` (repo root). They never live here.
 
 ## 0. The 30-second version
 
+> **New session? Read `START-HERE.md` first.** It is the one-prompt bootstrap:
+> the prompt to hand the user, the exact agent commands, and the traps table.
+> Everything below is the long-form manual behind it.
+>
 > **2026-10-08 — check §11 first.** There is now a **RELAY MODE**: the *sandbox*
 > serves the wire on a public preview URL (`https://<port>-<sandboxId>.e2b.app`)
 > and the user's **browser** (zero install) or `relay/relay.ps1` polls it and
@@ -328,6 +332,7 @@ Behaviour notes:
 
 | path | what |
 |---|---|
+| `START-HERE.md` (root) | the one-prompt bootstrap for a fresh session. **Read this first.** |
 | `SESSION.md` (root) | live credentials + session state. **Tracked in this repo** (contrary to its own old header) — rotate the token when the session ends. |
 | `CONNECT.md` (root) | this file. |
 | `roblox-bridge/` | the user's working bridge dir: `server.py`, `setup.py`, `arena_studio.py`, `ArenaBridge.lua` (canonical), `ab.ps1` (HANDS MODE helper), `bridge.token`, `tools/` (luau binaries + `check_globals.sh` + `fix-perms.sh`). |

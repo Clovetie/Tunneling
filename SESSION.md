@@ -40,7 +40,17 @@ file — `.\ab.ps1` reads it automatically). To sanity-check from the sandbox
 you can't (sandbox cannot reach the user's localhost); the user runs jobs and
 pastes output back.
 
-**2026-10-08:** the user's active working copy is a branch ZIP download at
+**2026-10-08 (later): the user's active working copy is a branch ZIP of THIS
+branch** — `C:\Users\Gamef\Downloads\Tunneling-arena-8673c420-tunneling\
+Tunneling-arena-8673c420-tunneling` — which contains the whole repo (`relay/`,
+`jobs/`, `nightloop/`) plus their copied-in `roblox-bridge\bridge.token`.
+Start of session for the next agent: `START-HERE.md` (one-prompt bootstrap).
+The client to hand them is `python .\relay\poll_local.py --url …` run from that
+repo root: `poll_local.py` searches for `bridge.token` next to itself, in
+`..\roblox-bridge\`, in the cwd, and in `cwd\roblox-bridge`, so nothing has to
+be copied anywhere. It is ASCII-only and needs no PowerShell quoting.
+
+**2026-10-08 (earlier):** an older working copy is a branch ZIP download at
 `C:\Users\Gamef\Downloads\Tunneling-arena-6d7d4b8a-tunneling\Tunneling-arena-6d7d4b8a-tunneling`
 — `bridge.token` was copied into its `roblox-bridge` folder (the ZIP doesn't
 ship it; it's gitignored). The running server process is still the one

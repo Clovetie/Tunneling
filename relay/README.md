@@ -30,6 +30,19 @@ Both deliver the *exact* job envelope the bridge already speaks
 so a caller sees `result.result.returned` — identical to talking to
 `server.py` directly.
 
+## Bootstrap from cold (what a fresh agent runs)
+
+`START-HERE.md` at the repo root is the canonical one-prompt version of this.
+Short form:
+
+```bash
+python3 relay/relay_server.py --port 8787 --token <bridge.token value> \
+        --url "https://8787-${E2B_SANDBOX_ID}.e2b.app"
+# hand the user, from their repo root:
+#   python .\relay\poll_local.py --url https://8787-<SANDBOX_ID>.e2b.app
+python3 relay/relay.py state        # clients attached?
+```
+
 ## Files
 
 | file | role |
@@ -37,7 +50,7 @@ so a caller sees `result.result.returned` — identical to talking to
 | `relay_server.py` | the relay: job queue, SSE, control-panel page, `/relay.ps1`, `/api/*` |
 | `relay.py` | **agent-side CLI** — `state`, `ping`, `run`, `runfile`, `survey`, `job`, `wait`, `tail` |
 | `relay.ps1` | user-side PowerShell client (served at `/relay.ps1`, ASCII + BOM) |
-| `poll_local.py` | user-side Python client (served at `/poll_local.py`) - the one to reach for |
+| `poll_local.py` | user-side Python client (served at `/poll_local.py`) - the one to reach for. Finds `bridge.token` next to itself, in `..\roblox-bridge\`, in the cwd, and in `cwd\roblox-bridge`; `--once` checks both hops and exits |
 | `selftest.py` | plays the user's machine so the whole chain can be tested with no user |
 
 Runtime state (token, event log) lives in `../.relay-state/` — **gitignored**,

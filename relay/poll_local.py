@@ -7,18 +7,28 @@ local bridge, post the answer back. Python is already on your machine (it runs
 server.py), and this file is plain ASCII, so there is nothing for Windows
 PowerShell 5.1 to mis-decode, no quoting rules, and no execution policy.
 
-    cd <your roblox-bridge folder>            # where bridge.token and server.py live
-    python poll_local.py --url https://8787-<sandbox>.e2b.app
+    # from a repo checkout (finds roblox-bridge/bridge.token by itself):
+    python .\relay\poll_local.py --url https://8787-<sandbox>.e2b.app
+
+    # or from the bridge folder, next to bridge.token:
+    python .\poll_local.py --url https://8787-<sandbox>.e2b.app
 
     # if the preview URL is token-gated (HTTP 403), copy the
     # e2b-traffic-access-token value out of the preview's address bar and:
     python poll_local.py --url https://8787-<sandbox>.e2b.app --traffic-token <value>
 
+It finds the token by itself, in this order (the first hit wins):
+    --token / --bridge-token, $BRIDGE_TOKEN, <script dir>\bridge.token,
+    <script dir>\..\roblox-bridge\bridge.token (the repo layout),
+    <cwd>\bridge.token, <cwd>\roblox-bridge\bridge.token
+So running it from a repo checkout works without copying anything:
+    python relay\poll_local.py --url https://8787-<sandbox>.e2b.app
+
 Options:
     --url URL             the relay (Arena preview) URL. Required.
-    --token TOKEN         relay token. Defaults to bridge.token / $BRIDGE_TOKEN.
+    --token TOKEN         relay token (default: found as above).
     --bridge URL          local bridge. Default http://127.0.0.1:8077
-    --bridge-token TOKEN  local bridge token. Default: bridge.token / relay token.
+    --bridge-token TOKEN  local bridge token (default: found as above).
     --traffic-token TOK   the preview's e2b-traffic-access-token, when gated.
     --interval SECONDS    poll interval (default 2).
     --once                check both hops and exit (no polling).
@@ -38,11 +48,40 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-TOKEN_FILE = HERE / "bridge.token"
 
 
 def log(msg):
     print(f"[relay] {msg}", flush=True)
+
+
+def token_candidates():
+    """Every place a bridge.token can sensibly live, best guess first.
+
+    The user works out of a ZIP of the repo (relay/poll_local.py,
+    roblox-bridge/bridge.token) and may or may not run this from a folder that
+    has the token beside it, so guessing is the feature, not laziness.
+    """
+    cwd = Path.cwd()
+    return [
+        HERE / "bridge.token",
+        HERE.parent / "roblox-bridge" / "bridge.token",
+        HERE.parent / "bridge.token",
+        cwd / "bridge.token",
+        cwd / "roblox-bridge" / "bridge.token",
+        HERE / "relay.token",
+    ]
+
+
+def find_token_file():
+    for candidate in token_candidates():
+        try:
+            if candidate.is_file():
+                text = candidate.read_text().strip()
+                if text:
+                    return text, str(candidate)
+        except OSError:
+            continue
+    return "", ""
 
 
 def http(url, method="GET", payload=None, timeout=140):
@@ -117,15 +156,20 @@ def main():
         print("no --url: pass the relay URL Arena gave you (https://<port>-<sandbox>.e2b.app)")
         return 1
 
-    file_token = ""
-    if TOKEN_FILE.exists():
-        file_token = TOKEN_FILE.read_text().strip()
-
-    relay_token = args.token or file_token or os.environ.get("BRIDGE_TOKEN") or ""
+    file_token, token_source = find_token_file()
+    relay_token = args.token or os.environ.get("BRIDGE_TOKEN") or file_token or ""
     bridge_token = args.bridge_token or file_token or relay_token
     if not relay_token:
-        print("no token: keep this script next to bridge.token, or pass --token")
+        print("no token found. Looked at:")
+        for candidate in token_candidates():
+            print(f"  {candidate}")
+        print("Pass --token <24-hex token>, set $BRIDGE_TOKEN, or keep bridge.token")
+        print("next to this script / next to a roblox-bridge folder beside it.")
         return 1
+    if not args.quiet:
+        where = token_source or ("--token/--bridge-token" if args.token or args.bridge_token
+                                 else "$BRIDGE_TOKEN")
+        log(f"using token from {where}")
 
     relay = Relay(args.url, relay_token, args.traffic_token)
     bridge = Bridge(args.bridge, bridge_token)
