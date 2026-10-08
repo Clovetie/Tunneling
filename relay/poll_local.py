@@ -173,13 +173,26 @@ class Bridge:
 
 def explain(exc, url):
     code = getattr(exc, "code", None)
+    detail = ""
+    if code is not None:
+        try:
+            detail = exc.read().decode("utf-8", "replace")
+        except Exception:                                    # noqa: BLE001
+            detail = ""
     if code == 403:
-        log("403 - the preview URL is token-gated (this is E2B's proxy, not the relay).")
-        log("Get the value from the relay page: open the preview, expand")
-        log("'Troubleshooting - and using the bridge without Arena', click")
-        log("'Copy preview token', then re-run this command with")
-        log("  --traffic-token <paste>")
-        log("It is cached next to this script afterwards, so that is a one-time step.")
+        log("403 from E2B's preview gate (not from the relay).")
+        if detail:
+            # the gate explains itself - repeat it word for word, it is always
+            # more specific than anything we could guess
+            for line in detail.splitlines():
+                if line.strip():
+                    log("  gate says: " + line.strip()[:200])
+        log("The gate wants the preview token as the e2b-traffic-access-token")
+        log("*header*. This client sends it when given --traffic-token, so re-run")
+        log("with --traffic-token <value>; the value is captured by the relay when")
+        log("the browser reloads the preview page (relay.py clientline prints it).")
+        log("An old copy of this script sends it only as a query parameter, which")
+        log("the gate rejects with the same 403 - re-download the current one.")
     elif code == 401:
         log("401 - the relay rejected the token. It wants the 24-hex token Arena")
         log("showed you; check bridge.token (it is usually the same value).")
@@ -252,6 +265,8 @@ def main():
     except Exception as exc:                                 # noqa: BLE001
         log(f"CANNOT reach the relay at {args.url}")
         explain(exc, args.url)
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()
         return 2
     log(f"relay v{state.get('version')} reachable - {state.get('sse_clients', 0)} browser client(s) attached")
 

@@ -228,6 +228,31 @@ def cmd_push(cfg, args):
     return 0
 
 
+def cmd_clientline(cfg, args):
+    """Print the exact command the user should run to attach a client."""
+    st = call(cfg, "GET", "/api/state")
+    traffic = st.get("preview_token") or ""
+    url = st.get("relay_url") or base_url(cfg)
+    lines = []
+    if traffic:
+        lines.append(f"# preview token was captured from your browser: ...{traffic[-6:]}")
+    else:
+        lines.append("# no preview token captured yet - ask the user to reload the relay page")
+    lines.append("")
+    lines.append(f'python .\\relay\\poll_local.py --url {url} --token {cfg["token"]}'
+                 + (f' --traffic-token {traffic}' if traffic else ' --traffic-token <paste>'))
+    lines.append("")
+    lines.append("# no Python? same thing in PowerShell:")
+    lines.append(f'.\\relay\\relay.ps1 -Url {url}'
+                 + (f' -TrafficToken {traffic}' if traffic else ' -TrafficToken <paste>'))
+    lines.append("")
+    lines.append("# if either 403s anyway, this URL works pasted straight into any browser tab:")
+    lines.append(f"{url}/?token={cfg['token']}"
+                 + (f"&e2b-traffic-access-token={traffic}" if traffic else ""))
+    print("\n".join(lines))
+    return 0
+
+
 def cmd_state(cfg, args):
     st = call(cfg, "GET", "/api/state")
     report = st.get("last_report") or {}
@@ -335,6 +360,9 @@ def main():
     p.add_argument("--wait", type=float, default=90)
     p.set_defaults(fn=lambda cfg, a: show_result(
         submit(cfg, "survey", {"depth": a.depth}, "relay survey", a.wait)))
+
+    p = sub.add_parser("clientline", help="print the command that attaches a client")
+    p.set_defaults(fn=cmd_clientline)
 
     p = sub.add_parser("drift", help="live place vs repo, per file (read-only)")
     p.add_argument("--file", default=None, help="audit job to run (default jobs/drift_audit.lua)")
