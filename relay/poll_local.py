@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 poll_local.py  -  the Arena relay client for YOUR PC (no PowerShell involved).
 
 Same job as relay.ps1, in Python: poll Arena's relay, run each job against your

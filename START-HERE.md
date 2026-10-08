@@ -23,12 +23,16 @@ Read START-HERE.md in the repo, then follow it exactly.
 Note: a branch ZIP never contains bridge.token (it is gitignored), so use the
 token above rather than looking for the file.
 
-Steps: start the relay, give me the ONE PowerShell line to run, verify with
-health + ping + the baseline survey, then run the publish pipeline (drift ->
-push dry -> review -> push --apply) and tell me what changed.
+Steps: start the relay, then give me the ONE command to run (you can print it
+with: python3 relay/relay.py clientline). It looks like:
 
-If my client prints 403, it needs the preview token - tell me to click
-"Copy preview token" on the relay page and paste it back to you.
+    python .\connect.py --url https://8787-<sandbox>.e2b.app --token <token> --traffic-token <preview token>
+
+Then verify with health + ping + the baseline survey, and run the publish
+pipeline (drift -> push dry -> review -> push --apply), telling me what changed.
+
+If anything 403s, the preview token is stale: have me reload the Arena preview
+page (that refreshes it), then print the command again.
 ```
 
 The token line matters: `bridge.token` is gitignored, so a fresh ZIP of the
@@ -70,12 +74,26 @@ is the page's **Copy preview token** button — ask for one paste.
 
 ### 3. Give the user ONE line (their folder, their Python)
 
-**Variant A — always works (token passed inline; also fine with an older
-`poll_local.py` that has no token search):**
+**The command (generate it with `relay.py clientline` so the tokens are right):**
 
 ```powershell
 cd "C:\Users\Gamef\Downloads\Tunneling-arena-8673c420-tunneling\Tunneling-arena-8673c420-tunneling"
-python .\relay\poll_local.py --url https://8787-<SANDBOX_ID>.e2b.app --token <24-hex token>
+python .\connect.py --url https://8787-<SANDBOX_ID>.e2b.app --token <24-hex token> --traffic-token <preview token>
+```
+
+`connect.py` is the whole bootstrap in one file, and it is deliberately
+chatty: it finds both tokens, says which file each came from, explains a gate
+403 in plain language, **starts `server.py` for you (new window) if it is not
+running**, **re-downloads `relay/poll_local.py` through the gate** so the client
+is never stale, and then attaches. `--once` checks the chain and exits.
+Tested against a fake bridge, a mock Studio and a stand-in for the gate:
+token discovery, gate 403 explanation, auto-start, client refresh, attach, and
+two real jobs — all through `connect.py`.
+
+The equivalent by hand, if you want to see the parts:
+
+```powershell
+python .\relay\poll_local.py --url https://8787-<SANDBOX_ID>.e2b.app --token <24-hex token> --traffic-token <preview token>
 ```
 
 **Expect a 403 the first time on a preview URL.** That is E2B's proxy, not the

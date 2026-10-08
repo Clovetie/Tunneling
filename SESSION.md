@@ -7,6 +7,39 @@
 > **Not committed.** It is gitignored in the repo and lives outside it on
 > purpose. Do not paste these values into any tracked file.
 
+## 2026-10-08 — CONNECTED AND PUBLISHED (session 5)
+
+The relay path works end to end, with the user's own machine as the client.
+What happened, in order:
+
+1. Relay (`relay_server.py` on :8787) + `connect.py` / `poll_local.py` on the
+   user's PC. The preview gate cost an hour: it wants
+   `E2b-Traffic-Access-Token` as a **header** (a query parameter is rejected),
+   Arena gives the user **no address bar** (rendered in a frame, no new-tab
+   option), and the value is only knowable to the browser. Solved by capturing
+   the header the proxy adds to page loads — see CONNECT.md section 11.
+2. `ping` -> place **"Place1"**, placeId **110457957229133** (same place as
+   "scary monster test 3", renamed), Studio 0.742.0.7421053.
+   **The installed plugin is v1, not v2.0** — `ping` returns no
+   `pluginVersion`, so it is the build without auto-connect. Upgrading is
+   `python setup.py --install-only` from the folder that has `bridge.token` +
+   a Studio restart (CONNECT.md section 7 trap: never run it in a folder
+   without the token).
+3. `drift` -> 19/22 identical, 3 differed (Config, MonsterAnimator,
+   WindowMonster — the climb work).
+4. `push --apply` -> replaced those 3: Config 7348->8357B,
+   MonsterAnimator 9471->12962B, WindowMonster 14532->25219B;
+   `require: all ok`; live tuning afterwards:
+   `climbing=true, climbSpeed=3.2, showPhase=true, nightDuration=900,
+   windowMonster={enabled=true, turnSpeed=2}, whispererEnabled=true,
+   whispererVoiceIds=0, whispererGlassIds=0`.
+5. `drift` again -> **22/22 identical**. The place matches the repo.
+   `baseline_survey.lua` confirms the package: 14 NightLoop entries + Entities,
+   both client scripts, no MonsterPreview, 8 spots.
+
+**Whisperer is still disabled at runtime** (0 IDs) — that is the one open item
+only the user can unblock.
+
 ## Credentials
 
 **2026-10-08 — RELAY MODE is the mode of record** (see `CONNECT.md` §11 and

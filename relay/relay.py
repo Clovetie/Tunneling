@@ -147,7 +147,8 @@ def cmd_drift(cfg, args):
         return 1
 
     checks = data.get("checks") or {}
-    live = {entry.get("name"): entry for entry in data.get("files") or []}
+    live = {entry.get("name"): entry for entry in (data.get("files") or [])
+            if not entry.get("folder")}
     repo = {key: digest(rel) for rel, key in MANIFEST}
 
     rows, same, diff = [], 0, 0
@@ -211,7 +212,7 @@ def cmd_push(cfg, args):
             detail += "  (stayed Disabled)"
         if row.get("error"):
             detail += f"  ! {row['error']}"
-        if row.get("bytesOk") is False or row.get("hashOk") is False:
+        if args.apply and (row.get("bytesOk") is False or row.get("hashOk") is False):
             detail += f"  ! verify bytes={row.get('bytesOk')} hash={row.get('hashOk')}"
         print(f"  {str(row.get('key')):38} {detail}")
     if data.get("tuning"):
@@ -239,6 +240,11 @@ def cmd_clientline(cfg, args):
     else:
         lines.append("# no preview token captured yet - ask the user to reload the relay page")
     lines.append("")
+    lines.append('# the one command (finds tokens, starts server.py if needed, refreshes the client):')
+    lines.append(f'python .\\connect.py --url {url} --token {cfg["token"]}'
+                 + (f' --traffic-token {traffic}' if traffic else ''))
+    lines.append("")
+    lines.append('# equivalent, if you would rather see the parts:')
     lines.append(f'python .\\relay\\poll_local.py --url {url} --token {cfg["token"]}'
                  + (f' --traffic-token {traffic}' if traffic else ' --traffic-token <paste>'))
     lines.append("")

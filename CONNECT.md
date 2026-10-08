@@ -340,6 +340,7 @@ Behaviour notes:
 | `nightloop/bridge/` | export-repo copy of the bridge (`ArenaBridge.lua`, `server.py`, `setup.py`, `arena_studio.py`, `ab.ps1`) — keep in sync with `roblox-bridge/`. |
 | `nightloop/src/` | the NightLoop game package (Rojo tree in `default.project.json` → `ServerScriptService.NightLoop` + `StarterPlayerScripts`). |
 | `jobs/` | paste-ready Luau jobs for HANDS MODE (`baseline_survey.lua` …). |
+| `connect.py` (root) | the one command the user runs to attach: finds tokens, explains a gate 403, starts `server.py` if needed, refreshes `poll_local.py`, attaches. |
 | `relay/` | RELAY MODE (§11): `relay_server.py` (the wire), `relay.py` (agent CLI), `relay.ps1` + the page at `/` (user clients), `selftest.py` (fake user's PC). |
 | `.relay-state/` | relay runtime: `relay.json` (token/port/url), `events.jsonl`. **Gitignored.** |
 | `nightloop/AGENTS.md` | workflow, traps, dead ends, security, entity status. |
@@ -424,17 +425,46 @@ Two interchangeable clients, both in `relay/`:
    BOM — keep both properties if you edit it. Also avoid PS7-only syntax
    (`$x = if (…) {…} else {…}`, `??`, `&&`); the user is on 5.1.
 
+### The preview gate, in full (paid for 2026-10-08, do not re-derive)
+
+* The preview URL is gated by E2B. **Browsers pass it automatically** (Arena's
+  frame carries the token); every other client needs it explicitly.
+* The gate wants the token as the **`E2b-Traffic-Access-Token` request header**.
+  A query parameter with the same name is rejected with
+  `{"message":"... requires a traffic access token. The e2b-traffic-access-token
+  header is missing."}` — that message is the single most useful clue.
+* **The relay captures the value for you.** The proxy adds that header to every
+  gate-satisfied request, including the page load, so `relay_server.py` stores it
+  (`STATE["traffic"]`, printed as `preview_token` by `relay.py state`). Ask the
+  user to reload the preview page once, then run `relay.py clientline`.
+* The capture is safe to leave on: the value is a per-sandbox gate ticket, it is
+  only ever handed to clients the user runs, and `.arena-traffic-token` (the
+  client-side cache) is gitignored.
+* Recovery recipe when a client 403s and the cache is stale:
+  `Invoke-WebRequest -Uri '<url>/poll_local.py' -Headers @{'e2b-traffic-access-token'='<value>'} -OutFile .\relay\poll_local.py`
+  (PowerShell's `curl` is an alias for `Invoke-WebRequest`; `curl.exe` also works
+  if given `-H`). Through a gate you cannot fetch anything without that header,
+  including the client itself.
+
 ### Operating it (agent side)
 
 ```bash
 # start the wire (token = the user's bridge token, so one secret does both hops)
 python3 relay/relay_server.py --port 8787 --token <tok> \
       --url https://8787-<sandboxId>.e2b.app
-python3 relay/relay.py state     # attached clients + Studio health + counts
-python3 relay/relay.py ping      # round trip through the whole chain
-python3 relay/relay.py runfile jobs/baseline_survey.lua --wait 90
-python3 relay/relay.py tail      # follow .relay-state/events.jsonl
+python3 relay/relay.py state      # attached clients + Studio health + counts
+python3 relay/relay.py clientline # print the ONE command to hand the user
+python3 relay/relay.py ping       # round trip through the whole chain
+python3 relay/relay.py drift      # live place vs repo, per file (read-only)
+python3 relay/relay.py push       # dry run; --apply to publish
+python3 relay/relay.py tail       # follow .relay-state/events.jsonl
 ```
+
+`relay.py clientline` is the handover: it prints `python .\connect.py --url …
+--token … --traffic-token …` with the **live** captured preview token, plus the
+by-hand equivalent, the PowerShell variant and a browser URL that also works.
+`connect.py` (repo root) does token discovery, gate explanation, `server.py`
+auto-start, client refresh and attach — tested end to end in the sandbox.
 
 The port is fixed by `--port`, so the preview URL is stable for the life of the
 sandbox; if the sandbox restarts, the URL changes and the user must re-point
