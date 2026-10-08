@@ -45,6 +45,9 @@ branch** — `C:\Users\Gamef\Downloads\Tunneling-arena-8673c420-tunneling\
 Tunneling-arena-8673c420-tunneling` — which contains the whole repo (`relay/`,
 `jobs/`, `nightloop/`) plus their copied-in `roblox-bridge\bridge.token`.
 Start of session for the next agent: `START-HERE.md` (one-prompt bootstrap).
+**That ZIP has no `bridge.token`** (gitignored) — the prompt template therefore
+carries the token inline and the client accepts `--token <24-hex>`; the older
+workspace copy still has the file for anyone who prefers to copy it in.
 The client to hand them is `python .\relay\poll_local.py --url …` run from that
 repo root: `poll_local.py` searches for `bridge.token` next to itself, in
 `..\roblox-bridge\`, in the cwd, and in `cwd\roblox-bridge`, so nothing has to

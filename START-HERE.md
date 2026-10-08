@@ -17,14 +17,20 @@ Connect to my Roblox Studio and get to work.
 Read START-HERE.md in the repo, then follow it exactly.
 
   My working copy:  C:\Users\Gamef\Downloads\Tunneling-arena-8673c420-tunneling\Tunneling-arena-8673c420-tunneling
-  Bridge token:     (in roblox-bridge\bridge.token — ask me to run the
-                     one-liner in START-HERE.md if you cannot read it)
+  Bridge token:     <paste the 24-hex token from roblox-bridge\bridge.token>
   Local bridge:     http://127.0.0.1:8077   (already running, my Studio is open)
+
+Note: a branch ZIP never contains bridge.token (it is gitignored), so use the
+token above rather than looking for the file.
 
 Steps: start the relay, give me the ONE PowerShell line to run, verify with
 health + ping + the baseline survey, then run the publish pipeline (drift ->
 push dry -> review -> push --apply) and tell me what changed.
 ```
+
+The token line matters: `bridge.token` is gitignored, so a fresh ZIP of the
+branch **never** has it, and every "read the token from a file" step fails.
+Put the token in the prompt (or copy the file into the checkout, below).
 
 ---
 
@@ -48,11 +54,27 @@ python3 relay/relay_server.py --port 8787 --token "$TOK" \
 
 ### 2. Give the user ONE line (their folder, their Python)
 
-The user's token never needs to be typed — `poll_local.py` finds it:
+**Variant A — always works (token passed inline; also fine with an older
+`poll_local.py` that has no token search):**
 
 ```powershell
 cd "C:\Users\Gamef\Downloads\Tunneling-arena-8673c420-tunneling\Tunneling-arena-8673c420-tunneling"
+python .\relay\poll_local.py --url https://8787-<SANDBOX_ID>.e2b.app --token <24-hex token>
+```
+
+**Variant B — give the checkout a token file first** (then A's `--token` is
+optional, and `server.py` started from that folder finds it too):
+
+```powershell
+Copy-Item "C:\Users\Gamef\Downloads\workspace-01a115c6-25b3-719b-a117-f3400625cd10\roblox-bridge\bridge.token" .\roblox-bridge\
 python .\relay\poll_local.py --url https://8787-<SANDBOX_ID>.e2b.app
+```
+
+**Variant C — run it from the folder that does have the token:**
+
+```powershell
+cd "C:\Users\Gamef\Downloads\workspace-01a115c6-25b3-719b-a117-f3400625cd10\roblox-bridge"
+python "C:\Users\Gamef\Downloads\Tunneling-arena-8673c420-tunneling\Tunneling-arena-8673c420-tunneling\relay\poll_local.py" --url https://8787-<SANDBOX_ID>.e2b.app
 ```
 
 Expect `local bridge ok - Studio CONNECTED, place "..."` then
@@ -122,6 +144,7 @@ and `nightloop/AGENTS.md`. The two things that need the user:
 | Preview downloads | the preview URL is **traffic-token gated**: `curl.exe` gets 157 bytes of gate JSON instead of a file. Downloads must happen in the browser (or carry `?e2b-traffic-access-token=…`). That is why the page embeds the files and has **Save** buttons. |
 | PowerShell 5.1 | it decodes `.ps1` as ANSI unless the file starts with a UTF-8 BOM → mojibake → parse errors. All our `.ps1` files are ASCII-only **and** served with a BOM. It also has no PowerShell 7 syntax (`$x = if (…) {…} else {…}`, `??`, `&&`). Prefer `poll_local.py`. |
 | Filenames | `python poll_local` (no extension) and pasted markdown links (`poll_[local.py](http://local.py)`) both fail. Always give `python .\poll_local.py`. |
+| Missing `bridge.token` | It is **gitignored**, so a branch ZIP never contains it. Symptom: `Get-Content .\roblox-bridge\bridge.token` -> PathNotFound, then `no token: keep this script next to bridge.token, or pass --token`. Fix: `--token <24-hex>` (variant A above) or copy the file from the user's other working copy (variant B). Never commit it. |
 | Token mismatch | the relay token and `bridge.token` are the same value; a *different* value shows up as HTTP 401 **from the relay**, and a stale `bridge.token` vs a running server shows up as 401 **from the local bridge**. `CONNECT.md` §7. |
 | Studio + `require` | replacing a module with a **new instance** is the only way to change live code; editing `.Source` keeps serving the cached module. `push_all.lua` does this correctly. |
 | Publishing | run it in **Edit mode**, not during a playtest; one job = one Ctrl+Z. |

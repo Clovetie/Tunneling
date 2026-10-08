@@ -620,18 +620,22 @@ $('#test').onclick = async () => {
 (function fillPS() {
   const sep = TRAFFIC ? '?e2b-traffic-access-token=' + encodeURIComponent(TRAFFIC) : '';
   const trafficArg = TRAFFIC ? ` -TrafficToken ${TRAFFIC}` : '';
+  const known = /^[0-9a-f]{24}$/.test(params.get('token') || '') ? params.get('token') : '';
+  const tokArg = known ? ` --token ${known}` : ' --token <the 24-hex token>';
   $('#pscmds').textContent =
-    `REM in your roblox-bridge folder (next to bridge.token):` +
-    `\npython .\\poll_local.py --url ${location.origin}${trafficArg}` +
+    `REM from your repo checkout (the ZIP never ships bridge.token):` +
+    `\nREM give it one first if you have another working copy:` +
+    `\nREM   Copy-Item "<other>\\roblox-bridge\\bridge.token" .\\roblox-bridge\\` +
+    `\npython .\\relay\\poll_local.py --url ${location.origin}${tokArg}${trafficArg}` +
     `\n\nREM PowerShell alternative (same job, ASCII-only):` +
-    `\n.\\relay.ps1 -Url ${location.origin}${trafficArg}`;
+    `\n.\\relay.ps1 -Url ${location.origin} -Token ${known || '<token>'}${trafficArg}`;
   $('#dllink').href = '/relay.ps1' + sep;
   $('#dlpoll').href = '/poll_local.py' + sep;
   $('#dlab').href = '/ab.ps1' + sep;
   const tok = /^[0-9a-f]{24}$/.test(params.get('token') || '') ? params.get('token') : '<token>';
   $('#pubcmds').textContent =
     `$env:BRIDGE_URL = "${BRIDGE}"\n` +
-    `$env:BRIDGE_TOKEN = (Get-Content .\\bridge.token -Raw).Trim()\n` +
+    `$env:BRIDGE_TOKEN = ${known ? '"' + known + '"' : '(Get-Content .\\bridge.token -Raw).Trim()'}\n` +
     'python arena_studio.py health\n' +
     'python arena_studio.py runfile push_all_dry.lua\n' +
     'python arena_studio.py runfile push_all.lua';

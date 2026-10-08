@@ -473,6 +473,10 @@ Full chain with **no user**: `server.py` (fake local bridge) + `mock_studio.py`
   never commit it.** Check `git status` before any `git add -A`.
 - A job is delivered to exactly one client; if that client goes silent for 20 s
   the job is requeued. Clients dedupe by job id.
+- **`bridge.token` is gitignored, so a branch ZIP never contains it.** Ask the
+  user for the 24-hex value up front (put it in the bootstrap prompt) or pass
+  `--token` on the client command line; do not send them looking for a file that
+  ships only in their own machine's folders.
 - PowerShell: `relay.ps1` is ~7.6 KB — fine as a here-string paste, but prefer
   downloading it from the relay (`/relay.ps1`) or opening it in the browser.
 - **Downloads from the preview must happen in the browser.** `curl.exe` gets
