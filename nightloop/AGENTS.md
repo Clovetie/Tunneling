@@ -193,3 +193,9 @@ Three entities are live (Window Monster, Knocker, Crawl). `Whisperer` is coded
 but needs audio asset IDs **the user will supply — do not invent them**.
 `Breathless` and `TickingMan` are disabled stubs that need room volumes, which
 nothing in the place currently marks.
+
+The Window Monster **climbs**: a spot with no floor under it is reached by
+scaling the wall rather than skipped (`Config.Entities.WindowMonster.Climbing`).
+Its animation is the package's first *cycling* pose — `MonsterAnimator:SetCycle`
+must be driven by distance climbed, not by the clock, or the hands slide out of
+time with the body.

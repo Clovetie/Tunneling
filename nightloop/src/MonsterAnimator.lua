@@ -19,6 +19,9 @@
 		twitch   a single hard jerk, auto-returns to the previous state
 		recoil   flashed: head snaps away, arms shield the face
 		lunge    breaching: surges toward the glass, jaw open
+		climb    CYCLE, not a pose: hauling itself up a wall. Drive it with
+		         SetCycle(phase) from the distance actually climbed, or the
+		         limbs slide out of time with the body.
 		retreat  folds down and away
 ]]
 
@@ -48,6 +51,66 @@ end
 	Rotations COMPOUND down the chain: Waist, Spine and NeckLower each at 20
 	degrees folds the body 60. Keep torso values small.
 ]]
+--[=[
+	climb is not a pose, it is a CYCLE. `cycle(phase, intensity)` returns the
+	joint offsets for one point in the stride, phase in [0,1). The owner drives
+	that phase from the distance the body has ACTUALLY climbed
+	(MonsterAnimator:SetCycle) rather than from the clock, so the hands keep
+	time with the wall. A clock-driven cycle visibly slides the moment the
+	climb eases in, eases out, or changes speed.
+
+	Same axis rules as every pose above. Arms reach UP at about +166 on X
+	(they hang down at rest, so +90 is straight out in front and +180 is up),
+	and the knee is drawn up by hip +X with the shin folded back by knee -X.
+]=]
+local function climbCycle(phase, intensity)
+	local TAU = math.pi * 2
+	local p = (phase or 0) % 1
+	local effort = 0.55 + (intensity or 0) * 0.45
+
+	-- 0 = hand overhead gripping, 0.5 = hand back down at the hip pulling
+	local upR = (math.cos(TAU * p) + 1) * 0.5
+	local upL = (math.cos(TAU * (p + 0.5)) + 1) * 0.5
+	-- the knee comes up on the same side as the hand that is reaching
+	local kneeR = (math.cos(TAU * (p + 0.25)) + 1) * 0.5
+	local kneeL = (math.cos(TAU * (p + 0.75)) + 1) * 0.5
+	local sway = math.sin(TAU * p) * 5
+
+	return {
+		-- pressed to the wall: hips in tight, shoulders working overhead
+		RootJoint = CFrame.new(0, -0.1 - 0.08 * upR, 0.2),
+		Waist = ang(-5, 0, sway * 0.5),
+		Spine = ang(-4, 0, -sway * 0.4),
+		NeckLower = ang(9, 0, 0),   -- chin up, watching the sill it is making for
+		Neck = ang(-5, 0, 0),
+		Jaw = ang(3 + effort * 7, 0, 0),
+
+		ShoulderR = ang(24 + 142 * upR, 0, 11),
+		-- the elbow EXTENDS into the reach and flexes through the pull, which
+		-- is the difference between climbing and waving
+		ElbowR = ang(6 + 42 * (1 - upR), 0, 0),
+		FingerR1 = ang(14 + 34 * (1 - upR), 0, 0),
+		FingerR2 = ang(18 + 38 * (1 - upR), 0, 0),
+		FingerR3 = ang(14 + 34 * (1 - upR), 0, 0),
+
+		ShoulderL = ang(24 + 142 * upL, 0, -11),
+		ElbowL = ang(6 + 42 * (1 - upL), 0, 0),
+		FingerL1 = ang(14 + 34 * (1 - upL), 0, 0),
+		FingerL2 = ang(18 + 38 * (1 - upL), 0, 0),
+		FingerL3 = ang(14 + 34 * (1 - upL), 0, 0),
+
+		-- the knee drives up high and the foot follows: 1.5 studs of travel
+		-- per stride, measured from the rig geometry
+		HipR = ang(8 + 72 * kneeR, 0, 0),
+		KneeR = ang(-14 - 104 * kneeR, 0, 0),
+		AnkleR = ang(8 + 24 * kneeR, 0, 0),
+
+		HipL = ang(8 + 72 * kneeL, 0, 0),
+		KneeL = ang(-14 - 104 * kneeL, 0, 0),
+		AnkleL = ang(8 + 24 * kneeL, 0, 0),
+	}
+end
+
 local POSES = {
 	idle = {
 		blend = 2.2,
@@ -150,6 +213,14 @@ local POSES = {
 		},
 	},
 
+	-- climbing the outside wall to reach a window with no floor under it.
+	-- blend is high because the goal moves every frame; a slow blend would
+	-- smear the cycle into a wobble.
+	climb = {
+		blend = 18,
+		cycle = climbCycle,
+	},
+
 	-- folds down and away, curling forward over itself
 	retreat = {
 		blend = 5,
@@ -197,8 +268,28 @@ function MonsterAnimator.new(model)
 	self.nextTwitch = 4 + math.random() * 7
 	self.twitchEnabled = true
 	self.intensity = 0
+	self.cyclePhase = 0
 	self.alive = true
 	return self
+end
+
+-- Joint goals for a state, resolving cycling poses on the fly.
+function MonsterAnimator:_goals(stateName)
+	local pose = POSES[stateName]
+	if not pose then
+		return {}
+	end
+	if pose.cycle then
+		return pose.cycle(self.cyclePhase, self.intensity)
+	end
+	return pose.joints
+end
+
+-- Where in the stride a cycling pose (climb) is, 0..1. Anything outside is
+-- wrapped, so the caller can pass total distance / stride without a modulo.
+function MonsterAnimator:SetCycle(phase)
+	self.cyclePhase = (tonumber(phase) or 0) % 1
+	return self.cyclePhase
 end
 
 function MonsterAnimator:Play(stateName, snap)
@@ -220,9 +311,9 @@ function MonsterAnimator:Play(stateName, snap)
 	self.state = stateName
 
 	if snap then
-		local pose = POSES[stateName].joints
+		local goals = self:_goals(stateName)
 		for name in pairs(self.joints) do
-			self.current[name] = pose[name] or CFrame.new()
+			self.current[name] = goals[name] or CFrame.new()
 		end
 	end
 end
@@ -274,7 +365,8 @@ function MonsterAnimator:Update(dt, targetPosition)
 	if not pose then
 		return
 	end
-	local target = pose.joints
+	-- cycling poses rebuild their goals every frame from the current phase
+	local target = self:_goals(self.state)
 	local blend = math.clamp(pose.blend * dt, 0, 1)
 
 	-- idle twitches, more often as the night gets worse
