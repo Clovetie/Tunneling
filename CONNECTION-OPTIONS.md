@@ -100,14 +100,14 @@ Risks:
 ## Security issue, regardless of route
 
 - **`SESSION.md` is tracked in git.** Its header says it is gitignored, and `nightloop/AGENTS.md` says the same. This repo has no `.gitignore`. The file itself says the token "sits in repo history."
-- Fix: rotate the bridge token (`python setup.py --rotate`), untrack `SESSION.md`, and add a `.gitignore`. This has not been changed, because it affects the user's workflow.
+- Done 2026-10-09: `SESSION.md` is untracked (the file stays on disk) and a root `.gitignore` covers it and `bridge.token`. Git history still holds the old copy, so the token must still be rotated: run `python setup.py --rotate` on the user's PC, then restart Studio.
 
-## Decisions needed
+## Decisions
 
-1. Adopt option 1 (Rojo over git)? This needs Rojo on the user's PC and a clone of this repo.
-2. Build option 2 (relay)? If so, which mailbox, and which executor?
-3. Rotate the token and untrack `SESSION.md`?
-4. Does the user know of a sandbox with open egress? The original tunnel route works there unchanged.
+1. Option 1 (Rojo over git) adopted 2026-10-09. Setup, workflow and limits: `nightloop/docs/ROJO-SYNC.md`. Build: `nightloop/tools/rojo_pull.py` (PC side), `nightloop/tools/precheck.sh` (pre-push gate), `servePlaceIds` in `nightloop/default.project.json`.
+2. Option 2 (relay) is not built. Build it only if live feedback from Studio is needed later. Open questions: which mailbox, and which executor.
+3. Untracking `SESSION.md` and adding a `.gitignore`: done 2026-10-09. Token rotation: still the user's action.
+4. Open question: does the user have a sandbox with open egress? The original tunnel route works there unchanged.
 
 ## Sources
 

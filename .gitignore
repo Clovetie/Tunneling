@@ -1,0 +1,16 @@
+# Session secrets and state. Never commit these. See CONNECTION-OPTIONS.md.
+SESSION.md
+bridge.token
+**/bridge.token
+
+# Tool output and caches (see nightloop/tools/README.md).
+nightloop/tools/reports/
+nightloop/.tools/
+nightloop/tools/node_modules/
+node_modules/
+
+# Build output and Python caches.
+*.rbxl
+*.rbxlx
+__pycache__/
+*.pyc

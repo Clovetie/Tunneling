@@ -1,5 +1,11 @@
 # CONNECT — Arena ↔ Roblox Studio bridge, operator's manual
 
+> **Update 2026-10-09.** This sandbox cannot reach the tunnel (§5). Script changes
+> now go through **Rojo over git**: commit under `nightloop/src` or `nightloop/client`,
+> run `bash nightloop/tools/precheck.sh`, push. The user's PC pulls the branch and Rojo
+> syncs it into Studio. See `nightloop/docs/ROJO-SYNC.md` and `CONNECTION-OPTIONS.md`.
+> The bridge (HANDS MODE, below) is still the only route for live jobs and read-back.
+
 **For the next agent.** This file is the entire connection story, written
 2026-10-07 after a full session of debugging exactly this. Read it once, top
 to bottom, before touching anything connection-related. **Do not re-derive any

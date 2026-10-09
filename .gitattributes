@@ -1,0 +1,5 @@
+# Rojo reads these files byte for byte, so the repo and the place must hash the
+# same. Keep Luau sources LF on every machine (a Windows checkout with autocrlf
+# would otherwise turn them into CRLF). See nightloop/docs/ROJO-SYNC.md.
+*.lua text eol=lf
+*.luau text eol=lf

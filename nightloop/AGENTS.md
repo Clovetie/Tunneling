@@ -15,6 +15,11 @@ egress allowlist), HANDS MODE for when the sandbox cannot reach the tunnel,
 and the plugin (v2.0: auto-connect on load). Read it before debugging any
 connection problem; it exists so you never have to re-derive this.
 
+**Since 2026-10-09, script changes go through Rojo over git** (`nightloop/docs/ROJO-SYNC.md`).
+Commit under `nightloop/src/` or `nightloop/client/`, run `bash nightloop/tools/precheck.sh`
+(it must print `precheck: passed`), then push the session branch. Do not push synced
+scripts with the bridge's `write_script`: the next Rojo sync would revert them.
+
 ---
 
 ## What the connector is
