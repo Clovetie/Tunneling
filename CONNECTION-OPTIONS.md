@@ -99,7 +99,7 @@ Risks:
 
 ## Security issue, regardless of route
 
-- **`SESSION.md` is tracked in git.** Its header says it is gitignored, and `nightloop/AGENTS.md` says the same. This repo has no `.gitignore`. The file itself says the token "sits in repo history."
+- **`SESSION.md` was tracked in git** (fixed 2026-10-09, see below). Its header said it was gitignored, and `nightloop/AGENTS.md` said the same. The repo had no `.gitignore`. The file itself says the token "sits in repo history."
 - Done 2026-10-09: `SESSION.md` is untracked (the file stays on disk) and a root `.gitignore` covers it and `bridge.token`. Git history still holds the old copy, so the token must still be rotated: run `python setup.py --rotate` on the user's PC, then restart Studio.
 
 ## Decisions

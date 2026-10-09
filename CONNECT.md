@@ -339,7 +339,7 @@ Behaviour notes:
 
 | path | what |
 |---|---|
-| `SESSION.md` (root) | live credentials + session state. **Tracked in this repo** (contrary to its own old header) — rotate the token when the session ends. |
+| `SESSION.md` (root) | live credentials + session state. **Untracked since 2026-10-09** (root `.gitignore`), but its old copy is still in git history — rotate the token when the session ends. |
 | `CONNECT.md` (root) | this file. |
 | `roblox-bridge/` | the user's working bridge dir: `server.py`, `setup.py`, `arena_studio.py`, `ArenaBridge.lua` (canonical), `ab.ps1` (HANDS MODE helper), `bridge.token`, `tools/` (luau binaries + `check_globals.sh` + `fix-perms.sh`). |
 | `roblox-bridge/tools/.selftest` | — (scratch, deleted after use) |
