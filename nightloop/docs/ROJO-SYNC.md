@@ -27,7 +27,7 @@ Not covered, on purpose:
 
 ## One-time setup (you)
 
-1. **Git.** Install Git for Windows if needed. The first pull asks you to sign in to GitHub once.
+1. **Git.** Install Git for Windows if needed. The repo is private, so `git clone` asks you to sign in to GitHub once. After that, the pull loop works without prompts.
 2. **Rojo 7.** Install from https://rojo.space, or with Rokit: `rokit add rojo-rbx/rojo` (as in `nightloop/tools/README.md`).
 3. **Rojo Studio plugin.** Run `rojo plugin install`, then restart Studio.
 4. **Clone and switch branch.**
