@@ -362,10 +362,10 @@ def main() -> int:
     p.add_argument("--apply-mode", default="auto", choices=["auto", "decal", "texture", "billboard", "surface_gui", "screen_gui"])
 
     p = sub.add_parser("kit", help="browse built-in skills, Luau modules, prefabs, and repo image assets")
-    p.add_argument("category", nargs="?", default="all", choices=["all", "skills", "modules", "prefabs", "images", "presets"])
+    p.add_argument("category", nargs="?", default="all", choices=["all", "skills", "modules", "templates", "prefabs", "images", "presets", "cloud_icons"])
     p.add_argument("--item", default=None)
 
-    p = sub.add_parser("install-module", help="install one or 'all' Luau modules from roblox-kit/modules into Studio")
+    p = sub.add_parser("install-module", help="install one or 'all' 12 Luau modules from roblox-kit/modules into Studio")
     p.add_argument("module", nargs="?", default="all")
     p.add_argument("--parent", default="ReplicatedStorage.Shared")
 
@@ -374,6 +374,14 @@ def main() -> int:
     p.add_argument("--parent", default=None)
     p.add_argument("--pos", nargs=3, type=float, default=None)
     p.add_argument("--as", dest="override_name", default=None)
+
+    p = sub.add_parser("template", help="install a full UI screen or multi-script gameplay system template into Studio")
+    p.add_argument("name", help="full_stud_ui_suite | stud_shop_window | stud_hud_shell | stud_daily_rewards | stud_rebirth_window | stud_rarity_index")
+
+    p = sub.add_parser("icons", help="search 1,022 verified cloud rbxassetid:// UI icons from CheckUIIcons")
+    p.add_argument("query", nargs="?", default="")
+    p.add_argument("--category", default=None)
+    p.add_argument("--limit", type=int, default=40)
 
     args = ap.parse_args()
     client = BridgeClient(base_url=BASE, token=TOKEN)
@@ -776,6 +784,19 @@ def main() -> int:
             "name": args.override_name,
             "peerId": args.peer,
         }, args.full, args.raw_json)
+
+    if args.cmd == "template":
+        return show_tool_output("install_template", client, "install_template", {
+            "template": args.name,
+            "peerId": args.peer,
+        }, args.full, args.raw_json)
+
+    if args.cmd == "icons":
+        return show_tool_output("search_cloud_icons", client, "search_cloud_icons", {
+            "query": args.query,
+            "category": args.category,
+            "limit": args.limit,
+        }, True, args.raw_json)
 
     return 0
 

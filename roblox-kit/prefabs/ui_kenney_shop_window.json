@@ -1,0 +1,184 @@
+{
+  "name": "ui_kenney_shop_window",
+  "category": "ui",
+  "description": "Glossy game Shop Modal built with genuine CC0 Kenney UI buttons, cart/coin/diamond icons, 3 item cards, and close button.",
+  "defaultParent": "StarterGui",
+  "requiredImages": [
+    "kenney_ui/blue_btn_depth_gloss.png",
+    "kenney_ui/green_btn_depth_gloss.png",
+    "kenney_ui/red_btn_square_depth_gloss.png",
+    "kenney_icons/ic_shopping_cart.png",
+    "kenney_icons/ic_coin.png",
+    "kenney_icons/ic_diamond.png",
+    "kenney_icons/ic_cross.png"
+  ],
+  "tree": [
+    {
+      "name": "KenneyShopGui",
+      "className": "ScreenGui",
+      "replaceExisting": true,
+      "properties": {
+        "ResetOnSpawn": false,
+        "IgnoreGuiInset": true,
+        "ZIndexBehavior": { "__t": "Enum", "v": "ZIndexBehavior.Sibling" }
+      },
+      "children": [
+        { "name": "RootScale", "className": "UIScale", "properties": { "Scale": 1.0 } },
+        {
+          "name": "ShopModal",
+          "className": "Frame",
+          "properties": {
+            "AnchorPoint": { "__t": "Vector2", "v": [0.5, 0.5] },
+            "Position": { "__t": "UDim2", "v": [0.5, 0, 0.5, 0] },
+            "Size": { "__t": "UDim2", "v": [0, 620, 0, 400] },
+            "BackgroundColor3": { "__t": "Color3", "v": [0.09, 0.12, 0.18] }
+          },
+          "children": [
+            { "name": "Corner", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 18] } } },
+            { "name": "Stroke", "className": "UIStroke", "properties": { "Color": { "__t": "Color3", "v": [0.26, 0.52, 0.96] }, "Thickness": 3 } },
+            {
+              "name": "HeaderBanner",
+              "className": "ImageLabel",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [1, 0, 0, 64] },
+                "BackgroundTransparency": 1,
+                "Image": "rbxasset://arena_assets/kenney_ui/blue_btn_depth_gloss.png",
+                "ScaleType": { "__t": "Enum", "v": "ScaleType.Slice" },
+                "SliceCenter": { "__t": "Rect", "v": [16, 16, 176, 48] }
+              },
+              "children": [
+                {
+                  "name": "CartIcon",
+                  "className": "ImageLabel",
+                  "properties": {
+                    "Position": { "__t": "UDim2", "v": [0, 18, 0.5, -18] },
+                    "Size": { "__t": "UDim2", "v": [0, 36, 0, 36] },
+                    "BackgroundTransparency": 1,
+                    "Image": "rbxasset://arena_assets/kenney_icons/ic_shopping_cart.png"
+                  }
+                },
+                {
+                  "name": "Title",
+                  "className": "TextLabel",
+                  "properties": {
+                    "Position": { "__t": "UDim2", "v": [0, 64, 0, 0] },
+                    "Size": { "__t": "UDim2", "v": [1, -140, 1, -4] },
+                    "BackgroundTransparency": 1,
+                    "Text": "ITEM SHOP",
+                    "TextColor3": { "__t": "Color3", "v": [1, 1, 1] },
+                    "TextSize": 26,
+                    "Font": { "__t": "Enum", "v": "Font.FredokaOne" },
+                    "TextXAlignment": { "__t": "Enum", "v": "TextXAlignment.Left" }
+                  }
+                },
+                {
+                  "name": "CloseButton",
+                  "className": "ImageButton",
+                  "properties": {
+                    "AnchorPoint": { "__t": "Vector2", "v": [1, 0.5] },
+                    "Position": { "__t": "UDim2", "v": [1, -12, 0.5, -2] },
+                    "Size": { "__t": "UDim2", "v": [0, 44, 0, 44] },
+                    "BackgroundTransparency": 1,
+                    "Image": "rbxasset://arena_assets/kenney_ui/red_btn_square_depth_gloss.png"
+                  },
+                  "children": [
+                    {
+                      "name": "X",
+                      "className": "ImageLabel",
+                      "properties": {
+                        "AnchorPoint": { "__t": "Vector2", "v": [0.5, 0.5] },
+                        "Position": { "__t": "UDim2", "v": [0.5, 0, 0.5, -2] },
+                        "Size": { "__t": "UDim2", "v": [0, 24, 0, 24] },
+                        "BackgroundTransparency": 1,
+                        "Image": "rbxasset://arena_assets/kenney_icons/ic_cross.png"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "name": "CardsRow",
+              "className": "Frame",
+              "properties": {
+                "Position": { "__t": "UDim2", "v": [0, 20, 0, 84] },
+                "Size": { "__t": "UDim2", "v": [1, -40, 1, -104] },
+                "BackgroundTransparency": 1
+              },
+              "children": [
+                {
+                  "name": "Layout",
+                  "className": "UIGridLayout",
+                  "properties": {
+                        "CellSize": { "__t": "UDim2", "v": [0, 180, 0, 290] },
+                        "CellPadding": { "__t": "UDim2", "v": [0, 18, 0, 14] }
+                  }
+                },
+                {
+                  "name": "StarterPackCard",
+                  "className": "Frame",
+                  "properties": { "BackgroundColor3": { "__t": "Color3", "v": [0.13, 0.17, 0.25] } },
+                  "children": [
+                    { "name": "Corner", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 14] } } },
+                    {
+                      "name": "PreviewIcon",
+                      "className": "ImageLabel",
+                      "properties": {
+                        "AnchorPoint": { "__t": "Vector2", "v": [0.5, 0] },
+                        "Position": { "__t": "UDim2", "v": [0.5, 0, 0, 26] },
+                        "Size": { "__t": "UDim2", "v": [0, 76, 0, 76] },
+                        "BackgroundTransparency": 1,
+                        "Image": "rbxasset://arena_assets/kenney_icons/ic_diamond.png",
+                        "ImageColor3": { "__t": "Color3", "v": [0.35, 0.82, 1.0] }
+                      }
+                    },
+                    {
+                      "name": "ItemName",
+                      "className": "TextLabel",
+                      "properties": {
+                        "Position": { "__t": "UDim2", "v": [0, 10, 0, 118] },
+                        "Size": { "__t": "UDim2", "v": [1, -20, 0, 32] },
+                        "BackgroundTransparency": 1,
+                        "Text": "Crystal Boost",
+                        "TextColor3": { "__t": "Color3", "v": [1, 1, 1] },
+                        "TextSize": 19,
+                        "Font": { "__t": "Enum", "v": "Font.GothamBold" }
+                      }
+                    },
+                    {
+                      "name": "BuyButton",
+                      "className": "ImageButton",
+                      "properties": {
+                        "AnchorPoint": { "__t": "Vector2", "v": [0.5, 1] },
+                        "Position": { "__t": "UDim2", "v": [0.5, 0, 1, -16] },
+                        "Size": { "__t": "UDim2", "v": [1, -24, 0, 48] },
+                        "BackgroundTransparency": 1,
+                        "Image": "rbxasset://arena_assets/kenney_ui/green_btn_depth_gloss.png",
+                        "ScaleType": { "__t": "Enum", "v": "ScaleType.Slice" },
+                        "SliceCenter": { "__t": "Rect", "v": [16, 16, 176, 48] }
+                      },
+                      "children": [
+                        {
+                          "name": "PriceLabel",
+                          "className": "TextLabel",
+                          "properties": {
+                            "Size": { "__t": "UDim2", "v": [1, 0, 1, -4] },
+                            "BackgroundTransparency": 1,
+                            "Text": "BUY - 250",
+                            "TextColor3": { "__t": "Color3", "v": [1, 1, 1] },
+                            "TextSize": 18,
+                            "Font": { "__t": "Enum", "v": "Font.FredokaOne" }
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

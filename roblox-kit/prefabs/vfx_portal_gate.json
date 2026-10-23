@@ -1,0 +1,109 @@
+{
+  "name": "vfx_portal_gate",
+  "category": "vfx",
+  "description": "Mystical 3D stone archway portal using Kenney twirl & magic rune particle sprites plus ProximityPrompt.",
+  "defaultParent": "Workspace",
+  "requiredImages": [
+    "kenney_vfx/twirl_01.png",
+    "kenney_vfx/magic_05.png"
+  ],
+  "tree": [
+    {
+      "name": "MysticPortalGate",
+      "className": "Model",
+      "tags": ["Portal"],
+      "attributes": { "DestinationTag": "SpawnLocation" },
+      "children": [
+        {
+          "name": "PillarLeft",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [2, 12, 2] },
+            "Position": { "__t": "Vector3", "v": [-5, 6, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Basalt" },
+            "Color": { "__t": "Color3", "v": [0.16, 0.16, 0.2] },
+            "Anchored": true
+          }
+        },
+        {
+          "name": "PillarRight",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [2, 12, 2] },
+            "Position": { "__t": "Vector3", "v": [5, 6, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Basalt" },
+            "Color": { "__t": "Color3", "v": [0.16, 0.16, 0.2] },
+            "Anchored": true
+          }
+        },
+        {
+          "name": "LintelTop",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [13, 2, 2.4] },
+            "Position": { "__t": "Vector3", "v": [0, 13, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Basalt" },
+            "Color": { "__t": "Color3", "v": [0.18, 0.18, 0.24] },
+            "Anchored": true
+          }
+        },
+        {
+          "name": "PortalVortex",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [8, 11.5, 0.35] },
+            "Position": { "__t": "Vector3", "v": [0, 6.2, 0] },
+            "Material": { "__t": "Enum", "v": "Material.ForceField" },
+            "Color": { "__t": "Color3", "v": [0.38, 0.62, 1.0] },
+            "Transparency": 0.25,
+            "Anchored": true,
+            "CanCollide": false
+          },
+          "children": [
+            {
+              "name": "PortalGlow",
+              "className": "PointLight",
+              "properties": {
+                "Brightness": 3.0,
+                "Range": 20,
+                "Color": { "__t": "Color3", "v": [0.42, 0.66, 1.0] }
+              }
+            },
+            {
+              "name": "SwirlVortex",
+              "className": "ParticleEmitter",
+              "properties": {
+                "Texture": "rbxasset://arena_assets/kenney_vfx/twirl_01.png",
+                "Rate": 8,
+                "Lifetime": { "__t": "NumberRange", "v": [1.5, 2.2] },
+                "Speed": { "__t": "NumberRange", "v": [0, 0.3] },
+                "RotSpeed": { "__t": "NumberRange", "v": [90, 140] },
+                "LightEmission": 1.0
+              }
+            },
+            {
+              "name": "MagicRunes",
+              "className": "ParticleEmitter",
+              "properties": {
+                "Texture": "rbxasset://arena_assets/kenney_vfx/magic_05.png",
+                "Rate": 6,
+                "Lifetime": { "__t": "NumberRange", "v": [1.0, 1.8] },
+                "Speed": { "__t": "NumberRange", "v": [1.5, 3.0] },
+                "LightEmission": 1.0
+              }
+            },
+            {
+              "name": "EnterPrompt",
+              "className": "ProximityPrompt",
+              "properties": {
+                "ActionText": "Enter Portal",
+                "ObjectText": "Ancient Gate",
+                "MaxActivationDistance": 12
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

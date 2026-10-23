@@ -1,5 +1,35 @@
 {
   "images": {
+    "banner_classic_curtain": {
+      "bytes": 11652,
+      "cloudUri": null,
+      "height": 64,
+      "key": "banner_classic_curtain",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/banner_classic_curtain.png",
+      "relPath": "kenney_adventure/banner_classic_curtain.png",
+      "sha256": "f51764cd3ebf66c3",
+      "width": 256
+    },
+    "banner_hanging": {
+      "bytes": 9892,
+      "cloudUri": null,
+      "height": 64,
+      "key": "banner_hanging",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/banner_hanging.png",
+      "relPath": "kenney_adventure/banner_hanging.png",
+      "sha256": "fb8f9b7a794d5635",
+      "width": 256
+    },
+    "banner_modern": {
+      "bytes": 1601,
+      "cloudUri": null,
+      "height": 48,
+      "key": "banner_modern",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/banner_modern.png",
+      "relPath": "kenney_adventure/banner_modern.png",
+      "sha256": "e2ec347210f81cf9",
+      "width": 256
+    },
     "beam_energy_streak": {
       "bytes": 2591,
       "cloudUri": null,
@@ -9,6 +39,226 @@
       "relPath": "vfx/beam_energy_streak.png",
       "sha256": "e59a2b769f3a0008",
       "width": 64
+    },
+    "blue_bar_round_gloss_large": {
+      "bytes": 1798,
+      "cloudUri": null,
+      "height": 48,
+      "key": "blue_bar_round_gloss_large",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/blue_bar_round_gloss_large.png",
+      "relPath": "kenney_scifi/blue_bar_round_gloss_large.png",
+      "sha256": "1f3a2df1d60f3049",
+      "width": 192
+    },
+    "blue_bar_round_gloss_large_square": {
+      "bytes": 1586,
+      "cloudUri": null,
+      "height": 48,
+      "key": "blue_bar_round_gloss_large_square",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/blue_bar_round_gloss_large_square.png",
+      "relPath": "kenney_scifi/blue_bar_round_gloss_large_square.png",
+      "sha256": "fdbbab33f278cc47",
+      "width": 48
+    },
+    "blue_bar_round_gloss_small": {
+      "bytes": 1172,
+      "cloudUri": null,
+      "height": 32,
+      "key": "blue_bar_round_gloss_small",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/blue_bar_round_gloss_small.png",
+      "relPath": "kenney_scifi/blue_bar_round_gloss_small.png",
+      "sha256": "15861fed41b376c4",
+      "width": 192
+    },
+    "blue_bar_round_gloss_small_square": {
+      "bytes": 1029,
+      "cloudUri": null,
+      "height": 32,
+      "key": "blue_bar_round_gloss_small_square",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/blue_bar_round_gloss_small_square.png",
+      "relPath": "kenney_scifi/blue_bar_round_gloss_small_square.png",
+      "sha256": "530f387a83be78eb",
+      "width": 32
+    },
+    "blue_bar_square_gloss_large": {
+      "bytes": 552,
+      "cloudUri": null,
+      "height": 48,
+      "key": "blue_bar_square_gloss_large",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/blue_bar_square_gloss_large.png",
+      "relPath": "kenney_scifi/blue_bar_square_gloss_large.png",
+      "sha256": "c7ec673cba0639fc",
+      "width": 192
+    },
+    "blue_btn_depth_flat": {
+      "bytes": 1262,
+      "cloudUri": null,
+      "height": 85,
+      "key": "blue_btn_depth_flat",
+      "localUri": "rbxasset://arena_assets/kenney_ui/blue_btn_depth_flat.png",
+      "relPath": "kenney_ui/blue_btn_depth_flat.png",
+      "sha256": "83930b93cf957617",
+      "width": 256
+    },
+    "blue_btn_depth_gloss": {
+      "bytes": 1283,
+      "cloudUri": null,
+      "height": 85,
+      "key": "blue_btn_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/blue_btn_depth_gloss.png",
+      "relPath": "kenney_ui/blue_btn_depth_gloss.png",
+      "sha256": "6733c0ea8ad0d385",
+      "width": 256
+    },
+    "blue_btn_gloss": {
+      "bytes": 1143,
+      "cloudUri": null,
+      "height": 85,
+      "key": "blue_btn_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/blue_btn_gloss.png",
+      "relPath": "kenney_ui/blue_btn_gloss.png",
+      "sha256": "89a0e2e4cbb2ed97",
+      "width": 256
+    },
+    "blue_btn_round_depth_gloss": {
+      "bytes": 4565,
+      "cloudUri": null,
+      "height": 128,
+      "key": "blue_btn_round_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/blue_btn_round_depth_gloss.png",
+      "relPath": "kenney_ui/blue_btn_round_depth_gloss.png",
+      "sha256": "e2fa0e1b3c43a3a6",
+      "width": 128
+    },
+    "blue_btn_square_depth_gloss": {
+      "bytes": 1091,
+      "cloudUri": null,
+      "height": 128,
+      "key": "blue_btn_square_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/blue_btn_square_depth_gloss.png",
+      "relPath": "kenney_ui/blue_btn_square_depth_gloss.png",
+      "sha256": "e495e06bbc395c3b",
+      "width": 128
+    },
+    "blue_check_square_color_checkmark": {
+      "bytes": 1878,
+      "cloudUri": null,
+      "height": 64,
+      "key": "blue_check_square_color_checkmark",
+      "localUri": "rbxasset://arena_assets/kenney_ui/blue_check_square_color_checkmark.png",
+      "relPath": "kenney_ui/blue_check_square_color_checkmark.png",
+      "sha256": "35123601cf7110ff",
+      "width": 64
+    },
+    "blue_slide_horizontal_color_section_wide": {
+      "bytes": 784,
+      "cloudUri": null,
+      "height": 32,
+      "key": "blue_slide_horizontal_color_section_wide",
+      "localUri": "rbxasset://arena_assets/kenney_ui/blue_slide_horizontal_color_section_wide.png",
+      "relPath": "kenney_ui/blue_slide_horizontal_color_section_wide.png",
+      "sha256": "a2eb00c34e5f2793",
+      "width": 64
+    },
+    "border_000": {
+      "bytes": 215,
+      "cloudUri": null,
+      "height": 48,
+      "key": "border_000",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/border_000.png",
+      "relPath": "kenney_fantasy/border_000.png",
+      "sha256": "3e1cc48d09025f60",
+      "width": 48
+    },
+    "border_003": {
+      "bytes": 221,
+      "cloudUri": null,
+      "height": 48,
+      "key": "border_003",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/border_003.png",
+      "relPath": "kenney_fantasy/border_003.png",
+      "sha256": "245171558e70ef9a",
+      "width": 48
+    },
+    "border_006": {
+      "bytes": 229,
+      "cloudUri": null,
+      "height": 48,
+      "key": "border_006",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/border_006.png",
+      "relPath": "kenney_fantasy/border_006.png",
+      "sha256": "6cb43c5ecd75b808",
+      "width": 48
+    },
+    "border_009": {
+      "bytes": 186,
+      "cloudUri": null,
+      "height": 48,
+      "key": "border_009",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/border_009.png",
+      "relPath": "kenney_fantasy/border_009.png",
+      "sha256": "43b8ba110fa7511a",
+      "width": 48
+    },
+    "border_012": {
+      "bytes": 216,
+      "cloudUri": null,
+      "height": 48,
+      "key": "border_012",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/border_012.png",
+      "relPath": "kenney_fantasy/border_012.png",
+      "sha256": "ca7d59b15fa80a22",
+      "width": 48
+    },
+    "border_015": {
+      "bytes": 141,
+      "cloudUri": null,
+      "height": 48,
+      "key": "border_015",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/border_015.png",
+      "relPath": "kenney_fantasy/border_015.png",
+      "sha256": "0b152375a6e49b3f",
+      "width": 48
+    },
+    "border_018": {
+      "bytes": 233,
+      "cloudUri": null,
+      "height": 48,
+      "key": "border_018",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/border_018.png",
+      "relPath": "kenney_fantasy/border_018.png",
+      "sha256": "7a3fbac7b27256e9",
+      "width": 48
+    },
+    "border_021": {
+      "bytes": 237,
+      "cloudUri": null,
+      "height": 48,
+      "key": "border_021",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/border_021.png",
+      "relPath": "kenney_fantasy/border_021.png",
+      "sha256": "9cde3e3ad92520f3",
+      "width": 48
+    },
+    "border_024": {
+      "bytes": 257,
+      "cloudUri": null,
+      "height": 48,
+      "key": "border_024",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/border_024.png",
+      "relPath": "kenney_fantasy/border_024.png",
+      "sha256": "f434acea6e7344fd",
+      "width": 48
+    },
+    "border_027": {
+      "bytes": 254,
+      "cloudUri": null,
+      "height": 48,
+      "key": "border_027",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/border_027.png",
+      "relPath": "kenney_fantasy/border_027.png",
+      "sha256": "152fe2cf06087e39",
+      "width": 48
     },
     "brushed_metal_noise": {
       "bytes": 9255,
@@ -20,6 +270,76 @@
       "sha256": "978899701ff6a87a",
       "width": 128
     },
+    "button_brown": {
+      "bytes": 838,
+      "cloudUri": null,
+      "height": 48,
+      "key": "button_brown",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/button_brown.png",
+      "relPath": "kenney_adventure/button_brown.png",
+      "sha256": "c9c6a16dbe3c4f08",
+      "width": 96
+    },
+    "button_brown_close": {
+      "bytes": 1096,
+      "cloudUri": null,
+      "height": 48,
+      "key": "button_brown_close",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/button_brown_close.png",
+      "relPath": "kenney_adventure/button_brown_close.png",
+      "sha256": "e9e787f42d2b6e6c",
+      "width": 96
+    },
+    "button_grey": {
+      "bytes": 680,
+      "cloudUri": null,
+      "height": 48,
+      "key": "button_grey",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/button_grey.png",
+      "relPath": "kenney_adventure/button_grey.png",
+      "sha256": "67cd257ca9b8114c",
+      "width": 96
+    },
+    "button_grey_close": {
+      "bytes": 944,
+      "cloudUri": null,
+      "height": 48,
+      "key": "button_grey_close",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/button_grey_close.png",
+      "relPath": "kenney_adventure/button_grey_close.png",
+      "sha256": "cf65ad4e922df7eb",
+      "width": 96
+    },
+    "button_red": {
+      "bytes": 677,
+      "cloudUri": null,
+      "height": 48,
+      "key": "button_red",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/button_red.png",
+      "relPath": "kenney_adventure/button_red.png",
+      "sha256": "7fec909d676a46fe",
+      "width": 96
+    },
+    "button_red_close": {
+      "bytes": 934,
+      "cloudUri": null,
+      "height": 48,
+      "key": "button_red_close",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/button_red_close.png",
+      "relPath": "kenney_adventure/button_red_close.png",
+      "sha256": "ced92188c7ff2332",
+      "width": 96
+    },
+    "circle_05": {
+      "bytes": 8420,
+      "cloudUri": null,
+      "height": 128,
+      "key": "circle_05",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/circle_05.png",
+      "relPath": "kenney_vfx/circle_05.png",
+      "sha256": "1f021061daf6323e",
+      "width": 128
+    },
     "crosshair_dot": {
       "bytes": 822,
       "cloudUri": null,
@@ -28,6 +348,546 @@
       "localUri": "rbxasset://arena_assets/ui/crosshair_dot.png",
       "relPath": "ui/crosshair_dot.png",
       "sha256": "f0c85630809c5e44",
+      "width": 64
+    },
+    "divider_000": {
+      "bytes": 164,
+      "cloudUri": null,
+      "height": 22,
+      "key": "divider_000",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/divider_000.png",
+      "relPath": "kenney_fantasy/divider_000.png",
+      "sha256": "19c10bc5d2e7c5f4",
+      "width": 96
+    },
+    "divider_001": {
+      "bytes": 131,
+      "cloudUri": null,
+      "height": 22,
+      "key": "divider_001",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/divider_001.png",
+      "relPath": "kenney_fantasy/divider_001.png",
+      "sha256": "a454489fe47a8070",
+      "width": 96
+    },
+    "divider_002": {
+      "bytes": 111,
+      "cloudUri": null,
+      "height": 10,
+      "key": "divider_002",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/divider_002.png",
+      "relPath": "kenney_fantasy/divider_002.png",
+      "sha256": "78c8ced3b6f2dc5f",
+      "width": 96
+    },
+    "divider_003": {
+      "bytes": 170,
+      "cloudUri": null,
+      "height": 18,
+      "key": "divider_003",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/divider_003.png",
+      "relPath": "kenney_fantasy/divider_003.png",
+      "sha256": "64dcd0f6ef79eaf3",
+      "width": 96
+    },
+    "divider_004": {
+      "bytes": 157,
+      "cloudUri": null,
+      "height": 14,
+      "key": "divider_004",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/divider_004.png",
+      "relPath": "kenney_fantasy/divider_004.png",
+      "sha256": "0d2e1fd44945bf9e",
+      "width": 96
+    },
+    "divider_005": {
+      "bytes": 174,
+      "cloudUri": null,
+      "height": 18,
+      "key": "divider_005",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/divider_005.png",
+      "relPath": "kenney_fantasy/divider_005.png",
+      "sha256": "4cb72a08da4e8e34",
+      "width": 96
+    },
+    "extra_button_rectangle_depth_line": {
+      "bytes": 1379,
+      "cloudUri": null,
+      "height": 85,
+      "key": "extra_button_rectangle_depth_line",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_button_rectangle_depth_line.png",
+      "relPath": "kenney_ui/extra_button_rectangle_depth_line.png",
+      "sha256": "09064a06bb68b819",
+      "width": 256
+    },
+    "extra_button_rectangle_line": {
+      "bytes": 1152,
+      "cloudUri": null,
+      "height": 85,
+      "key": "extra_button_rectangle_line",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_button_rectangle_line.png",
+      "relPath": "kenney_ui/extra_button_rectangle_line.png",
+      "sha256": "2686b819b20c8ec6",
+      "width": 256
+    },
+    "extra_button_round_depth_line": {
+      "bytes": 6374,
+      "cloudUri": null,
+      "height": 128,
+      "key": "extra_button_round_depth_line",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_button_round_depth_line.png",
+      "relPath": "kenney_ui/extra_button_round_depth_line.png",
+      "sha256": "54f1159b6f4d7866",
+      "width": 128
+    },
+    "extra_button_round_line": {
+      "bytes": 5536,
+      "cloudUri": null,
+      "height": 128,
+      "key": "extra_button_round_line",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_button_round_line.png",
+      "relPath": "kenney_ui/extra_button_round_line.png",
+      "sha256": "b096491af34500d8",
+      "width": 128
+    },
+    "extra_button_square_depth_line": {
+      "bytes": 1192,
+      "cloudUri": null,
+      "height": 128,
+      "key": "extra_button_square_depth_line",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_button_square_depth_line.png",
+      "relPath": "kenney_ui/extra_button_square_depth_line.png",
+      "sha256": "4bc9c48cb09c1292",
+      "width": 128
+    },
+    "extra_button_square_line": {
+      "bytes": 1007,
+      "cloudUri": null,
+      "height": 128,
+      "key": "extra_button_square_line",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_button_square_line.png",
+      "relPath": "kenney_ui/extra_button_square_line.png",
+      "sha256": "ff9e9d5b582b5c92",
+      "width": 128
+    },
+    "extra_divider": {
+      "bytes": 107,
+      "cloudUri": null,
+      "height": 8,
+      "key": "extra_divider",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_divider.png",
+      "relPath": "kenney_ui/extra_divider.png",
+      "sha256": "3debe5f4720581a8",
+      "width": 128
+    },
+    "extra_divider_edges": {
+      "bytes": 159,
+      "cloudUri": null,
+      "height": 8,
+      "key": "extra_divider_edges",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_divider_edges.png",
+      "relPath": "kenney_ui/extra_divider_edges.png",
+      "sha256": "25e27bb7ee6d8337",
+      "width": 128
+    },
+    "extra_icon_arrow_down_dark": {
+      "bytes": 353,
+      "cloudUri": null,
+      "height": 44,
+      "key": "extra_icon_arrow_down_dark",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_icon_arrow_down_dark.png",
+      "relPath": "kenney_ui/extra_icon_arrow_down_dark.png",
+      "sha256": "5120d042c525ac07",
+      "width": 68
+    },
+    "extra_icon_arrow_down_light": {
+      "bytes": 472,
+      "cloudUri": null,
+      "height": 44,
+      "key": "extra_icon_arrow_down_light",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_icon_arrow_down_light.png",
+      "relPath": "kenney_ui/extra_icon_arrow_down_light.png",
+      "sha256": "8ae0f5e9159453f0",
+      "width": 68
+    },
+    "extra_icon_arrow_down_outline": {
+      "bytes": 582,
+      "cloudUri": null,
+      "height": 52,
+      "key": "extra_icon_arrow_down_outline",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_icon_arrow_down_outline.png",
+      "relPath": "kenney_ui/extra_icon_arrow_down_outline.png",
+      "sha256": "f43a79494e76b368",
+      "width": 76
+    },
+    "extra_icon_arrow_up_dark": {
+      "bytes": 388,
+      "cloudUri": null,
+      "height": 44,
+      "key": "extra_icon_arrow_up_dark",
+      "localUri": "rbxasset://arena_assets/kenney_ui/extra_icon_arrow_up_dark.png",
+      "relPath": "kenney_ui/extra_icon_arrow_up_dark.png",
+      "sha256": "b010b5d24bc2c8d5",
+      "width": 68
+    },
+    "fire_01": {
+      "bytes": 17792,
+      "cloudUri": null,
+      "height": 128,
+      "key": "fire_01",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/fire_01.png",
+      "relPath": "kenney_vfx/fire_01.png",
+      "sha256": "ba9d61585e936426",
+      "width": 128
+    },
+    "flame_04": {
+      "bytes": 11885,
+      "cloudUri": null,
+      "height": 128,
+      "key": "flame_04",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/flame_04.png",
+      "relPath": "kenney_vfx/flame_04.png",
+      "sha256": "eedc0b7aafe18b61",
+      "width": 128
+    },
+    "flare_01": {
+      "bytes": 5937,
+      "cloudUri": null,
+      "height": 128,
+      "key": "flare_01",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/flare_01.png",
+      "relPath": "kenney_vfx/flare_01.png",
+      "sha256": "8d70ba4284188314",
+      "width": 128
+    },
+    "frame_clear_000": {
+      "bytes": 246,
+      "cloudUri": null,
+      "height": 48,
+      "key": "frame_clear_000",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/frame_clear_000.png",
+      "relPath": "kenney_fantasy/frame_clear_000.png",
+      "sha256": "6d5ba922f0736988",
+      "width": 48
+    },
+    "frame_clear_004": {
+      "bytes": 187,
+      "cloudUri": null,
+      "height": 48,
+      "key": "frame_clear_004",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/frame_clear_004.png",
+      "relPath": "kenney_fantasy/frame_clear_004.png",
+      "sha256": "1c489bc1e2a8dc62",
+      "width": 48
+    },
+    "frame_clear_008": {
+      "bytes": 265,
+      "cloudUri": null,
+      "height": 48,
+      "key": "frame_clear_008",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/frame_clear_008.png",
+      "relPath": "kenney_fantasy/frame_clear_008.png",
+      "sha256": "951bb2e573d2230c",
+      "width": 48
+    },
+    "frame_clear_012": {
+      "bytes": 246,
+      "cloudUri": null,
+      "height": 48,
+      "key": "frame_clear_012",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/frame_clear_012.png",
+      "relPath": "kenney_fantasy/frame_clear_012.png",
+      "sha256": "a975ca5237a5006e",
+      "width": 48
+    },
+    "frame_clear_016": {
+      "bytes": 269,
+      "cloudUri": null,
+      "height": 48,
+      "key": "frame_clear_016",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/frame_clear_016.png",
+      "relPath": "kenney_fantasy/frame_clear_016.png",
+      "sha256": "5c8cd0eb131e53aa",
+      "width": 48
+    },
+    "frame_clear_020": {
+      "bytes": 278,
+      "cloudUri": null,
+      "height": 48,
+      "key": "frame_clear_020",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/frame_clear_020.png",
+      "relPath": "kenney_fantasy/frame_clear_020.png",
+      "sha256": "5c1e57dee1a10579",
+      "width": 48
+    },
+    "frame_clear_024": {
+      "bytes": 268,
+      "cloudUri": null,
+      "height": 48,
+      "key": "frame_clear_024",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/frame_clear_024.png",
+      "relPath": "kenney_fantasy/frame_clear_024.png",
+      "sha256": "1ea53dc681d29995",
+      "width": 48
+    },
+    "frame_clear_028": {
+      "bytes": 244,
+      "cloudUri": null,
+      "height": 48,
+      "key": "frame_clear_028",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/frame_clear_028.png",
+      "relPath": "kenney_fantasy/frame_clear_028.png",
+      "sha256": "b6c4a80de1b38fd5",
+      "width": 48
+    },
+    "gauntlet_point": {
+      "bytes": 1339,
+      "cloudUri": null,
+      "height": 64,
+      "key": "gauntlet_point",
+      "localUri": "rbxasset://arena_assets/kenney_cursors/gauntlet_point.png",
+      "relPath": "kenney_cursors/gauntlet_point.png",
+      "sha256": "fc548d03e8720d9e",
+      "width": 64
+    },
+    "green_bar_round_gloss_large": {
+      "bytes": 1799,
+      "cloudUri": null,
+      "height": 48,
+      "key": "green_bar_round_gloss_large",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/green_bar_round_gloss_large.png",
+      "relPath": "kenney_scifi/green_bar_round_gloss_large.png",
+      "sha256": "1a4cf3671b647df2",
+      "width": 192
+    },
+    "green_bar_round_gloss_large_square": {
+      "bytes": 1594,
+      "cloudUri": null,
+      "height": 48,
+      "key": "green_bar_round_gloss_large_square",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/green_bar_round_gloss_large_square.png",
+      "relPath": "kenney_scifi/green_bar_round_gloss_large_square.png",
+      "sha256": "89d6601185514aee",
+      "width": 48
+    },
+    "green_bar_round_gloss_small": {
+      "bytes": 1177,
+      "cloudUri": null,
+      "height": 32,
+      "key": "green_bar_round_gloss_small",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/green_bar_round_gloss_small.png",
+      "relPath": "kenney_scifi/green_bar_round_gloss_small.png",
+      "sha256": "773a1b568911620d",
+      "width": 192
+    },
+    "green_bar_round_gloss_small_square": {
+      "bytes": 1023,
+      "cloudUri": null,
+      "height": 32,
+      "key": "green_bar_round_gloss_small_square",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/green_bar_round_gloss_small_square.png",
+      "relPath": "kenney_scifi/green_bar_round_gloss_small_square.png",
+      "sha256": "525c6b0b8632367f",
+      "width": 32
+    },
+    "green_bar_square_gloss_large": {
+      "bytes": 560,
+      "cloudUri": null,
+      "height": 48,
+      "key": "green_bar_square_gloss_large",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/green_bar_square_gloss_large.png",
+      "relPath": "kenney_scifi/green_bar_square_gloss_large.png",
+      "sha256": "752e44510e5e4999",
+      "width": 192
+    },
+    "green_btn_depth_flat": {
+      "bytes": 1231,
+      "cloudUri": null,
+      "height": 85,
+      "key": "green_btn_depth_flat",
+      "localUri": "rbxasset://arena_assets/kenney_ui/green_btn_depth_flat.png",
+      "relPath": "kenney_ui/green_btn_depth_flat.png",
+      "sha256": "4d2e708cfe7259b7",
+      "width": 256
+    },
+    "green_btn_depth_gloss": {
+      "bytes": 1247,
+      "cloudUri": null,
+      "height": 85,
+      "key": "green_btn_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/green_btn_depth_gloss.png",
+      "relPath": "kenney_ui/green_btn_depth_gloss.png",
+      "sha256": "98a989e74bf2b49d",
+      "width": 256
+    },
+    "green_btn_gloss": {
+      "bytes": 1102,
+      "cloudUri": null,
+      "height": 85,
+      "key": "green_btn_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/green_btn_gloss.png",
+      "relPath": "kenney_ui/green_btn_gloss.png",
+      "sha256": "ba5f1901259d8177",
+      "width": 256
+    },
+    "green_btn_round_depth_gloss": {
+      "bytes": 4705,
+      "cloudUri": null,
+      "height": 128,
+      "key": "green_btn_round_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/green_btn_round_depth_gloss.png",
+      "relPath": "kenney_ui/green_btn_round_depth_gloss.png",
+      "sha256": "a92def0b1a3a69f6",
+      "width": 128
+    },
+    "green_btn_square_depth_gloss": {
+      "bytes": 1080,
+      "cloudUri": null,
+      "height": 128,
+      "key": "green_btn_square_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/green_btn_square_depth_gloss.png",
+      "relPath": "kenney_ui/green_btn_square_depth_gloss.png",
+      "sha256": "727aeaba5f99fc5e",
+      "width": 128
+    },
+    "green_check_square_color_checkmark": {
+      "bytes": 1916,
+      "cloudUri": null,
+      "height": 64,
+      "key": "green_check_square_color_checkmark",
+      "localUri": "rbxasset://arena_assets/kenney_ui/green_check_square_color_checkmark.png",
+      "relPath": "kenney_ui/green_check_square_color_checkmark.png",
+      "sha256": "2a2d653d986a7e99",
+      "width": 64
+    },
+    "green_slide_horizontal_color_section_wide": {
+      "bytes": 805,
+      "cloudUri": null,
+      "height": 32,
+      "key": "green_slide_horizontal_color_section_wide",
+      "localUri": "rbxasset://arena_assets/kenney_ui/green_slide_horizontal_color_section_wide.png",
+      "relPath": "kenney_ui/green_slide_horizontal_color_section_wide.png",
+      "sha256": "f5f1805fda0324cf",
+      "width": 64
+    },
+    "grey_bar_round_gloss_large": {
+      "bytes": 1738,
+      "cloudUri": null,
+      "height": 48,
+      "key": "grey_bar_round_gloss_large",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/grey_bar_round_gloss_large.png",
+      "relPath": "kenney_scifi/grey_bar_round_gloss_large.png",
+      "sha256": "de8b5fa020eb5e2b",
+      "width": 192
+    },
+    "grey_bar_round_gloss_large_square": {
+      "bytes": 1552,
+      "cloudUri": null,
+      "height": 48,
+      "key": "grey_bar_round_gloss_large_square",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/grey_bar_round_gloss_large_square.png",
+      "relPath": "kenney_scifi/grey_bar_round_gloss_large_square.png",
+      "sha256": "da20518115c2c986",
+      "width": 48
+    },
+    "grey_bar_round_gloss_small": {
+      "bytes": 1165,
+      "cloudUri": null,
+      "height": 32,
+      "key": "grey_bar_round_gloss_small",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/grey_bar_round_gloss_small.png",
+      "relPath": "kenney_scifi/grey_bar_round_gloss_small.png",
+      "sha256": "81eb22a03e53230a",
+      "width": 192
+    },
+    "grey_bar_round_gloss_small_square": {
+      "bytes": 1022,
+      "cloudUri": null,
+      "height": 32,
+      "key": "grey_bar_round_gloss_small_square",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/grey_bar_round_gloss_small_square.png",
+      "relPath": "kenney_scifi/grey_bar_round_gloss_small_square.png",
+      "sha256": "d5b6cb15a24a76ae",
+      "width": 32
+    },
+    "grey_bar_square_gloss_large": {
+      "bytes": 554,
+      "cloudUri": null,
+      "height": 48,
+      "key": "grey_bar_square_gloss_large",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/grey_bar_square_gloss_large.png",
+      "relPath": "kenney_scifi/grey_bar_square_gloss_large.png",
+      "sha256": "15cf838d806f80c5",
+      "width": 192
+    },
+    "grey_btn_depth_flat": {
+      "bytes": 1312,
+      "cloudUri": null,
+      "height": 85,
+      "key": "grey_btn_depth_flat",
+      "localUri": "rbxasset://arena_assets/kenney_ui/grey_btn_depth_flat.png",
+      "relPath": "kenney_ui/grey_btn_depth_flat.png",
+      "sha256": "74395b52ee344a1f",
+      "width": 256
+    },
+    "grey_btn_depth_gloss": {
+      "bytes": 1330,
+      "cloudUri": null,
+      "height": 85,
+      "key": "grey_btn_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/grey_btn_depth_gloss.png",
+      "relPath": "kenney_ui/grey_btn_depth_gloss.png",
+      "sha256": "8cb3c28f704d6d76",
+      "width": 256
+    },
+    "grey_btn_gloss": {
+      "bytes": 1168,
+      "cloudUri": null,
+      "height": 85,
+      "key": "grey_btn_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/grey_btn_gloss.png",
+      "relPath": "kenney_ui/grey_btn_gloss.png",
+      "sha256": "86aa97bfed256161",
+      "width": 256
+    },
+    "grey_btn_round_depth_gloss": {
+      "bytes": 4746,
+      "cloudUri": null,
+      "height": 128,
+      "key": "grey_btn_round_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/grey_btn_round_depth_gloss.png",
+      "relPath": "kenney_ui/grey_btn_round_depth_gloss.png",
+      "sha256": "b68bae406beba1f9",
+      "width": 128
+    },
+    "grey_btn_square_depth_gloss": {
+      "bytes": 1104,
+      "cloudUri": null,
+      "height": 128,
+      "key": "grey_btn_square_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/grey_btn_square_depth_gloss.png",
+      "relPath": "kenney_ui/grey_btn_square_depth_gloss.png",
+      "sha256": "a348c208a2fa93c5",
+      "width": 128
+    },
+    "grey_check_square_color_checkmark": {
+      "bytes": 1816,
+      "cloudUri": null,
+      "height": 64,
+      "key": "grey_check_square_color_checkmark",
+      "localUri": "rbxasset://arena_assets/kenney_ui/grey_check_square_color_checkmark.png",
+      "relPath": "kenney_ui/grey_check_square_color_checkmark.png",
+      "sha256": "f28ea4a7dd137820",
+      "width": 64
+    },
+    "grey_slide_horizontal_color_section_wide": {
+      "bytes": 769,
+      "cloudUri": null,
+      "height": 32,
+      "key": "grey_slide_horizontal_color_section_wide",
+      "localUri": "rbxasset://arena_assets/kenney_ui/grey_slide_horizontal_color_section_wide.png",
+      "relPath": "kenney_ui/grey_slide_horizontal_color_section_wide.png",
+      "sha256": "cc9e0036ed3b1f34",
       "width": 64
     },
     "grid_accent_orange": {
@@ -50,6 +910,26 @@
       "sha256": "a86e7c2220715c05",
       "width": 128
     },
+    "hand_open": {
+      "bytes": 662,
+      "cloudUri": null,
+      "height": 64,
+      "key": "hand_open",
+      "localUri": "rbxasset://arena_assets/kenney_cursors/hand_open.png",
+      "relPath": "kenney_cursors/hand_open.png",
+      "sha256": "ef1ebf1add8a80e5",
+      "width": 64
+    },
+    "hand_point": {
+      "bytes": 611,
+      "cloudUri": null,
+      "height": 64,
+      "key": "hand_point",
+      "localUri": "rbxasset://arena_assets/kenney_cursors/hand_point.png",
+      "relPath": "kenney_cursors/hand_point.png",
+      "sha256": "693933213c75f11d",
+      "width": 64
+    },
     "hazard_stripes": {
       "bytes": 637,
       "cloudUri": null,
@@ -59,6 +939,426 @@
       "relPath": "textures/hazard_stripes.png",
       "sha256": "6932629cb0917abe",
       "width": 128
+    },
+    "ic_arrow_down": {
+      "bytes": 400,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_arrow_down",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_arrow_down.png",
+      "relPath": "kenney_icons/ic_arrow_down.png",
+      "sha256": "c92201a097fd0a58",
+      "width": 100
+    },
+    "ic_arrow_left": {
+      "bytes": 398,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_arrow_left",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_arrow_left.png",
+      "relPath": "kenney_icons/ic_arrow_left.png",
+      "sha256": "26dfc207a040da5f",
+      "width": 100
+    },
+    "ic_arrow_right": {
+      "bytes": 393,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_arrow_right",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_arrow_right.png",
+      "relPath": "kenney_icons/ic_arrow_right.png",
+      "sha256": "7b985ce4d7048910",
+      "width": 100
+    },
+    "ic_arrow_up": {
+      "bytes": 361,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_arrow_up",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_arrow_up.png",
+      "relPath": "kenney_icons/ic_arrow_up.png",
+      "sha256": "3716b95292de5b25",
+      "width": 100
+    },
+    "ic_audio_off": {
+      "bytes": 440,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_audio_off",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_audio_off.png",
+      "relPath": "kenney_icons/ic_audio_off.png",
+      "sha256": "746c0617775ccd8f",
+      "width": 100
+    },
+    "ic_audio_on": {
+      "bytes": 714,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_audio_on",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_audio_on.png",
+      "relPath": "kenney_icons/ic_audio_on.png",
+      "sha256": "cccd15e3a69273ad",
+      "width": 100
+    },
+    "ic_bars_horizontal": {
+      "bytes": 356,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_bars_horizontal",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_bars_horizontal.png",
+      "relPath": "kenney_icons/ic_bars_horizontal.png",
+      "sha256": "8fa918e9a078ecad",
+      "width": 100
+    },
+    "ic_checkmark": {
+      "bytes": 700,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_checkmark",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_checkmark.png",
+      "relPath": "kenney_icons/ic_checkmark.png",
+      "sha256": "8a9182c61ac5a09e",
+      "width": 100
+    },
+    "ic_cloud": {
+      "bytes": 782,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_cloud",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_cloud.png",
+      "relPath": "kenney_icons/ic_cloud.png",
+      "sha256": "538a851b019c546e",
+      "width": 100
+    },
+    "ic_coin": {
+      "bytes": 1141,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_coin",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_coin.png",
+      "relPath": "kenney_icons/ic_coin.png",
+      "sha256": "e8a93751ff2fd10d",
+      "width": 100
+    },
+    "ic_cross": {
+      "bytes": 599,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_cross",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_cross.png",
+      "relPath": "kenney_icons/ic_cross.png",
+      "sha256": "063eacd89bb8d072",
+      "width": 100
+    },
+    "ic_cursor": {
+      "bytes": 714,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_cursor",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_cursor.png",
+      "relPath": "kenney_icons/ic_cursor.png",
+      "sha256": "93f35a098d969258",
+      "width": 100
+    },
+    "ic_diamond": {
+      "bytes": 743,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_diamond",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_diamond.png",
+      "relPath": "kenney_icons/ic_diamond.png",
+      "sha256": "6cbc072d85c57bac",
+      "width": 100
+    },
+    "ic_exit_right": {
+      "bytes": 484,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_exit_right",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_exit_right.png",
+      "relPath": "kenney_icons/ic_exit_right.png",
+      "sha256": "1d5e2f45bcaa74c1",
+      "width": 100
+    },
+    "ic_fight_fist": {
+      "bytes": 724,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_fight_fist",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_fight_fist.png",
+      "relPath": "kenney_icons/ic_fight_fist.png",
+      "sha256": "46a0469d62f8f11c",
+      "width": 100
+    },
+    "ic_gamepad": {
+      "bytes": 463,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_gamepad",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_gamepad.png",
+      "relPath": "kenney_icons/ic_gamepad.png",
+      "sha256": "fb1fc3dae137c699",
+      "width": 100
+    },
+    "ic_gear": {
+      "bytes": 1252,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_gear",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_gear.png",
+      "relPath": "kenney_icons/ic_gear.png",
+      "sha256": "6af74e101ce1d4a0",
+      "width": 100
+    },
+    "ic_home": {
+      "bytes": 348,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_home",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_home.png",
+      "relPath": "kenney_icons/ic_home.png",
+      "sha256": "1211c1e21796b5cf",
+      "width": 100
+    },
+    "ic_information": {
+      "bytes": 566,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_information",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_information.png",
+      "relPath": "kenney_icons/ic_information.png",
+      "sha256": "74b4c1862ace97a8",
+      "width": 100
+    },
+    "ic_leaderboards_complex": {
+      "bytes": 676,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_leaderboards_complex",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_leaderboards_complex.png",
+      "relPath": "kenney_icons/ic_leaderboards_complex.png",
+      "sha256": "13e23210e249b813",
+      "width": 100
+    },
+    "ic_locked": {
+      "bytes": 413,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_locked",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_locked.png",
+      "relPath": "kenney_icons/ic_locked.png",
+      "sha256": "958bde8e754e74cd",
+      "width": 100
+    },
+    "ic_medal1": {
+      "bytes": 775,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_medal1",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_medal1.png",
+      "relPath": "kenney_icons/ic_medal1.png",
+      "sha256": "ea2e9ac6cd6c490b",
+      "width": 100
+    },
+    "ic_medal2": {
+      "bytes": 1011,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_medal2",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_medal2.png",
+      "relPath": "kenney_icons/ic_medal2.png",
+      "sha256": "85d7350ff46bc605",
+      "width": 100
+    },
+    "ic_minus": {
+      "bytes": 243,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_minus",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_minus.png",
+      "relPath": "kenney_icons/ic_minus.png",
+      "sha256": "56332502175561f8",
+      "width": 100
+    },
+    "ic_music_off": {
+      "bytes": 751,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_music_off",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_music_off.png",
+      "relPath": "kenney_icons/ic_music_off.png",
+      "sha256": "98e62f84a6a77e14",
+      "width": 100
+    },
+    "ic_music_on": {
+      "bytes": 675,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_music_on",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_music_on.png",
+      "relPath": "kenney_icons/ic_music_on.png",
+      "sha256": "3fef8b34808576ad",
+      "width": 100
+    },
+    "ic_pause": {
+      "bytes": 322,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_pause",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_pause.png",
+      "relPath": "kenney_icons/ic_pause.png",
+      "sha256": "a0fa87cd7d60e6b0",
+      "width": 100
+    },
+    "ic_plus": {
+      "bytes": 377,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_plus",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_plus.png",
+      "relPath": "kenney_icons/ic_plus.png",
+      "sha256": "404d296d161ba008",
+      "width": 100
+    },
+    "ic_power": {
+      "bytes": 999,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_power",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_power.png",
+      "relPath": "kenney_icons/ic_power.png",
+      "sha256": "7f55f9bd430e7037",
+      "width": 100
+    },
+    "ic_question": {
+      "bytes": 701,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_question",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_question.png",
+      "relPath": "kenney_icons/ic_question.png",
+      "sha256": "e0c9220cce1fee0d",
+      "width": 100
+    },
+    "ic_return": {
+      "bytes": 886,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_return",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_return.png",
+      "relPath": "kenney_icons/ic_return.png",
+      "sha256": "41d46e86f10e08ca",
+      "width": 100
+    },
+    "ic_save": {
+      "bytes": 305,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_save",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_save.png",
+      "relPath": "kenney_icons/ic_save.png",
+      "sha256": "331bd479ab2212b3",
+      "width": 100
+    },
+    "ic_shopping_basket": {
+      "bytes": 684,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_shopping_basket",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_shopping_basket.png",
+      "relPath": "kenney_icons/ic_shopping_basket.png",
+      "sha256": "c18118ab27d969ad",
+      "width": 100
+    },
+    "ic_shopping_cart": {
+      "bytes": 635,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_shopping_cart",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_shopping_cart.png",
+      "relPath": "kenney_icons/ic_shopping_cart.png",
+      "sha256": "4f91a84c17a861b2",
+      "width": 100
+    },
+    "ic_star": {
+      "bytes": 735,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_star",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_star.png",
+      "relPath": "kenney_icons/ic_star.png",
+      "sha256": "bcaf08dd4a1440ce",
+      "width": 100
+    },
+    "ic_target": {
+      "bytes": 1103,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_target",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_target.png",
+      "relPath": "kenney_icons/ic_target.png",
+      "sha256": "a3fd43f92eb81897",
+      "width": 100
+    },
+    "ic_trophy": {
+      "bytes": 428,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_trophy",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_trophy.png",
+      "relPath": "kenney_icons/ic_trophy.png",
+      "sha256": "28a5215d3eb32385",
+      "width": 100
+    },
+    "ic_unlocked": {
+      "bytes": 433,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_unlocked",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_unlocked.png",
+      "relPath": "kenney_icons/ic_unlocked.png",
+      "sha256": "93d3bfbea35deaa5",
+      "width": 100
+    },
+    "ic_warning": {
+      "bytes": 853,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_warning",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_warning.png",
+      "relPath": "kenney_icons/ic_warning.png",
+      "sha256": "2e50aa7fe839aef4",
+      "width": 100
+    },
+    "ic_wrench": {
+      "bytes": 799,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_wrench",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_wrench.png",
+      "relPath": "kenney_icons/ic_wrench.png",
+      "sha256": "d3906ee4ad823dd1",
+      "width": 100
+    },
+    "ic_zoom_in": {
+      "bytes": 965,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_zoom_in",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_zoom_in.png",
+      "relPath": "kenney_icons/ic_zoom_in.png",
+      "sha256": "7bc9c79af6136db4",
+      "width": 100
+    },
+    "ic_zoom_out": {
+      "bytes": 918,
+      "cloudUri": null,
+      "height": 100,
+      "key": "ic_zoom_out",
+      "localUri": "rbxasset://arena_assets/kenney_icons/ic_zoom_out.png",
+      "relPath": "kenney_icons/ic_zoom_out.png",
+      "sha256": "a1b8e7cae966309c",
+      "width": 100
     },
     "icon_bolt": {
       "bytes": 2396,
@@ -180,6 +1480,436 @@
       "sha256": "0301d1d7ef9c3680",
       "width": 64
     },
+    "keyboard_1": {
+      "bytes": 712,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_1",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_1.png",
+      "relPath": "kenney_inputs/keyboard_1.png",
+      "sha256": "6201acfac0cefb32",
+      "width": 128
+    },
+    "keyboard_2": {
+      "bytes": 955,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_2",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_2.png",
+      "relPath": "kenney_inputs/keyboard_2.png",
+      "sha256": "00d2bf6312c64fa2",
+      "width": 128
+    },
+    "keyboard_3": {
+      "bytes": 1083,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_3",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_3.png",
+      "relPath": "kenney_inputs/keyboard_3.png",
+      "sha256": "68c7ecc2ea2cef4a",
+      "width": 128
+    },
+    "keyboard_4": {
+      "bytes": 727,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_4",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_4.png",
+      "relPath": "kenney_inputs/keyboard_4.png",
+      "sha256": "7c9e70ef714f10f1",
+      "width": 128
+    },
+    "keyboard_arrows_all": {
+      "bytes": 640,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_arrows_all",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_arrows_all.png",
+      "relPath": "kenney_inputs/keyboard_arrows_all.png",
+      "sha256": "218bf73fcad9ecce",
+      "width": 128
+    },
+    "keyboard_c": {
+      "bytes": 1203,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_c",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_c.png",
+      "relPath": "kenney_inputs/keyboard_c.png",
+      "sha256": "10e61e3689ab9d77",
+      "width": 128
+    },
+    "keyboard_e": {
+      "bytes": 699,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_e",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_e.png",
+      "relPath": "kenney_inputs/keyboard_e.png",
+      "sha256": "f2fdc0e679ccae42",
+      "width": 128
+    },
+    "keyboard_escape": {
+      "bytes": 1140,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_escape",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_escape.png",
+      "relPath": "kenney_inputs/keyboard_escape.png",
+      "sha256": "4266d46048bfbd1c",
+      "width": 128
+    },
+    "keyboard_f": {
+      "bytes": 696,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_f",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_f.png",
+      "relPath": "kenney_inputs/keyboard_f.png",
+      "sha256": "b6bb582368ae5f37",
+      "width": 128
+    },
+    "keyboard_g": {
+      "bytes": 1278,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_g",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_g.png",
+      "relPath": "kenney_inputs/keyboard_g.png",
+      "sha256": "78ed7c499f7f7b18",
+      "width": 128
+    },
+    "keyboard_q": {
+      "bytes": 1149,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_q",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_q.png",
+      "relPath": "kenney_inputs/keyboard_q.png",
+      "sha256": "0418abb566903194",
+      "width": 128
+    },
+    "keyboard_r": {
+      "bytes": 935,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_r",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_r.png",
+      "relPath": "kenney_inputs/keyboard_r.png",
+      "sha256": "823799a82809f593",
+      "width": 128
+    },
+    "keyboard_shift": {
+      "bytes": 1057,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_shift",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_shift.png",
+      "relPath": "kenney_inputs/keyboard_shift.png",
+      "sha256": "15b00360c9a23301",
+      "width": 128
+    },
+    "keyboard_space": {
+      "bytes": 1257,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_space",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_space.png",
+      "relPath": "kenney_inputs/keyboard_space.png",
+      "sha256": "ab4cc897cafe92d3",
+      "width": 128
+    },
+    "keyboard_tab": {
+      "bytes": 972,
+      "cloudUri": null,
+      "height": 128,
+      "key": "keyboard_tab",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/keyboard_tab.png",
+      "relPath": "kenney_inputs/keyboard_tab.png",
+      "sha256": "925507804f39c94b",
+      "width": 128
+    },
+    "light_01": {
+      "bytes": 15869,
+      "cloudUri": null,
+      "height": 128,
+      "key": "light_01",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/light_01.png",
+      "relPath": "kenney_vfx/light_01.png",
+      "sha256": "893204ea50ac0551",
+      "width": 128
+    },
+    "light_03": {
+      "bytes": 16955,
+      "cloudUri": null,
+      "height": 128,
+      "key": "light_03",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/light_03.png",
+      "relPath": "kenney_vfx/light_03.png",
+      "sha256": "fb58f1236332b5ed",
+      "width": 128
+    },
+    "magic_04": {
+      "bytes": 8728,
+      "cloudUri": null,
+      "height": 128,
+      "key": "magic_04",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/magic_04.png",
+      "relPath": "kenney_vfx/magic_04.png",
+      "sha256": "29422a78a0a65c11",
+      "width": 128
+    },
+    "magic_05": {
+      "bytes": 11962,
+      "cloudUri": null,
+      "height": 128,
+      "key": "magic_05",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/magic_05.png",
+      "relPath": "kenney_vfx/magic_05.png",
+      "sha256": "429e318d27e143e3",
+      "width": 128
+    },
+    "mobile_action_circle": {
+      "bytes": 2236,
+      "cloudUri": null,
+      "height": 64,
+      "key": "mobile_action_circle",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/mobile_action_circle.png",
+      "relPath": "kenney_inputs/mobile_action_circle.png",
+      "sha256": "bcc4e4bcec53de6d",
+      "width": 64
+    },
+    "mobile_action_diamond": {
+      "bytes": 1764,
+      "cloudUri": null,
+      "height": 64,
+      "key": "mobile_action_diamond",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/mobile_action_diamond.png",
+      "relPath": "kenney_inputs/mobile_action_diamond.png",
+      "sha256": "7e6d3e70901e442d",
+      "width": 64
+    },
+    "mobile_joystick_ring": {
+      "bytes": 4612,
+      "cloudUri": null,
+      "height": 128,
+      "key": "mobile_joystick_ring",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/mobile_joystick_ring.png",
+      "relPath": "kenney_inputs/mobile_joystick_ring.png",
+      "sha256": "377a914286f54824",
+      "width": 128
+    },
+    "mouse_left": {
+      "bytes": 1271,
+      "cloudUri": null,
+      "height": 128,
+      "key": "mouse_left",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/mouse_left.png",
+      "relPath": "kenney_inputs/mouse_left.png",
+      "sha256": "5b9a3b7101464c97",
+      "width": 128
+    },
+    "mouse_right": {
+      "bytes": 1274,
+      "cloudUri": null,
+      "height": 128,
+      "key": "mouse_right",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/mouse_right.png",
+      "relPath": "kenney_inputs/mouse_right.png",
+      "sha256": "7daeb698aa51ba05",
+      "width": 128
+    },
+    "mouse_scroll": {
+      "bytes": 1298,
+      "cloudUri": null,
+      "height": 128,
+      "key": "mouse_scroll",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/mouse_scroll.png",
+      "relPath": "kenney_inputs/mouse_scroll.png",
+      "sha256": "e4096dd317da01de",
+      "width": 128
+    },
+    "muzzle_01": {
+      "bytes": 13470,
+      "cloudUri": null,
+      "height": 128,
+      "key": "muzzle_01",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/muzzle_01.png",
+      "relPath": "kenney_vfx/muzzle_01.png",
+      "sha256": "bb1e6e012817fd81",
+      "width": 128
+    },
+    "panel_000": {
+      "bytes": 234,
+      "cloudUri": null,
+      "height": 48,
+      "key": "panel_000",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/panel_000.png",
+      "relPath": "kenney_fantasy/panel_000.png",
+      "sha256": "508945903f356568",
+      "width": 48
+    },
+    "panel_004": {
+      "bytes": 179,
+      "cloudUri": null,
+      "height": 48,
+      "key": "panel_004",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/panel_004.png",
+      "relPath": "kenney_fantasy/panel_004.png",
+      "sha256": "d6fdf1ba9ec8db25",
+      "width": 48
+    },
+    "panel_008": {
+      "bytes": 249,
+      "cloudUri": null,
+      "height": 48,
+      "key": "panel_008",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/panel_008.png",
+      "relPath": "kenney_fantasy/panel_008.png",
+      "sha256": "bec7e44458eb7657",
+      "width": 48
+    },
+    "panel_012": {
+      "bytes": 228,
+      "cloudUri": null,
+      "height": 48,
+      "key": "panel_012",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/panel_012.png",
+      "relPath": "kenney_fantasy/panel_012.png",
+      "sha256": "b1cb0cc71aeb36cd",
+      "width": 48
+    },
+    "panel_016": {
+      "bytes": 260,
+      "cloudUri": null,
+      "height": 48,
+      "key": "panel_016",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/panel_016.png",
+      "relPath": "kenney_fantasy/panel_016.png",
+      "sha256": "f82617296a1967e4",
+      "width": 48
+    },
+    "panel_020": {
+      "bytes": 258,
+      "cloudUri": null,
+      "height": 48,
+      "key": "panel_020",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/panel_020.png",
+      "relPath": "kenney_fantasy/panel_020.png",
+      "sha256": "782ca8bd30003003",
+      "width": 48
+    },
+    "panel_024": {
+      "bytes": 266,
+      "cloudUri": null,
+      "height": 48,
+      "key": "panel_024",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/panel_024.png",
+      "relPath": "kenney_fantasy/panel_024.png",
+      "sha256": "74d8ff2f4e6f1ffa",
+      "width": 48
+    },
+    "panel_028": {
+      "bytes": 235,
+      "cloudUri": null,
+      "height": 48,
+      "key": "panel_028",
+      "localUri": "rbxasset://arena_assets/kenney_fantasy/panel_028.png",
+      "relPath": "kenney_fantasy/panel_028.png",
+      "sha256": "48f3c9cd562f25bb",
+      "width": 48
+    },
+    "panel_border_brown": {
+      "bytes": 2251,
+      "cloudUri": null,
+      "height": 128,
+      "key": "panel_border_brown",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/panel_border_brown.png",
+      "relPath": "kenney_adventure/panel_border_brown.png",
+      "sha256": "960d1fb18a612b96",
+      "width": 128
+    },
+    "panel_border_brown_detail": {
+      "bytes": 1288,
+      "cloudUri": null,
+      "height": 128,
+      "key": "panel_border_brown_detail",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/panel_border_brown_detail.png",
+      "relPath": "kenney_adventure/panel_border_brown_detail.png",
+      "sha256": "ae85dc29686d66dd",
+      "width": 128
+    },
+    "panel_border_grey": {
+      "bytes": 845,
+      "cloudUri": null,
+      "height": 128,
+      "key": "panel_border_grey",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/panel_border_grey.png",
+      "relPath": "kenney_adventure/panel_border_grey.png",
+      "sha256": "960996569d1a993c",
+      "width": 128
+    },
+    "panel_border_grey_detail": {
+      "bytes": 1861,
+      "cloudUri": null,
+      "height": 128,
+      "key": "panel_border_grey_detail",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/panel_border_grey_detail.png",
+      "relPath": "kenney_adventure/panel_border_grey_detail.png",
+      "sha256": "4146e50e719f7cd5",
+      "width": 128
+    },
+    "panel_brown": {
+      "bytes": 853,
+      "cloudUri": null,
+      "height": 128,
+      "key": "panel_brown",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/panel_brown.png",
+      "relPath": "kenney_adventure/panel_brown.png",
+      "sha256": "0c3f94702787ce47",
+      "width": 128
+    },
+    "panel_brown_arrows": {
+      "bytes": 3075,
+      "cloudUri": null,
+      "height": 128,
+      "key": "panel_brown_arrows",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/panel_brown_arrows.png",
+      "relPath": "kenney_adventure/panel_brown_arrows.png",
+      "sha256": "1b8ca24ff76773df",
+      "width": 128
+    },
+    "panel_brown_arrows_dark": {
+      "bytes": 2750,
+      "cloudUri": null,
+      "height": 128,
+      "key": "panel_brown_arrows_dark",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/panel_brown_arrows_dark.png",
+      "relPath": "kenney_adventure/panel_brown_arrows_dark.png",
+      "sha256": "8bb1efae10af8676",
+      "width": 128
+    },
+    "panel_brown_arrows_dark_detail": {
+      "bytes": 3687,
+      "cloudUri": null,
+      "height": 128,
+      "key": "panel_brown_arrows_dark_detail",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/panel_brown_arrows_dark_detail.png",
+      "relPath": "kenney_adventure/panel_brown_arrows_dark_detail.png",
+      "sha256": "9a86b9ee67a1c443",
+      "width": 128
+    },
+    "panel_brown_arrows_detail": {
+      "bytes": 3984,
+      "cloudUri": null,
+      "height": 128,
+      "key": "panel_brown_arrows_detail",
+      "localUri": "rbxasset://arena_assets/kenney_adventure/panel_brown_arrows_detail.png",
+      "relPath": "kenney_adventure/panel_brown_arrows_detail.png",
+      "sha256": "74adb2d0c21ac5b4",
+      "width": 128
+    },
     "panel_glass_9slice": {
       "bytes": 429,
       "cloudUri": null,
@@ -230,6 +1960,26 @@
       "sha256": "57aa92bb326af01d",
       "width": 64
     },
+    "pointer_a": {
+      "bytes": 357,
+      "cloudUri": null,
+      "height": 64,
+      "key": "pointer_a",
+      "localUri": "rbxasset://arena_assets/kenney_cursors/pointer_a.png",
+      "relPath": "kenney_cursors/pointer_a.png",
+      "sha256": "b1be5af254823d70",
+      "width": 64
+    },
+    "pointer_c": {
+      "bytes": 429,
+      "cloudUri": null,
+      "height": 64,
+      "key": "pointer_c",
+      "localUri": "rbxasset://arena_assets/kenney_cursors/pointer_c.png",
+      "relPath": "kenney_cursors/pointer_c.png",
+      "sha256": "90a4f392695716bd",
+      "width": 64
+    },
     "radial_ring": {
       "bytes": 3708,
       "cloudUri": null,
@@ -238,6 +1988,126 @@
       "localUri": "rbxasset://arena_assets/ui/radial_ring.png",
       "relPath": "ui/radial_ring.png",
       "sha256": "6fd67066577c5c5d",
+      "width": 64
+    },
+    "red_bar_round_gloss_large": {
+      "bytes": 1802,
+      "cloudUri": null,
+      "height": 48,
+      "key": "red_bar_round_gloss_large",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/red_bar_round_gloss_large.png",
+      "relPath": "kenney_scifi/red_bar_round_gloss_large.png",
+      "sha256": "32bb8e02dd6f5c96",
+      "width": 192
+    },
+    "red_bar_round_gloss_large_square": {
+      "bytes": 1597,
+      "cloudUri": null,
+      "height": 48,
+      "key": "red_bar_round_gloss_large_square",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/red_bar_round_gloss_large_square.png",
+      "relPath": "kenney_scifi/red_bar_round_gloss_large_square.png",
+      "sha256": "f19c5b6cc97395db",
+      "width": 48
+    },
+    "red_bar_round_gloss_small": {
+      "bytes": 1187,
+      "cloudUri": null,
+      "height": 32,
+      "key": "red_bar_round_gloss_small",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/red_bar_round_gloss_small.png",
+      "relPath": "kenney_scifi/red_bar_round_gloss_small.png",
+      "sha256": "7e818c3a8c8639a3",
+      "width": 192
+    },
+    "red_bar_round_gloss_small_square": {
+      "bytes": 1043,
+      "cloudUri": null,
+      "height": 32,
+      "key": "red_bar_round_gloss_small_square",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/red_bar_round_gloss_small_square.png",
+      "relPath": "kenney_scifi/red_bar_round_gloss_small_square.png",
+      "sha256": "4161be7739fa6540",
+      "width": 32
+    },
+    "red_bar_square_gloss_large": {
+      "bytes": 557,
+      "cloudUri": null,
+      "height": 48,
+      "key": "red_bar_square_gloss_large",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/red_bar_square_gloss_large.png",
+      "relPath": "kenney_scifi/red_bar_square_gloss_large.png",
+      "sha256": "964083277e6f5da3",
+      "width": 192
+    },
+    "red_btn_depth_flat": {
+      "bytes": 1269,
+      "cloudUri": null,
+      "height": 85,
+      "key": "red_btn_depth_flat",
+      "localUri": "rbxasset://arena_assets/kenney_ui/red_btn_depth_flat.png",
+      "relPath": "kenney_ui/red_btn_depth_flat.png",
+      "sha256": "022ea3d79e0be279",
+      "width": 256
+    },
+    "red_btn_depth_gloss": {
+      "bytes": 1307,
+      "cloudUri": null,
+      "height": 85,
+      "key": "red_btn_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/red_btn_depth_gloss.png",
+      "relPath": "kenney_ui/red_btn_depth_gloss.png",
+      "sha256": "765f7a8d4cd38f7f",
+      "width": 256
+    },
+    "red_btn_gloss": {
+      "bytes": 1156,
+      "cloudUri": null,
+      "height": 85,
+      "key": "red_btn_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/red_btn_gloss.png",
+      "relPath": "kenney_ui/red_btn_gloss.png",
+      "sha256": "e329238d1047980a",
+      "width": 256
+    },
+    "red_btn_round_depth_gloss": {
+      "bytes": 4669,
+      "cloudUri": null,
+      "height": 128,
+      "key": "red_btn_round_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/red_btn_round_depth_gloss.png",
+      "relPath": "kenney_ui/red_btn_round_depth_gloss.png",
+      "sha256": "0878f6365a19ad08",
+      "width": 128
+    },
+    "red_btn_square_depth_gloss": {
+      "bytes": 1094,
+      "cloudUri": null,
+      "height": 128,
+      "key": "red_btn_square_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/red_btn_square_depth_gloss.png",
+      "relPath": "kenney_ui/red_btn_square_depth_gloss.png",
+      "sha256": "6a48ca0f3bf4ceba",
+      "width": 128
+    },
+    "red_check_square_color_checkmark": {
+      "bytes": 1814,
+      "cloudUri": null,
+      "height": 64,
+      "key": "red_check_square_color_checkmark",
+      "localUri": "rbxasset://arena_assets/kenney_ui/red_check_square_color_checkmark.png",
+      "relPath": "kenney_ui/red_check_square_color_checkmark.png",
+      "sha256": "04fc90039326f956",
+      "width": 64
+    },
+    "red_slide_horizontal_color_section_wide": {
+      "bytes": 760,
+      "cloudUri": null,
+      "height": 32,
+      "key": "red_slide_horizontal_color_section_wide",
+      "localUri": "rbxasset://arena_assets/kenney_ui/red_slide_horizontal_color_section_wide.png",
+      "relPath": "kenney_ui/red_slide_horizontal_color_section_wide.png",
+      "sha256": "63c7aee6ea335f21",
       "width": 64
     },
     "scifi_panel_tile": {
@@ -250,6 +2120,156 @@
       "sha256": "88c0a1ff99fefb60",
       "width": 128
     },
+    "scorch_01": {
+      "bytes": 12297,
+      "cloudUri": null,
+      "height": 128,
+      "key": "scorch_01",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/scorch_01.png",
+      "relPath": "kenney_vfx/scorch_01.png",
+      "sha256": "b6c02257eaa60280",
+      "width": 128
+    },
+    "slash_01": {
+      "bytes": 4865,
+      "cloudUri": null,
+      "height": 128,
+      "key": "slash_01",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/slash_01.png",
+      "relPath": "kenney_vfx/slash_01.png",
+      "sha256": "f377ee16f07eed8f",
+      "width": 128
+    },
+    "slash_03": {
+      "bytes": 3942,
+      "cloudUri": null,
+      "height": 128,
+      "key": "slash_03",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/slash_03.png",
+      "relPath": "kenney_vfx/slash_03.png",
+      "sha256": "e5bec595103d2e94",
+      "width": 128
+    },
+    "smoke_01": {
+      "bytes": 15308,
+      "cloudUri": null,
+      "height": 128,
+      "key": "smoke_01",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/smoke_01.png",
+      "relPath": "kenney_vfx/smoke_01.png",
+      "sha256": "b34c23c00f986519",
+      "width": 128
+    },
+    "smoke_04": {
+      "bytes": 16524,
+      "cloudUri": null,
+      "height": 128,
+      "key": "smoke_04",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/smoke_04.png",
+      "relPath": "kenney_vfx/smoke_04.png",
+      "sha256": "479ec131dfdabb7a",
+      "width": 128
+    },
+    "smoke_07": {
+      "bytes": 12540,
+      "cloudUri": null,
+      "height": 128,
+      "key": "smoke_07",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/smoke_07.png",
+      "relPath": "kenney_vfx/smoke_07.png",
+      "sha256": "bef17646ab5b8e50",
+      "width": 128
+    },
+    "spark_01": {
+      "bytes": 16510,
+      "cloudUri": null,
+      "height": 128,
+      "key": "spark_01",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/spark_01.png",
+      "relPath": "kenney_vfx/spark_01.png",
+      "sha256": "82f262ecb393351f",
+      "width": 128
+    },
+    "spark_05": {
+      "bytes": 12486,
+      "cloudUri": null,
+      "height": 128,
+      "key": "spark_05",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/spark_05.png",
+      "relPath": "kenney_vfx/spark_05.png",
+      "sha256": "e6ceba961f34cff9",
+      "width": 128
+    },
+    "star_04": {
+      "bytes": 5418,
+      "cloudUri": null,
+      "height": 128,
+      "key": "star_04",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/star_04.png",
+      "relPath": "kenney_vfx/star_04.png",
+      "sha256": "83dffda366e590a7",
+      "width": 128
+    },
+    "star_07": {
+      "bytes": 6143,
+      "cloudUri": null,
+      "height": 128,
+      "key": "star_07",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/star_07.png",
+      "relPath": "kenney_vfx/star_07.png",
+      "sha256": "40104036a606a6ac",
+      "width": 128
+    },
+    "symbol_01": {
+      "bytes": 2804,
+      "cloudUri": null,
+      "height": 128,
+      "key": "symbol_01",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/symbol_01.png",
+      "relPath": "kenney_vfx/symbol_01.png",
+      "sha256": "0acd4b0773060caf",
+      "width": 128
+    },
+    "target_a": {
+      "bytes": 327,
+      "cloudUri": null,
+      "height": 64,
+      "key": "target_a",
+      "localUri": "rbxasset://arena_assets/kenney_cursors/target_a.png",
+      "relPath": "kenney_cursors/target_a.png",
+      "sha256": "304468bbcf1116a6",
+      "width": 64
+    },
+    "target_b": {
+      "bytes": 238,
+      "cloudUri": null,
+      "height": 64,
+      "key": "target_b",
+      "localUri": "rbxasset://arena_assets/kenney_cursors/target_b.png",
+      "relPath": "kenney_cursors/target_b.png",
+      "sha256": "a90e20a8c05d65b5",
+      "width": 64
+    },
+    "trace_01": {
+      "bytes": 3774,
+      "cloudUri": null,
+      "height": 128,
+      "key": "trace_01",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/trace_01.png",
+      "relPath": "kenney_vfx/trace_01.png",
+      "sha256": "151131261d3a4410",
+      "width": 128
+    },
+    "twirl_01": {
+      "bytes": 9872,
+      "cloudUri": null,
+      "height": 128,
+      "key": "twirl_01",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/twirl_01.png",
+      "relPath": "kenney_vfx/twirl_01.png",
+      "sha256": "a6e6156468f75735",
+      "width": 128
+    },
     "vignette_soft": {
       "bytes": 9034,
       "cloudUri": null,
@@ -259,6 +2279,216 @@
       "relPath": "ui/vignette_soft.png",
       "sha256": "4b81393c45db2eed",
       "width": 128
+    },
+    "window_04": {
+      "bytes": 10842,
+      "cloudUri": null,
+      "height": 128,
+      "key": "window_04",
+      "localUri": "rbxasset://arena_assets/kenney_vfx/window_04.png",
+      "relPath": "kenney_vfx/window_04.png",
+      "sha256": "cbf8f082f557eafa",
+      "width": 128
+    },
+    "xbox_button_color_a": {
+      "bytes": 1954,
+      "cloudUri": null,
+      "height": 128,
+      "key": "xbox_button_color_a",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/xbox_button_color_a.png",
+      "relPath": "kenney_inputs/xbox_button_color_a.png",
+      "sha256": "1845c1d08578ed0b",
+      "width": 128
+    },
+    "xbox_button_color_b": {
+      "bytes": 1880,
+      "cloudUri": null,
+      "height": 128,
+      "key": "xbox_button_color_b",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/xbox_button_color_b.png",
+      "relPath": "kenney_inputs/xbox_button_color_b.png",
+      "sha256": "8074d8cf05151a54",
+      "width": 128
+    },
+    "xbox_button_color_x": {
+      "bytes": 2167,
+      "cloudUri": null,
+      "height": 128,
+      "key": "xbox_button_color_x",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/xbox_button_color_x.png",
+      "relPath": "kenney_inputs/xbox_button_color_x.png",
+      "sha256": "f707e2b656b4736c",
+      "width": 128
+    },
+    "xbox_button_color_y": {
+      "bytes": 2026,
+      "cloudUri": null,
+      "height": 128,
+      "key": "xbox_button_color_y",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/xbox_button_color_y.png",
+      "relPath": "kenney_inputs/xbox_button_color_y.png",
+      "sha256": "5e97c8d11af4e3a0",
+      "width": 128
+    },
+    "xbox_lb": {
+      "bytes": 952,
+      "cloudUri": null,
+      "height": 128,
+      "key": "xbox_lb",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/xbox_lb.png",
+      "relPath": "kenney_inputs/xbox_lb.png",
+      "sha256": "59f0fd804f39d55c",
+      "width": 128
+    },
+    "xbox_lt": {
+      "bytes": 880,
+      "cloudUri": null,
+      "height": 128,
+      "key": "xbox_lt",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/xbox_lt.png",
+      "relPath": "kenney_inputs/xbox_lt.png",
+      "sha256": "4809801fc4e8fa70",
+      "width": 128
+    },
+    "xbox_rb": {
+      "bytes": 1111,
+      "cloudUri": null,
+      "height": 128,
+      "key": "xbox_rb",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/xbox_rb.png",
+      "relPath": "kenney_inputs/xbox_rb.png",
+      "sha256": "31030b91b89a030e",
+      "width": 128
+    },
+    "xbox_rt": {
+      "bytes": 1088,
+      "cloudUri": null,
+      "height": 128,
+      "key": "xbox_rt",
+      "localUri": "rbxasset://arena_assets/kenney_inputs/xbox_rt.png",
+      "relPath": "kenney_inputs/xbox_rt.png",
+      "sha256": "9c462bac5ea5ed81",
+      "width": 128
+    },
+    "yellow_bar_round_gloss_large": {
+      "bytes": 1712,
+      "cloudUri": null,
+      "height": 48,
+      "key": "yellow_bar_round_gloss_large",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/yellow_bar_round_gloss_large.png",
+      "relPath": "kenney_scifi/yellow_bar_round_gloss_large.png",
+      "sha256": "71ed3924905f0346",
+      "width": 192
+    },
+    "yellow_bar_round_gloss_large_square": {
+      "bytes": 1519,
+      "cloudUri": null,
+      "height": 48,
+      "key": "yellow_bar_round_gloss_large_square",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/yellow_bar_round_gloss_large_square.png",
+      "relPath": "kenney_scifi/yellow_bar_round_gloss_large_square.png",
+      "sha256": "4632f4374307a5ec",
+      "width": 48
+    },
+    "yellow_bar_round_gloss_small": {
+      "bytes": 1154,
+      "cloudUri": null,
+      "height": 32,
+      "key": "yellow_bar_round_gloss_small",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/yellow_bar_round_gloss_small.png",
+      "relPath": "kenney_scifi/yellow_bar_round_gloss_small.png",
+      "sha256": "6679f57bf916c6a2",
+      "width": 192
+    },
+    "yellow_bar_round_gloss_small_square": {
+      "bytes": 1017,
+      "cloudUri": null,
+      "height": 32,
+      "key": "yellow_bar_round_gloss_small_square",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/yellow_bar_round_gloss_small_square.png",
+      "relPath": "kenney_scifi/yellow_bar_round_gloss_small_square.png",
+      "sha256": "d846b4eb060481da",
+      "width": 32
+    },
+    "yellow_bar_square_gloss_large": {
+      "bytes": 556,
+      "cloudUri": null,
+      "height": 48,
+      "key": "yellow_bar_square_gloss_large",
+      "localUri": "rbxasset://arena_assets/kenney_scifi/yellow_bar_square_gloss_large.png",
+      "relPath": "kenney_scifi/yellow_bar_square_gloss_large.png",
+      "sha256": "081318241665ba49",
+      "width": 192
+    },
+    "yellow_btn_depth_flat": {
+      "bytes": 1323,
+      "cloudUri": null,
+      "height": 85,
+      "key": "yellow_btn_depth_flat",
+      "localUri": "rbxasset://arena_assets/kenney_ui/yellow_btn_depth_flat.png",
+      "relPath": "kenney_ui/yellow_btn_depth_flat.png",
+      "sha256": "a21c717dd496764a",
+      "width": 256
+    },
+    "yellow_btn_depth_gloss": {
+      "bytes": 1346,
+      "cloudUri": null,
+      "height": 85,
+      "key": "yellow_btn_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/yellow_btn_depth_gloss.png",
+      "relPath": "kenney_ui/yellow_btn_depth_gloss.png",
+      "sha256": "c670f9ca71365c56",
+      "width": 256
+    },
+    "yellow_btn_gloss": {
+      "bytes": 1206,
+      "cloudUri": null,
+      "height": 85,
+      "key": "yellow_btn_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/yellow_btn_gloss.png",
+      "relPath": "kenney_ui/yellow_btn_gloss.png",
+      "sha256": "a1daf0619621411f",
+      "width": 256
+    },
+    "yellow_btn_round_depth_gloss": {
+      "bytes": 4536,
+      "cloudUri": null,
+      "height": 128,
+      "key": "yellow_btn_round_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/yellow_btn_round_depth_gloss.png",
+      "relPath": "kenney_ui/yellow_btn_round_depth_gloss.png",
+      "sha256": "b77a81eb01460338",
+      "width": 128
+    },
+    "yellow_btn_square_depth_gloss": {
+      "bytes": 1082,
+      "cloudUri": null,
+      "height": 128,
+      "key": "yellow_btn_square_depth_gloss",
+      "localUri": "rbxasset://arena_assets/kenney_ui/yellow_btn_square_depth_gloss.png",
+      "relPath": "kenney_ui/yellow_btn_square_depth_gloss.png",
+      "sha256": "1b3e34c97a0807bd",
+      "width": 128
+    },
+    "yellow_check_square_color_checkmark": {
+      "bytes": 1568,
+      "cloudUri": null,
+      "height": 64,
+      "key": "yellow_check_square_color_checkmark",
+      "localUri": "rbxasset://arena_assets/kenney_ui/yellow_check_square_color_checkmark.png",
+      "relPath": "kenney_ui/yellow_check_square_color_checkmark.png",
+      "sha256": "95ce3c0006ffce67",
+      "width": 64
+    },
+    "yellow_slide_horizontal_color_section_wide": {
+      "bytes": 756,
+      "cloudUri": null,
+      "height": 32,
+      "key": "yellow_slide_horizontal_color_section_wide",
+      "localUri": "rbxasset://arena_assets/kenney_ui/yellow_slide_horizontal_color_section_wide.png",
+      "relPath": "kenney_ui/yellow_slide_horizontal_color_section_wide.png",
+      "sha256": "0004d80ddcc55d2a",
+      "width": 64
     }
   },
   "version": 1

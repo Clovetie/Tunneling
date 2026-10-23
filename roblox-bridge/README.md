@@ -80,7 +80,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 
 ---
 
-## Full 43-Tool MCP Suite + Repo Kit & Skills
+## Full 45-Tool MCP Suite + Open-Source UI Kit, Assets & Skills
 
 | Domain | MCP Tools |
 |---|---|
@@ -92,7 +92,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 | **Attributes & Tags (2)** | `manage_attributes` (`get`/`set`/`delete`), `manage_tags` (`list_all`/`find_tagged`/`get`/`add`/`remove`) |
 | **World, Camera, Undo & Assets (5)** | `manage_selection`, `manage_camera`, `undo_redo`, `edit_terrain`, `insert_asset` (auto script-strip safety) |
 | **Toolchain, Sync & Snapshots (3)** | `luau_check` (offline compiler + undefined globals), `drift_and_sync` (`check`/`push`/`pull`), `manage_snapshots` (`create`/`list`/`get`/`restore`) |
-| **Direct Image Import, Kit & Prefabs (6)** | `import_image` (file / base64 / URL / repo / procedural -> `rbxasset://arena_assets/...` + live `EditableImage` + Studio/Open Cloud `rbxassetid://`), `import_images_batch`, `generate_procedural_image`, `browse_kit`, `install_kit_module` (`Maid`, `Signal`, `NetGuard`, `TagBinder`, `SpringUI`, `StateStore`, `Assets`), `spawn_prefab` |
+| **Open-Source UI Kit, 1,022 Cloud Icons, Direct Image Import & Prefabs (8)** | `install_template` (`full_stud_ui_suite`, `stud_shop_window`, `stud_hud_shell`, `stud_daily_rewards`, `stud_rebirth_window`, `stud_rarity_index`), `search_cloud_icons` (1,022 live `rbxassetid://` icons), `import_image` (file / base64 / URL / 249 curated Kenney CC0 + procedural PNGs -> `rbxasset://arena_assets/...` + live `EditableImage` + Studio/Open Cloud `rbxassetid://`), `import_images_batch`, `generate_procedural_image`, `browse_kit`, `install_kit_module` (12 verified Luau modules), `spawn_prefab` (14 3D/UI/VFX/Lighting prefabs) |
 
 ### Repo-Committed Skills, Assets & Modules
 - **Agent Skills (`.claude/skills/*/SKILL.md` + `skill://{name}` MCP resources + root `AGENTS.md`)**:

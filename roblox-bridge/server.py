@@ -32,7 +32,7 @@ import uuid
 
 from mcp_core import BridgeClient, MCPDispatcher, TOOL_SPECS
 
-VERSION = "3.0.0"
+VERSION = "3.2.0"
 PEER_ONLINE_WINDOW = 25.0  # seconds since last poll before a peer is considered stale
 HERE = Path(__file__).resolve().parent
 
@@ -83,9 +83,11 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             r".\ab.ps1 sync  ./src ServerScriptService.App",
             r".\ab.ps1 import-image ./art/banner.png --target Workspace --apply-mode surface_gui",
             r".\ab.ps1 gen-image icon_coin --size 128 --target StarterGui --apply-mode screen_gui",
+            r".\ab.ps1 icons 'golden cat'",
+            r".\ab.ps1 template full_stud_ui_suite",
             r".\ab.ps1 install-module all --parent ReplicatedStorage.Shared",
+            r".\ab.ps1 prefab ui_kenney_shop_window",
             r".\ab.ps1 prefab lighting_cinematic_sunset",
-            r".\ab.ps1 prefab hud_modern_shell",
             r".\ab.ps1 scenario --mode play --server-code 'return {players = #game.Players:GetPlayers()}'",
         ],
         "keyTips": [
@@ -827,7 +829,7 @@ def make_http_handler(state: BridgeState):
 def dashboard_html() -> str:
     return r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<title>Roblox Studio MCP &amp; Bridge Control Center (v3.0)</title>
+<title>Roblox Studio MCP &amp; Open-Source UI Kit Control Center (v3.2)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
  :root{color-scheme:dark;--bg:#0b0f16;--panel:#131922;--panel2:#0e131b;--border:#232c3a;
@@ -997,25 +999,49 @@ def dashboard_html() -> str:
       <div class="prompt-card">
         <div class="prompt-head">
           <div>
-            <h3>Reusable Studio Kit Modules &amp; 1-Click Prefabs</h3>
-            <div class="sub">Install zero-warning Luau foundations or drop complete 3D/UI/Lighting prefabs into Studio.</div>
+            <h3>1-Click Full Stud UI &amp; Gameplay System Templates</h3>
+            <div class="sub">Installs <code>StudUI</code> + <code>StudMotion</code> + <code>CheckUIIcons</code>, builds real editable <code>ScreenGui</code>s straight into <code>StarterGui</code>, and wires controllers &amp; server economy.</div>
           </div>
-          <button class="primary sm" onclick="installAllModules()">Install All 7 Luau Modules</button>
+          <button class="primary sm" onclick="installAllModules()">Install All 12 Luau Modules</button>
         </div>
-        <div id="prefab-list" style="display:flex;flex-direction:column;gap:7px"></div>
-        <pre id="kit-action-out">Click any prefab or module action above.</pre>
+        <div id="template-list" style="display:flex;flex-direction:column;gap:7px"></div>
+        <pre id="kit-action-out">Click any template, prefab, or module button to install straight into Studio.</pre>
       </div>
     </div>
 
-    <div class="card">
-      <div class="prompt-head">
+    <div class="card" style="margin-bottom:16px">
+      <div class="prompt-head" style="flex-wrap:wrap;gap:10px">
         <div>
-          <h2>Repo Image Asset Library (<code>roblox-kit/assets/images/</code>)</h2>
-          <div class="sub">Pre-built transparent icons, VFX sprites, and seamless prototype textures committed in Git. Click <strong>Copy URI</strong> or <strong>Send to Studio</strong>.</div>
+          <h2>1,022 Cloud <code>rbxassetid://</code> UI Icon Search (<code>CheckUIIcons</code> — Zero Upload Needed)</h2>
+          <div class="sub">Search 1,022 pre-uploaded live Roblox icons (<code>coin</code>, <code>gem</code>, <code>cat</code>, <code>potion</code>, <code>sword</code>, <code>crown</code>, <code>cart</code>, <code>rebirth</code>, <code>box</code>). Works immediately in Studio AND published multiplayer games!</div>
         </div>
-        <button class="sm" onclick="loadKitGallery()">Refresh Gallery</button>
+        <div style="display:flex;gap:8px;min-width:340px">
+          <input id="cloud-icon-q" placeholder="Search 1,022 rbxassetid:// icons (e.g. coin, cat, cart, crown, box)..." oninput="searchCloudIconsUI()">
+          <button class="primary sm" onclick="searchCloudIconsUI()">Search</button>
+        </div>
       </div>
-      <div id="asset-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:10px;margin-top:12px"></div>
+      <div id="cloud-icon-cats" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
+      <div id="cloud-icon-results" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin-top:8px"></div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="prompt-head" style="flex-wrap:wrap;gap:10px">
+        <div>
+          <h2>Open-Source Repo PNG Packs (249 Curated Kenney CC0 + Procedural Assets)</h2>
+          <div class="sub">Genuine CC0 UI buttons, 9-slice Fantasy borders, Sci-Fi bars, Adventure banners, White 2x Retina Icons, PC/Xbox/Mobile Input Prompts, Cursors &amp; Alpha Particle Sprites.</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input id="asset-search" placeholder="Filter 249 PNGs..." oninput="renderFilteredAssets()" style="width:210px">
+          <button class="sm" onclick="loadKitGallery()">Refresh</button>
+        </div>
+      </div>
+      <div id="asset-pack-pills" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
+      <div id="asset-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <h2>14 Ready-to-Spawn 3D, UI &amp; Lighting Prefabs (<code>roblox-kit/prefabs/</code>)</h2>
+      <div id="prefab-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:8px;margin-top:10px"></div>
     </div>
   </section>
 
@@ -1057,7 +1083,7 @@ def dashboard_html() -> str:
 
       <div class="prompt-card">
         <div class="prompt-head">
-          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 37 tools enabled (read + write + playtest + sync)</div></div>
+          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 45 tools enabled (read + write + UI kit + images + playtest + sync)</div></div>
           <button class="primary sm" onclick="copyById('cfg-json')">Copy</button>
         </div>
         <pre id="cfg-json"></pre>
@@ -1103,7 +1129,7 @@ def dashboard_html() -> str:
       </div>
 
       <div class="prompt-card">
-        <h3>Invoke Any of the 37 MCP Tools Directly</h3>
+        <h3>Invoke Any of the 45 MCP Tools Directly</h3>
         <div class="sub" id="tool-desc">Select any MCP tool to inspect its fields and call it over <code>POST /mcp</code>.</div>
         <div style="display:flex;gap:8px;align-items:center">
           <select id="tool-select" onchange="onSelectTool()"></select>
@@ -1323,8 +1349,10 @@ codex mcp add roblox-studio -- python "${mcpPath}" --auto-install-plugin`;
     [".\\ab.ps1 sync ./src ServerScriptService.App", "Validate + snapshot + atomic single-undo sync to Studio"],
     [".\\ab.ps1 import-image ./icon.png --target StarterGui --apply-mode screen_gui", "Import PNG/JPG into repo + Studio directly"],
     [".\\ab.ps1 gen-image icon_coin --size 128 --target StarterGui --apply-mode screen_gui", "Generate crisp procedural icon/texture PNG"],
-    [".\\ab.ps1 install-module all --parent ReplicatedStorage.Shared", "Install Maid, Signal, NetGuard, TagBinder, SpringUI, StateStore, Assets"],
-    [".\\ab.ps1 prefab lighting_cinematic_sunset", "Spawn lighting / HUD / world prefab into Studio"],
+    [".\\ab.ps1 icons \"golden cat\"", "Search 1,022 verified live rbxassetid:// UI icons"],
+    [".\\ab.ps1 template full_stud_ui_suite", "Install full HUD + Shop + Daily + Rebirth + Index + Economy"],
+    [".\\ab.ps1 install-module all --parent ReplicatedStorage.Shared", "Install all 12 reusable Luau modules (StudUI, Maid, Signal, etc.)"],
+    [".\\ab.ps1 prefab ui_kenney_shop_window", "Spawn Kenney 9-slice UI / VFX / Lighting prefab into Studio"],
     [".\\ab.ps1 scenario --mode play --server-code \"return {ok=true}\"", "Run automated Play Solo test & stop cleanly"]
   ];
   document.getElementById('cmd-list').innerHTML = cmds.map(([c, d]) => `
@@ -1369,9 +1397,9 @@ Start by running a quick recon (\`.\\ab.ps1 state\` and \`.\\ab.ps1 survey\`) so
 `Connect directly to my live Roblox Studio Bridge & MCP Server:
 - Base URL: ${pubUrl}
 - Auth Header: \`Authorization: Bearer ${tok}\` (or \`X-Arena-Token: ${tok}\`)
-- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (43 tools, skills, prefabs, direct image import)
+- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (45 tools, 7 skills, 6 full UI templates, 14 prefabs, 249 PNGs, 1,022 cloud icons)
 - Agent Onboarding & Live State Endpoint: \`GET ${pubUrl}/api/agent-guide\`
-- Built-in Repo Kit: call \`browse_kit\` to inspect all 6 Roblox Studio Skills (\`.claude/skills/*\`), 7 Luau modules (\`install_kit_module\`), 8 3D/UI/Lighting prefabs (\`spawn_prefab\`), and 26+ PNG assets (\`import_image\` accepts \`filePath\`, \`base64Data\`, \`imageUrl\`, \`repoAsset\`, or \`proceduralPreset\`!).
+- Built-in Repo Kit: call \`browse_kit\` to inspect all 7 Roblox Studio Skills (\`.claude/skills/*\`), 12 Luau modules (\`install_kit_module\`), 6 complete \`StudUI\` screen & economy templates (\`install_template\`), 14 3D/UI/Lighting prefabs (\`spawn_prefab\`), 1,022 cloud \`rbxassetid://\` icons (\`search_cloud_icons\`), and 249 curated Kenney CC0 + procedural PNG assets (\`import_image\`).
 
 Rules of engagement:
 1. Inspect live ground truth first (\`get_studio_state\`, \`survey_place\` with \`includeSource=false\`, and \`browse_kit\`).
@@ -1494,12 +1522,27 @@ async function uploadBrowserImage(){
   } catch (e) { out.textContent = String(e); }
 }
 
+let ALL_KIT_IMAGES = [];
+let ACTIVE_PACK = 'all';
+let ACTIVE_CLOUD_CAT = '';
+
 async function installAllModules(){
   const out = document.getElementById('kit-action-out');
-  out.textContent = 'Installing Maid, Signal, NetGuard, TagBinder, SpringUI, StateStore, Assets -> ReplicatedStorage.Shared...';
+  out.textContent = 'Installing all 12 Luau modules -> ReplicatedStorage.Shared...';
   try {
     const res = await callMcp('install_kit_module', { module: 'all', parent: 'ReplicatedStorage.Shared' });
     out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    tick();
+  } catch (e) { out.textContent = String(e); }
+}
+
+async function installTemplateUI(tname){
+  const out = document.getElementById('kit-action-out');
+  out.textContent = 'Installing template ' + tname + ' (modules + ScreenGuis in StarterGui + runtime controllers)...';
+  try {
+    const res = await callMcp('install_template', { template: tname });
+    out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    toast('Installed ' + tname + ' into Studio!');
     tick();
   } catch (e) { out.textContent = String(e); }
 }
@@ -1510,6 +1553,7 @@ async function spawnKitPrefab(name){
   try {
     const res = await callMcp('spawn_prefab', { prefab: name });
     out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    toast('Spawned ' + name);
     tick();
   } catch (e) { out.textContent = String(e); }
 }
@@ -1524,30 +1568,119 @@ async function importRepoAssetToStudio(relPath){
   });
 }
 
+async function spawnCloudIconPreview(uri, label){
+  toast('Spawning cloud icon ' + label + ' in StarterGui...');
+  await quickTool('build_instance_tree', {
+    parent: 'StarterGui',
+    tree: [{
+      name: 'CloudIconPreview',
+      className: 'ScreenGui',
+      replaceExisting: true,
+      properties: { ResetOnSpawn: false },
+      children: [{
+        name: label.replace(/[^A-Za-z0-9_]/g, '_') || 'Icon',
+        className: 'ImageLabel',
+        properties: {
+          AnchorPoint: { __t: 'Vector2', v: [0.5, 0.5] },
+          Position: { __t: 'UDim2', v: [0.5, 0, 0.5, 0] },
+          Size: { __t: 'UDim2', v: [0, 128, 0, 128] },
+          BackgroundTransparency: 0.25,
+          Image: uri
+        }
+      }]
+    }]
+  });
+}
+
+function selectPack(pack){
+  ACTIVE_PACK = pack;
+  document.querySelectorAll('#asset-pack-pills button').forEach(b => {
+    b.classList.toggle('primary', b.dataset.pack === pack);
+  });
+  renderFilteredAssets();
+}
+
+function renderFilteredAssets(){
+  const q = (document.getElementById('asset-search').value || '').trim().toLowerCase();
+  const filtered = ALL_KIT_IMAGES.filter(im => {
+    if(ACTIVE_PACK !== 'all' && im.pack !== ACTIVE_PACK) return false;
+    if(q && !(im.relPath.toLowerCase().includes(q) || im.name.toLowerCase().includes(q))) return false;
+    return true;
+  });
+  document.getElementById('asset-gallery').innerHTML = filtered.slice(0, 96).map(im => `
+    <div class="card" style="padding:10px;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center">
+      <div style="width:68px;height:68px;display:flex;align-items:center;justify-content:center;background:repeating-conic-gradient(#161d29 0% 25%, #0d121a 0% 50%) 50% / 14px 14px;border-radius:8px;padding:6px">
+        <img src="/api/kit/image/${esc(im.relPath)}" alt="${esc(im.name)}" loading="lazy" style="max-width:54px;max-height:54px;image-rendering:auto">
+      </div>
+      <div style="font-size:10px;color:var(--muted)">${esc(im.pack)}</div>
+      <code style="font-size:11px;word-break:break-all">${esc(im.name)}</code>
+      <div style="display:flex;gap:4px">
+        <button class="sm" onclick="copyText('${esc(im.localUri)}')">URI</button>
+        <button class="sm primary" onclick="importRepoAssetToStudio('${esc(im.relPath)}')">Send</button>
+      </div>
+    </div>`).join('') + (filtered.length > 96 ? `<div class="sub" style="grid-column:1/-1">Showing 96 of ${filtered.length} matching PNGs — pick a pack pill or type a filter above to narrow further.</div>` : '');
+}
+
+async function searchCloudIconsUI(catOverride){
+  if(catOverride !== undefined) ACTIVE_CLOUD_CAT = catOverride;
+  const q = (document.getElementById('cloud-icon-q').value || '').trim();
+  try {
+    const res = await callMcp('search_cloud_icons', {
+      query: q,
+      category: ACTIVE_CLOUD_CAT || undefined,
+      limit: 32
+    });
+    const d = res.structuredContent || {};
+    const cats = d.categories || {};
+    document.getElementById('cloud-icon-cats').innerHTML =
+      `<button class="sm ${ACTIVE_CLOUD_CAT===''?'primary':''}" onclick="searchCloudIconsUI('')">All (${d.totalCatalogIcons||1022})</button>` +
+      Object.entries(cats).map(([c, n]) =>
+        `<button class="sm ${ACTIVE_CLOUD_CAT===c?'primary':''}" onclick="searchCloudIconsUI('${esc(c)}')">${esc(c)} (${n})</button>`
+      ).join('');
+    document.getElementById('cloud-icon-results').innerHTML = (d.icons || []).map(ic => `
+      <div class="cmd-row" style="align-items:center;justify-content:space-between">
+        <div style="min-width:0">
+          <strong style="font-size:12px">${esc(ic.name)}</strong>
+          <div class="sub" style="font-size:11px;overflow:hidden;text-overflow:ellipsis">${esc(ic.path)} &bull; <code>${esc(ic.uri)}</code></div>
+        </div>
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          <button class="sm" onclick="copyText('${esc(ic.uri)}')">Copy</button>
+          <button class="sm primary" onclick="spawnCloudIconPreview('${esc(ic.uri)}', '${esc(ic.name)}')">Spawn</button>
+        </div>
+      </div>`).join('');
+  } catch(_){}
+}
+
 async function loadKitGallery(){
   try {
     const res = await callMcp('browse_kit', { category: 'all' });
     const data = res.structuredContent || {};
+
+    const templates = data.templates || [];
+    document.getElementById('template-list').innerHTML = templates.map(t => `
+      <div class="cmd-row">
+        <div><strong>${esc(t.title)}</strong> <code style="font-size:11px">${esc(t.name)}</code><div class="sub">${esc(t.description)}</div></div>
+        <div class="spacer"></div>
+        <button class="sm primary" onclick="installTemplateUI('${esc(t.name)}')">Install</button>
+      </div>`).join('');
+
     const prefabs = data.prefabs || [];
     document.getElementById('prefab-list').innerHTML = prefabs.map(p => `
       <div class="cmd-row">
-        <div><strong>${esc(p.name)}</strong><div class="sub">${esc(p.description)}</div></div>
+        <div><strong>${esc(p.name)}</strong> <span class="pill" style="font-size:10px;padding:1px 6px">${esc(p.category)}</span><div class="sub">${esc(p.description)}</div></div>
         <div class="spacer"></div>
         <button class="sm primary" onclick="spawnKitPrefab('${esc(p.name)}')">Spawn</button>
       </div>`).join('');
 
-    const imgs = data.images || [];
-    document.getElementById('asset-gallery').innerHTML = imgs.map(im => `
-      <div class="card" style="padding:10px;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center">
-        <div style="width:64px;height:64px;display:flex;align-items:center;justify-content:center;background:#0b0f16;border-radius:8px;padding:6px">
-          <img src="/api/kit/image/${esc(im.relPath)}" alt="${esc(im.name)}" style="max-width:52px;max-height:52px;image-rendering:auto">
-        </div>
-        <code style="font-size:11px">${esc(im.name)}</code>
-        <div style="display:flex;gap:4px">
-          <button class="sm" onclick="copyText('${esc(im.localUri)}')">URI</button>
-          <button class="sm primary" onclick="importRepoAssetToStudio('${esc(im.relPath)}')">Send</button>
-        </div>
-      </div>`).join('');
+    ALL_KIT_IMAGES = data.images || [];
+    const catCounts = data.imageCategories || {};
+    document.getElementById('asset-pack-pills').innerHTML =
+      `<button class="sm ${ACTIVE_PACK==='all'?'primary':''}" data-pack="all" onclick="selectPack('all')">All (${ALL_KIT_IMAGES.length})</button>` +
+      Object.entries(catCounts).sort().map(([pack, cnt]) =>
+        `<button class="sm ${ACTIVE_PACK===pack?'primary':''}" data-pack="${esc(pack)}" onclick="selectPack('${esc(pack)}')">${esc(pack)} (${cnt})</button>`
+      ).join('');
+    renderFilteredAssets();
+    searchCloudIconsUI('');
   } catch(_){}
 }
 

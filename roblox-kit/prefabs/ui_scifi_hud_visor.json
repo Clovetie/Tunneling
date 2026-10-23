@@ -1,0 +1,68 @@
+{
+  "name": "ui_scifi_hud_visor",
+  "category": "ui",
+  "description": "Sci-Fi Tactical Visor HUD with glossy shield & energy bars from Kenney Sci-Fi UI Pack plus center reticle from Kenney Cursors.",
+  "defaultParent": "StarterGui",
+  "requiredImages": [
+    "kenney_scifi/blue_bar_square_gloss_large.png",
+    "kenney_scifi/yellow_bar_square_gloss_large.png",
+    "kenney_cursors/target_a.png"
+  ],
+  "tree": [
+    {
+      "name": "SciFiVisorHUD",
+      "className": "ScreenGui",
+      "replaceExisting": true,
+      "properties": { "ResetOnSpawn": false, "IgnoreGuiInset": true },
+      "children": [
+        {
+          "name": "CenterReticle",
+          "className": "ImageLabel",
+          "properties": {
+            "AnchorPoint": { "__t": "Vector2", "v": [0.5, 0.5] },
+            "Position": { "__t": "UDim2", "v": [0.5, 0, 0.5, 0] },
+            "Size": { "__t": "UDim2", "v": [0, 44, 0, 44] },
+            "BackgroundTransparency": 1,
+            "Image": "rbxasset://arena_assets/kenney_cursors/target_a.png",
+            "ImageTransparency": 0.15
+          }
+        },
+        {
+          "name": "VitalsCluster",
+          "className": "Frame",
+          "properties": {
+            "AnchorPoint": { "__t": "Vector2", "v": [0, 1] },
+            "Position": { "__t": "UDim2", "v": [0, 24, 1, -24] },
+            "Size": { "__t": "UDim2", "v": [0, 280, 0, 72] },
+            "BackgroundTransparency": 1
+          },
+          "children": [
+            {
+              "name": "ShieldBar",
+              "className": "ImageLabel",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [1, 0, 0, 30] },
+                "BackgroundTransparency": 1,
+                "Image": "rbxasset://arena_assets/kenney_scifi/blue_bar_square_gloss_large.png",
+                "ScaleType": { "__t": "Enum", "v": "ScaleType.Slice" },
+                "SliceCenter": { "__t": "Rect", "v": [14, 8, 178, 24] }
+              }
+            },
+            {
+              "name": "EnergyBar",
+              "className": "ImageLabel",
+              "properties": {
+                "Position": { "__t": "UDim2", "v": [0, 0, 0, 38] },
+                "Size": { "__t": "UDim2", "v": [0.82, 0, 0, 26] },
+                "BackgroundTransparency": 1,
+                "Image": "rbxasset://arena_assets/kenney_scifi/yellow_bar_square_gloss_large.png",
+                "ScaleType": { "__t": "Enum", "v": "ScaleType.Slice" },
+                "SliceCenter": { "__t": "Rect", "v": [14, 8, 178, 24] }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

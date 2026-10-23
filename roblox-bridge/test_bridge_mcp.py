@@ -197,10 +197,10 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         self.assertEqual(st_n, 202)
         self.assertIsNone(body_n)
 
-        # Tools list returns all 43 annotated tools
+        # Tools list returns all 45 annotated tools
         _, list_resp, _ = self.mcp_http({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, auth_mode="header")
         tools = list_resp["result"]["tools"]
-        self.assertEqual(len(tools), 43)
+        self.assertEqual(len(tools), 45)
         self.assertEqual(len(tools), len(TOOL_SPECS))
         for t in tools:
             self.assertIn("annotations", t)
@@ -454,29 +454,36 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             boot_data = json.loads(boot_resp.read().decode("utf-8"))
             self.assertTrue(boot_data["local"])
             self.assertEqual(boot_data["token"], self.token)
-            self.assertEqual(len(boot_data["tools"]), 43)
+            self.assertEqual(len(boot_data["tools"]), 45)
 
         with urllib.request.urlopen(f"{self.base_url}/api/agent-guide", timeout=5) as guide_resp:
             guide_data = json.loads(guide_resp.read().decode("utf-8"))
-            self.assertEqual(guide_data["toolCounts"]["total"], 43)
+            self.assertEqual(guide_data["toolCounts"]["total"], 45)
             self.assertGreaterEqual(len(guide_data["keyTips"]), 5)
 
-        # 8. Direct Image Import (base64 + repo asset), Studio Kit Modules, Prefabs & Skills
+        # 8. Direct Image Import, Open-Source Kenney Packs, 1,022 Cloud Icons, Templates, Prefabs & Skills
         kit_all = self.call_tool("browse_kit", {"category": "all"})
-        self.assertGreaterEqual(len(kit_all["skills"]), 6)
-        self.assertGreaterEqual(len(kit_all["modules"]), 7)
-        self.assertGreaterEqual(len(kit_all["prefabs"]), 8)
-        self.assertGreaterEqual(len(kit_all["images"]), 26)
+        self.assertGreaterEqual(len(kit_all["skills"]), 7)
+        self.assertGreaterEqual(len(kit_all["modules"]), 12)
+        self.assertGreaterEqual(len(kit_all["templates"]), 6)
+        self.assertGreaterEqual(len(kit_all["prefabs"]), 14)
+        self.assertGreaterEqual(len(kit_all["images"]), 240)
+        self.assertEqual(kit_all["cloudIconsCount"], 1022)
+
+        icon_search = self.call_tool("search_cloud_icons", {"query": "shopping cart", "limit": 10})
+        self.assertEqual(icon_search["totalCatalogIcons"], 1022)
+        self.assertGreaterEqual(icon_search["returnedCount"], 1)
+        self.assertTrue(icon_search["icons"][0]["uri"].startswith("rbxassetid://"))
 
         _, skill_read, _ = self.mcp_http({
             "jsonrpc": "2.0",
             "id": "sk1",
             "method": "resources/read",
-            "params": {"uri": "skill://roblox-ui-and-images"},
+            "params": {"uri": "skill://roblox-stud-ui-design"},
         })
-        self.assertIn("Direct Image Import", skill_read["result"]["contents"][0]["text"])
+        self.assertIn("StudUI", skill_read["result"]["contents"][0]["text"])
 
-        with urllib.request.urlopen(f"{self.base_url}/api/kit/image/ui/icon_coin.png", timeout=5) as png_resp:
+        with urllib.request.urlopen(f"{self.base_url}/api/kit/image/kenney_ui/blue_btn_depth_gloss.png", timeout=5) as png_resp:
             png_bytes = png_resp.read()
             self.assertEqual(png_bytes[:8], b"\x89PNG\r\n\x1a\n")
 
@@ -498,10 +505,14 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         self.assertEqual(imp_res["studioApplied"]["appliedTo"], "Workspace.Baseplate.test_badge_gem.Icon")
 
         mod_res = self.call_tool("install_kit_module", {"module": "all", "parent": "ReplicatedStorage.Shared"})
-        self.assertGreaterEqual(mod_res["count"], 7)
+        self.assertGreaterEqual(mod_res["count"], 12)
 
-        prefab_res = self.call_tool("spawn_prefab", {"prefab": "hud_modern_shell"})
-        self.assertEqual(prefab_res["created"], ["StarterGui.ModernHUD"])
+        prefab_res = self.call_tool("spawn_prefab", {"prefab": "ui_kenney_shop_window"})
+        self.assertEqual(prefab_res["created"], ["StarterGui.KenneyShopGui"])
+
+        tmpl_res = self.call_tool("install_template", {"template": "full_stud_ui_suite"})
+        self.assertEqual(len(tmpl_res["installedModules"]), 5)
+        self.assertEqual(len(tmpl_res["installedScripts"]), 2)
 
     def test_03_mcp_stdio_ndjson_and_lsp_framing_plus_readonly_mode(self):
         env = dict(os.environ)
@@ -587,7 +598,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             msg = json.loads(line)
             self.assertEqual(msg["id"], 201)
             self.assertFalse(msg["result"]["isError"])
-            self.assertEqual(msg["result"]["structuredContent"]["bridge"]["mcp_tools"], 43)
+            self.assertEqual(msg["result"]["structuredContent"]["bridge"]["mcp_tools"], 45)
         finally:
             proc.stdin.close()
             proc.stdout.close()

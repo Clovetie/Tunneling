@@ -139,6 +139,9 @@ class MockWorld:
 
         for svc in ("Players", "Lighting", "ServerStorage", "StarterGui", "StarterPack", "StarterPlayer", "SoundService"):
             self.root.add(MockNode(svc, svc))
+        sp_svc = self.resolve("StarterPlayer")
+        sp_svc.add(MockNode("StarterPlayerScripts", "StarterPlayerScripts"))
+        sp_svc.add(MockNode("StarterCharacterScripts", "StarterCharacterScripts"))
         self.resolve("Lighting").props.update({"ClockTime": 14.0, "Ambient": [0.5, 0.5, 0.5]})
 
     def snapshot_tree(self):

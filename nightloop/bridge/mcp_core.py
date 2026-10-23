@@ -26,7 +26,7 @@ import urllib.request
 from pathlib import Path
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "3.0.0"
+MCP_SERVER_VERSION = "3.2.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2025-06-18",
     "2025-03-26",
@@ -1230,32 +1230,32 @@ TOOL_SPECS = [
     },
     {
         "name": "browse_kit",
-        "description": "List or read built-in Roblox Studio Skills (.claude/skills), reusable Luau Modules (roblox-kit/modules), 3D/UI/Lighting Prefabs (roblox-kit/prefabs), and Repo Image Assets (roblox-kit/assets).",
+        "description": "List or read built-in Roblox Studio Skills (.claude/skills), reusable Luau Modules (roblox-kit/modules including StudUI, StudMotion, CheckUIIcons), full multi-script UI/Gameplay System Templates (roblox-kit/templates), 3D/UI/Lighting Prefabs (roblox-kit/prefabs), and 249 Repo PNG Assets (Kenney CC0 + procedural).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["all", "skills", "modules", "prefabs", "images", "presets"],
+                    "enum": ["all", "skills", "modules", "templates", "prefabs", "images", "presets", "cloud_icons"],
                     "default": "all",
                 },
-                "item": {"type": "string", "description": "Optional specific skill/module/prefab name to return full Markdown/Luau/JSON source."},
+                "item": {"type": "string", "description": "Optional specific skill/module/template/prefab/image name to return full Markdown/Luau/JSON source."},
             },
         },
-        "annotations": _ann("Browse Skills, Modules, Prefabs & Assets", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Browse Skills, Modules, Templates, Prefabs & Assets", read_only=True, destructive=False, idempotent=True),
     },
     {
         "name": "install_kit_module",
-        "description": "Install one or all production-verified Luau ModuleScripts (Maid, Signal, NetGuard, TagBinder, SpringUI, StateStore, Assets) from `roblox-kit/modules/` into `ReplicatedStorage.Shared` (or custom Studio container) in a single undoable step.",
+        "description": "Install one or all 12 production-verified Luau ModuleScripts (Maid, Signal, NetGuard, TagBinder, SpringUI, StateStore, Assets, StudUI, StudMotion, CheckUIIcons, FormatNumber, DataStoreSafe) from `roblox-kit/modules/` into `ReplicatedStorage.Shared` (or `ReplicatedStorage`).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "module": {
                     "type": "string",
                     "default": "all",
-                    "description": "Module stem ('Maid', 'Signal', 'NetGuard', 'TagBinder', 'SpringUI', 'StateStore', 'Assets') or 'all'.",
+                    "description": "Module stem ('Maid', 'Signal', 'NetGuard', 'TagBinder', 'SpringUI', 'StateStore', 'Assets', 'StudUI', 'StudMotion', 'CheckUIIcons', 'FormatNumber', 'DataStoreSafe') or 'all'.",
                 },
-                "parent": {"type": "string", "default": "ReplicatedStorage.Shared", "description": "Target Studio folder/service path (auto-creates child Folder if under a Service)."},
+                "parent": {"type": "string", "default": "ReplicatedStorage.Shared", "description": "Target Studio folder/service path."},
                 "peerId": PEER_PROP,
             },
         },
@@ -1263,13 +1263,13 @@ TOOL_SPECS = [
     },
     {
         "name": "spawn_prefab",
-        "description": "Spawn a ready-made lighting preset, modern ScreenGui HUD, world sign board, collectible orb VFX, starter plaza, or interaction pad from `roblox-kit/prefabs/` into Roblox Studio (auto-syncing required repo images first).",
+        "description": "Spawn a ready-made lighting preset, Kenney 9-slice Shop/Fantasy Dialog/Sci-Fi Visor/Input Legend ScreenGui, warm campfire, portal gate, world sign board, collectible orb VFX, starter plaza, or interaction pad from `roblox-kit/prefabs/` into Roblox Studio (auto-syncing required repo images first).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "prefab": {
                     "type": "string",
-                    "description": "Prefab name (e.g. 'lighting_cinematic_sunset', 'lighting_cyber_night', 'lighting_stylized_day', 'hud_modern_shell', 'interact_pad', 'spawn_plaza', 'world_sign_board', 'vfx_collectible_orb') or path to a JSON file.",
+                    "description": "Prefab name (e.g. 'ui_kenney_shop_window', 'ui_fantasy_quest_dialog', 'ui_scifi_hud_visor', 'ui_input_prompt_bar', 'hud_modern_shell', 'lighting_cinematic_sunset', 'lighting_cyber_night', 'lighting_stylized_day', 'vfx_campfire_warm', 'vfx_portal_gate', 'vfx_collectible_orb', 'interact_pad', 'spawn_plaza', 'world_sign_board') or path to a JSON file.",
                 },
                 "parent": {"type": "string", "description": "Optional override parent path (defaults to prefab's defaultParent)."},
                 "position": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "Optional [x, y, z] world offset applied to spawned 3D parts."},
@@ -1279,6 +1279,35 @@ TOOL_SPECS = [
             "required": ["prefab"],
         },
         "annotations": _ann("Spawn 3D / UI / Lighting Prefab", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "install_template",
+        "description": "Install a complete end-to-end Roblox UI screen or full multi-script game system template (`full_stud_ui_suite`, `stud_shop_window`, `stud_hud_shell`, `stud_daily_rewards`, `stud_rebirth_window`, `stud_rarity_index`), automatically installing StudUI/StudMotion/CheckUIIcons modules, generating live editable ScreenGuis in StarterGui, attaching animation controllers, and wiring Server/Client economy scripts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "template": {
+                    "type": "string",
+                    "description": "Template name: 'full_stud_ui_suite', 'stud_shop_window', 'stud_hud_shell', 'stud_daily_rewards', 'stud_rebirth_window', or 'stud_rarity_index'.",
+                },
+                "peerId": PEER_PROP,
+            },
+            "required": ["template"],
+        },
+        "annotations": _ann("Install Full UI / Gameplay System Template", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "search_cloud_icons",
+        "description": "Search 1,022 verified pre-uploaded Roblox `rbxassetid://` UI icons from `CheckUIIcons` by keyword (e.g. 'coin', 'gem', 'potion', 'cat', 'sword', 'crown', 'cart', 'rebirth', 'key') or category. Returns ready-to-use `rbxassetid://` URIs that work immediately in Studio and published multiplayer servers with zero uploads.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "default": "", "description": "Case-insensitive search keywords, e.g. 'golden cat', 'shopping cart', 'potion', 'coin'."},
+                "category": {"type": "string", "description": "Optional top-level folder filter, e.g. 'Main', 'Item', 'Animal', 'Currency', 'UI'."},
+                "limit": {"type": "integer", "default": 40, "minimum": 1, "maximum": 250},
+            },
+        },
+        "annotations": _ann("Search 1,022 Live rbxassetid:// UI Icons", read_only=True, destructive=False, idempotent=True),
     },
 ]
 
@@ -1796,6 +1825,20 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
     if name == "browse_kit":
         return browse_kit_helper(category=args.get("category", "all"), item=args.get("item"))
 
+    if name == "search_cloud_icons":
+        return search_cloud_icons_helper(
+            query=args.get("query", ""),
+            category=args.get("category"),
+            limit=int(args.get("limit", 40)),
+        )
+
+    if name == "install_template":
+        return install_template_helper(
+            client=client,
+            template_name=args["template"],
+            peer_id=peer_id,
+        )
+
     if name == "generate_procedural_image":
         return import_image_helper(
             client=client,
@@ -2089,6 +2132,192 @@ def _find_skills_dir() -> Path:
     return here.parent / ".claude" / "skills"
 
 
+_CLOUD_ICONS_CACHE = None
+
+
+def _load_cloud_icons() -> list:
+    global _CLOUD_ICONS_CACHE
+    if _CLOUD_ICONS_CACHE is not None:
+        return _CLOUD_ICONS_CACHE
+    from image_pipeline import find_kit_root
+
+    icons_file = find_kit_root() / "modules" / "CheckUIIcons.lua"
+    entries = []
+    if icons_file.is_file():
+        src = icons_file.read_text(encoding="utf-8")
+        # Matches FlatMap entries: ["Category/Sub/Icon Name"] = "rbxassetid://1234567890"
+        for m in re.finditer(r'\[\s*"([^"]+)"\s*\]\s*=\s*"rbxassetid://(\d+)"', src):
+            path_key, aid = m.group(1), m.group(2)
+            parts = path_key.split("/")
+            entries.append({
+                "path": path_key,
+                "category": parts[0] if parts else "General",
+                "subCategory": parts[1] if len(parts) > 2 else "",
+                "name": parts[-1],
+                "assetId": int(aid),
+                "uri": f"rbxassetid://{aid}",
+            })
+    _CLOUD_ICONS_CACHE = entries
+    return entries
+
+
+def search_cloud_icons_helper(query: str = "", category: str = None, limit: int = 40) -> dict:
+    all_icons = _load_cloud_icons()
+    cat_counts = {}
+    for ic in all_icons:
+        c = ic["category"]
+        cat_counts[c] = cat_counts.get(c, 0) + 1
+
+    terms = [t.lower() for t in (query or "").strip().split() if t]
+    cat_filter = (category or "").strip().lower()
+    matched = []
+    for ic in all_icons:
+        if cat_filter and ic["category"].lower() != cat_filter:
+            continue
+        hay = ic["path"].lower()
+        if all(t in hay for t in terms):
+            matched.append(ic)
+            if len(matched) >= max(1, min(limit, 250)):
+                break
+
+    return {
+        "totalCatalogIcons": len(all_icons),
+        "query": query or "",
+        "category": category or "all",
+        "returnedCount": len(matched),
+        "categories": cat_counts,
+        "icons": matched,
+    }
+
+
+def _load_templates_manifest() -> list:
+    from image_pipeline import find_kit_root
+
+    manifest_file = find_kit_root() / "templates" / "systems.json"
+    if not manifest_file.is_file():
+        return []
+    try:
+        data = json.loads(manifest_file.read_text(encoding="utf-8"))
+        return data.get("systems", [])
+    except Exception:
+        return []
+
+
+def install_template_helper(client: BridgeClient, template_name: str, peer_id: str = None) -> dict:
+    from image_pipeline import find_kit_root
+
+    kit = find_kit_root()
+    systems = _load_templates_manifest()
+    spec = next((s for s in systems if s.get("name") == template_name), None)
+    if not spec:
+        raise KeyError(
+            f"Unknown template {template_name!r}. Available: {[s.get('name') for s in systems]}"
+        )
+
+    installed_modules = []
+    mod_specs = []
+    for mod_stem in spec.get("modules") or []:
+        mfile = kit / "modules" / f"{mod_stem}.lua"
+        if not mfile.is_file():
+            raise FileNotFoundError(f"Required module missing: {mfile}")
+        mod_specs.append({
+            "name": mod_stem,
+            "className": "ModuleScript",
+            "replaceExisting": True,
+            "source": mfile.read_text(encoding="utf-8"),
+        })
+        installed_modules.append(f"ReplicatedStorage.{mod_stem}")
+
+    if mod_specs:
+        _unwrap_job(client.submit_job("build", {
+            "parent": "ReplicatedStorage",
+            "tree": mod_specs,
+            "select": False,
+        }, note=f"template_modules:{template_name}", wait=45.0, dm="edit", peer_id=peer_id))
+
+    screens_dir = kit / "templates" / "screens"
+    builders = spec.get("builderModules") or []
+    built_screens = []
+    if builders:
+        builder_children = []
+        for bstem in builders:
+            bfile = screens_dir / f"{bstem}.lua"
+            if not bfile.is_file():
+                raise FileNotFoundError(f"Screen builder missing: {bfile}")
+            builder_children.append({
+                "name": bstem,
+                "className": "ModuleScript",
+                "replaceExisting": True,
+                "source": bfile.read_text(encoding="utf-8"),
+            })
+        _unwrap_job(client.submit_job("build", {
+            "parent": "ServerStorage",
+            "tree": [{
+                "name": "StudExamples",
+                "className": "Folder",
+                "replaceExisting": True,
+                "children": builder_children,
+            }],
+            "select": False,
+        }, note=f"template_builders:{template_name}", wait=45.0, dm="edit", peer_id=peer_id))
+
+        controller_src = ""
+        ctrl_file = screens_dir / "06_MenuController.client.lua"
+        if ctrl_file.is_file():
+            controller_src = ctrl_file.read_text(encoding="utf-8")
+
+        attach_list = spec.get("attachMenuControllerTo") or []
+        preview_list = spec.get("enableForPreview") or []
+        luau_lines = [
+            "local RS = game:GetService('ReplicatedStorage')",
+            "local SS = game:GetService('ServerStorage')",
+            "local SG = game:GetService('StarterGui')",
+            "local UI = require(RS:WaitForChild('StudUI'))",
+            "local Icons = require(RS:WaitForChild('CheckUIIcons'))",
+            "local built = {}",
+        ]
+        for bstem in builders:
+            luau_lines.append(
+                f"do local fn = require(SS.StudExamples[{json.dumps(bstem)}]); fn(UI, Icons, SG); table.insert(built, {json.dumps(bstem)}) end"
+            )
+        for modal_name in attach_list:
+            if controller_src:
+                luau_lines.append(
+                    f"do local g = SG:FindFirstChild({json.dumps(modal_name)}); "
+                    f"if g then local old = g:FindFirstChild('MenuController'); if old then old:Destroy() end; "
+                    f"local ls = Instance.new('LocalScript'); ls.Name = 'MenuController'; ls.Source = {json.dumps(controller_src)}; ls.Parent = g end end"
+                )
+        for prev_name in preview_list:
+            luau_lines.append(
+                f"do local g = SG:FindFirstChild({json.dumps(prev_name)}); if g and g:IsA('ScreenGui') then g.Enabled = true end end"
+            )
+        luau_lines.append("return built")
+
+        eval_res = _unwrap_job(client.submit_job("run_luau", {
+            "code": "\n".join(luau_lines),
+        }, note=f"template_generate:{template_name}", wait=45.0, dm="edit", peer_id=peer_id))
+        built_screens = eval_res.get("returned") or eval_res.get("result") or builders
+
+    written_scripts = []
+    for sc in spec.get("scripts") or []:
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": sc["parent"],
+            "name": sc["name"],
+            "className": sc.get("className", "Script"),
+            "source": sc["source"],
+            "replaceInstance": True,
+        }, note=f"template_script:{sc['name']}", wait=30.0, dm="edit", peer_id=peer_id))
+        written_scripts.append(f"{sc['parent']}.{sc['name']}")
+
+    return {
+        "template": template_name,
+        "title": spec.get("title", template_name),
+        "installedModules": installed_modules,
+        "generatedScreens": built_screens,
+        "installedScripts": written_scripts,
+    }
+
+
 def browse_kit_helper(category: str = "all", item: str = None) -> dict:
     from image_pipeline import PROCEDURAL_PRESETS, find_kit_root
 
@@ -2097,6 +2326,7 @@ def browse_kit_helper(category: str = "all", item: str = None) -> dict:
     modules_dir = kit / "modules"
     prefabs_dir = kit / "prefabs"
     images_dir = kit / "assets" / "images"
+    templates = _load_templates_manifest()
 
     if item:
         target = item.strip()
@@ -2109,6 +2339,10 @@ def browse_kit_helper(category: str = "all", item: str = None) -> dict:
         m_file = modules_dir / f"{m_stem}.lua"
         if category in ("all", "modules") and m_file.is_file():
             return {"type": "module", "name": m_stem, "path": str(m_file), "content": m_file.read_text(encoding="utf-8")}
+        # Check template
+        t_spec = next((t for t in templates if t.get("name") == target), None)
+        if category in ("all", "templates") and t_spec is not None:
+            return {"type": "template", "name": target, "spec": t_spec, "content": json.dumps(t_spec, indent=2)}
         # Check prefab
         p_stem = target[:-5] if target.endswith(".json") else target
         p_file = prefabs_dir / f"{p_stem}.json"
@@ -2142,6 +2376,17 @@ def browse_kit_helper(category: str = "all", item: str = None) -> dict:
             {"name": f.stem, "bytes": f.stat().st_size, "path": str(f)}
             for f in sorted(modules_dir.glob("*.lua"))
         ] if modules_dir.is_dir() else []
+    if category in ("all", "templates"):
+        out["templates"] = [
+            {
+                "name": t["name"],
+                "title": t.get("title", t["name"]),
+                "category": t.get("category", "ui-screen"),
+                "description": t.get("description", ""),
+                "modules": t.get("modules", []),
+            }
+            for t in templates
+        ]
     if category in ("all", "prefabs"):
         prefabs = []
         if prefabs_dir.is_dir():
@@ -2159,19 +2404,27 @@ def browse_kit_helper(category: str = "all", item: str = None) -> dict:
         out["prefabs"] = prefabs
     if category in ("all", "images"):
         imgs = []
+        cat_counts = {}
         if images_dir.is_dir():
             for f in sorted(images_dir.rglob("*")):
                 if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp"):
                     rel = f.relative_to(images_dir).as_posix()
+                    pack = rel.split("/")[0] if "/" in rel else "misc"
+                    cat_counts[pack] = cat_counts.get(pack, 0) + 1
                     imgs.append({
                         "name": f.stem,
+                        "pack": pack,
                         "relPath": rel,
                         "localUri": f"rbxasset://arena_assets/{rel}",
                         "bytes": f.stat().st_size,
                     })
         out["images"] = imgs
+        out["imageCategories"] = cat_counts
     if category in ("all", "presets"):
         out["proceduralPresets"] = list(PROCEDURAL_PRESETS.keys())
+    if category in ("all", "cloud_icons"):
+        ci = _load_cloud_icons()
+        out["cloudIconsCount"] = len(ci)
     return out
 
 
