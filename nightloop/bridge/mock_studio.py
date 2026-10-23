@@ -235,7 +235,7 @@ class MockWorld:
         mutating = kind in {
             "build", "write_script", "multi_edit", "set_properties",
             "mass_set_properties", "clone_instance", "reparent_instance", "delete",
-            "terrain", "insert_asset",
+            "terrain", "insert_asset", "import_image",
         } or (kind == "find_replace_scripts" and not p.get("dryRun")) \
           or (kind == "attributes" and p.get("action") in ("set", "delete")) \
           or (kind == "tags" and p.get("action") in ("add", "remove"))
@@ -825,6 +825,43 @@ class MockWorld:
                 "embeddedScriptsFound": 1,
                 "scriptsStripped": strip,
                 "embeddedScripts": embedded,
+            }
+
+        if kind == "import_image":
+            final_uri = p.get("uri") or ""
+            editable_created = bool(p.get("rgbaBase64"))
+            pub_id = 777000111 if (editable_created and p.get("publishStudioAsset")) else None
+            if pub_id:
+                final_uri = f"rbxassetid://{pub_id}"
+            applied_to = None
+            if p.get("targetPath"):
+                target = self.must_resolve(p["targetPath"])
+                mode = p.get("applyMode", "auto")
+                inst_name = p.get("instanceName") or "ImportedImage"
+                if mode == "billboard":
+                    bb = target.add(MockNode(inst_name, "BillboardGui"))
+                    lbl = bb.add(MockNode("Icon", "ImageLabel", {"Image": final_uri}))
+                    applied_to = lbl.full_name()
+                elif mode == "surface_gui":
+                    sg = target.add(MockNode(inst_name, "SurfaceGui"))
+                    lbl = sg.add(MockNode("Poster", "ImageLabel", {"Image": final_uri}))
+                    applied_to = lbl.full_name()
+                elif mode == "screen_gui" or (mode == "auto" and target.name == "StarterGui"):
+                    gui = target.find_child("ImportedImagesGui") or target.add(MockNode("ImportedImagesGui", "ScreenGui"))
+                    lbl = gui.add(MockNode(inst_name, "ImageLabel", {"Image": final_uri}))
+                    applied_to = lbl.full_name()
+                elif mode in ("decal", "texture") or (mode == "auto" and "Part" in target.class_name):
+                    cls_t = "Texture" if mode == "texture" else "Decal"
+                    dec = target.add(MockNode(inst_name, cls_t, {"Texture": final_uri, "Face": p.get("face", "Front")}))
+                    applied_to = dec.full_name()
+                else:
+                    target.props["Image"] = final_uri
+                    applied_to = target.full_name()
+            return {
+                "uri": final_uri,
+                "editableCreated": editable_created,
+                "publishedAssetId": pub_id,
+                "appliedTo": applied_to,
             }
 
         if kind == "playtest":

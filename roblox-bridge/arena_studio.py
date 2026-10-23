@@ -341,6 +341,40 @@ def main() -> int:
     p.add_argument("--label", default=None)
     p.add_argument("--id", dest="snap_id", default=None)
 
+    p = sub.add_parser("import-image", help="import PNG/JPG/BMP/URL/repo image directly into Studio & repo")
+    p.add_argument("source", help="local file path, https:// URL, or repo asset (e.g. ui/icon_coin.png)")
+    p.add_argument("--name", default=None)
+    p.add_argument("--subdir", default="imported")
+    p.add_argument("--target", default=None, help="optional Studio Instance path to apply onto")
+    p.add_argument("--apply-mode", default="auto", choices=["auto", "decal", "texture", "billboard", "surface_gui", "screen_gui"])
+    p.add_argument("--face", default="Front")
+    p.add_argument("--editable", action="store_true", help="hydrate live EditableImage RGBA buffer")
+    p.add_argument("--publish", default="none", choices=["none", "studio", "open_cloud"])
+    p.add_argument("--sync-assets", action="store_true")
+
+    p = sub.add_parser("gen-image", help="generate crisp procedural icon/sprite/texture PNG into repo & Studio")
+    p.add_argument("preset")
+    p.add_argument("--name", default=None)
+    p.add_argument("--size", type=int, default=128)
+    p.add_argument("--primary", default=None)
+    p.add_argument("--secondary", default=None)
+    p.add_argument("--target", default=None)
+    p.add_argument("--apply-mode", default="auto", choices=["auto", "decal", "texture", "billboard", "surface_gui", "screen_gui"])
+
+    p = sub.add_parser("kit", help="browse built-in skills, Luau modules, prefabs, and repo image assets")
+    p.add_argument("category", nargs="?", default="all", choices=["all", "skills", "modules", "prefabs", "images", "presets"])
+    p.add_argument("--item", default=None)
+
+    p = sub.add_parser("install-module", help="install one or 'all' Luau modules from roblox-kit/modules into Studio")
+    p.add_argument("module", nargs="?", default="all")
+    p.add_argument("--parent", default="ReplicatedStorage.Shared")
+
+    p = sub.add_parser("prefab", help="spawn a 3D / UI / VFX / Lighting prefab into Roblox Studio")
+    p.add_argument("name")
+    p.add_argument("--parent", default=None)
+    p.add_argument("--pos", nargs=3, type=float, default=None)
+    p.add_argument("--as", dest="override_name", default=None)
+
     args = ap.parse_args()
     client = BridgeClient(base_url=BASE, token=TOKEN)
 
@@ -684,6 +718,62 @@ def main() -> int:
             "root": args.root,
             "label": args.label,
             "snapshotId": args.snap_id,
+            "peerId": args.peer,
+        }, args.full, args.raw_json)
+
+    if args.cmd == "kit":
+        return show_tool_output("browse_kit", client, "browse_kit", {
+            "category": args.category,
+            "item": args.item,
+        }, True, args.raw_json)
+
+    if args.cmd == "import-image":
+        src = args.source
+        targs = {
+            "name": args.name,
+            "saveSubdir": args.subdir,
+            "targetPath": args.target,
+            "applyMode": args.apply_mode,
+            "face": args.face,
+            "useEditableImage": args.editable,
+            "publishVia": args.publish,
+            "syncAssetsModule": args.sync_assets,
+            "peerId": args.peer,
+        }
+        if src.startswith("http://") or src.startswith("https://"):
+            targs["imageUrl"] = src
+        elif Path(src).is_file():
+            targs["filePath"] = str(Path(src).resolve())
+        else:
+            targs["repoAsset"] = src
+        return show_tool_output("import_image", client, "import_image", targs, args.full, args.raw_json)
+
+    if args.cmd == "gen-image":
+        return show_tool_output("generate_procedural_image", client, "generate_procedural_image", {
+            "preset": args.preset,
+            "name": args.name,
+            "width": args.size,
+            "height": args.size,
+            "primaryColor": args.primary,
+            "secondaryColor": args.secondary,
+            "targetPath": args.target,
+            "applyMode": args.apply_mode,
+            "peerId": args.peer,
+        }, args.full, args.raw_json)
+
+    if args.cmd == "install-module":
+        return show_tool_output("install_kit_module", client, "install_kit_module", {
+            "module": args.module,
+            "parent": args.parent,
+            "peerId": args.peer,
+        }, args.full, args.raw_json)
+
+    if args.cmd == "prefab":
+        return show_tool_output("spawn_prefab", client, "spawn_prefab", {
+            "prefab": args.name,
+            "parent": args.parent,
+            "position": args.pos,
+            "name": args.override_name,
             "peerId": args.peer,
         }, args.full, args.raw_json)
 

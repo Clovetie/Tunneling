@@ -1,0 +1,98 @@
+{
+  "name": "interact_pad",
+  "category": "gameplay",
+  "description": "Illuminated shop/portal/reward pad with ProximityPrompt, PointLight, and floating BillboardGui icon.",
+  "defaultParent": "Workspace",
+  "requiredImages": ["ui/icon_star.png", "vfx/particle_soft_glow.png"],
+  "tree": [
+    {
+      "name": "InteractPad",
+      "className": "Model",
+      "tags": ["InteractPad"],
+      "attributes": { "ActionId": "shop_open", "Cooldown": 1.0 },
+      "children": [
+        {
+          "name": "BaseRim",
+          "className": "Part",
+          "properties": {
+            "Shape": { "__t": "Enum", "v": "PartType.Cylinder" },
+            "Size": { "__t": "Vector3", "v": [0.6, 8, 8] },
+            "CFrame": { "__t": "CFrame", "v": [0, 0.3, 0, 0, 0, 1, 0, 1, 0, -1, 0, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Metal" },
+            "Color": { "__t": "Color3", "v": [0.16, 0.2, 0.26] },
+            "Anchored": true
+          }
+        },
+        {
+          "name": "GlowCore",
+          "className": "Part",
+          "properties": {
+            "Shape": { "__t": "Enum", "v": "PartType.Cylinder" },
+            "Size": { "__t": "Vector3", "v": [0.7, 6.6, 6.6] },
+            "CFrame": { "__t": "CFrame", "v": [0, 0.36, 0, 0, 0, 1, 0, 1, 0, -1, 0, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Neon" },
+            "Color": { "__t": "Color3", "v": [0.22, 0.72, 1.0] },
+            "Anchored": true
+          },
+          "children": [
+            {
+              "name": "PadLight",
+              "className": "PointLight",
+              "properties": {
+                "Brightness": 2.2,
+                "Range": 16,
+                "Color": { "__t": "Color3", "v": [0.22, 0.72, 1.0] }
+              }
+            },
+            {
+              "name": "Prompt",
+              "className": "ProximityPrompt",
+              "properties": {
+                "ActionText": "Interact",
+                "ObjectText": "Station",
+                "HoldDuration": 0,
+                "MaxActivationDistance": 12
+              }
+            },
+            {
+              "name": "FloatingBadge",
+              "className": "BillboardGui",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [0, 140, 0, 64] },
+                "StudsOffset": { "__t": "Vector3", "v": [0, 5.2, 0] },
+                "AlwaysOnTop": true
+              },
+              "children": [
+                {
+                  "name": "BadgeIcon",
+                  "className": "ImageLabel",
+                  "properties": {
+                    "AnchorPoint": { "__t": "Vector2", "v": [0.5, 0] },
+                    "Position": { "__t": "UDim2", "v": [0.5, 0, 0, 0] },
+                    "Size": { "__t": "UDim2", "v": [0, 36, 0, 36] },
+                    "BackgroundTransparency": 1,
+                    "Image": "rbxasset://arena_assets/ui/icon_star.png"
+                  }
+                },
+                {
+                  "name": "Title",
+                  "className": "TextLabel",
+                  "properties": {
+                    "Position": { "__t": "UDim2", "v": [0, 0, 0, 36] },
+                    "Size": { "__t": "UDim2", "v": [1, 0, 0, 26] },
+                    "BackgroundTransparency": 1,
+                    "Text": "REWARDS",
+                    "TextColor3": { "__t": "Color3", "v": [1, 1, 1] },
+                    "TextStrokeTransparency": 0.4,
+                    "TextSize": 18,
+                    "Font": { "__t": "Enum", "v": "Font.GothamBlack" }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

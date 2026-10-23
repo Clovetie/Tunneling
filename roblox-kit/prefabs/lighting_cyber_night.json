@@ -1,0 +1,47 @@
+{
+  "name": "lighting_cyber_night",
+  "category": "lighting",
+  "description": "Crisp neon cyberpunk night lighting with deep blue shadows, punchy emissive bloom, and cool contrast.",
+  "defaultParent": "Lighting",
+  "lightingProperties": {
+    "ClockTime": 0.8,
+    "Brightness": 1.35,
+    "ExposureCompensation": 0.05,
+    "EnvironmentDiffuseScale": 0.85,
+    "EnvironmentSpecularScale": 1.0,
+    "Ambient": { "__t": "Color3", "v": [0.07, 0.1, 0.18] },
+    "OutdoorAmbient": { "__t": "Color3", "v": [0.11, 0.16, 0.28] },
+    "GlobalShadows": true
+  },
+  "tree": [
+    {
+      "name": "CyberAtmosphere",
+      "className": "Atmosphere",
+      "replaceExisting": true,
+      "properties": {
+        "Density": 0.36,
+        "Offset": 0.1,
+        "Color": { "__t": "Color3", "v": [0.15, 0.25, 0.45] },
+        "Decay": { "__t": "Color3", "v": [0.06, 0.09, 0.18] },
+        "Glare": 0.15,
+        "Haze": 2.1
+      }
+    },
+    {
+      "name": "CyberBloom",
+      "className": "BloomEffect",
+      "replaceExisting": true,
+      "properties": { "Intensity": 0.85, "Size": 32, "Threshold": 0.95 }
+    },
+    {
+      "name": "CyberGrade",
+      "className": "ColorCorrectionEffect",
+      "replaceExisting": true,
+      "properties": {
+        "Contrast": 0.14,
+        "Saturation": 0.18,
+        "TintColor": { "__t": "Color3", "v": [0.9, 0.96, 1.0] }
+      }
+    }
+  ]
+}

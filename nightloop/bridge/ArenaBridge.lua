@@ -2431,6 +2431,235 @@ handlers["console"] = function(p)
 end
 
 ------------------------------------------------------------------------------
+-- Direct Image Import (Local `rbxasset://`, `EditableImage` RGBA, Cloud Publish)
+------------------------------------------------------------------------------
+
+local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local B64_DEC: { [number]: number } = {}
+for idx = 1, #B64_ALPHABET do
+	B64_DEC[string.byte(B64_ALPHABET, idx)] = idx - 1
+end
+
+local function decodeBase64ToBuffer(b64: string, expectedBytes: number): buffer
+	local buf = buffer.create(expectedBytes)
+	local outIdx = 0
+	local acc = 0
+	local vals = 0
+	local n = #b64
+	for i = 1, n do
+		local c = B64_DEC[string.byte(b64, i)]
+		if c ~= nil then
+			acc = acc * 64 + c
+			vals = vals + 1
+			if vals == 4 then
+				local b1 = math.floor(acc / 65536) % 256
+				local b2 = math.floor(acc / 256) % 256
+				local b3 = acc % 256
+				if outIdx < expectedBytes then
+					buffer.writeu8(buf, outIdx, b1)
+					outIdx = outIdx + 1
+				end
+				if outIdx < expectedBytes then
+					buffer.writeu8(buf, outIdx, b2)
+					outIdx = outIdx + 1
+				end
+				if outIdx < expectedBytes then
+					buffer.writeu8(buf, outIdx, b3)
+					outIdx = outIdx + 1
+				end
+				acc = 0
+				vals = 0
+			end
+		end
+	end
+	if vals == 3 and outIdx < expectedBytes then
+		local t = acc * 64
+		buffer.writeu8(buf, outIdx, math.floor(t / 65536) % 256)
+		outIdx = outIdx + 1
+		if outIdx < expectedBytes then
+			buffer.writeu8(buf, outIdx, math.floor(t / 256) % 256)
+		end
+	elseif vals == 2 and outIdx < expectedBytes then
+		local t = acc * 4096
+		buffer.writeu8(buf, outIdx, math.floor(t / 65536) % 256)
+	end
+	return buf
+end
+
+local function applyImageToGuiOrSurface(inst: Instance, finalUri: string, editable: any, preferEditable: boolean)
+	if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+		if editable ~= nil and (preferEditable or finalUri == "") then
+			pcall(function()
+				(inst :: any).ImageContent = Content.fromObject(editable)
+			end)
+		end
+		if finalUri ~= "" and not preferEditable then
+			(inst :: any).Image = finalUri
+		end
+	elseif inst:IsA("Decal") or inst:IsA("Texture") or inst:IsA("ParticleEmitter") then
+		if editable ~= nil and (preferEditable or finalUri == "") and inst:IsA("Decal") then
+			pcall(function()
+				(inst :: any).ColorMapContent = Content.fromObject(editable)
+			end)
+		end
+		if finalUri ~= "" and not preferEditable then
+			(inst :: any).Texture = finalUri
+		end
+	elseif inst:IsA("MeshPart") then
+		if editable ~= nil and (preferEditable or finalUri == "") then
+			pcall(function()
+				(inst :: any).TextureContent = Content.fromObject(editable)
+			end)
+		elseif finalUri ~= "" then
+			(inst :: any).TextureID = finalUri
+		end
+	end
+end
+
+handlers["import_image"] = function(p)
+	local AssetService = game:GetService("AssetService")
+	local finalUri = tostring(p.uri or "")
+	local preferEditable = p.preferEditable == true
+	local editable: any = nil
+	local publishedAssetId: any = nil
+	local publishWarning: string? = nil
+
+	if type(p.rgbaBase64) == "string" and #p.rgbaBase64 > 0 then
+		local w = math.clamp(math.floor(tonumber(p.width) or 64), 1, 1024)
+		local h = math.clamp(math.floor(tonumber(p.height) or 64), 1, 1024)
+		local pixBuf = decodeBase64ToBuffer(p.rgbaBase64, w * h * 4)
+		local okEd, createdEd = pcall(function()
+			local ed = AssetService:CreateEditableImage({ Size = Vector2.new(w, h) })
+			ed:WritePixelsBuffer(Vector2.new(0, 0), Vector2.new(w, h), pixBuf)
+			return ed
+		end)
+		if okEd and createdEd then
+			editable = createdEd
+			if p.publishStudioAsset == true then
+				local okPub, statusOrErr, newAssetId = pcall(function()
+					return AssetService:CreateAssetAsync(editable, Enum.AssetType.Image, {
+						Name = tostring(p.displayName or "ImportedImage"),
+						Description = tostring(p.description or "Imported via Studio MCP"),
+					})
+				end)
+				if okPub and newAssetId then
+					publishedAssetId = newAssetId
+					finalUri = "rbxassetid://" .. tostring(newAssetId)
+					preferEditable = false
+				else
+					publishWarning = tostring(statusOrErr)
+				end
+			end
+		else
+			publishWarning = tostring(createdEd)
+		end
+	end
+
+	local appliedTo: string? = nil
+	if type(p.targetPath) == "string" and p.targetPath ~= "" then
+		local target = mustResolve(p.targetPath)
+		local mode = tostring(p.applyMode or "auto")
+		local instName = tostring(p.instanceName or "ImportedImage")
+		local faceEnum = (Enum.NormalId :: any)[tostring(p.face or "Front")] or Enum.NormalId.Front
+
+		if mode == "decal" or (mode == "auto" and target:IsA("BasePart")) then
+			local existing = target:FindFirstChild(instName)
+			local decal = (existing and existing:IsA("Decal")) and existing or Instance.new("Decal")
+			decal.Name = instName
+			decal.Face = faceEnum
+			decal.Parent = target
+			applyImageToGuiOrSurface(decal, finalUri, editable, preferEditable)
+			appliedTo = fullName(decal)
+		elseif mode == "texture" then
+			local existing = target:FindFirstChild(instName)
+			local tex = (existing and existing:IsA("Texture")) and existing or Instance.new("Texture")
+			tex.Name = instName
+			tex.Face = faceEnum
+			tex.StudsPerTileU = tonumber(p.studsPerTileU) or 4
+			tex.StudsPerTileV = tonumber(p.studsPerTileV) or 4
+			tex.Parent = target
+			applyImageToGuiOrSurface(tex, finalUri, editable, preferEditable)
+			appliedTo = fullName(tex)
+		elseif mode == "billboard" then
+			local existing = target:FindFirstChild(instName)
+			if existing then
+				existing:Destroy()
+			end
+			local bb = Instance.new("BillboardGui")
+			bb.Name = instName
+			bb.Size = UDim2.new(0, tonumber(p.pixelWidth) or 128, 0, tonumber(p.pixelHeight) or 128)
+			bb.StudsOffset = Vector3.new(0, tonumber(p.studsOffsetY) or 4, 0)
+			bb.AlwaysOnTop = true
+			bb.Parent = target
+			local lbl = Instance.new("ImageLabel")
+			lbl.Name = "Icon"
+			lbl.Size = UDim2.new(1, 0, 1, 0)
+			lbl.BackgroundTransparency = 1
+			lbl.ScaleType = Enum.ScaleType.Fit
+			lbl.Parent = bb
+			applyImageToGuiOrSurface(lbl, finalUri, editable, preferEditable)
+			appliedTo = fullName(lbl)
+		elseif mode == "surface_gui" then
+			local existing = target:FindFirstChild(instName)
+			if existing then
+				existing:Destroy()
+			end
+			local sg = Instance.new("SurfaceGui")
+			sg.Name = instName
+			sg.Face = faceEnum
+			sg.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+			sg.PixelsPerStud = 64
+			sg.Parent = target
+			local lbl = Instance.new("ImageLabel")
+			lbl.Name = "Poster"
+			lbl.Size = UDim2.new(1, 0, 1, 0)
+			lbl.BackgroundTransparency = 1
+			lbl.ScaleType = Enum.ScaleType.Fit
+			lbl.Parent = sg
+			applyImageToGuiOrSurface(lbl, finalUri, editable, preferEditable)
+			appliedTo = fullName(lbl)
+		elseif mode == "screen_gui" or (mode == "auto" and target == game:GetService("StarterGui")) then
+			local guiParent = target:IsA("ScreenGui") and target or (function()
+				local found = target:FindFirstChild("ImportedImagesGui")
+				if found and found:IsA("ScreenGui") then
+					return found
+				end
+				local g = Instance.new("ScreenGui")
+				g.Name = "ImportedImagesGui"
+				g.ResetOnSpawn = false
+				g.Parent = target
+				return g
+			end)()
+			local old = guiParent:FindFirstChild(instName)
+			if old then
+				old:Destroy()
+			end
+			local lbl = Instance.new("ImageLabel")
+			lbl.Name = instName
+			lbl.AnchorPoint = Vector2.new(0.5, 0.5)
+			lbl.Position = UDim2.new(0.5, 0, 0.5, 0)
+			lbl.Size = UDim2.new(0, tonumber(p.pixelWidth) or 192, 0, tonumber(p.pixelHeight) or 192)
+			lbl.BackgroundTransparency = 1
+			lbl.ScaleType = Enum.ScaleType.Fit
+			lbl.Parent = guiParent
+			applyImageToGuiOrSurface(lbl, finalUri, editable, preferEditable)
+			appliedTo = fullName(lbl)
+		else
+			applyImageToGuiOrSurface(target, finalUri, editable, preferEditable)
+			appliedTo = fullName(target)
+		end
+	end
+
+	return {
+		uri = finalUri,
+		editableCreated = editable ~= nil,
+		publishedAssetId = publishedAssetId,
+		appliedTo = appliedTo,
+		warning = publishWarning,
+	}
+end
+
+------------------------------------------------------------------------------
 -- Read-only classification & ChangeHistoryService wrapper
 ------------------------------------------------------------------------------
 

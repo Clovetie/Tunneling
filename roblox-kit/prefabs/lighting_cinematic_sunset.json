@@ -1,0 +1,55 @@
+{
+  "name": "lighting_cinematic_sunset",
+  "category": "lighting",
+  "description": "Warm golden-hour lighting with Future shadows, atmospheric haze, subtle bloom, and sun rays.",
+  "defaultParent": "Lighting",
+  "lightingProperties": {
+    "ClockTime": 17.6,
+    "GeographicLatitude": 34.0,
+    "Brightness": 2.4,
+    "ExposureCompensation": 0.12,
+    "EnvironmentDiffuseScale": 1.0,
+    "EnvironmentSpecularScale": 1.0,
+    "Ambient": { "__t": "Color3", "v": [0.22, 0.18, 0.25] },
+    "OutdoorAmbient": { "__t": "Color3", "v": [0.46, 0.35, 0.32] },
+    "ColorShift_Top": { "__t": "Color3", "v": [1.0, 0.72, 0.44] },
+    "GlobalShadows": true
+  },
+  "tree": [
+    {
+      "name": "SunsetAtmosphere",
+      "className": "Atmosphere",
+      "replaceExisting": true,
+      "properties": {
+        "Density": 0.31,
+        "Offset": 0.18,
+        "Color": { "__t": "Color3", "v": [0.98, 0.72, 0.52] },
+        "Decay": { "__t": "Color3", "v": [0.44, 0.28, 0.34] },
+        "Glare": 0.35,
+        "Haze": 1.8
+      }
+    },
+    {
+      "name": "SunsetBloom",
+      "className": "BloomEffect",
+      "replaceExisting": true,
+      "properties": { "Intensity": 0.45, "Size": 26, "Threshold": 1.35 }
+    },
+    {
+      "name": "SunsetColorGrade",
+      "className": "ColorCorrectionEffect",
+      "replaceExisting": true,
+      "properties": {
+        "Contrast": 0.08,
+        "Saturation": 0.12,
+        "TintColor": { "__t": "Color3", "v": [1.0, 0.96, 0.92] }
+      }
+    },
+    {
+      "name": "SunsetRays",
+      "className": "SunRaysEffect",
+      "replaceExisting": true,
+      "properties": { "Intensity": 0.11, "Spread": 0.65 }
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "name": "spawn_plaza",
+  "category": "architecture",
+  "description": "Clean architectural starter plaza (32x32 studs) with grid-textured deck, neon border trim, corner light pillars, and neutral SpawnLocation.",
+  "defaultParent": "Workspace",
+  "requiredImages": ["textures/grid_dark_1m.png"],
+  "tree": [
+    {
+      "name": "SpawnPlaza",
+      "className": "Model",
+      "children": [
+        {
+          "name": "Deck",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [32, 1.5, 32] },
+            "Position": { "__t": "Vector3", "v": [0, 0.75, 0] },
+            "Material": { "__t": "Enum", "v": "Material.SmoothPlastic" },
+            "Color": { "__t": "Color3", "v": [0.14, 0.17, 0.22] },
+            "Anchored": true
+          },
+          "children": [
+            {
+              "name": "TopGrid",
+              "className": "Texture",
+              "properties": {
+                "Face": { "__t": "Enum", "v": "NormalId.Top" },
+                "Texture": "rbxasset://arena_assets/textures/grid_dark_1m.png",
+                "StudsPerTileU": 4,
+                "StudsPerTileV": 4,
+                "Transparency": 0.25
+              }
+            }
+          ]
+        },
+        {
+          "name": "SpawnPad",
+          "className": "SpawnLocation",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [8, 0.4, 8] },
+            "Position": { "__t": "Vector3", "v": [0, 1.7, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Neon" },
+            "Color": { "__t": "Color3", "v": [0.24, 0.65, 1.0] },
+            "Neutral": true,
+            "Anchored": true
+          }
+        },
+        {
+          "name": "PillarNW",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [1.5, 10, 1.5] },
+            "Position": { "__t": "Vector3", "v": [-14.5, 6.5, -14.5] },
+            "Material": { "__t": "Enum", "v": "Material.Metal" },
+            "Color": { "__t": "Color3", "v": [0.22, 0.26, 0.34] },
+            "Anchored": true
+          }
+        },
+        {
+          "name": "PillarNE",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [1.5, 10, 1.5] },
+            "Position": { "__t": "Vector3", "v": [14.5, 6.5, -14.5] },
+            "Material": { "__t": "Enum", "v": "Material.Metal" },
+            "Color": { "__t": "Color3", "v": [0.22, 0.26, 0.34] },
+            "Anchored": true
+          }
+        }
+      ]
+    }
+  ]
+}

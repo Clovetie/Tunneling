@@ -197,10 +197,10 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         self.assertEqual(st_n, 202)
         self.assertIsNone(body_n)
 
-        # Tools list returns all 37 annotated tools
+        # Tools list returns all 43 annotated tools
         _, list_resp, _ = self.mcp_http({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, auth_mode="header")
         tools = list_resp["result"]["tools"]
-        self.assertEqual(len(tools), 37)
+        self.assertEqual(len(tools), 43)
         self.assertEqual(len(tools), len(TOOL_SPECS))
         for t in tools:
             self.assertIn("annotations", t)
@@ -454,12 +454,54 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             boot_data = json.loads(boot_resp.read().decode("utf-8"))
             self.assertTrue(boot_data["local"])
             self.assertEqual(boot_data["token"], self.token)
-            self.assertEqual(len(boot_data["tools"]), 37)
+            self.assertEqual(len(boot_data["tools"]), 43)
 
         with urllib.request.urlopen(f"{self.base_url}/api/agent-guide", timeout=5) as guide_resp:
             guide_data = json.loads(guide_resp.read().decode("utf-8"))
-            self.assertEqual(guide_data["toolCounts"]["total"], 37)
+            self.assertEqual(guide_data["toolCounts"]["total"], 43)
             self.assertGreaterEqual(len(guide_data["keyTips"]), 5)
+
+        # 8. Direct Image Import (base64 + repo asset), Studio Kit Modules, Prefabs & Skills
+        kit_all = self.call_tool("browse_kit", {"category": "all"})
+        self.assertGreaterEqual(len(kit_all["skills"]), 6)
+        self.assertGreaterEqual(len(kit_all["modules"]), 7)
+        self.assertGreaterEqual(len(kit_all["prefabs"]), 8)
+        self.assertGreaterEqual(len(kit_all["images"]), 26)
+
+        _, skill_read, _ = self.mcp_http({
+            "jsonrpc": "2.0",
+            "id": "sk1",
+            "method": "resources/read",
+            "params": {"uri": "skill://roblox-ui-and-images"},
+        })
+        self.assertIn("Direct Image Import", skill_read["result"]["contents"][0]["text"])
+
+        with urllib.request.urlopen(f"{self.base_url}/api/kit/image/ui/icon_coin.png", timeout=5) as png_resp:
+            png_bytes = png_resp.read()
+            self.assertEqual(png_bytes[:8], b"\x89PNG\r\n\x1a\n")
+
+        import base64 as _b64
+        from image_pipeline import encode_png_rgba, generate_procedural_rgba
+        w, h, rgba = generate_procedural_rgba("icon_gem", 32, 32)
+        b64_uri = "data:image/png;base64," + _b64.b64encode(encode_png_rgba(w, h, rgba)).decode("ascii")
+
+        imp_res = self.call_tool("import_image", {
+            "base64Data": b64_uri,
+            "name": "test_badge_gem",
+            "saveToRepo": False,
+            "useEditableImage": True,
+            "targetPath": "Workspace.Baseplate",
+            "applyMode": "billboard",
+        })
+        self.assertEqual(imp_res["width"], 32)
+        self.assertTrue(imp_res["studioApplied"]["editableCreated"])
+        self.assertEqual(imp_res["studioApplied"]["appliedTo"], "Workspace.Baseplate.test_badge_gem.Icon")
+
+        mod_res = self.call_tool("install_kit_module", {"module": "all", "parent": "ReplicatedStorage.Shared"})
+        self.assertGreaterEqual(mod_res["count"], 7)
+
+        prefab_res = self.call_tool("spawn_prefab", {"prefab": "hud_modern_shell"})
+        self.assertEqual(prefab_res["created"], ["StarterGui.ModernHUD"])
 
     def test_03_mcp_stdio_ndjson_and_lsp_framing_plus_readonly_mode(self):
         env = dict(os.environ)
@@ -545,7 +587,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             msg = json.loads(line)
             self.assertEqual(msg["id"], 201)
             self.assertFalse(msg["result"]["isError"])
-            self.assertEqual(msg["result"]["structuredContent"]["bridge"]["mcp_tools"], 37)
+            self.assertEqual(msg["result"]["structuredContent"]["bridge"]["mcp_tools"], 43)
         finally:
             proc.stdin.close()
             proc.stdout.close()

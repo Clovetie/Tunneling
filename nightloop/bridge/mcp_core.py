@@ -38,8 +38,12 @@ KNOWN_ROBLOX_GLOBALS = {
     "game", "workspace", "script", "plugin", "version", "loadstring",
     "Enum", "Instance", "CFrame", "Vector3", "Vector2", "Color3", "UDim2",
     "UDim", "TweenInfo", "RaycastParams", "Random", "NumberSequence",
-    "NumberRange", "ColorSequence", "BrickColor", "Ray", "Region3", "Rect",
-    "Font", "task", "warn", "print", "wait", "spawn", "delay", "tick", "time",
+    "NumberSequenceKeypoint", "NumberRange", "ColorSequence",
+    "ColorSequenceKeypoint", "BrickColor", "Ray", "Region3", "Rect",
+    "Font", "Content", "vector", "CatalogSearchParams", "DockWidgetPluginGuiInfo",
+    "PathWaypoint", "FloatCurveKey", "RotationCurveKey", "SharedTable",
+    "SecurityCapabilities", "UserSettings", "elapsedTime",
+    "task", "warn", "print", "wait", "spawn", "delay", "tick", "time",
     "typeof", "require", "shared", "settings", "DateTime", "PhysicalProperties",
     "OverlapParams", "Axes", "Faces", "debug", "utf8", "bit32", "buffer",
     "os", "math", "string", "table", "coroutine", "select", "unpack",
@@ -1153,6 +1157,129 @@ TOOL_SPECS = [
         },
         "annotations": _ann("Manage Script Snapshots & Rollback", read_only=False, destructive=False, idempotent=False),
     },
+    # ------------------------------------------------------------------
+    # 9. DIRECT IMAGE IMPORT, PROCEDURAL ASSETS & STUDIO KIT (6 tools)
+    # ------------------------------------------------------------------
+    {
+        "name": "import_image",
+        "description": "Import an image directly into Roblox Studio and the repo asset library from a local file path, base64 payload (great over tunnels), HTTPS URL, built-in repo asset, or procedural preset. Supports zero-key local Studio `rbxasset://arena_assets/...` installation, live `EditableImage` RGBA pixel transfer, Studio `CreateAssetAsync` cloud publishing, and headless Open Cloud `rbxassetid://` upload, plus optional 1-step placement onto an ImageLabel, Decal, Texture, BillboardGui, SurfaceGui, or ScreenGui.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filePath": {"type": "string", "description": "Local file path (.png, .jpg, .jpeg, .bmp, etc.)."},
+                "base64Data": {"type": "string", "description": "Base64-encoded PNG/JPEG/BMP bytes (accepts raw base64 or data:image/...;base64,... URI)."},
+                "imageUrl": {"type": "string", "description": "HTTP/HTTPS URL to fetch image bytes from."},
+                "repoAsset": {"type": "string", "description": "Relative path inside roblox-kit/assets/images/ (e.g. 'ui/icon_coin.png')."},
+                "proceduralPreset": {"type": "string", "description": "Optional procedural preset name (e.g. 'icon_coin', 'icon_gem', 'particle_spark_star', 'grid_dark_1m')."},
+                "name": {"type": "string", "description": "Clean asset name/filename stem (e.g. 'shop_banner' or 'icon_potion')."},
+                "saveSubdir": {"type": "string", "default": "imported", "description": "Subfolder under roblox-kit/assets/images/ when saving to repo ('ui', 'vfx', 'textures', 'imported')."},
+                "saveToRepo": {"type": "boolean", "default": True, "description": "Save image into roblox-kit/assets/images/ and update Assets.lua."},
+                "useEditableImage": {"type": "boolean", "default": False, "description": "Force live RGBA buffer hydration into a Studio EditableImage via Content.fromObject."},
+                "publishVia": {"type": "string", "enum": ["none", "studio", "open_cloud"], "default": "none", "description": "Optional cloud publish mode to mint a permanent `rbxassetid://<id>`."},
+                "apiKey": {"type": "string", "description": "Optional Open Cloud API key override (defaults to ROBLOX_API_KEY env var)."},
+                "creatorId": {"type": "string", "description": "Optional Roblox UserId or GroupId override (defaults to ROBLOX_CREATOR_ID env var)."},
+                "creatorType": {"type": "string", "enum": ["user", "group"], "default": "user"},
+                "targetPath": {"type": "string", "description": "Optional Studio Instance path to apply or attach the imported image to (e.g. 'Workspace.SignPart', 'StarterGui')."},
+                "applyMode": {"type": "string", "enum": ["auto", "decal", "texture", "billboard", "surface_gui", "screen_gui"], "default": "auto"},
+                "instanceName": {"type": "string", "description": "Name of child Decal/Texture/BillboardGui/SurfaceGui/ImageLabel created when applying."},
+                "face": {"type": "string", "enum": ["Front", "Back", "Top", "Bottom", "Left", "Right"], "default": "Front"},
+                "syncAssetsModule": {"type": "boolean", "default": False, "description": "Also write updated Assets.lua into ReplicatedStorage.Shared.Assets in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Import Image Directly into Studio & Repo", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "import_images_batch",
+        "description": "Batch-import all images in a directory (or explicit file list) into the repo asset vault, local Studio `rbxasset://arena_assets/...` content folder, and `Assets.lua` manifest.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string", "description": "Directory containing .png/.jpg/.jpeg/.bmp files (defaults to roblox-kit/assets/images)."},
+                "files": {"type": "array", "items": {"type": "string"}, "description": "Optional explicit file paths instead of scanning directory."},
+                "saveSubdir": {"type": "string", "default": "imported"},
+                "syncAssetsModule": {"type": "boolean", "default": True, "description": "Push regenerated Assets ModuleScript to ReplicatedStorage.Shared.Assets in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Batch Import Image Folder into Studio", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "generate_procedural_image",
+        "description": "Synthesize a crisp transparent PNG icon, UI 9-slice panel, crosshair, VFX sprite, or seamless world texture at any resolution up to 512x512, save to repo, and optionally apply in Studio.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "description": "Preset name: icon_coin, icon_gem, icon_shield, icon_sword, icon_heart, icon_star, icon_bolt, icon_lock, icon_gear, icon_crown, icon_check, icon_close, panel_glass_9slice, vignette_soft, crosshair_dot, radial_ring, particle_soft_glow, particle_spark_star, particle_smoke_puff, particle_shockwave_ring, beam_energy_streak, grid_dark_1m, grid_accent_orange, hazard_stripes, brushed_metal_noise, scifi_panel_tile.",
+                },
+                "name": {"type": "string", "description": "Output asset name (defaults to preset name)."},
+                "width": {"type": "integer", "default": 128, "minimum": 8, "maximum": 512},
+                "height": {"type": "integer", "default": 128, "minimum": 8, "maximum": 512},
+                "primaryColor": {"type": "string", "description": "Hex color e.g. '#FFD43B'."},
+                "secondaryColor": {"type": "string", "description": "Hex color e.g. '#F08C00'."},
+                "saveSubdir": {"type": "string", "default": "generated"},
+                "targetPath": {"type": "string", "description": "Optional Studio path to immediately apply image onto."},
+                "applyMode": {"type": "string", "enum": ["auto", "decal", "texture", "billboard", "surface_gui", "screen_gui"], "default": "auto"},
+                "peerId": PEER_PROP,
+            },
+            "required": ["preset"],
+        },
+        "annotations": _ann("Generate Procedural UI/VFX/Surface PNG", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "browse_kit",
+        "description": "List or read built-in Roblox Studio Skills (.claude/skills), reusable Luau Modules (roblox-kit/modules), 3D/UI/Lighting Prefabs (roblox-kit/prefabs), and Repo Image Assets (roblox-kit/assets).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["all", "skills", "modules", "prefabs", "images", "presets"],
+                    "default": "all",
+                },
+                "item": {"type": "string", "description": "Optional specific skill/module/prefab name to return full Markdown/Luau/JSON source."},
+            },
+        },
+        "annotations": _ann("Browse Skills, Modules, Prefabs & Assets", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "install_kit_module",
+        "description": "Install one or all production-verified Luau ModuleScripts (Maid, Signal, NetGuard, TagBinder, SpringUI, StateStore, Assets) from `roblox-kit/modules/` into `ReplicatedStorage.Shared` (or custom Studio container) in a single undoable step.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "module": {
+                    "type": "string",
+                    "default": "all",
+                    "description": "Module stem ('Maid', 'Signal', 'NetGuard', 'TagBinder', 'SpringUI', 'StateStore', 'Assets') or 'all'.",
+                },
+                "parent": {"type": "string", "default": "ReplicatedStorage.Shared", "description": "Target Studio folder/service path (auto-creates child Folder if under a Service)."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Install Reusable Luau Kit Modules", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "spawn_prefab",
+        "description": "Spawn a ready-made lighting preset, modern ScreenGui HUD, world sign board, collectible orb VFX, starter plaza, or interaction pad from `roblox-kit/prefabs/` into Roblox Studio (auto-syncing required repo images first).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prefab": {
+                    "type": "string",
+                    "description": "Prefab name (e.g. 'lighting_cinematic_sunset', 'lighting_cyber_night', 'lighting_stylized_day', 'hud_modern_shell', 'interact_pad', 'spawn_plaza', 'world_sign_board', 'vfx_collectible_orb') or path to a JSON file.",
+                },
+                "parent": {"type": "string", "description": "Optional override parent path (defaults to prefab's defaultParent)."},
+                "position": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "Optional [x, y, z] world offset applied to spawned 3D parts."},
+                "name": {"type": "string", "description": "Optional override root Instance name."},
+                "peerId": PEER_PROP,
+            },
+            "required": ["prefab"],
+        },
+        "annotations": _ann("Spawn 3D / UI / Lighting Prefab", read_only=False, destructive=False, idempotent=False),
+    },
 ]
 
 TOOL_MAP = {t["name"]: t for t in TOOL_SPECS}
@@ -1666,6 +1793,44 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
                 restored.append(entry["path"])
             return {"restoredSnapshot": args["snapshotId"], "restoredCount": len(restored), "paths": restored}
 
+    if name == "browse_kit":
+        return browse_kit_helper(category=args.get("category", "all"), item=args.get("item"))
+
+    if name == "generate_procedural_image":
+        return import_image_helper(
+            client=client,
+            args={
+                "proceduralPreset": args["preset"],
+                "name": args.get("name") or args["preset"],
+                "width": args.get("width", 128),
+                "height": args.get("height", 128),
+                "primaryColor": args.get("primaryColor"),
+                "secondaryColor": args.get("secondaryColor"),
+                "saveSubdir": args.get("saveSubdir", "generated"),
+                "saveToRepo": True,
+                "targetPath": args.get("targetPath"),
+                "applyMode": args.get("applyMode", "auto"),
+            },
+            peer_id=peer_id,
+        )
+
+    if name == "import_image":
+        return import_image_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "import_images_batch":
+        return import_images_batch_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "install_kit_module":
+        return install_kit_module_helper(
+            client=client,
+            module_name=args.get("module", "all"),
+            parent_path=args.get("parent", "ReplicatedStorage.Shared"),
+            peer_id=peer_id,
+        )
+
+    if name == "spawn_prefab":
+        return spawn_prefab_helper(client=client, args=args, peer_id=peer_id)
+
     raise KeyError(f"Unknown tool: {name}")
 
 
@@ -1832,7 +1997,7 @@ RESOURCE_TEMPLATES = [
     {
         "uriTemplate": "studio://scripts/{path}",
         "name": "Live Script Source by Path",
-        "description": "Read live Luau source code for any dot-separated script path (e.g. studio://scripts/ServerScriptService.NightLoop.Config).",
+        "description": "Read live Luau source code for any dot-separated script path (e.g. studio://scripts/ServerScriptService.Main).",
         "mimeType": "text/x-luau",
     },
     {
@@ -1840,6 +2005,12 @@ RESOURCE_TEMPLATES = [
         "name": "Instance Subtree & Properties",
         "description": "Inspect properties, attributes, tags, and immediate children of any Instance path.",
         "mimeType": "application/json",
+    },
+    {
+        "uriTemplate": "skill://{name}",
+        "name": "Roblox Studio Agent Skill Markdown",
+        "description": "Read full Markdown instructions for any built-in skill in `.claude/skills/{name}/SKILL.md`.",
+        "mimeType": "text/markdown",
     },
 ]
 
@@ -1899,7 +2070,456 @@ def read_mcp_resource(client: BridgeClient, uri: str) -> dict:
         path = uri[len("studio://instance/") :]
         data = execute_tool(client, "inspect_instance", {"path": path, "depth": 2})
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
+    if uri.startswith("skill://"):
+        skill_name = uri[len("skill://") :].strip("/")
+        data = browse_kit_helper(category="skills", item=skill_name)
+        return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": data.get("content", "")}]}
     raise KeyError(f"Unknown resource URI: {uri}")
+
+
+# ---------------------------------------------------------------------------
+# Direct Image Import, Procedural Asset & Studio Kit Helpers
+# ---------------------------------------------------------------------------
+
+def _find_skills_dir() -> Path:
+    here = Path(__file__).resolve().parent
+    for cand in (here.parent / ".claude" / "skills", here.parent.parent / ".claude" / "skills"):
+        if cand.is_dir():
+            return cand
+    return here.parent / ".claude" / "skills"
+
+
+def browse_kit_helper(category: str = "all", item: str = None) -> dict:
+    from image_pipeline import PROCEDURAL_PRESETS, find_kit_root
+
+    kit = find_kit_root()
+    skills_dir = _find_skills_dir()
+    modules_dir = kit / "modules"
+    prefabs_dir = kit / "prefabs"
+    images_dir = kit / "assets" / "images"
+
+    if item:
+        target = item.strip()
+        # Check skill
+        s_file = skills_dir / target / "SKILL.md"
+        if category in ("all", "skills") and s_file.is_file():
+            return {"type": "skill", "name": target, "path": str(s_file), "content": s_file.read_text(encoding="utf-8")}
+        # Check Luau module
+        m_stem = target[:-4] if target.endswith(".lua") else target
+        m_file = modules_dir / f"{m_stem}.lua"
+        if category in ("all", "modules") and m_file.is_file():
+            return {"type": "module", "name": m_stem, "path": str(m_file), "content": m_file.read_text(encoding="utf-8")}
+        # Check prefab
+        p_stem = target[:-5] if target.endswith(".json") else target
+        p_file = prefabs_dir / f"{p_stem}.json"
+        if category in ("all", "prefabs") and p_file.is_file():
+            raw = p_file.read_text(encoding="utf-8")
+            return {"type": "prefab", "name": p_stem, "path": str(p_file), "spec": json.loads(raw), "content": raw}
+        # Check repo image asset
+        img_cand = images_dir / target
+        if category in ("all", "images") and img_cand.is_file():
+            rel = img_cand.relative_to(images_dir).as_posix()
+            return {
+                "type": "image",
+                "name": img_cand.stem,
+                "relPath": rel,
+                "localUri": f"rbxasset://arena_assets/{rel}",
+                "bytes": img_cand.stat().st_size,
+            }
+        raise KeyError(f"Kit item not found: {target}")
+
+    out = {"kitRoot": str(kit)}
+    if category in ("all", "skills"):
+        skills = []
+        if skills_dir.is_dir():
+            for d in sorted(skills_dir.iterdir()):
+                md = d / "SKILL.md"
+                if d.is_dir() and md.is_file():
+                    skills.append({"name": d.name, "uri": f"skill://{d.name}", "path": str(md)})
+        out["skills"] = skills
+    if category in ("all", "modules"):
+        out["modules"] = [
+            {"name": f.stem, "bytes": f.stat().st_size, "path": str(f)}
+            for f in sorted(modules_dir.glob("*.lua"))
+        ] if modules_dir.is_dir() else []
+    if category in ("all", "prefabs"):
+        prefabs = []
+        if prefabs_dir.is_dir():
+            for f in sorted(prefabs_dir.glob("*.json")):
+                try:
+                    spec = json.loads(f.read_text(encoding="utf-8"))
+                except Exception:
+                    spec = {}
+                prefabs.append({
+                    "name": f.stem,
+                    "category": spec.get("category", "general"),
+                    "description": spec.get("description", ""),
+                    "defaultParent": spec.get("defaultParent", "Workspace"),
+                })
+        out["prefabs"] = prefabs
+    if category in ("all", "images"):
+        imgs = []
+        if images_dir.is_dir():
+            for f in sorted(images_dir.rglob("*")):
+                if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp"):
+                    rel = f.relative_to(images_dir).as_posix()
+                    imgs.append({
+                        "name": f.stem,
+                        "relPath": rel,
+                        "localUri": f"rbxasset://arena_assets/{rel}",
+                        "bytes": f.stat().st_size,
+                    })
+        out["images"] = imgs
+    if category in ("all", "presets"):
+        out["proceduralPresets"] = list(PROCEDURAL_PRESETS.keys())
+    return out
+
+
+def import_image_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    import base64 as _b64
+    import re as _re
+    from image_pipeline import (
+        decode_any_to_rgba,
+        encode_png_rgba,
+        find_kit_root,
+        generate_procedural_rgba,
+        install_into_studio_content,
+        resize_rgba,
+        update_repo_asset_manifest,
+        upload_open_cloud_image,
+    )
+
+    kit = find_kit_root()
+    images_dir = kit / "assets" / "images"
+
+    raw_bytes = None
+    ext = ".png"
+    default_stem = "imported_image"
+    rel_override = None
+
+    if args.get("proceduralPreset"):
+        preset = args["proceduralPreset"]
+        w, h, rgba = generate_procedural_rgba(
+            preset,
+            width=int(args.get("width") or 0),
+            height=int(args.get("height") or 0),
+            primary_hex=args.get("primaryColor"),
+            secondary_hex=args.get("secondaryColor"),
+        )
+        raw_bytes = encode_png_rgba(w, h, rgba)
+        default_stem = preset
+    elif args.get("repoAsset"):
+        rel_clean = args["repoAsset"].replace("\\", "/").lstrip("/")
+        cand = images_dir / rel_clean
+        if not cand.is_file():
+            raise FileNotFoundError(f"Repo asset not found: {cand}")
+        raw_bytes = cand.read_bytes()
+        ext = cand.suffix.lower() or ".png"
+        default_stem = cand.stem
+        rel_override = rel_clean
+    elif args.get("filePath"):
+        src_p = Path(args["filePath"]).expanduser()
+        if not src_p.is_file():
+            raise FileNotFoundError(f"Image file not found: {src_p}")
+        raw_bytes = src_p.read_bytes()
+        ext = src_p.suffix.lower() or ".png"
+        default_stem = src_p.stem
+    elif args.get("base64Data"):
+        b64_in = args["base64Data"].strip()
+        if b64_in.startswith("data:"):
+            header, _, b64_in = b64_in.partition(",")
+            if "jpeg" in header or "jpg" in header:
+                ext = ".jpg"
+            elif "bmp" in header:
+                ext = ".bmp"
+        raw_bytes = _b64.b64decode(b64_in)
+    elif args.get("imageUrl"):
+        req = urllib.request.Request(args["imageUrl"], headers={"User-Agent": "ArenaRobloxMCP/3.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw_bytes = resp.read()
+        url_path = args["imageUrl"].split("?", 1)[0]
+        if Path(url_path).suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp"):
+            ext = Path(url_path).suffix.lower()
+        default_stem = Path(url_path).stem or "remote_image"
+    else:
+        raise ValueError(
+            "Provide one image source: 'filePath', 'base64Data', 'imageUrl', 'repoAsset', or 'proceduralPreset'."
+        )
+
+    raw_name = args.get("name") or default_stem
+    safe_stem = _re.sub(r"[^A-Za-z0-9_\-]", "_", Path(raw_name).stem) or "image"
+    subdir = _re.sub(r"[^A-Za-z0-9_/\-]", "", args.get("saveSubdir") or "imported").strip("/") or "imported"
+    rel_path = rel_override or f"{subdir}/{safe_stem}{ext}"
+
+    repo_saved_path = None
+    if args.get("saveToRepo", True):
+        out_path = images_dir / rel_path
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(raw_bytes)
+        repo_saved_path = str(out_path)
+
+    # 1. Install into local Roblox Studio `content/arena_assets/...` when Studio exists locally
+    local_install = install_into_studio_content(raw_bytes, rel_path)
+    best_uri = local_install["uri"]
+    cloud_result = None
+
+    # 2. Optional Open Cloud permanent `rbxassetid://` publish
+    publish_via = args.get("publishVia") or "none"
+    if publish_via == "open_cloud":
+        cloud_result = upload_open_cloud_image(
+            raw_bytes=raw_bytes,
+            filename=f"{safe_stem}{ext}",
+            display_name=safe_stem,
+            api_key=args.get("apiKey"),
+            creator_id=args.get("creatorId"),
+            creator_type=args.get("creatorType") or "user",
+        )
+        best_uri = cloud_result["uri"]
+
+    # 3. Decode RGBA pixels whenever Studio hydration / target application / studio publish is needed
+    need_editable = bool(
+        args.get("useEditableImage")
+        or publish_via == "studio"
+        or (not local_install["installed"] and args.get("targetPath") and not cloud_result)
+    )
+    img_w = img_h = 0
+    rgba_b64 = None
+    ed_w = ed_h = 0
+    try:
+        img_w, img_h, rgba_raw = decode_any_to_rgba(raw_bytes, f"{safe_stem}{ext}")
+        if need_editable:
+            scale = min(1.0, 512.0 / max(img_w, img_h, 1))
+            ed_w = max(1, int(round(img_w * scale)))
+            ed_h = max(1, int(round(img_h * scale)))
+            ed_bytes = resize_rgba(img_w, img_h, rgba_raw, ed_w, ed_h)
+            rgba_b64 = _b64.b64encode(ed_bytes).decode("ascii")
+    except Exception:
+        if need_editable and publish_via == "studio":
+            raise
+
+    # 4. Send to live Studio when applying to a target, hydrating EditableImage, or publishing via Studio
+    studio_apply = None
+    health = client.health()
+    if health.get("studio_connected") and (args.get("targetPath") or need_editable):
+        studio_apply = _unwrap_job(client.submit_job("import_image", {
+            "uri": best_uri,
+            "preferEditable": bool(args.get("useEditableImage") or (not local_install["installed"] and not cloud_result)),
+            "rgbaBase64": rgba_b64,
+            "width": ed_w,
+            "height": ed_h,
+            "publishStudioAsset": publish_via == "studio",
+            "displayName": safe_stem,
+            "targetPath": args.get("targetPath"),
+            "applyMode": args.get("applyMode", "auto"),
+            "instanceName": args.get("instanceName") or safe_stem,
+            "face": args.get("face", "Front"),
+        }, note=f"import_image:{safe_stem}", wait=45.0, dm="edit", peer_id=peer_id))
+        if studio_apply.get("publishedAssetId"):
+            best_uri = f"rbxassetid://{studio_apply['publishedAssetId']}"
+
+    manifest = None
+    if args.get("saveToRepo", True):
+        manifest = update_repo_asset_manifest({
+            "key": _re.sub(r"[^A-Za-z0-9_]", "_", safe_stem),
+            "cloudUri": best_uri if best_uri.startswith("rbxassetid://") else None,
+        })
+        if args.get("syncAssetsModule") and health.get("studio_connected"):
+            install_kit_module_helper(client, "Assets", "ReplicatedStorage.Shared", peer_id=peer_id)
+
+    return {
+        "name": safe_stem,
+        "uri": best_uri,
+        "width": img_w,
+        "height": img_h,
+        "bytes": len(raw_bytes),
+        "savedToRepo": repo_saved_path,
+        "localStudioContentInstalled": local_install["installed"],
+        "localContentPaths": local_install["installedPaths"],
+        "cloudUpload": cloud_result,
+        "studioApplied": studio_apply,
+        "manifestUpdated": manifest["moduleFile"] if manifest else None,
+    }
+
+
+def import_images_batch_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from image_pipeline import find_kit_root, install_into_studio_content, update_repo_asset_manifest
+
+    kit = find_kit_root()
+    images_dir = kit / "assets" / "images"
+    explicit_files = args.get("files")
+    subdir = (args.get("saveSubdir") or "imported").strip("/")
+
+    items = []
+    if explicit_files:
+        file_list = [Path(p).expanduser() for p in explicit_files]
+    else:
+        scan_dir = Path(args["directory"]).expanduser() if args.get("directory") else images_dir
+        file_list = [
+            f for f in sorted(scan_dir.rglob("*"))
+            if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp")
+        ]
+
+    for f in file_list:
+        raw = f.read_bytes()
+        try:
+            rel = f.relative_to(images_dir).as_posix()
+        except ValueError:
+            rel = f"{subdir}/{f.name}"
+            dest = images_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(raw)
+        inst = install_into_studio_content(raw, rel)
+        items.append({"file": str(f), "relPath": rel, "uri": inst["uri"], "localInstalled": inst["installed"]})
+
+    manifest = update_repo_asset_manifest()
+    synced_module = False
+    if args.get("syncAssetsModule", True) and client.health().get("studio_connected"):
+        install_kit_module_helper(client, "Assets", "ReplicatedStorage.Shared", peer_id=peer_id)
+        synced_module = True
+
+    return {
+        "importedCount": len(items),
+        "items": items,
+        "manifestModule": manifest["moduleFile"],
+        "syncedAssetsModuleToStudio": synced_module,
+    }
+
+
+def install_kit_module_helper(
+    client: BridgeClient,
+    module_name: str = "all",
+    parent_path: str = "ReplicatedStorage.Shared",
+    peer_id: str = None,
+) -> dict:
+    from image_pipeline import find_kit_root
+
+    kit = find_kit_root()
+    modules_dir = kit / "modules"
+    if module_name == "all":
+        files = sorted(modules_dir.glob("*.lua"))
+    else:
+        stem = module_name[:-4] if module_name.endswith(".lua") else module_name
+        target = modules_dir / f"{stem}.lua"
+        if not target.is_file():
+            raise FileNotFoundError(f"Kit module not found: {target}")
+        files = [target]
+
+    parts = [p for p in parent_path.replace("/", ".").split(".") if p]
+    children_specs = [
+        {
+            "name": f.stem,
+            "className": "ModuleScript",
+            "replaceExisting": True,
+            "source": f.read_text(encoding="utf-8"),
+        }
+        for f in files
+    ]
+
+    if len(parts) >= 2:
+        service_root = ".".join(parts[:-1])
+        folder_name = parts[-1]
+        tree = [{
+            "name": folder_name,
+            "className": "Folder",
+            "replaceExisting": False,
+            "children": children_specs,
+        }]
+        # Ensure folder exists or write directly if already present
+        existing_check = client.submit_job("inspect", {"path": parent_path, "depth": 0}, wait=10.0, dm="edit", peer_id=peer_id)
+        if existing_check.get("status") == "done":
+            build_res = _unwrap_job(client.submit_job("build", {
+                "parent": parent_path,
+                "tree": children_specs,
+                "select": False,
+            }, note=f"install_kit:{module_name}", wait=45.0, dm="edit", peer_id=peer_id))
+        else:
+            build_res = _unwrap_job(client.submit_job("build", {
+                "parent": service_root,
+                "tree": tree,
+                "select": False,
+            }, note=f"install_kit:{module_name}", wait=45.0, dm="edit", peer_id=peer_id))
+    else:
+        build_res = _unwrap_job(client.submit_job("build", {
+            "parent": parent_path,
+            "tree": children_specs,
+            "select": False,
+        }, note=f"install_kit:{module_name}", wait=45.0, dm="edit", peer_id=peer_id))
+
+    return {
+        "installed": [f"{parent_path}.{f.stem}" for f in files],
+        "count": len(files),
+        "buildResult": build_res,
+    }
+
+
+def _offset_tree_positions(node: dict, dx: float, dy: float, dz: float):
+    props = node.get("properties")
+    if isinstance(props, dict):
+        if "Position" in props:
+            p = props["Position"]
+            if isinstance(p, dict) and p.get("__t") == "Vector3":
+                v = p["v"]
+                props["Position"] = {"__t": "Vector3", "v": [v[0] + dx, v[1] + dy, v[2] + dz]}
+            elif isinstance(p, list) and len(p) == 3:
+                props["Position"] = [p[0] + dx, p[1] + dy, p[2] + dz]
+        if "CFrame" in props:
+            cf = props["CFrame"]
+            if isinstance(cf, dict) and cf.get("__t") == "CFrame":
+                v = list(cf["v"])
+                v[0], v[1], v[2] = v[0] + dx, v[1] + dy, v[2] + dz
+                props["CFrame"] = {"__t": "CFrame", "v": v}
+    for ch in node.get("children") or []:
+        _offset_tree_positions(ch, dx, dy, dz)
+
+
+def spawn_prefab_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    import copy as _copy
+    from image_pipeline import find_kit_root, install_into_studio_content
+
+    kit = find_kit_root()
+    prefab_arg = args["prefab"]
+    cand = Path(prefab_arg)
+    if not cand.is_file():
+        stem = prefab_arg[:-5] if prefab_arg.endswith(".json") else prefab_arg
+        cand = kit / "prefabs" / f"{stem}.json"
+    if not cand.is_file():
+        raise FileNotFoundError(f"Prefab not found: {prefab_arg}")
+
+    spec = _copy.deepcopy(json.loads(cand.read_text(encoding="utf-8")))
+    synced_imgs = []
+    for rel_img in spec.get("requiredImages") or []:
+        img_file = kit / "assets" / "images" / rel_img
+        if img_file.is_file():
+            inst = install_into_studio_content(img_file.read_bytes(), rel_img)
+            synced_imgs.append(inst["uri"])
+
+    if spec.get("lightingProperties"):
+        _unwrap_job(client.submit_job("set_properties", {
+            "path": "Lighting",
+            "properties": spec["lightingProperties"],
+        }, note=f"prefab_lighting:{spec.get('name')}", wait=30.0, dm="edit", peer_id=peer_id))
+
+    tree = spec.get("tree") or []
+    if args.get("name") and tree:
+        tree[0]["name"] = args["name"]
+    pos = args.get("position")
+    if isinstance(pos, list) and len(pos) == 3:
+        for root_item in tree:
+            _offset_tree_positions(root_item, float(pos[0]), float(pos[1]), float(pos[2]))
+
+    target_parent = args.get("parent") or spec.get("defaultParent") or "Workspace"
+    build_res = _unwrap_job(client.submit_job("build", {
+        "parent": target_parent,
+        "tree": tree,
+        "select": True,
+    }, note=f"spawn_prefab:{spec.get('name')}", wait=45.0, dm="edit", peer_id=peer_id))
+
+    return {
+        "prefab": spec.get("name") or cand.stem,
+        "parent": target_parent,
+        "created": build_res.get("created", []),
+        "syncedImages": synced_imgs,
+    }
 
 
 def get_mcp_prompt(name: str, arguments: dict = None) -> dict:

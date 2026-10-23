@@ -81,6 +81,11 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             r".\ab.ps1 check ./src",
             r".\ab.ps1 drift ./src ServerScriptService.App",
             r".\ab.ps1 sync  ./src ServerScriptService.App",
+            r".\ab.ps1 import-image ./art/banner.png --target Workspace --apply-mode surface_gui",
+            r".\ab.ps1 gen-image icon_coin --size 128 --target StarterGui --apply-mode screen_gui",
+            r".\ab.ps1 install-module all --parent ReplicatedStorage.Shared",
+            r".\ab.ps1 prefab lighting_cinematic_sunset",
+            r".\ab.ps1 prefab hud_modern_shell",
             r".\ab.ps1 scenario --mode play --server-code 'return {players = #game.Players:GetPlayers()}'",
         ],
         "keyTips": [
@@ -293,7 +298,7 @@ class BridgeState:
         "find_replace_scripts", "set_properties", "mass_set_properties",
         "clone_instance", "reparent_instance", "delete", "attributes",
         "tags", "selection", "camera", "history", "terrain",
-        "insert_asset", "playtest", "open_script",
+        "insert_asset", "import_image", "playtest", "open_script",
     }
 
     def enqueue_job(
@@ -623,6 +628,16 @@ def make_http_handler(state: BridgeState):
             if path == "/":
                 return self._send(200, dashboard_html(), "text/html; charset=utf-8")
 
+            if path.startswith("/api/kit/image/"):
+                from image_pipeline import find_kit_root
+                rel_img = path[len("/api/kit/image/") :].lstrip("/")
+                images_root = (find_kit_root() / "assets" / "images").resolve()
+                target_img = (images_root / rel_img).resolve()
+                if not str(target_img).startswith(str(images_root)) or not target_img.is_file():
+                    return self._send(404, {"error": "image not found"})
+                mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".bmp": "image/bmp"}
+                return self._send(200, target_img.read_bytes(), mime_map.get(target_img.suffix.lower(), "application/octet-stream"))
+
             # Loopback-only bootstrap so localhost:8077 auto-fills token, paths & tools safely
             if path == "/api/local-boot":
                 is_local = self._is_loopback()
@@ -898,10 +913,11 @@ def dashboard_html() -> str:
 
 <nav>
   <button class="tab-btn active" onclick="showTab('monitor', this)">1. Live Monitor</button>
-  <button class="tab-btn" onclick="showTab('prompts', this)">2. Next-Agent Handoff &amp; Prompts</button>
-  <button class="tab-btn" onclick="showTab('commands', this)">3. Commands &amp; MCP Config</button>
-  <button class="tab-btn" onclick="showTab('playground', this)">4. Live Tool &amp; Luau Runner</button>
-  <button class="tab-btn" onclick="showTab('tips', this)">5. Helpful Tips &amp; Gotchas</button>
+  <button class="tab-btn" onclick="showTab('kit', this)">2. Image Importer &amp; Studio Kit</button>
+  <button class="tab-btn" onclick="showTab('prompts', this)">3. Next-Agent Handoff &amp; Prompts</button>
+  <button class="tab-btn" onclick="showTab('commands', this)">4. Commands &amp; MCP Config</button>
+  <button class="tab-btn" onclick="showTab('playground', this)">5. Live Tool &amp; Luau Runner</button>
+  <button class="tab-btn" onclick="showTab('tips', this)">6. Helpful Tips &amp; Gotchas</button>
 </nav>
 
 <main>
@@ -909,7 +925,7 @@ def dashboard_html() -> str:
   <section id="tab-monitor" class="tab-pane active">
     <div class="grid">
       <div class="card"><div class="k">Studio Peers</div><div class="v" id="c-peers">0 online</div></div>
-      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">37</div></div>
+      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">43</div></div>
       <div class="card"><div class="k">Queued</div><div class="v" id="c-queued">0</div></div>
       <div class="card"><div class="k">Completed</div><div class="v" id="c-done">0</div></div>
       <div class="card"><div class="k">Failed</div><div class="v" id="c-fail">0</div></div>
@@ -953,7 +969,57 @@ def dashboard_html() -> str:
     </table>
   </section>
 
-  <!-- ==================== TAB 2: NEXT-AGENT PROMPTS ==================== -->
+  <!-- ==================== TAB 2: IMAGE IMPORTER & STUDIO KIT ==================== -->
+  <section id="tab-kit" class="tab-pane">
+    <div class="two-col">
+      <div class="prompt-card">
+        <h3>Direct Image Importer (Local File &rarr; Repo + Roblox Studio)</h3>
+        <div class="sub">Pick any <code>.png</code>, <code>.jpg</code>, or <code>.bmp</code>. Saves to <code>roblox-kit/assets/images/</code>, installs into Studio <code>content/arena_assets/</code> (<code>rbxasset://arena_assets/...</code>) + live <code>EditableImage</code>, updates <code>Assets.lua</code>, and applies to your target instance.</div>
+        <input type="file" id="img-file" accept=".png,.jpg,.jpeg,.bmp">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <input id="img-name" placeholder="Asset name (optional, e.g. shop_banner)">
+          <input id="img-target" placeholder="Target path (e.g. StarterGui or Workspace.Baseplate)" value="StarterGui">
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="img-mode">
+            <option value="screen_gui">Apply: StarterGui Preview (ScreenGui)</option>
+            <option value="decal">Apply: Decal on Part</option>
+            <option value="texture">Apply: Tiled Texture on Part</option>
+            <option value="billboard">Apply: Floating 3D BillboardGui</option>
+            <option value="surface_gui">Apply: 3D Poster SurfaceGui</option>
+            <option value="auto">Apply: Auto-detect from Target Class</option>
+          </select>
+          <button class="primary" onclick="uploadBrowserImage()" style="white-space:nowrap">Import Image</button>
+        </div>
+        <pre id="img-import-out">Ready to import any image file directly into Roblox Studio.</pre>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>Reusable Studio Kit Modules &amp; 1-Click Prefabs</h3>
+            <div class="sub">Install zero-warning Luau foundations or drop complete 3D/UI/Lighting prefabs into Studio.</div>
+          </div>
+          <button class="primary sm" onclick="installAllModules()">Install All 7 Luau Modules</button>
+        </div>
+        <div id="prefab-list" style="display:flex;flex-direction:column;gap:7px"></div>
+        <pre id="kit-action-out">Click any prefab or module action above.</pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="prompt-head">
+        <div>
+          <h2>Repo Image Asset Library (<code>roblox-kit/assets/images/</code>)</h2>
+          <div class="sub">Pre-built transparent icons, VFX sprites, and seamless prototype textures committed in Git. Click <strong>Copy URI</strong> or <strong>Send to Studio</strong>.</div>
+        </div>
+        <button class="sm" onclick="loadKitGallery()">Refresh Gallery</button>
+      </div>
+      <div id="asset-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:10px;margin-top:12px"></div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 3: NEXT-AGENT PROMPTS ==================== -->
   <section id="tab-prompts" class="tab-pane">
     <div class="card" style="margin-bottom:16px">
       <div class="prompt-head" style="align-items:center;flex-wrap:wrap">
@@ -1255,7 +1321,10 @@ codex mcp add roblox-studio -- python "${mcpPath}" --auto-install-plugin`;
     [".\\ab.ps1 check ./src", "Offline Luau bytecode + undefined-global check"],
     [".\\ab.ps1 drift ./src ServerScriptService.App", "Compare local folder vs Studio via exact 32-bit FNV-1a"],
     [".\\ab.ps1 sync ./src ServerScriptService.App", "Validate + snapshot + atomic single-undo sync to Studio"],
-    [".\\ab.ps1 pull ServerScriptService.App ./src", "Export live Studio scripts back into local Git files"],
+    [".\\ab.ps1 import-image ./icon.png --target StarterGui --apply-mode screen_gui", "Import PNG/JPG into repo + Studio directly"],
+    [".\\ab.ps1 gen-image icon_coin --size 128 --target StarterGui --apply-mode screen_gui", "Generate crisp procedural icon/texture PNG"],
+    [".\\ab.ps1 install-module all --parent ReplicatedStorage.Shared", "Install Maid, Signal, NetGuard, TagBinder, SpringUI, StateStore, Assets"],
+    [".\\ab.ps1 prefab lighting_cinematic_sunset", "Spawn lighting / HUD / world prefab into Studio"],
     [".\\ab.ps1 scenario --mode play --server-code \"return {ok=true}\"", "Run automated Play Solo test & stop cleanly"]
   ];
   document.getElementById('cmd-list').innerHTML = cmds.map(([c, d]) => `
@@ -1297,15 +1366,15 @@ Start by running a quick recon (\`.\\ab.ps1 state\` and \`.\\ab.ps1 survey\`) so
       title: "2. Next-Agent Handoff — Direct Tunnel / Streamable HTTP MCP + REST",
       sub: "Best when sharing a Cloudflare Quick Tunnel (`python setup.py --tunnel`) or local HTTP connection with an agent.",
       body:
-`Connect directly to my live Roblox Studio v3.0 Bridge & MCP Server:
+`Connect directly to my live Roblox Studio Bridge & MCP Server:
 - Base URL: ${pubUrl}
 - Auth Header: \`Authorization: Bearer ${tok}\` (or \`X-Arena-Token: ${tok}\`)
-- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (37 tools, resources, prompts)
+- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (43 tools, skills, prefabs, direct image import)
 - Agent Onboarding & Live State Endpoint: \`GET ${pubUrl}/api/agent-guide\`
-- Direct Job Queue Endpoint: \`POST ${pubUrl}/api/jobs\` with \`{"type":"ping","wait":10}\`
+- Built-in Repo Kit: call \`browse_kit\` to inspect all 6 Roblox Studio Skills (\`.claude/skills/*\`), 7 Luau modules (\`install_kit_module\`), 8 3D/UI/Lighting prefabs (\`spawn_prefab\`), and 26+ PNG assets (\`import_image\` accepts \`filePath\`, \`base64Data\`, \`imageUrl\`, \`repoAsset\`, or \`proceduralPreset\`!).
 
 Rules of engagement:
-1. Inspect live ground truth first (\`get_studio_state\`, \`survey_place\` with \`includeSource=false\`, then targeted \`script_read\` / \`script_grep\`).
+1. Inspect live ground truth first (\`get_studio_state\`, \`survey_place\` with \`includeSource=false\`, and \`browse_kit\`).
 2. Validate Luau edits with \`luau_check\` before writing, and create a rollback point via \`manage_snapshots(action="create")\` before multi-script changes.
 3. Pass \`replaceInstance=true\` when modifying \`ModuleScript\`s that may already be cached by \`require()\`.
 4. Verify behaviour via \`run_playtest_scenario\` across \`server\` and \`client\` DataModels and check \`get_console_output\` for zero errors.`
@@ -1395,6 +1464,93 @@ function renderTips(){
     <div class="card"><h3>${esc(t)}</h3><p style="margin:6px 0 0;color:#b6c0cb">${esc(b)}</p></div>`).join('');
 }
 
+async function uploadBrowserImage(){
+  const fileInput = document.getElementById('img-file');
+  const out = document.getElementById('img-import-out');
+  if(!fileInput.files || !fileInput.files[0]){
+    out.textContent = 'Select a .png, .jpg, or .bmp file first.';
+    return;
+  }
+  const f = fileInput.files[0];
+  out.textContent = 'Encoding & importing ' + f.name + '...';
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(f);
+  });
+  try {
+    const res = await callMcp('import_image', {
+      base64Data: dataUrl,
+      name: document.getElementById('img-name').value.trim() || f.name.replace(/\.[^.]+$/, ''),
+      targetPath: document.getElementById('img-target').value.trim() || undefined,
+      applyMode: document.getElementById('img-mode').value,
+      useEditableImage: true,
+      syncAssetsModule: true
+    });
+    out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    loadKitGallery();
+    tick();
+  } catch (e) { out.textContent = String(e); }
+}
+
+async function installAllModules(){
+  const out = document.getElementById('kit-action-out');
+  out.textContent = 'Installing Maid, Signal, NetGuard, TagBinder, SpringUI, StateStore, Assets -> ReplicatedStorage.Shared...';
+  try {
+    const res = await callMcp('install_kit_module', { module: 'all', parent: 'ReplicatedStorage.Shared' });
+    out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    tick();
+  } catch (e) { out.textContent = String(e); }
+}
+
+async function spawnKitPrefab(name){
+  const out = document.getElementById('kit-action-out');
+  out.textContent = 'Spawning prefab ' + name + '...';
+  try {
+    const res = await callMcp('spawn_prefab', { prefab: name });
+    out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    tick();
+  } catch (e) { out.textContent = String(e); }
+}
+
+async function importRepoAssetToStudio(relPath){
+  toast('Sending ' + relPath + ' to Studio...');
+  await quickTool('import_image', {
+    repoAsset: relPath,
+    targetPath: 'StarterGui',
+    applyMode: 'screen_gui',
+    useEditableImage: true
+  });
+}
+
+async function loadKitGallery(){
+  try {
+    const res = await callMcp('browse_kit', { category: 'all' });
+    const data = res.structuredContent || {};
+    const prefabs = data.prefabs || [];
+    document.getElementById('prefab-list').innerHTML = prefabs.map(p => `
+      <div class="cmd-row">
+        <div><strong>${esc(p.name)}</strong><div class="sub">${esc(p.description)}</div></div>
+        <div class="spacer"></div>
+        <button class="sm primary" onclick="spawnKitPrefab('${esc(p.name)}')">Spawn</button>
+      </div>`).join('');
+
+    const imgs = data.images || [];
+    document.getElementById('asset-gallery').innerHTML = imgs.map(im => `
+      <div class="card" style="padding:10px;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center">
+        <div style="width:64px;height:64px;display:flex;align-items:center;justify-content:center;background:#0b0f16;border-radius:8px;padding:6px">
+          <img src="/api/kit/image/${esc(im.relPath)}" alt="${esc(im.name)}" style="max-width:52px;max-height:52px;image-rendering:auto">
+        </div>
+        <code style="font-size:11px">${esc(im.name)}</code>
+        <div style="display:flex;gap:4px">
+          <button class="sm" onclick="copyText('${esc(im.localUri)}')">URI</button>
+          <button class="sm primary" onclick="importRepoAssetToStudio('${esc(im.relPath)}')">Send</button>
+        </div>
+      </div>`).join('');
+  } catch(_){}
+}
+
 async function initBoot(){
   try {
     const r = await fetch('/api/local-boot', { cache:'no-store' });
@@ -1410,6 +1566,7 @@ async function initBoot(){
   } catch(_){}
   renderTips();
   renderPrompts();
+  loadKitGallery();
 }
 
 async function tick(){

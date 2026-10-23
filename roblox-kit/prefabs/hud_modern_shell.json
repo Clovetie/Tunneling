@@ -1,0 +1,130 @@
+{
+  "name": "hud_modern_shell",
+  "category": "ui",
+  "description": "Responsive modern ScreenGui HUD with UIScale, currency pills using imported Coin & Gem PNG icons, health bar, and center notification banner.",
+  "defaultParent": "StarterGui",
+  "requiredImages": ["ui/icon_coin.png", "ui/icon_gem.png", "ui/icon_heart.png", "ui/panel_glass_9slice.png"],
+  "tree": [
+    {
+      "name": "ModernHUD",
+      "className": "ScreenGui",
+      "replaceExisting": true,
+      "properties": {
+        "ResetOnSpawn": false,
+        "IgnoreGuiInset": true,
+        "ZIndexBehavior": { "__t": "Enum", "v": "ZIndexBehavior.Sibling" }
+      },
+      "children": [
+        { "name": "RootScale", "className": "UIScale", "properties": { "Scale": 1.0 } },
+        {
+          "name": "CurrencyBar",
+          "className": "Frame",
+          "properties": {
+            "Position": { "__t": "UDim2", "v": [0, 20, 0.5, -56] },
+            "Size": { "__t": "UDim2", "v": [0, 178, 0, 108] },
+            "BackgroundTransparency": 1
+          },
+          "children": [
+            {
+              "name": "Layout",
+              "className": "UIListLayout",
+              "properties": { "Padding": { "__t": "UDim", "v": [0, 8] } }
+            },
+            {
+              "name": "CoinsPill",
+              "className": "Frame",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [1, 0, 0, 48] },
+                "BackgroundColor3": { "__t": "Color3", "v": [0.09, 0.12, 0.17] },
+                "BackgroundTransparency": 0.12
+              },
+              "children": [
+                { "name": "Corner", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 12] } } },
+                { "name": "Stroke", "className": "UIStroke", "properties": { "Color": { "__t": "Color3", "v": [0.95, 0.75, 0.2] }, "Thickness": 1.5, "Transparency": 0.35 } },
+                {
+                  "name": "Icon",
+                  "className": "ImageLabel",
+                  "properties": {
+                    "Position": { "__t": "UDim2", "v": [0, 10, 0.5, -16] },
+                    "Size": { "__t": "UDim2", "v": [0, 32, 0, 32] },
+                    "BackgroundTransparency": 1,
+                    "Image": "rbxasset://arena_assets/ui/icon_coin.png"
+                  }
+                },
+                {
+                  "name": "Amount",
+                  "className": "TextLabel",
+                  "properties": {
+                    "Position": { "__t": "UDim2", "v": [0, 50, 0, 0] },
+                    "Size": { "__t": "UDim2", "v": [1, -60, 1, 0] },
+                    "BackgroundTransparency": 1,
+                    "Text": "1,250",
+                    "TextColor3": { "__t": "Color3", "v": [1, 0.96, 0.84] },
+                    "TextSize": 20,
+                    "Font": { "__t": "Enum", "v": "Font.GothamBold" },
+                    "TextXAlignment": { "__t": "Enum", "v": "TextXAlignment.Left" }
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GemsPill",
+              "className": "Frame",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [1, 0, 0, 48] },
+                "BackgroundColor3": { "__t": "Color3", "v": [0.09, 0.12, 0.17] },
+                "BackgroundTransparency": 0.12
+              },
+              "children": [
+                { "name": "Corner", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 12] } } },
+                { "name": "Stroke", "className": "UIStroke", "properties": { "Color": { "__t": "Color3", "v": [0.3, 0.68, 0.98] }, "Thickness": 1.5, "Transparency": 0.35 } },
+                {
+                  "name": "Icon",
+                  "className": "ImageLabel",
+                  "properties": {
+                    "Position": { "__t": "UDim2", "v": [0, 10, 0.5, -16] },
+                    "Size": { "__t": "UDim2", "v": [0, 32, 0, 32] },
+                    "BackgroundTransparency": 1,
+                    "Image": "rbxasset://arena_assets/ui/icon_gem.png"
+                  }
+                },
+                {
+                  "name": "Amount",
+                  "className": "TextLabel",
+                  "properties": {
+                    "Position": { "__t": "UDim2", "v": [0, 50, 0, 0] },
+                    "Size": { "__t": "UDim2", "v": [1, -60, 1, 0] },
+                    "BackgroundTransparency": 1,
+                    "Text": "50",
+                    "TextColor3": { "__t": "Color3", "v": [0.85, 0.95, 1] },
+                    "TextSize": 20,
+                    "Font": { "__t": "Enum", "v": "Font.GothamBold" },
+                    "TextXAlignment": { "__t": "Enum", "v": "TextXAlignment.Left" }
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "ToastBanner",
+          "className": "TextLabel",
+          "properties": {
+            "AnchorPoint": { "__t": "Vector2", "v": [0.5, 0] },
+            "Position": { "__t": "UDim2", "v": [0.5, 0, 0, 58] },
+            "Size": { "__t": "UDim2", "v": [0, 360, 0, 42] },
+            "BackgroundColor3": { "__t": "Color3", "v": [0.08, 0.11, 0.16] },
+            "BackgroundTransparency": 0.15,
+            "Text": "Welcome to the Experience!",
+            "TextColor3": { "__t": "Color3", "v": [1, 1, 1] },
+            "TextSize": 17,
+            "Font": { "__t": "Enum", "v": "Font.GothamSemibold" }
+          },
+          "children": [
+            { "name": "Corner", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 999] } } }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "name": "world_sign_board",
+  "category": "ui",
+  "description": "Framed 3D world display board with high-resolution SurfaceGui ready for `import_image` posters, leaderboards, or tutorial art.",
+  "defaultParent": "Workspace",
+  "requiredImages": ["ui/panel_glass_9slice.png"],
+  "tree": [
+    {
+      "name": "DisplayBoard",
+      "className": "Model",
+      "children": [
+        {
+          "name": "ScreenPart",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [12, 7, 0.6] },
+            "Position": { "__t": "Vector3", "v": [0, 5.5, -14] },
+            "Material": { "__t": "Enum", "v": "Material.Metal" },
+            "Color": { "__t": "Color3", "v": [0.11, 0.14, 0.18] },
+            "Anchored": true
+          },
+          "children": [
+            {
+              "name": "FrontDisplay",
+              "className": "SurfaceGui",
+              "properties": {
+                "Face": { "__t": "Enum", "v": "NormalId.Front" },
+                "SizingMode": { "__t": "Enum", "v": "SurfaceGuiSizingMode.PixelsPerStud" },
+                "PixelsPerStud": 64
+              },
+              "children": [
+                {
+                  "name": "Poster",
+                  "className": "ImageLabel",
+                  "properties": {
+                    "Size": { "__t": "UDim2", "v": [1, 0, 1, 0] },
+                    "BackgroundColor3": { "__t": "Color3", "v": [0.08, 0.1, 0.14] },
+                    "ScaleType": { "__t": "Enum", "v": "ScaleType.Fit" },
+                    "Image": "rbxasset://arena_assets/ui/panel_glass_9slice.png"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

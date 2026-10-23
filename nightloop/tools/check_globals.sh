@@ -2,13 +2,13 @@
 # Surface genuinely-undefined globals, filtering out the Roblox API surface
 # that luau-analyze does not ship types for. This is the check that would have
 # caught `placeAt` being deleted out from under its last caller.
-KNOWN='game|workspace|script|plugin|version|loadstring|Enum|Instance|CFrame|Vector3|Vector2|Color3|UDim2|UDim|TweenInfo|RaycastParams|Random|NumberSequence|NumberRange|ColorSequence|BrickColor|Ray|Region3|Rect|Font|task|warn|print|wait|spawn|delay|tick|time|typeof|require|shared|settings|DateTime|PhysicalProperties|OverlapParams|Axes|Faces|debug|utf8|bit32|buffer|os|math|string|table|coroutine|select|unpack|newproxy|gcinfo'
+KNOWN='game|workspace|script|plugin|version|loadstring|Enum|Instance|CFrame|Vector3|Vector2|Color3|UDim2|UDim|TweenInfo|RaycastParams|Random|NumberSequence|NumberSequenceKeypoint|NumberRange|ColorSequence|ColorSequenceKeypoint|BrickColor|Ray|Region3|Rect|Font|Content|vector|CatalogSearchParams|DockWidgetPluginGuiInfo|PathWaypoint|FloatCurveKey|RotationCurveKey|SharedTable|SecurityCapabilities|UserSettings|elapsedTime|task|warn|print|wait|spawn|delay|tick|time|typeof|require|shared|settings|DateTime|PhysicalProperties|OverlapParams|Axes|Faces|debug|utf8|bit32|buffer|os|math|string|table|coroutine|select|unpack|newproxy|gcinfo'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANALYZER=""
 for cand in \
   "$SCRIPT_DIR/luau-analyze" \
-  "$SCRIPT_DIR/../.tools/bin/luau-analyze" \
+  "$SCRIPT_DIR/../tools/luau-analyze" \
   "$SCRIPT_DIR/../../roblox-bridge/tools/luau-analyze" \
   "$(command -v luau-analyze 2>/dev/null || true)"; do
   if [ -n "$cand" ] && [ -x "$cand" ]; then

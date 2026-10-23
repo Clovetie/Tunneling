@@ -80,7 +80,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 
 ---
 
-## Full 37-Tool MCP Suite
+## Full 43-Tool MCP Suite + Repo Kit & Skills
 
 | Domain | MCP Tools |
 |---|---|
@@ -92,6 +92,15 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 | **Attributes & Tags (2)** | `manage_attributes` (`get`/`set`/`delete`), `manage_tags` (`list_all`/`find_tagged`/`get`/`add`/`remove`) |
 | **World, Camera, Undo & Assets (5)** | `manage_selection`, `manage_camera`, `undo_redo`, `edit_terrain`, `insert_asset` (auto script-strip safety) |
 | **Toolchain, Sync & Snapshots (3)** | `luau_check` (offline compiler + undefined globals), `drift_and_sync` (`check`/`push`/`pull`), `manage_snapshots` (`create`/`list`/`get`/`restore`) |
+| **Direct Image Import, Kit & Prefabs (6)** | `import_image` (file / base64 / URL / repo / procedural -> `rbxasset://arena_assets/...` + live `EditableImage` + Studio/Open Cloud `rbxassetid://`), `import_images_batch`, `generate_procedural_image`, `browse_kit`, `install_kit_module` (`Maid`, `Signal`, `NetGuard`, `TagBinder`, `SpringUI`, `StateStore`, `Assets`), `spawn_prefab` |
+
+### Repo-Committed Skills, Assets & Modules
+- **Agent Skills (`.claude/skills/*/SKILL.md` + `skill://{name}` MCP resources + root `AGENTS.md`)**:
+  - `roblox-place-builder`, `roblox-luau-systems`, `roblox-ui-and-images`, `roblox-vfx-lighting-audio`, `roblox-playtest-qa`, `roblox-optimization-security`
+- **26 Pre-Built PNG Assets (`roblox-kit/assets/images/{ui,vfx,textures}/` + `Assets.lua`)**:
+  - UI icons (`icon_coin`, `icon_gem`, `icon_shield`, `icon_sword`, `icon_heart`, `icon_star`, `icon_bolt`, `icon_lock`, `icon_gear`, `icon_crown`, `icon_check`, `icon_close`, `panel_glass_9slice`, `vignette_soft`, `crosshair_dot`, `radial_ring`), VFX sprites (`particle_soft_glow`, `particle_spark_star`, `particle_smoke_puff`, `particle_shockwave_ring`, `beam_energy_streak`), and tileable world textures (`grid_dark_1m`, `grid_accent_orange`, `hazard_stripes`, `brushed_metal_noise`, `scifi_panel_tile`)
+- **8 Ready-to-Spawn Prefabs (`roblox-kit/prefabs/*.json`)**:
+  - `lighting_cinematic_sunset`, `lighting_cyber_night`, `lighting_stylized_day`, `hud_modern_shell`, `interact_pad`, `spawn_plaza`, `world_sign_board`, `vfx_collectible_orb`
 
 ### MCP Resources & Prompts Also Exposed
 - **Resources**: `studio://state`, `studio://peers`, `studio://console`, `studio://selection`, `studio://survey`

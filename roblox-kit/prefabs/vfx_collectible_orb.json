@@ -1,0 +1,60 @@
+{
+  "name": "vfx_collectible_orb",
+  "category": "vfx",
+  "description": "Glowing collectible orb with Highlight rim, PointLight, custom spark star ParticleEmitter, and CollectionService tag.",
+  "defaultParent": "Workspace",
+  "requiredImages": ["vfx/particle_spark_star.png"],
+  "tree": [
+    {
+      "name": "CollectibleOrb",
+      "className": "Model",
+      "tags": ["Collectible"],
+      "attributes": { "Value": 25, "RespawnSeconds": 10 },
+      "children": [
+        {
+          "name": "Orb",
+          "className": "Part",
+          "properties": {
+            "Shape": { "__t": "Enum", "v": "PartType.Ball" },
+            "Size": { "__t": "Vector3", "v": [2.2, 2.2, 2.2] },
+            "Position": { "__t": "Vector3", "v": [0, 3.5, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Neon" },
+            "Color": { "__t": "Color3", "v": [1.0, 0.82, 0.22] },
+            "Anchored": true,
+            "CanCollide": false
+          },
+          "children": [
+            {
+              "name": "RimHighlight",
+              "className": "Highlight",
+              "properties": {
+                "FillTransparency": 0.65,
+                "OutlineColor": { "__t": "Color3", "v": [1, 1, 1] }
+              }
+            },
+            {
+              "name": "Glow",
+              "className": "PointLight",
+              "properties": {
+                "Brightness": 2.0,
+                "Range": 11,
+                "Color": { "__t": "Color3", "v": [1.0, 0.82, 0.25] }
+              }
+            },
+            {
+              "name": "Sparkles",
+              "className": "ParticleEmitter",
+              "properties": {
+                "Texture": "rbxasset://arena_assets/vfx/particle_spark_star.png",
+                "Rate": 14,
+                "Lifetime": { "__t": "NumberRange", "v": [0.7, 1.3] },
+                "Speed": { "__t": "NumberRange", "v": [1.2, 2.8] },
+                "LightEmission": 1.0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

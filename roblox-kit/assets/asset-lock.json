@@ -1,0 +1,265 @@
+{
+  "images": {
+    "beam_energy_streak": {
+      "bytes": 2591,
+      "cloudUri": null,
+      "height": 64,
+      "key": "beam_energy_streak",
+      "localUri": "rbxasset://arena_assets/vfx/beam_energy_streak.png",
+      "relPath": "vfx/beam_energy_streak.png",
+      "sha256": "e59a2b769f3a0008",
+      "width": 64
+    },
+    "brushed_metal_noise": {
+      "bytes": 9255,
+      "cloudUri": null,
+      "height": 128,
+      "key": "brushed_metal_noise",
+      "localUri": "rbxasset://arena_assets/textures/brushed_metal_noise.png",
+      "relPath": "textures/brushed_metal_noise.png",
+      "sha256": "978899701ff6a87a",
+      "width": 128
+    },
+    "crosshair_dot": {
+      "bytes": 822,
+      "cloudUri": null,
+      "height": 64,
+      "key": "crosshair_dot",
+      "localUri": "rbxasset://arena_assets/ui/crosshair_dot.png",
+      "relPath": "ui/crosshair_dot.png",
+      "sha256": "f0c85630809c5e44",
+      "width": 64
+    },
+    "grid_accent_orange": {
+      "bytes": 497,
+      "cloudUri": null,
+      "height": 128,
+      "key": "grid_accent_orange",
+      "localUri": "rbxasset://arena_assets/textures/grid_accent_orange.png",
+      "relPath": "textures/grid_accent_orange.png",
+      "sha256": "9671523ef9cf5547",
+      "width": 128
+    },
+    "grid_dark_1m": {
+      "bytes": 499,
+      "cloudUri": null,
+      "height": 128,
+      "key": "grid_dark_1m",
+      "localUri": "rbxasset://arena_assets/textures/grid_dark_1m.png",
+      "relPath": "textures/grid_dark_1m.png",
+      "sha256": "a86e7c2220715c05",
+      "width": 128
+    },
+    "hazard_stripes": {
+      "bytes": 637,
+      "cloudUri": null,
+      "height": 128,
+      "key": "hazard_stripes",
+      "localUri": "rbxasset://arena_assets/textures/hazard_stripes.png",
+      "relPath": "textures/hazard_stripes.png",
+      "sha256": "6932629cb0917abe",
+      "width": 128
+    },
+    "icon_bolt": {
+      "bytes": 2396,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_bolt",
+      "localUri": "rbxasset://arena_assets/ui/icon_bolt.png",
+      "relPath": "ui/icon_bolt.png",
+      "sha256": "2a90d3655001904f",
+      "width": 64
+    },
+    "icon_check": {
+      "bytes": 916,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_check",
+      "localUri": "rbxasset://arena_assets/ui/icon_check.png",
+      "relPath": "ui/icon_check.png",
+      "sha256": "44e1785551f50fa1",
+      "width": 64
+    },
+    "icon_close": {
+      "bytes": 514,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_close",
+      "localUri": "rbxasset://arena_assets/ui/icon_close.png",
+      "relPath": "ui/icon_close.png",
+      "sha256": "e6494fd660482a81",
+      "width": 64
+    },
+    "icon_coin": {
+      "bytes": 3632,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_coin",
+      "localUri": "rbxasset://arena_assets/ui/icon_coin.png",
+      "relPath": "ui/icon_coin.png",
+      "sha256": "2097ff8480d1a415",
+      "width": 64
+    },
+    "icon_crown": {
+      "bytes": 3635,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_crown",
+      "localUri": "rbxasset://arena_assets/ui/icon_crown.png",
+      "relPath": "ui/icon_crown.png",
+      "sha256": "450f87022438998d",
+      "width": 64
+    },
+    "icon_gear": {
+      "bytes": 1329,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_gear",
+      "localUri": "rbxasset://arena_assets/ui/icon_gear.png",
+      "relPath": "ui/icon_gear.png",
+      "sha256": "6886232841dfe207",
+      "width": 64
+    },
+    "icon_gem": {
+      "bytes": 879,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_gem",
+      "localUri": "rbxasset://arena_assets/ui/icon_gem.png",
+      "relPath": "ui/icon_gem.png",
+      "sha256": "b1eb89460fdb072b",
+      "width": 64
+    },
+    "icon_heart": {
+      "bytes": 3322,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_heart",
+      "localUri": "rbxasset://arena_assets/ui/icon_heart.png",
+      "relPath": "ui/icon_heart.png",
+      "sha256": "51a2fe7d9f099e74",
+      "width": 64
+    },
+    "icon_lock": {
+      "bytes": 294,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_lock",
+      "localUri": "rbxasset://arena_assets/ui/icon_lock.png",
+      "relPath": "ui/icon_lock.png",
+      "sha256": "f9cc7deaa559d0d7",
+      "width": 64
+    },
+    "icon_shield": {
+      "bytes": 660,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_shield",
+      "localUri": "rbxasset://arena_assets/ui/icon_shield.png",
+      "relPath": "ui/icon_shield.png",
+      "sha256": "4bc116a2861807f2",
+      "width": 64
+    },
+    "icon_star": {
+      "bytes": 3841,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_star",
+      "localUri": "rbxasset://arena_assets/ui/icon_star.png",
+      "relPath": "ui/icon_star.png",
+      "sha256": "862b5cb11c8b8c99",
+      "width": 64
+    },
+    "icon_sword": {
+      "bytes": 631,
+      "cloudUri": null,
+      "height": 64,
+      "key": "icon_sword",
+      "localUri": "rbxasset://arena_assets/ui/icon_sword.png",
+      "relPath": "ui/icon_sword.png",
+      "sha256": "0301d1d7ef9c3680",
+      "width": 64
+    },
+    "panel_glass_9slice": {
+      "bytes": 429,
+      "cloudUri": null,
+      "height": 64,
+      "key": "panel_glass_9slice",
+      "localUri": "rbxasset://arena_assets/ui/panel_glass_9slice.png",
+      "relPath": "ui/panel_glass_9slice.png",
+      "sha256": "d99cabd6586880d4",
+      "width": 64
+    },
+    "particle_shockwave_ring": {
+      "bytes": 1982,
+      "cloudUri": null,
+      "height": 64,
+      "key": "particle_shockwave_ring",
+      "localUri": "rbxasset://arena_assets/vfx/particle_shockwave_ring.png",
+      "relPath": "vfx/particle_shockwave_ring.png",
+      "sha256": "623657bf86fdafc7",
+      "width": 64
+    },
+    "particle_smoke_puff": {
+      "bytes": 8671,
+      "cloudUri": null,
+      "height": 64,
+      "key": "particle_smoke_puff",
+      "localUri": "rbxasset://arena_assets/vfx/particle_smoke_puff.png",
+      "relPath": "vfx/particle_smoke_puff.png",
+      "sha256": "df6be33eba139afa",
+      "width": 64
+    },
+    "particle_soft_glow": {
+      "bytes": 2139,
+      "cloudUri": null,
+      "height": 64,
+      "key": "particle_soft_glow",
+      "localUri": "rbxasset://arena_assets/vfx/particle_soft_glow.png",
+      "relPath": "vfx/particle_soft_glow.png",
+      "sha256": "63f0ce73749468be",
+      "width": 64
+    },
+    "particle_spark_star": {
+      "bytes": 1811,
+      "cloudUri": null,
+      "height": 64,
+      "key": "particle_spark_star",
+      "localUri": "rbxasset://arena_assets/vfx/particle_spark_star.png",
+      "relPath": "vfx/particle_spark_star.png",
+      "sha256": "57aa92bb326af01d",
+      "width": 64
+    },
+    "radial_ring": {
+      "bytes": 3708,
+      "cloudUri": null,
+      "height": 64,
+      "key": "radial_ring",
+      "localUri": "rbxasset://arena_assets/ui/radial_ring.png",
+      "relPath": "ui/radial_ring.png",
+      "sha256": "6fd67066577c5c5d",
+      "width": 64
+    },
+    "scifi_panel_tile": {
+      "bytes": 422,
+      "cloudUri": null,
+      "height": 128,
+      "key": "scifi_panel_tile",
+      "localUri": "rbxasset://arena_assets/textures/scifi_panel_tile.png",
+      "relPath": "textures/scifi_panel_tile.png",
+      "sha256": "88c0a1ff99fefb60",
+      "width": 128
+    },
+    "vignette_soft": {
+      "bytes": 9034,
+      "cloudUri": null,
+      "height": 128,
+      "key": "vignette_soft",
+      "localUri": "rbxasset://arena_assets/ui/vignette_soft.png",
+      "relPath": "ui/vignette_soft.png",
+      "sha256": "4b81393c45db2eed",
+      "width": 128
+    }
+  },
+  "version": 1
+}

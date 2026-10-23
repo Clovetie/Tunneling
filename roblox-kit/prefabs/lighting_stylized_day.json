@@ -1,0 +1,36 @@
+{
+  "name": "lighting_stylized_day",
+  "category": "lighting",
+  "description": "Clean vibrant stylized daylight ideal for simulators, obbies, hubs, and adventure games.",
+  "defaultParent": "Lighting",
+  "lightingProperties": {
+    "ClockTime": 13.8,
+    "Brightness": 2.8,
+    "ExposureCompensation": 0.08,
+    "EnvironmentDiffuseScale": 1.0,
+    "EnvironmentSpecularScale": 1.0,
+    "Ambient": { "__t": "Color3", "v": [0.34, 0.38, 0.46] },
+    "OutdoorAmbient": { "__t": "Color3", "v": [0.48, 0.54, 0.64] },
+    "GlobalShadows": true
+  },
+  "tree": [
+    {
+      "name": "DayAtmosphere",
+      "className": "Atmosphere",
+      "replaceExisting": true,
+      "properties": {
+        "Density": 0.24,
+        "Offset": 0.25,
+        "Color": { "__t": "Color3", "v": [0.78, 0.88, 1.0] },
+        "Decay": { "__t": "Color3", "v": [0.58, 0.72, 0.95] },
+        "Haze": 0.9
+      }
+    },
+    {
+      "name": "DayBloom",
+      "className": "BloomEffect",
+      "replaceExisting": true,
+      "properties": { "Intensity": 0.32, "Size": 22, "Threshold": 1.5 }
+    }
+  ]
+}
