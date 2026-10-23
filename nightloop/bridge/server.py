@@ -32,7 +32,7 @@ import uuid
 
 from mcp_core import BridgeClient, MCPDispatcher, TOOL_SPECS
 
-VERSION = "3.3.0"
+VERSION = "3.4.0"
 PEER_ONLINE_WINDOW = 25.0  # seconds since last poll before a peer is considered stale
 HERE = Path(__file__).resolve().parent
 
@@ -839,7 +839,7 @@ def make_http_handler(state: BridgeState):
 def dashboard_html() -> str:
     return r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<title>Roblox Studio MCP &amp; Open-Source UI/Audio/LiveOps Kit (v3.3)</title>
+<title>Roblox Studio MCP, 3D Viewport Vision &amp; Open-Source Kit (v3.4)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
  :root{color-scheme:dark;--bg:#0b0f16;--panel:#131922;--panel2:#0e131b;--border:#232c3a;
@@ -913,7 +913,7 @@ def dashboard_html() -> str:
 </style></head><body>
 
 <header>
-  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v3.0</span></h1>
+  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v3.4</span></h1>
   <span id="status" class="pill off">checking&hellip;</span>
   <span id="ro-badge" class="pill ro" style="display:none">Read-Only Inspector</span>
   <span id="place" class="pill info-pill" style="display:none"></span>
@@ -937,7 +937,7 @@ def dashboard_html() -> str:
   <section id="tab-monitor" class="tab-pane active">
     <div class="grid">
       <div class="card"><div class="k">Studio Peers</div><div class="v" id="c-peers">0 online</div></div>
-      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">43</div></div>
+      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">55</div></div>
       <div class="card"><div class="k">Queued</div><div class="v" id="c-queued">0</div></div>
       <div class="card"><div class="k">Completed</div><div class="v" id="c-done">0</div></div>
       <div class="card"><div class="k">Failed</div><div class="v" id="c-fail">0</div></div>
@@ -953,8 +953,46 @@ def dashboard_html() -> str:
       <button class="sm" onclick="quickTool('list_studios', {})">List Peers</button>
       <button class="sm" onclick="quickTool('undo_redo', {action:'undo'})">Undo (Ctrl+Z)</button>
       <button class="sm" onclick="quickTool('undo_redo', {action:'redo'})">Redo</button>
+      <button class="sm" onclick="quickTool('export_place_rbxlx', {outputFile:'roblox-kit/models/StarterPlace.rbxlx'})">Export .rbxlx Place</button>
       <div class="spacer"></div>
       <button class="danger sm" onclick="clearQueue()">Clear Queue</button>
+    </div>
+
+    <div class="two-col" style="margin-bottom:16px">
+      <div class="card">
+        <div class="prompt-head" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
+          <div>
+            <h2>Live 3D Place + HUD Viewport Vision</h2>
+            <div class="sub">Real-time software rasterizer &amp; HUD compositor (exact same <code>image/png</code> vision stream multimodal AI agents receive from <code>capture_viewport</code>).</div>
+          </div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap">
+            <button class="sm primary" id="cam-perspective" onclick="refresh3DViewport('perspective')">Perspective</button>
+            <button class="sm" id="cam-iso_ne" onclick="refresh3DViewport('iso_ne')">Iso NE</button>
+            <button class="sm" id="cam-top_blueprint" onclick="refresh3DViewport('top_blueprint')">Top Blueprint</button>
+            <button class="sm" id="cam-front" onclick="refresh3DViewport('front')">Front</button>
+            <button class="sm" onclick="toggle3DHud()" id="btn-hud-toggle">HUD: ON</button>
+          </div>
+        </div>
+        <div style="background:#070a10;border:1px solid var(--border);border-radius:8px;overflow:hidden;text-align:center">
+          <img id="live-viewport-img" alt="Live 3D Place Viewport" style="width:100%;max-height:300px;object-fit:contain;display:block">
+        </div>
+        <div id="live-viewport-meta" class="sub" style="margin-top:6px">Click any camera preset above to re-render the live Studio Workspace + HUD.</div>
+      </div>
+
+      <div class="card">
+        <div class="prompt-head" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
+          <div>
+            <h2>3D Scene, Physics &amp; Grounding Auditor</h2>
+            <div class="sub">Detects unanchored parts, floating geometry gaps, blocked spawns &amp; Z-fighting coplanar surfaces.</div>
+          </div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap">
+            <button class="sm primary" onclick="run3DSceneAudit(false, false)">Audit Scene</button>
+            <button class="sm" onclick="run3DSceneAudit(true, true)">Auto-Anchor &amp; Snap Fix</button>
+          </div>
+        </div>
+        <div id="scene-audit-summary" class="sub" style="margin-bottom:8px">Ready to audit <code>Workspace</code> geometry &amp; physics.</div>
+        <div id="scene-audit-list" style="display:flex;flex-direction:column;gap:6px;max-height:265px;overflow:auto"></div>
+      </div>
     </div>
 
     <div id="quick-out-wrap" class="card" style="display:none;margin-bottom:18px">
@@ -1012,7 +1050,7 @@ def dashboard_html() -> str:
             <h3>1-Click Full Stud UI &amp; Gameplay System Templates</h3>
             <div class="sub">Installs <code>StudUI</code> / <code>ModernUI</code> + icons, builds live editable <code>ScreenGui</code>s in <code>StarterGui</code>, and wires controllers &amp; server economy.</div>
           </div>
-          <button class="primary sm" onclick="installAllModules()">Install All 15 Luau Modules</button>
+          <button class="primary sm" onclick="installAllModules()">Install All 19 Luau Modules</button>
         </div>
         <div id="template-list" style="display:flex;flex-direction:column;gap:7px"></div>
         <pre id="kit-action-out">Click any template, system, prefab, audio clip, or module button to install straight into Studio.</pre>
@@ -1028,6 +1066,10 @@ def dashboard_html() -> str:
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
           <select id="ui-audit-src" onchange="runUiPreviewAndAudit()" style="width:240px">
             <option value="prefab:ui_kenney_shop_window">Prefab: ui_kenney_shop_window</option>
+            <option value="prefab:ui_minimap_radar">Prefab: ui_minimap_radar</option>
+            <option value="prefab:ui_hotbar_abilities">Prefab: ui_hotbar_abilities</option>
+            <option value="prefab:ui_mobile_touch_pad">Prefab: ui_mobile_touch_pad</option>
+            <option value="prefab:ui_rank_up_banner">Prefab: ui_rank_up_banner</option>
             <option value="prefab:ui_fantasy_quest_dialog">Prefab: ui_fantasy_quest_dialog</option>
             <option value="prefab:ui_scifi_hud_visor">Prefab: ui_scifi_hud_visor</option>
             <option value="prefab:ui_input_prompt_bar">Prefab: ui_input_prompt_bar</option>
@@ -1055,14 +1097,15 @@ def dashboard_html() -> str:
     <div class="card" style="margin-bottom:16px">
       <div class="prompt-head" style="flex-wrap:wrap;gap:10px">
         <div>
-          <h2>1,587 Cloud <code>rbxassetid://</code> Icons (1,022 Glossy 3D Stud + 565 Flat Vector Lucide)</h2>
-          <div class="sub">Zero-upload cloud icons for both chunky simulator/cartoon UIs (<code>Stud</code>) and sleek minimalist/tactical dark UIs (<code>Lucide</code>).</div>
+          <h2>4,811 Cloud <code>rbxassetid://</code> Icons (1,022 Glossy 3D Stud + 1,894 Lucide Outline + 1,895 Lucide Filled)</h2>
+          <div class="sub">Zero-upload cloud icons for chunky simulator UIs (<code>Stud</code>) and sleek dark/minimalist UIs (<code>Lucide Outline</code> + <code>Lucide Filled</code> active states).</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;min-width:360px">
-          <button class="sm primary" id="pk-all" onclick="setIconPack('all')">All (1,587)</button>
+          <button class="sm primary" id="pk-all" onclick="setIconPack('all')">All (4,811)</button>
           <button class="sm" id="pk-stud" onclick="setIconPack('stud')">3D Stud (1,022)</button>
-          <button class="sm" id="pk-lucide" onclick="setIconPack('lucide')">Lucide Vector (565)</button>
-          <input id="cloud-icon-q" placeholder="Search icons (shield, sword, settings, coin, cat)..." oninput="searchCloudIconsUI()" style="width:230px">
+          <button class="sm" id="pk-lucide" onclick="setIconPack('lucide')">Lucide Outline (1,894)</button>
+          <button class="sm" id="pk-lucide_fill" onclick="setIconPack('lucide_fill')">Lucide Filled (1,895)</button>
+          <input id="cloud-icon-q" placeholder="Search icons (shield, sword, heart, settings, coin, cat)..." oninput="searchCloudIconsUI()" style="width:230px">
         </div>
       </div>
       <div id="cloud-icon-cats" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
@@ -1087,11 +1130,11 @@ def dashboard_html() -> str:
     <div class="card" style="margin-bottom:16px">
       <div class="prompt-head" style="flex-wrap:wrap;gap:10px">
         <div>
-          <h2>Open-Source Repo PNG Packs (249 Curated Kenney CC0 + Procedural Assets)</h2>
-          <div class="sub">Genuine CC0 UI buttons, 9-slice Fantasy borders, Sci-Fi bars, Adventure banners, White 2x Retina Icons, PC/Xbox/Mobile Input Prompts, Cursors &amp; Alpha Particle Sprites.</div>
+          <h2>Open-Source Repo PNG Packs (405 Curated Kenney CC0 + Procedural Assets across 18 Packs)</h2>
+          <div class="sub">CC0 UI buttons, 9-slice Fantasy/Sci-Fi/Adventure frames, Medals &amp; Ranks, Minimap &amp; Compass pins, NPC Emotes, RPG/Fighter skill icons, PS5/Switch/Xbox/Mobile controls, Pets &amp; Prototype Grids.</div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
-          <input id="asset-search" placeholder="Filter 249 PNGs..." oninput="renderFilteredAssets()" style="width:210px">
+          <input id="asset-search" placeholder="Filter 405 PNGs..." oninput="renderFilteredAssets()" style="width:210px">
           <button class="sm" onclick="loadKitGallery()">Refresh</button>
         </div>
       </div>
@@ -1102,7 +1145,7 @@ def dashboard_html() -> str:
     <div class="card">
       <div class="prompt-head">
         <div>
-          <h2>14 Prefabs &amp; Drag-and-Drop <code>.rbxmx</code> Models (<code>roblox-kit/prefabs/</code> &amp; <code>models/</code>)</h2>
+          <h2>20 Prefabs &amp; Drag-and-Drop <code>.rbxmx</code> Models (<code>roblox-kit/prefabs/</code> &amp; <code>models/</code>)</h2>
           <div class="sub">Spawn directly into Studio OR export any live Studio path to a standalone <code>.rbxmx</code> model file.</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
@@ -1152,7 +1195,7 @@ def dashboard_html() -> str:
 
       <div class="prompt-card">
         <div class="prompt-head">
-          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 50 tools enabled (UI linter + .rbxmx + audio + LiveOps + images + playtest + sync)</div></div>
+          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 55 tools enabled (3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
           <button class="primary sm" onclick="copyById('cfg-json')">Copy</button>
         </div>
         <pre id="cfg-json"></pre>
@@ -1198,7 +1241,7 @@ def dashboard_html() -> str:
       </div>
 
       <div class="prompt-card">
-        <h3>Invoke Any of the 50 MCP Tools Directly</h3>
+        <h3>Invoke Any of the 55 MCP Tools Directly</h3>
         <div class="sub" id="tool-desc">Select any MCP tool to inspect its fields and call it over <code>POST /mcp</code>.</div>
         <div style="display:flex;gap:8px;align-items:center">
           <select id="tool-select" onchange="onSelectTool()"></select>
@@ -1418,14 +1461,17 @@ codex mcp add roblox-studio -- python "${mcpPath}" --auto-install-plugin`;
     [".\\ab.ps1 sync ./src ServerScriptService.App", "Validate + snapshot + atomic single-undo sync to Studio"],
     [".\\ab.ps1 import-image ./icon.png --target StarterGui --apply-mode screen_gui", "Import PNG/JPG into repo + Studio directly"],
     [".\\ab.ps1 gen-image icon_coin --size 128 --target StarterGui --apply-mode screen_gui", "Generate crisp procedural icon/texture PNG"],
-    [".\\ab.ps1 icons \"shield\" --pack lucide", "Search 1,587 cloud icons across Stud (1,022) & Lucide (565)"],
+    [".\\ab.ps1 viewport --preset perspective --out viewport.png", "Render shaded 3D Workspace + HUD PNG frame"],
+    [".\\ab.ps1 audit-3d --fix-unanchored --snap-floating", "Audit & auto-fix unanchored/floating 3D geometry & spawns"],
+    [".\\ab.ps1 export-place --out StarterPlace.rbxlx", "Export full live Studio place (or offline starter place) to .rbxlx"],
+    [".\\ab.ps1 icons \"shield\" --pack lucide_fill", "Search 4,811 cloud icons across Stud, Lucide Outline & Lucide Filled"],
     [".\\ab.ps1 system liveops/codes", "Install any of 14 drop-in LiveOps / Monetization / Data systems"],
     [".\\ab.ps1 import-audio click_001.wav --target SoundService", "Import any of 45 CC0 WAVs or custom audio straight into Studio"],
     [".\\ab.ps1 audit-ui --path StarterGui", "Lint responsive UI bounds across Desktop, Tablet & Mobile"],
     [".\\ab.ps1 export-rbxmx StarterGui --out ./ui.rbxmx", "Export live Studio hierarchy to .rbxmx XML model file"],
     [".\\ab.ps1 template full_stud_ui_suite", "Install full HUD + Shop + Daily + Rebirth + Index + Economy"],
-    [".\\ab.ps1 install-module all --parent ReplicatedStorage.Shared", "Install all 15 reusable Luau modules (StudUI, ModernUI, SoundFX, etc.)"],
-    [".\\ab.ps1 prefab ui_kenney_shop_window", "Spawn Kenney 9-slice UI / VFX / Lighting prefab into Studio"],
+    [".\\ab.ps1 install-module all --parent ReplicatedStorage.Shared", "Install all 19 reusable Luau modules (StudUI, ModernUI, WidgetKit, etc.)"],
+    [".\\ab.ps1 prefab ui_minimap_radar", "Spawn Minimap Radar / Ability Hotbar / Quest NPC / Kenney Shop prefab"],
     [".\\ab.ps1 scenario --mode play --server-code \"return {ok=true}\"", "Run automated Play Solo test & stop cleanly"]
   ];
   document.getElementById('cmd-list').innerHTML = cmds.map(([c, d]) => `
@@ -1470,7 +1516,7 @@ Start by running a quick recon (\`.\\ab.ps1 state\` and \`.\\ab.ps1 survey\`) so
 `Connect directly to my live Roblox Studio Bridge & MCP Server:
 - Base URL: ${pubUrl}
 - Auth Header: \`Authorization: Bearer ${tok}\` (or \`X-Arena-Token: ${tok}\`)
-- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (50 tools, 14 skills, 14 LiveOps/Monetization systems, 6 UI templates, 14 .rbxmx models, 249 PNGs, 45 CC0 WAVs, 1,587 cloud icons)
+- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (55 tools, 16 skills, multimodal 3D viewport vision, 3D physics auditor, .rbxlx place export, 14 LiveOps/Monetization systems, 20 .rbxmx models, 405 PNGs, 45 CC0 WAVs, 4,811 cloud icons)
 - Agent Onboarding & Live State Endpoint: \`GET ${pubUrl}/api/agent-guide\`
 - Built-in Repo Kit: call \`browse_kit\` to inspect all 7 Roblox Studio Skills (\`.claude/skills/*\`), 12 Luau modules (\`install_kit_module\`), 6 complete \`StudUI\` screen & economy templates (\`install_template\`), 14 3D/UI/Lighting prefabs (\`spawn_prefab\`), 1,022 cloud \`rbxassetid://\` icons (\`search_cloud_icons\`), and 249 curated Kenney CC0 + procedural PNG assets (\`import_image\`).
 
@@ -1643,7 +1689,7 @@ async function importRepoAssetToStudio(relPath){
 
 async function spawnCloudIconPreview(uri, label){
   toast('Spawning cloud icon ' + label + ' in StarterGui...');
-  await quickTool('build_instance_tree', {
+  await quickTool('build_tree', {
     parent: 'StarterGui',
     tree: [{
       name: 'CloudIconPreview',
@@ -1802,9 +1848,69 @@ function renderUiPreviewStage(){
       </div>`).join('');
 }
 
+let ACTIVE_3D_PRESET = 'perspective';
+let ACTIVE_3D_HUD = true;
+
+async function refresh3DViewport(preset){
+  if(preset) ACTIVE_3D_PRESET = preset;
+  ['perspective', 'iso_ne', 'top_blueprint', 'front'].forEach(k => {
+    const b = document.getElementById('cam-' + k);
+    if(b) b.classList.toggle('primary', k === ACTIVE_3D_PRESET);
+  });
+  try {
+    const res = await callMcp('capture_viewport', {
+      preset: ACTIVE_3D_PRESET,
+      includeHud: ACTIVE_3D_HUD,
+      width: 680,
+      height: 360
+    });
+    const imgItem = (res.content || []).find(c => c.type === 'image');
+    const sc = res.structuredContent || {};
+    if(imgItem && imgItem.data){
+      document.getElementById('live-viewport-img').src = 'data:image/png;base64,' + imgItem.data;
+    }
+    document.getElementById('live-viewport-meta').textContent =
+      `Camera: ${sc.cameraPreset} [${(sc.cameraPosition||[]).join(', ')}] • Parts rendered: ${sc.partsRendered||0} • HUD widgets: ${sc.hudElementsComposited||0}`;
+  } catch(e){
+    document.getElementById('live-viewport-meta').textContent = String(e);
+  }
+}
+
+function toggle3DHud(){
+  ACTIVE_3D_HUD = !ACTIVE_3D_HUD;
+  document.getElementById('btn-hud-toggle').textContent = 'HUD: ' + (ACTIVE_3D_HUD ? 'ON' : 'OFF');
+  refresh3DViewport();
+}
+
+async function run3DSceneAudit(fixUnanchored, snapFloating){
+  try {
+    const res = await callMcp('audit_3d_scene', {
+      path: 'Workspace',
+      autoFixUnanchored: Boolean(fixUnanchored),
+      snapFloating: Boolean(snapFloating)
+    });
+    const d = res.structuredContent || {};
+    document.getElementById('scene-audit-summary').textContent =
+      `Audited ${d.totalPartsAudited||0} parts — Errors: ${d.errorCount||0}, Warnings: ${d.warningCount||0}` +
+      (d.autoFixedUnanchored ? ` (Auto-anchored ${d.autoFixedUnanchored}!)` : '') +
+      (d.autoSnappedFloating ? ` (Snapped ${d.autoSnappedFloating}!)` : '');
+    const issues = d.issues || [];
+    document.getElementById('scene-audit-list').innerHTML = issues.length === 0
+      ? '<div class="pill on" style="display:inline-block">All 3D geometry grounded, anchored &amp; spawn-clear!</div>'
+      : issues.map(iss => `
+        <div class="cmd-row" style="flex-direction:column;align-items:flex-start;gap:3px">
+          <div><span class="pill ${iss.severity==='error'?'off':'ro'}" style="font-size:10px;padding:1px 7px">${esc(iss.code)}</span> <code style="font-size:11px">${esc(iss.path)}</code></div>
+          <div class="sub">${esc(iss.message)}</div>
+        </div>`).join('');
+    if(fixUnanchored || snapFloating) refresh3DViewport();
+  } catch(e){
+    document.getElementById('scene-audit-summary').textContent = String(e);
+  }
+}
+
 function setIconPack(pk){
   ACTIVE_ICON_PACK = pk;
-  ['all', 'stud', 'lucide'].forEach(k => {
+  ['all', 'stud', 'lucide', 'lucide_fill'].forEach(k => {
     const b = document.getElementById('pk-' + k);
     if(b) b.classList.toggle('primary', k === pk);
   });
@@ -1892,6 +1998,8 @@ async function loadKitGallery(){
     renderFilteredAssets();
     searchCloudIconsUI('');
     runUiPreviewAndAudit();
+    refresh3DViewport('perspective');
+    run3DSceneAudit(false, false);
   } catch(_){}
 }
 

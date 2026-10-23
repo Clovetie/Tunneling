@@ -378,11 +378,29 @@ def main() -> int:
     p = sub.add_parser("template", help="install a full UI screen or multi-script gameplay system template into Studio")
     p.add_argument("name", help="full_stud_ui_suite | stud_shop_window | stud_hud_shell | stud_daily_rewards | stud_rebirth_window | stud_rarity_index")
 
-    p = sub.add_parser("icons", help="search 1,587 verified cloud rbxassetid:// UI icons (Stud + Lucide)")
+    p = sub.add_parser("icons", help="search 4,811 verified cloud rbxassetid:// UI icons (Stud + Lucide + LucideFill)")
     p.add_argument("query", nargs="?", default="")
-    p.add_argument("--pack", default="all", choices=["all", "stud", "lucide"])
+    p.add_argument("--pack", default="all", choices=["all", "stud", "lucide", "lucide_fill"])
     p.add_argument("--category", default=None)
     p.add_argument("--limit", type=int, default=40)
+
+    p = sub.add_parser("viewport", help="capture a visual PNG render of Workspace + HUD")
+    p.add_argument("--preset", default="perspective", choices=["perspective", "iso_ne", "iso_nw", "top_blueprint", "front"])
+    p.add_argument("--no-hud", action="store_true")
+    p.add_argument("--out", default="viewport.png")
+
+    p = sub.add_parser("audit-3d", help="run 3D geometry, physics, grounding & spawn obstruction auditor")
+    p.add_argument("--path", default="Workspace")
+    p.add_argument("--fix-unanchored", action="store_true")
+    p.add_argument("--snap-floating", action="store_true")
+
+    p = sub.add_parser("export-place", help="export full Studio session (or offline starter place) to .rbxlx XML")
+    p.add_argument("--out", default="roblox-kit/models/StarterPlace.rbxlx")
+    p.add_argument("--offline", action="store_true")
+
+    p = sub.add_parser("import-place", help="import a .rbxlx XML place file into Studio")
+    p.add_argument("file")
+    p.add_argument("--strip-scripts", action="store_true")
 
     p = sub.add_parser("system", help="install a drop-in server+shared+client system from roblox-kit/systems")
     p.add_argument("name", help="e.g. liveops/codes | liveops/playtime-gifts | monetization/offline-earnings | core/data | all")
@@ -853,6 +871,36 @@ def main() -> int:
         return show_tool_output("audit_ui_layout", client, "audit_ui_layout", {
             "path": args.path,
             "prefab": args.prefab,
+            "peerId": args.peer,
+        }, True, args.raw_json)
+
+    if args.cmd == "viewport":
+        return show_tool_output("capture_viewport", client, "capture_viewport", {
+            "preset": args.preset,
+            "includeHud": not args.no_hud,
+            "saveFile": args.out,
+            "peerId": args.peer,
+        }, True, args.raw_json)
+
+    if args.cmd == "audit-3d":
+        return show_tool_output("audit_3d_scene", client, "audit_3d_scene", {
+            "path": args.path,
+            "autoFixUnanchored": args.fix_unanchored,
+            "snapFloating": args.snap_floating,
+            "peerId": args.peer,
+        }, True, args.raw_json)
+
+    if args.cmd == "export-place":
+        return show_tool_output("export_place_rbxlx", client, "export_place_rbxlx", {
+            "outputFile": args.out,
+            "offlineStarterPlace": args.offline,
+            "peerId": args.peer,
+        }, True, args.raw_json)
+
+    if args.cmd == "import-place":
+        return show_tool_output("import_place_rbxlx", client, "import_place_rbxlx", {
+            "filePath": args.file,
+            "stripScripts": args.strip_scripts,
             "peerId": args.peer,
         }, True, args.raw_json)
 

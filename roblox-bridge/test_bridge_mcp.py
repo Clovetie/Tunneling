@@ -197,10 +197,10 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         self.assertEqual(st_n, 202)
         self.assertIsNone(body_n)
 
-        # Tools list returns all 50 annotated tools
+        # Tools list returns all 55 annotated tools
         _, list_resp, _ = self.mcp_http({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, auth_mode="header")
         tools = list_resp["result"]["tools"]
-        self.assertEqual(len(tools), 50)
+        self.assertEqual(len(tools), 55)
         self.assertEqual(len(tools), len(TOOL_SPECS))
         for t in tools:
             self.assertIn("annotations", t)
@@ -454,33 +454,77 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             boot_data = json.loads(boot_resp.read().decode("utf-8"))
             self.assertTrue(boot_data["local"])
             self.assertEqual(boot_data["token"], self.token)
-            self.assertEqual(len(boot_data["tools"]), 50)
+            self.assertEqual(len(boot_data["tools"]), 55)
 
         with urllib.request.urlopen(f"{self.base_url}/api/agent-guide", timeout=5) as guide_resp:
             guide_data = json.loads(guide_resp.read().decode("utf-8"))
-            self.assertEqual(guide_data["toolCounts"]["total"], 50)
+            self.assertEqual(guide_data["toolCounts"]["total"], 55)
             self.assertGreaterEqual(len(guide_data["keyTips"]), 5)
 
-        # 8. Direct Image/Audio Import, Dual Cloud Icons (1,587), 14 Drop-In Systems, .rbxmx & Multi-Viewport UI Linter
+        # 8. Direct Image/Audio Import, 4,811 Cloud Icons, 14 Systems, 3D Viewport Vision, 3D Physics QA & .rbxlx
         kit_all = self.call_tool("browse_kit", {"category": "all"})
-        self.assertGreaterEqual(len(kit_all["skills"]), 14)
-        self.assertGreaterEqual(len(kit_all["modules"]), 15)
+        self.assertGreaterEqual(len(kit_all["skills"]), 16)
+        self.assertGreaterEqual(len(kit_all["modules"]), 18)
         self.assertGreaterEqual(len(kit_all["systems"]), 14)
-        self.assertGreaterEqual(len(kit_all["models"]), 14)
+        self.assertGreaterEqual(len(kit_all["models"]), 20)
         self.assertGreaterEqual(len(kit_all["audio"]), 45)
         self.assertGreaterEqual(len(kit_all["templates"]), 6)
-        self.assertGreaterEqual(len(kit_all["prefabs"]), 14)
-        self.assertGreaterEqual(len(kit_all["images"]), 240)
-        self.assertEqual(kit_all["cloudIconsCount"], 1587)
+        self.assertGreaterEqual(len(kit_all["prefabs"]), 20)
+        self.assertGreaterEqual(len(kit_all["images"]), 400)
+        self.assertEqual(kit_all["cloudIconsCount"], 4811)
 
         icon_search = self.call_tool("search_cloud_icons", {"query": "shopping cart", "limit": 10})
-        self.assertEqual(icon_search["totalCatalogIcons"], 1587)
+        self.assertEqual(icon_search["totalCatalogIcons"], 4811)
         self.assertGreaterEqual(icon_search["returnedCount"], 1)
         self.assertTrue(icon_search["icons"][0]["uri"].startswith("rbxassetid://"))
 
-        lucide_search = self.call_tool("search_cloud_icons", {"query": "shield", "pack": "lucide", "limit": 10})
+        lucide_search = self.call_tool("search_cloud_icons", {"query": "shield", "pack": "lucide_fill", "limit": 10})
         self.assertGreaterEqual(lucide_search["returnedCount"], 1)
-        self.assertEqual(lucide_search["icons"][0]["pack"], "lucide")
+        self.assertEqual(lucide_search["icons"][0]["pack"], "lucide_fill")
+
+        # Multimodal 3D Viewport + HUD capture emits genuine MCP image/png content block!
+        _, vp_raw, _ = self.mcp_http({
+            "jsonrpc": "2.0",
+            "id": "vp1",
+            "method": "tools/call",
+            "params": {"name": "capture_viewport", "arguments": {"preset": "perspective", "includeHud": True, "width": 480, "height": 270}},
+        })
+        vp_res = vp_raw["result"]
+        self.assertFalse(vp_res["isError"])
+        self.assertEqual(vp_res["content"][0]["type"], "image")
+        self.assertEqual(vp_res["content"][0]["mimeType"], "image/png")
+        import base64 as _b64_vp
+        vp_png = _b64_vp.b64decode(vp_res["content"][0]["data"])
+        self.assertEqual(vp_png[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertGreaterEqual(vp_res["structuredContent"]["partsRendered"], 2)
+
+        # 3D Scene & Physics Auditor catches unanchored parts and auto-fixes cleanly
+        self.call_tool("build_tree", {
+            "parent": "Workspace",
+            "tree": [{
+                "name": "LooseTestCrate",
+                "className": "Part",
+                "properties": {
+                    "Anchored": False,
+                    "Size": {"__t": "Vector3", "v": [4, 4, 4]},
+                    "Position": {"__t": "Vector3", "v": [6, 5.5, 6]},
+                },
+            }],
+        })
+        scene_check = self.call_tool("audit_3d_scene", {"path": "Workspace"})
+        self.assertIn("Workspace.LooseTestCrate", scene_check["unanchoredPaths"])
+        scene_fixed = self.call_tool("audit_3d_scene", {"path": "Workspace", "autoFixUnanchored": True, "snapFloating": True})
+        self.assertEqual(scene_fixed["errorCount"], 0)
+        self.assertGreaterEqual(scene_fixed["autoFixedUnanchored"], 1)
+
+        # Full .rbxlx Place XML export + re-import round-trip
+        with tempfile.TemporaryDirectory() as rbxlx_tmp:
+            place_xml = Path(rbxlx_tmp) / "FullPlace.rbxlx"
+            exp_place = self.call_tool("export_place_rbxlx", {"outputFile": str(place_xml), "offlineStarterPlace": True})
+            self.assertTrue(place_xml.is_file())
+            self.assertGreater(exp_place["bytes"], 5000)
+            imp_place = self.call_tool("import_place_rbxlx", {"filePath": str(place_xml)})
+            self.assertIn("Workspace", imp_place["servicesSynced"])
 
         _, skill_read, _ = self.mcp_http({
             "jsonrpc": "2.0",
@@ -628,7 +672,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             msg = json.loads(line)
             self.assertEqual(msg["id"], 201)
             self.assertFalse(msg["result"]["isError"])
-            self.assertEqual(msg["result"]["structuredContent"]["bridge"]["mcp_tools"], 50)
+            self.assertEqual(msg["result"]["structuredContent"]["bridge"]["mcp_tools"], 55)
         finally:
             proc.stdin.close()
             proc.stdout.close()

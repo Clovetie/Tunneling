@@ -26,7 +26,7 @@ import urllib.request
 from pathlib import Path
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "3.3.0"
+MCP_SERVER_VERSION = "3.4.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2025-06-18",
     "2025-03-26",
@@ -1298,17 +1298,17 @@ TOOL_SPECS = [
     },
     {
         "name": "search_cloud_icons",
-        "description": "Search 1,587 verified pre-uploaded Roblox `rbxassetid://` UI icons across BOTH `CheckUIIcons` (1,022 glossy 3D Stud cartoon icons) AND `LucideIcons` (565 crisp modern flat vector icons). Works immediately in Studio and published multiplayer servers with zero uploads.",
+        "description": "Search 4,811 verified pre-uploaded Roblox `rbxassetid://` UI icons across 3 packs: `stud` (1,022 glossy 3D cartoon icons), `lucide` (1,894 crisp outline vector icons), and `lucide_fill` (1,895 solid filled vector icons). Works immediately in Studio and published multiplayer servers with zero uploads.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "default": "", "description": "Case-insensitive search keywords, e.g. 'shopping cart', 'shield', 'settings', 'golden cat', 'coin', 'swords'."},
-                "pack": {"type": "string", "enum": ["all", "stud", "lucide"], "default": "all", "description": "Filter icon style pack: 'stud' (glossy 3D cartoon), 'lucide' (minimalist flat vector), or 'all'."},
-                "category": {"type": "string", "description": "Optional category filter, e.g. 'Main', 'Item', 'Animal', 'Currency', 'Lucide'."},
+                "query": {"type": "string", "default": "", "description": "Case-insensitive search keywords, e.g. 'shopping cart', 'shield', 'settings', 'heart', 'golden cat', 'coin', 'swords'."},
+                "pack": {"type": "string", "enum": ["all", "stud", "lucide", "lucide_fill"], "default": "all", "description": "Filter icon style pack: 'stud' (glossy 3D cartoon), 'lucide' (outline vector), 'lucide_fill' (solid filled vector), or 'all'."},
+                "category": {"type": "string", "description": "Optional category filter, e.g. 'Main', 'Item', 'Animal', 'Currency', 'Lucide', 'LucideFill'."},
                 "limit": {"type": "integer", "default": 40, "minimum": 1, "maximum": 250},
             },
         },
-        "annotations": _ann("Search 1,587 Live rbxassetid:// UI Icons (Stud + Lucide)", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Search 4,811 Live rbxassetid:// UI Icons (Stud + Lucide + LucideFill)", read_only=True, destructive=False, idempotent=True),
     },
     {
         "name": "import_audio",
@@ -1395,6 +1395,94 @@ TOOL_SPECS = [
         },
         "annotations": _ann("Install Modular LiveOps / Monetization / Data System", read_only=False, destructive=False, idempotent=True),
     },
+    {
+        "name": "capture_viewport",
+        "description": "Capture a shaded visual PNG screenshot of the open Roblox place (3D Workspace geometry + Lighting mood + world grid + optional StarterGui HUD overlay, or native host window capture on Windows/macOS). Returns BOTH a native MCP `image/png` block so multimodal agents can see the scene AND structured camera/scene telemetry.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": ["perspective", "iso_ne", "iso_nw", "top_blueprint", "front"],
+                    "default": "perspective",
+                    "description": "Camera angle preset ('top_blueprint' renders an orthographic architectural floorplan).",
+                },
+                "includeHud": {"type": "boolean", "default": True, "description": "Composite active StarterGui ScreenGuis on top of the 3D frame."},
+                "showLabels": {"type": "boolean", "default": True, "description": "Draw crisp callout labels on foreground 3D parts."},
+                "width": {"type": "integer", "default": 800, "minimum": 240, "maximum": 1280},
+                "height": {"type": "integer", "default": 450, "minimum": 160, "maximum": 800},
+                "mode": {"type": "string", "enum": ["software", "native"], "default": "software", "description": "Use deterministic 3D+HUD software rasterizer ('software', works headless/minimized everywhere) or OS desktop capture ('native' fallback to software)."},
+                "saveFile": {"type": "string", "description": "Optional path to save the rendered PNG on disk."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Capture Visual 3D Viewport + HUD PNG", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "audit_3d_scene",
+        "description": "Run numerical 3D scene & physics QA on `Workspace` (or a specific Model/Folder): detects unanchored world parts (`UNANCHORED_PART`), mid-air floating geometry (`FLOATING_GEOMETRY` with exact gap studs), blocked `SpawnLocation` headroom (`SPAWN_OBSTRUCTED`), coplanar Z-fighting surfaces (`Z_FIGHTING_COPLANAR`), and extreme/degenerate sizes — with optional 1-step auto-remediation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "default": "Workspace", "description": "Studio hierarchy root to audit."},
+                "autoFixUnanchored": {"type": "boolean", "default": False, "description": "Automatically anchor all non-character unanchored parts in a single undo step."},
+                "snapFloating": {"type": "boolean", "default": False, "description": "Automatically snap accidentally floating parts down onto their supporting surface."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Audit 3D Geometry, Grounding, Physics & Spawns", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "export_place_rbxlx",
+        "description": "Export the entire connected Studio place (`Workspace`, `Lighting`, `ReplicatedStorage`, `ServerScriptService`, `StarterGui`, `StarterPlayer`, `SoundService`) OR generate an offline standalone playable `.rbxlx` place XML file directly on disk (even before Roblox Studio is open!).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "outputFile": {"type": "string", "default": "roblox-kit/models/StarterPlace.rbxlx", "description": "Destination `.rbxlx` file path."},
+                "offlineStarterPlace": {"type": "boolean", "default": False, "description": "Generate a complete standalone `.rbxlx` place from built-in kit modules, spawn plaza, lighting, and UI even if Studio is offline."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Export Full .rbxlx Roblox Place File", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "import_place_rbxlx",
+        "description": "Parse a `.rbxlx` Roblox Place XML file from disk and synchronize its services (`Workspace`, `Lighting`, `ReplicatedStorage`, `ServerScriptService`, `StarterGui`, `StarterPlayer`, `SoundService`) into the connected Studio session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filePath": {"type": "string", "description": "Path to `.rbxlx` file on disk."},
+                "stripScripts": {"type": "boolean", "default": False, "description": "Strip embedded scripts when importing untrusted external place files."},
+                "peerId": PEER_PROP,
+            },
+            "required": ["filePath"],
+        },
+        "annotations": _ann("Import .rbxlx Place XML into Studio", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "open_cloud_action",
+        "description": "Invoke Roblox Open Cloud v1/v2 REST endpoints (`publish_place`, `datastore_list`, `datastore_get`, `datastore_set`, `messaging_publish`) using `ROBLOX_OPEN_CLOUD_API_KEY` (or explicit `apiKey`).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["publish_place", "datastore_list", "datastore_get", "datastore_set", "messaging_publish"],
+                },
+                "universeId": {"type": "integer", "description": "Target Roblox Universe ID."},
+                "placeId": {"type": "integer", "description": "Target Place ID (for `publish_place`)."},
+                "placeFile": {"type": "string", "description": "Local `.rbxlx` or `.rbxl` file path to upload for `publish_place`."},
+                "versionType": {"type": "string", "enum": ["Saved", "Published"], "default": "Saved"},
+                "datastoreName": {"type": "string", "description": "DataStore name."},
+                "entryKey": {"type": "string", "description": "DataStore entry key."},
+                "value": {"description": "JSON-serializable value for `datastore_set` or message payload for `messaging_publish`."},
+                "topic": {"type": "string", "description": "Topic name for `messaging_publish`."},
+                "apiKey": {"type": "string", "description": "Optional Open Cloud API key override (defaults to `ROBLOX_OPEN_CLOUD_API_KEY` env var)."},
+            },
+            "required": ["action", "universeId"],
+        },
+        "annotations": _ann("Roblox Open Cloud Publish / DataStore / Messaging", read_only=False, destructive=False, idempotent=False),
+    },
 ]
 
 TOOL_MAP = {t["name"]: t for t in TOOL_SPECS}
@@ -1429,6 +1517,10 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
     if name == "drift_and_sync" and args.get("mode", "check") == "check":
         return True
     if name == "manage_snapshots" and args.get("action", "list") in ("list", "get"):
+        return True
+    if name == "audit_3d_scene" and not args.get("autoFixUnanchored") and not args.get("snapFloating"):
+        return True
+    if name == "open_cloud_action" and args.get("action") in ("datastore_list", "datastore_get"):
         return True
     return False
 
@@ -1941,6 +2033,21 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
     if name == "install_dropin_system":
         return install_dropin_system_helper(client=client, system_arg=args["system"], peer_id=peer_id)
 
+    if name == "capture_viewport":
+        return capture_viewport_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "audit_3d_scene":
+        return audit_3d_scene_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "export_place_rbxlx":
+        return export_place_rbxlx_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "import_place_rbxlx":
+        return import_place_rbxlx_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "open_cloud_action":
+        return open_cloud_action_helper(args=args)
+
     if name == "generate_procedural_image":
         return import_image_helper(
             client=client,
@@ -2269,8 +2376,22 @@ def _load_cloud_icons() -> list:
                 "pack": "lucide",
                 "path": f"Lucide/{lname}",
                 "category": "Lucide",
-                "subCategory": "Vector",
+                "subCategory": "Outline",
                 "name": lname,
+                "assetId": int(aid),
+                "uri": f"rbxassetid://{aid}",
+            })
+    lucide_fill_file = mod_dir / "LucideFilledIcons.lua"
+    if lucide_fill_file.is_file():
+        fsrc = lucide_fill_file.read_text(encoding="utf-8")
+        for m in re.finditer(r'\[\s*"([^"]+)"\s*\]\s*=\s*"rbxassetid://(\d+)"', fsrc):
+            fname, aid = m.group(1), m.group(2)
+            entries.append({
+                "pack": "lucide_fill",
+                "path": f"LucideFill/{fname}-fill",
+                "category": "LucideFill",
+                "subCategory": "Filled",
+                "name": f"{fname}-fill",
                 "assetId": int(aid),
                 "uri": f"rbxassetid://{aid}",
             })
@@ -2818,7 +2939,7 @@ def _live_inspect_to_export_node(node: dict, client: BridgeClient, peer_id: str 
     out = {
         "name": node.get("name") or cls,
         "className": cls,
-        "properties": node.get("properties") or {},
+        "properties": {**(node.get("properties") or {}), **(node.get("structuredProperties") or {})},
         "tags": node.get("tags") or [],
         "children": [],
     }
@@ -2899,6 +3020,279 @@ def audit_ui_layout_helper(client: BridgeClient, args: dict, peer_id: str = None
     audit = run_multi_viewport_audit(tree, viewports=args.get("viewports"))
     audit["source"] = source_label
     return audit
+
+
+def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    import base64 as _b64
+    from viewport_renderer import render_scene_png, try_native_os_window_capture
+
+    preset = args.get("preset") or "perspective"
+    w = int(args.get("width", 800))
+    h = int(args.get("height", 450))
+    include_hud = bool(args.get("includeHud", True))
+    show_labels = bool(args.get("showLabels", True))
+    mode = args.get("mode") or "software"
+
+    if mode == "native":
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+            tmp_native = Path(tf.name)
+        try:
+            if try_native_os_window_capture(tmp_native):
+                png_bytes = tmp_native.read_bytes()
+                if args.get("saveFile"):
+                    sp = Path(args["saveFile"]).expanduser()
+                    sp.parent.mkdir(parents=True, exist_ok=True)
+                    sp.write_bytes(png_bytes)
+                return {
+                    "renderer": "native_os_window",
+                    "bytes": len(png_bytes),
+                    "savedFile": str(args.get("saveFile") or ""),
+                    "_mcp_image_png_b64": _b64.b64encode(png_bytes).decode("ascii"),
+                }
+        finally:
+            try:
+                tmp_native.unlink()
+            except Exception:
+                pass
+
+    ws_tree = _unwrap_job(client.submit_job("inspect", {
+        "path": "Workspace",
+        "depth": 8,
+        "includeProperties": True,
+    }, wait=45.0, dm="edit", peer_id=peer_id))
+
+    lighting_props = {}
+    try:
+        lg = _unwrap_job(client.submit_job("inspect", {
+            "path": "Lighting",
+            "depth": 1,
+            "includeProperties": True,
+        }, wait=15.0, dm="edit", peer_id=peer_id))
+        lighting_props = lg.get("properties") or {}
+    except Exception:
+        pass
+
+    gui_children = []
+    if include_hud:
+        try:
+            sg = _unwrap_job(client.submit_job("inspect", {
+                "path": "StarterGui",
+                "depth": 8,
+                "includeProperties": True,
+            }, wait=20.0, dm="edit", peer_id=peer_id))
+            gui_children = sg.get("children") or []
+        except Exception:
+            pass
+
+    png_bytes, meta = render_scene_png(
+        workspace_tree=ws_tree,
+        gui_tree=gui_children,
+        lighting_props=lighting_props,
+        width=w,
+        height=h,
+        camera_preset=preset,
+        include_hud=include_hud,
+        show_labels=show_labels,
+    )
+    if args.get("saveFile"):
+        sp = Path(args["saveFile"]).expanduser()
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_bytes(png_bytes)
+        meta["savedFile"] = str(sp)
+    meta["_mcp_image_png_b64"] = _b64.b64encode(png_bytes).decode("ascii")
+    return meta
+
+
+def audit_3d_scene_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from scene_auditor import audit_3d_hierarchy
+
+    target_path = args.get("path") or "Workspace"
+    root = _unwrap_job(client.submit_job("inspect", {
+        "path": target_path,
+        "depth": 10,
+        "includeProperties": True,
+    }, wait=45.0, dm="edit", peer_id=peer_id))
+
+    report = audit_3d_hierarchy(root)
+    report["path"] = target_path
+    anchored_fixed = 0
+    snapped_fixed = 0
+
+    if args.get("autoFixUnanchored") and report["unanchoredPaths"]:
+        _unwrap_job(client.submit_job("mass_set_properties", {
+            "paths": report["unanchoredPaths"],
+            "properties": {"Anchored": True},
+        }, note="auto_anchor_3d_audit", wait=30.0, dm="edit", peer_id=peer_id))
+        anchored_fixed = len(report["unanchoredPaths"])
+
+    if args.get("snapFloating") and report["floatingSnapCandidates"]:
+        for cand in report["floatingSnapCandidates"]:
+            _unwrap_job(client.submit_job("set_properties", {
+                "path": cand["path"],
+                "properties": {"Position": {"__t": "Vector3", "v": cand["newPosition"]}},
+            }, note="snap_floating_part", wait=20.0, dm="edit", peer_id=peer_id))
+            snapped_fixed += 1
+
+    if anchored_fixed or snapped_fixed:
+        root_after = _unwrap_job(client.submit_job("inspect", {
+            "path": target_path,
+            "depth": 10,
+            "includeProperties": True,
+        }, wait=45.0, dm="edit", peer_id=peer_id))
+        report = audit_3d_hierarchy(root_after)
+        report["path"] = target_path
+
+    report["autoFixedUnanchored"] = anchored_fixed
+    report["autoSnappedFloating"] = snapped_fixed
+    return report
+
+
+def export_place_rbxlx_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from image_pipeline import find_kit_root
+    from rbxmx_pipeline import serialize_place_to_rbxlx
+
+    kit = find_kit_root()
+    out_file = Path(args.get("outputFile") or (kit / "models" / "StarterPlace.rbxlx")).expanduser()
+    services_map = {}
+
+    if args.get("offlineStarterPlace") or not client.health().get("studio_connected"):
+        plaza = json.loads((kit / "prefabs" / "spawn_plaza.json").read_text(encoding="utf-8"))["tree"]
+        shop = json.loads((kit / "prefabs" / "ui_kenney_shop_window.json").read_text(encoding="utf-8"))["tree"]
+        mods = [
+            {
+                "name": mf.stem,
+                "className": "ModuleScript",
+                "source": mf.read_text(encoding="utf-8"),
+            }
+            for mf in sorted((kit / "modules").glob("*.lua"))
+        ]
+        services_map = {
+            "Workspace": [
+                {
+                    "name": "Baseplate",
+                    "className": "Part",
+                    "properties": {
+                        "Anchored": True,
+                        "Size": {"__t": "Vector3", "v": [512, 16, 512]},
+                        "Position": {"__t": "Vector3", "v": [0, -8, 0]},
+                        "Color": {"__t": "Color3", "v": [0.38, 0.4, 0.44]},
+                    },
+                },
+                *plaza,
+            ],
+            "ReplicatedStorage": [{"name": "Shared", "className": "Folder", "children": mods}],
+            "StarterGui": shop,
+        }
+        mode_used = "offline_starter_place"
+    else:
+        for svc in ("Workspace", "Lighting", "ReplicatedStorage", "ServerScriptService", "StarterGui", "StarterPlayer", "SoundService"):
+            try:
+                insp = _unwrap_job(client.submit_job("inspect", {
+                    "path": svc,
+                    "depth": 8,
+                    "includeProperties": True,
+                }, wait=30.0, dm="edit", peer_id=peer_id))
+                exported = _live_inspect_to_export_node(insp, client, peer_id)
+                services_map[svc] = {
+                    "properties": exported.get("properties") or {},
+                    "children": exported.get("children") or [],
+                }
+            except Exception:
+                services_map[svc] = []
+        mode_used = "live_studio_export"
+
+    xml_str = serialize_place_to_rbxlx(services_map)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_text(xml_str, encoding="utf-8")
+    return {
+        "mode": mode_used,
+        "outputFile": str(out_file),
+        "bytes": len(xml_str.encode("utf-8")),
+        "servicesExported": list(services_map.keys()),
+    }
+
+
+def import_place_rbxlx_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from rbxmx_pipeline import parse_rbxlx_place
+
+    fp = Path(args["filePath"]).expanduser()
+    if not fp.is_file():
+        raise FileNotFoundError(f".rbxlx file not found: {fp}")
+    services, stats = parse_rbxlx_place(fp.read_text(encoding="utf-8"), strip_scripts=bool(args.get("stripScripts", False)))
+    synced_services = []
+    created_total = 0
+    for svc_name, payload in services.items():
+        children = payload.get("children") or []
+        if not children:
+            continue
+        res = _unwrap_job(client.submit_job("build", {
+            "parent": svc_name,
+            "tree": children,
+            "select": False,
+        }, note=f"import_rbxlx:{svc_name}", wait=60.0, dm="edit", peer_id=peer_id))
+        synced_services.append(svc_name)
+        created_total += len(res.get("created", []))
+
+    return {
+        "file": str(fp),
+        "servicesSynced": synced_services,
+        "createdRoots": created_total,
+        "itemsParsed": stats["itemsParsed"],
+        "scriptsStripped": stats["scriptsStripped"],
+    }
+
+
+def open_cloud_action_helper(args: dict) -> dict:
+    from urllib.parse import quote
+
+    api_key = (args.get("apiKey") or os.environ.get("ROBLOX_OPEN_CLOUD_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "Missing Open Cloud API key. Set ROBLOX_OPEN_CLOUD_API_KEY or pass 'apiKey' with permissions for Universes / DataStores / Messaging."
+        )
+    action = args["action"]
+    uid = int(args["universeId"])
+    headers = {"x-api-key": api_key}
+
+    if action == "publish_place":
+        pid = int(args["placeId"])
+        pfile = Path(args["placeFile"]).expanduser()
+        if not pfile.is_file():
+            raise FileNotFoundError(f"Place file not found: {pfile}")
+        raw = pfile.read_bytes()
+        vtype = args.get("versionType") or "Saved"
+        ctype = "application/xml" if pfile.suffix.lower() == ".rbxlx" else "application/octet-stream"
+        url = f"https://apis.roblox.com/universes/v1/{uid}/places/{pid}/versions?versionType={quote(vtype)}"
+        req = urllib.request.Request(url, data=raw, method="POST", headers={**headers, "Content-Type": ctype})
+    elif action == "datastore_list":
+        url = f"https://apis.roblox.com/datastores/v1/universes/{uid}/standard-datastores?limit=50"
+        req = urllib.request.Request(url, method="GET", headers=headers)
+    elif action == "datastore_get":
+        ds = quote(args["datastoreName"])
+        ek = quote(args["entryKey"])
+        url = f"https://apis.roblox.com/datastores/v1/universes/{uid}/standard-datastores/datastore/entries/entry?datastoreName={ds}&entryKey={ek}"
+        req = urllib.request.Request(url, method="GET", headers=headers)
+    elif action == "datastore_set":
+        ds = quote(args["datastoreName"])
+        ek = quote(args["entryKey"])
+        body = json.dumps(args.get("value")).encode("utf-8")
+        url = f"https://apis.roblox.com/datastores/v1/universes/{uid}/standard-datastores/datastore/entries/entry?datastoreName={ds}&entryKey={ek}"
+        req = urllib.request.Request(url, data=body, method="POST", headers={**headers, "Content-Type": "application/json"})
+    elif action == "messaging_publish":
+        topic = quote(args["topic"])
+        body = json.dumps({"message": json.dumps(args.get("value"))}).encode("utf-8")
+        url = f"https://apis.roblox.com/messaging-service/v1/universes/{uid}/topics/{topic}"
+        req = urllib.request.Request(url, data=body, method="POST", headers={**headers, "Content-Type": "application/json"})
+    else:
+        raise ValueError(f"Unsupported Open Cloud action: {action}")
+
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw_out = resp.read().decode("utf-8", errors="replace")
+        return {
+            "status": resp.status,
+            "action": action,
+            "response": json.loads(raw_out) if raw_out.strip() else {"ok": True},
+        }
 
 
 def import_image_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
@@ -3412,9 +3806,17 @@ class MCPDispatcher:
 
                 try:
                     data = execute_tool(self.client, tname, targs)
+                    img_b64 = data.pop("_mcp_image_png_b64", None) if isinstance(data, dict) else None
+                    content_items = [{"type": "text", "text": json.dumps(data, indent=2)}]
+                    if img_b64:
+                        content_items.insert(0, {
+                            "type": "image",
+                            "data": img_b64,
+                            "mimeType": "image/png",
+                        })
                     return self._ok(msg_id, {
                         "isError": False,
-                        "content": [{"type": "text", "text": json.dumps(data, indent=2)}],
+                        "content": content_items,
                         "structuredContent": data,
                     })
                 except Exception as tool_exc:

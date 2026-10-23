@@ -80,7 +80,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 
 ---
 
-## Full 50-Tool MCP Suite + Dual UI Kits, 1,587 Cloud Icons, LiveOps Systems, Audio & `.rbxmx`
+## Full 55-Tool MCP Suite + Multimodal 3D Viewport Vision, 3D Physics QA, `.rbxlx` & Open-Source Vault
 
 | Domain | MCP Tools |
 |---|---|
@@ -92,7 +92,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 | **Attributes & Tags (2)** | `manage_attributes` (`get`/`set`/`delete`), `manage_tags` (`list_all`/`find_tagged`/`get`/`add`/`remove`) |
 | **World, Camera, Undo & Assets (5)** | `manage_selection`, `manage_camera`, `undo_redo`, `edit_terrain`, `insert_asset` (auto script-strip safety) |
 | **Toolchain, Sync & Snapshots (3)** | `luau_check` (offline compiler + undefined globals), `drift_and_sync` (`check`/`push`/`pull`), `manage_snapshots` (`create`/`list`/`get`/`restore`) |
-| **Dual UI Kits, 1,587 Cloud Icons, Multi-Device UI Linter, LiveOps Systems, Audio, Images & `.rbxmx` (13)** | `audit_ui_layout` (`desktop`/`tablet`/`mobile`), `install_dropin_system` (14 `ProfileStore`/LiveOps/Monetization systems), `import_audio` (45 CC0 WAVs + custom audio), `import_rbxmx`, `export_rbxmx`, `install_template` (6 full UI suites), `search_cloud_icons` (1,022 `stud` + 565 `lucide` = **1,587** `rbxassetid://` icons), `import_image` (249 PNGs + custom files/URLs/base64), `import_images_batch`, `generate_procedural_image`, `browse_kit`, `install_kit_module` (15 verified Luau modules), `spawn_prefab` (14 prefabs) |
+| **3D Viewport Vision, 3D Physics QA, `.rbxlx`, Open Cloud & Open-Source UI/Audio/LiveOps Vault (18)** | `capture_viewport` (multimodal `image/png` 3D+HUD render), `audit_3d_scene` (unanchored/floating/spawn/Z-fight QA + auto-fix), `export_place_rbxlx`, `import_place_rbxlx`, `open_cloud_action` (`publish_place` / DataStore / Messaging), `audit_ui_layout` (`desktop`/`tablet`/`mobile`), `install_dropin_system` (14 systems), `import_audio` (45 CC0 WAVs), `import_rbxmx`, `export_rbxmx`, `install_template` (6 suites), `search_cloud_icons` (**4,811** `rbxassetid://` icons across `stud`, `lucide`, `lucide_fill`), `import_image` (**405** PNGs), `import_images_batch`, `generate_procedural_image`, `browse_kit`, `install_kit_module` (**19** Luau modules), `spawn_prefab` (**20** prefabs) |
 
 ### Repo-Committed Skills, Assets & Modules
 - **Agent Skills (`.claude/skills/*/SKILL.md` + `skill://{name}` MCP resources + root `AGENTS.md`)**:

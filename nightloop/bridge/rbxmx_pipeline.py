@@ -297,6 +297,80 @@ def serialize_tree_to_rbxmx(nodes: list) -> str:
     return "\n".join(lines)
 
 
+def serialize_place_to_rbxlx(services_map: dict) -> str:
+    """Serialize a full Roblox Studio Place (.rbxlx XML v4) from {serviceClassName: [children]}."""
+    from xml.sax.saxutils import escape
+
+    ordered_services = [
+        "Workspace",
+        "Players",
+        "Lighting",
+        "ReplicatedFirst",
+        "ReplicatedStorage",
+        "ServerScriptService",
+        "ServerStorage",
+        "StarterGui",
+        "StarterPack",
+        "StarterPlayer",
+        "SoundService",
+    ]
+    seen = set()
+    lines = [
+        '<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" '
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">',
+        "\t<External>null</External>",
+        "\t<External>nil</External>",
+    ]
+    counter = [0]
+
+    def emit_service(svc_name: str, svc_payload):
+        seen.add(svc_name)
+        counter[0] += 1
+        ref_id = f"RBXSVC{counter[0]:04d}"
+        props = {}
+        children = []
+        if isinstance(svc_payload, dict):
+            props = svc_payload.get("properties") or {}
+            children = svc_payload.get("children") or []
+        elif isinstance(svc_payload, list):
+            children = svc_payload
+        lines.append(f'\t<Item class="{escape(svc_name)}" referent="{ref_id}">')
+        lines.append("\t\t<Properties>")
+        lines.append(f'\t\t\t<string name="Name">{escape(svc_name)}</string>')
+        for pname, pval in sorted(props.items()):
+            if pname != "Name":
+                _emit_prop_xml(lines, "\t\t\t", pname, pval)
+        lines.append("\t\t</Properties>")
+        for ch in children:
+            _emit_item_xml(lines, ch, counter, 2)
+        lines.append("\t</Item>")
+
+    for svc in ordered_services:
+        emit_service(svc, services_map.get(svc, []))
+    for extra_svc, payload in services_map.items():
+        if extra_svc not in seen:
+            emit_service(extra_svc, payload)
+
+    lines.append("</roblox>")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def parse_rbxlx_place(xml_text: str, strip_scripts: bool = False) -> tuple:
+    """Parse a full .rbxlx XML place file into {serviceName: {properties, children}}."""
+    top_items, stats = parse_rbxmx_to_tree(xml_text, strip_scripts=strip_scripts)
+    services = {}
+    for node in top_items:
+        cls = node.get("className") or node.get("name") or "Folder"
+        services[cls] = {
+            "properties": node.get("properties") or {},
+            "children": node.get("children") or [],
+        }
+    stats["serviceCount"] = len(services)
+    return services, stats
+
+
 def build_repo_rbxmx_models() -> dict:
     from image_pipeline import find_kit_root
 

@@ -1,0 +1,68 @@
+{
+  "category": "gameplay-3d",
+  "description": "Grounded, anchored Quest Giver NPC Pedestal with ProximityPrompt, QuestPin tag, and overhead BillboardGui quest marker.",
+  "defaultParent": "Workspace",
+  "tree": [
+    {
+      "name": "QuestGiverStation",
+      "className": "Model",
+      "replaceExisting": true,
+      "tags": ["QuestPin"],
+      "children": [
+        {
+          "name": "PedestalBase",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Size": { "__t": "Vector3", "v": [6, 1, 6] },
+            "Position": { "__t": "Vector3", "v": [12, 0.5, -10] },
+            "Color": { "__t": "Color3", "v": [0.22, 0.25, 0.32] }
+          }
+        },
+        {
+          "name": "NpcBody",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Size": { "__t": "Vector3", "v": [2.2, 4.4, 1.4] },
+            "Position": { "__t": "Vector3", "v": [12, 3.2, -10] },
+            "Color": { "__t": "Color3", "v": [0.25, 0.62, 0.96] }
+          },
+          "children": [
+            {
+              "name": "TalkPrompt",
+              "className": "ProximityPrompt",
+              "properties": {
+                "ActionText": "Talk",
+                "ObjectText": "Quest Captain",
+                "MaxActivationDistance": 12
+              }
+            },
+            {
+              "name": "QuestMarkerGui",
+              "className": "BillboardGui",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [0, 80, 0, 44] },
+                "StudsOffset": { "__t": "Vector3", "v": [0, 3.8, 0] },
+                "AlwaysOnTop": true
+              },
+              "children": [
+                {
+                  "name": "Exclaim",
+                  "className": "TextLabel",
+                  "properties": {
+                    "Size": { "__t": "UDim2", "v": [1, 0, 1, 0] },
+                    "BackgroundTransparency": 1,
+                    "Text": "! QUEST",
+                    "TextScaled": true,
+                    "TextColor3": { "__t": "Color3", "v": [1.0, 0.84, 0.18] }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

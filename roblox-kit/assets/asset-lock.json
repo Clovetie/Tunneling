@@ -362,6 +362,26 @@
     }
   },
   "images": {
+    "arrow_clockwise": {
+      "bytes": 1046,
+      "cloudUri": null,
+      "height": 128,
+      "key": "arrow_clockwise",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/arrow_clockwise.png",
+      "relPath": "kenney_rpg_combat/arrow_clockwise.png",
+      "sha256": "7e7660813df75765",
+      "width": 128
+    },
+    "arrow_right": {
+      "bytes": 528,
+      "cloudUri": null,
+      "height": 128,
+      "key": "arrow_right",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/arrow_right.png",
+      "relPath": "kenney_rpg_combat/arrow_right.png",
+      "sha256": "410e00482b9071c7",
+      "width": 128
+    },
     "banner_classic_curtain": {
       "bytes": 11652,
       "cloudUri": null,
@@ -401,6 +421,16 @@
       "relPath": "vfx/beam_energy_streak.png",
       "sha256": "e59a2b769f3a0008",
       "width": 64
+    },
+    "bear": {
+      "bytes": 4705,
+      "cloudUri": null,
+      "height": 140,
+      "key": "bear",
+      "localUri": "rbxasset://arena_assets/kenney_pets/bear.png",
+      "relPath": "kenney_pets/bear.png",
+      "sha256": "1875c2fef55ad33c",
+      "width": 162
     },
     "blue_bar_round_gloss_large": {
       "bytes": 1798,
@@ -632,6 +662,16 @@
       "sha256": "978899701ff6a87a",
       "width": 128
     },
+    "buffalo": {
+      "bytes": 5467,
+      "cloudUri": null,
+      "height": 160,
+      "key": "buffalo",
+      "localUri": "rbxasset://arena_assets/kenney_pets/buffalo.png",
+      "relPath": "kenney_pets/buffalo.png",
+      "sha256": "d4169c51e712e644",
+      "width": 191
+    },
     "button_brown": {
       "bytes": 838,
       "cloudUri": null,
@@ -692,6 +732,86 @@
       "sha256": "ced92188c7ff2332",
       "width": 96
     },
+    "card_add": {
+      "bytes": 1056,
+      "cloudUri": null,
+      "height": 128,
+      "key": "card_add",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/card_add.png",
+      "relPath": "kenney_rpg_combat/card_add.png",
+      "sha256": "8ccf3e7d4d5971e3",
+      "width": 128
+    },
+    "card_outline_place": {
+      "bytes": 1153,
+      "cloudUri": null,
+      "height": 128,
+      "key": "card_outline_place",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/card_outline_place.png",
+      "relPath": "kenney_rpg_combat/card_outline_place.png",
+      "sha256": "2976792d5a782e97",
+      "width": 128
+    },
+    "card_tap_outline_down": {
+      "bytes": 750,
+      "cloudUri": null,
+      "height": 128,
+      "key": "card_tap_outline_down",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/card_tap_outline_down.png",
+      "relPath": "kenney_rpg_combat/card_tap_outline_down.png",
+      "sha256": "34442252733f3e18",
+      "width": 128
+    },
+    "cards_flip": {
+      "bytes": 1477,
+      "cloudUri": null,
+      "height": 128,
+      "key": "cards_flip",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/cards_flip.png",
+      "relPath": "kenney_rpg_combat/cards_flip.png",
+      "sha256": "43fca33cf835f0aa",
+      "width": 128
+    },
+    "cards_stack_cross": {
+      "bytes": 1327,
+      "cloudUri": null,
+      "height": 128,
+      "key": "cards_stack_cross",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/cards_stack_cross.png",
+      "relPath": "kenney_rpg_combat/cards_stack_cross.png",
+      "sha256": "a5be889d1d89f5b2",
+      "width": 128
+    },
+    "chess_king": {
+      "bytes": 675,
+      "cloudUri": null,
+      "height": 128,
+      "key": "chess_king",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/chess_king.png",
+      "relPath": "kenney_rpg_combat/chess_king.png",
+      "sha256": "bb24f35b7ccc0c14",
+      "width": 128
+    },
+    "chick": {
+      "bytes": 3673,
+      "cloudUri": null,
+      "height": 136,
+      "key": "chick",
+      "localUri": "rbxasset://arena_assets/kenney_pets/chick.png",
+      "relPath": "kenney_pets/chick.png",
+      "sha256": "85049195d755d142",
+      "width": 137
+    },
+    "chicken": {
+      "bytes": 4144,
+      "cloudUri": null,
+      "height": 153,
+      "key": "chicken",
+      "localUri": "rbxasset://arena_assets/kenney_pets/chicken.png",
+      "relPath": "kenney_pets/chicken.png",
+      "sha256": "f74736f17fec2a51",
+      "width": 136
+    },
     "circle_05": {
       "bytes": 8420,
       "cloudUri": null,
@@ -702,6 +822,36 @@
       "sha256": "1f021061daf6323e",
       "width": 128
     },
+    "controller_playstation1": {
+      "bytes": 758,
+      "cloudUri": null,
+      "height": 128,
+      "key": "controller_playstation1",
+      "localUri": "rbxasset://arena_assets/kenney_controls/controller_playstation1.png",
+      "relPath": "kenney_controls/controller_playstation1.png",
+      "sha256": "38e76d4aacff0802",
+      "width": 128
+    },
+    "cow": {
+      "bytes": 4428,
+      "cloudUri": null,
+      "height": 136,
+      "key": "cow",
+      "localUri": "rbxasset://arena_assets/kenney_pets/cow.png",
+      "relPath": "kenney_pets/cow.png",
+      "sha256": "3b19579497506204",
+      "width": 153
+    },
+    "crocodile": {
+      "bytes": 4009,
+      "cloudUri": null,
+      "height": 136,
+      "key": "crocodile",
+      "localUri": "rbxasset://arena_assets/kenney_pets/crocodile.png",
+      "relPath": "kenney_pets/crocodile.png",
+      "sha256": "a7bb43c3eaa28e2f",
+      "width": 137
+    },
     "crosshair_dot": {
       "bytes": 822,
       "cloudUri": null,
@@ -711,6 +861,66 @@
       "relPath": "ui/crosshair_dot.png",
       "sha256": "f0c85630809c5e44",
       "width": 64
+    },
+    "d10_outline": {
+      "bytes": 1102,
+      "cloudUri": null,
+      "height": 128,
+      "key": "d10_outline",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/d10_outline.png",
+      "relPath": "kenney_rpg_combat/d10_outline.png",
+      "sha256": "4048d384bd1aeb13",
+      "width": 128
+    },
+    "d20_outline": {
+      "bytes": 905,
+      "cloudUri": null,
+      "height": 128,
+      "key": "d20_outline",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/d20_outline.png",
+      "relPath": "kenney_rpg_combat/d20_outline.png",
+      "sha256": "fa668da3a6c5b72d",
+      "width": 128
+    },
+    "d4": {
+      "bytes": 691,
+      "cloudUri": null,
+      "height": 128,
+      "key": "d4",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/d4.png",
+      "relPath": "kenney_rpg_combat/d4.png",
+      "sha256": "02d6328c03b92942",
+      "width": 128
+    },
+    "d8_number": {
+      "bytes": 947,
+      "cloudUri": null,
+      "height": 128,
+      "key": "d8_number",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/d8_number.png",
+      "relPath": "kenney_rpg_combat/d8_number.png",
+      "sha256": "3877fc911ccfbac5",
+      "width": 128
+    },
+    "dice_4": {
+      "bytes": 781,
+      "cloudUri": null,
+      "height": 128,
+      "key": "dice_4",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/dice_4.png",
+      "relPath": "kenney_rpg_combat/dice_4.png",
+      "sha256": "ff51681008463486",
+      "width": 128
+    },
+    "dice_skull": {
+      "bytes": 992,
+      "cloudUri": null,
+      "height": 128,
+      "key": "dice_skull",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/dice_skull.png",
+      "relPath": "kenney_rpg_combat/dice_skull.png",
+      "sha256": "3e08ff11834ada1f",
+      "width": 128
     },
     "divider_000": {
       "bytes": 164,
@@ -771,6 +981,66 @@
       "relPath": "kenney_fantasy/divider_005.png",
       "sha256": "4cb72a08da4e8e34",
       "width": 96
+    },
+    "dog": {
+      "bytes": 4561,
+      "cloudUri": null,
+      "height": 165,
+      "key": "dog",
+      "localUri": "rbxasset://arena_assets/kenney_pets/dog.png",
+      "relPath": "kenney_pets/dog.png",
+      "sha256": "2304e25d32ce81ae",
+      "width": 137
+    },
+    "duck": {
+      "bytes": 4060,
+      "cloudUri": null,
+      "height": 136,
+      "key": "duck",
+      "localUri": "rbxasset://arena_assets/kenney_pets/duck.png",
+      "relPath": "kenney_pets/duck.png",
+      "sha256": "f9427de04dae1420",
+      "width": 137
+    },
+    "elephant": {
+      "bytes": 5595,
+      "cloudUri": null,
+      "height": 162,
+      "key": "elephant",
+      "localUri": "rbxasset://arena_assets/kenney_pets/elephant.png",
+      "relPath": "kenney_pets/elephant.png",
+      "sha256": "444547f93fa0f02c",
+      "width": 191
+    },
+    "emote": {
+      "bytes": 148,
+      "cloudUri": null,
+      "height": 16,
+      "key": "emote",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/emote.png",
+      "relPath": "kenney_emotes/emote.png",
+      "sha256": "574c2abaf2ebb200",
+      "width": 16
+    },
+    "emote_dots3": {
+      "bytes": 156,
+      "cloudUri": null,
+      "height": 16,
+      "key": "emote_dots3",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/emote_dots3.png",
+      "relPath": "kenney_emotes/emote_dots3.png",
+      "sha256": "3c63e9619d9fcd61",
+      "width": 16
+    },
+    "emote_hearts": {
+      "bytes": 188,
+      "cloudUri": null,
+      "height": 16,
+      "key": "emote_hearts",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/emote_hearts.png",
+      "relPath": "kenney_emotes/emote_hearts.png",
+      "sha256": "7ecd442941e94ead",
+      "width": 16
     },
     "extra_button_rectangle_depth_line": {
       "bytes": 1379,
@@ -892,6 +1162,16 @@
       "sha256": "b010b5d24bc2c8d5",
       "width": 68
     },
+    "fire": {
+      "bytes": 1026,
+      "cloudUri": null,
+      "height": 128,
+      "key": "fire",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/fire.png",
+      "relPath": "kenney_rpg_combat/fire.png",
+      "sha256": "fd47ab5349b2d331",
+      "width": 128
+    },
     "fire_01": {
       "bytes": 17792,
       "cloudUri": null,
@@ -920,6 +1200,196 @@
       "localUri": "rbxasset://arena_assets/kenney_vfx/flare_01.png",
       "relPath": "kenney_vfx/flare_01.png",
       "sha256": "8d70ba4284188314",
+      "width": 128
+    },
+    "flat_medal1": {
+      "bytes": 1010,
+      "cloudUri": null,
+      "height": 74,
+      "key": "flat_medal1",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flat_medal1.png",
+      "relPath": "kenney_medals/flat_medal1.png",
+      "sha256": "d7c532551469259d",
+      "width": 41
+    },
+    "flat_medal2": {
+      "bytes": 1075,
+      "cloudUri": null,
+      "height": 74,
+      "key": "flat_medal2",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flat_medal2.png",
+      "relPath": "kenney_medals/flat_medal2.png",
+      "sha256": "59d7f89158764314",
+      "width": 41
+    },
+    "flat_medal3": {
+      "bytes": 925,
+      "cloudUri": null,
+      "height": 74,
+      "key": "flat_medal3",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flat_medal3.png",
+      "relPath": "kenney_medals/flat_medal3.png",
+      "sha256": "53bf69b26b547870",
+      "width": 41
+    },
+    "flat_medal4": {
+      "bytes": 1015,
+      "cloudUri": null,
+      "height": 74,
+      "key": "flat_medal4",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flat_medal4.png",
+      "relPath": "kenney_medals/flat_medal4.png",
+      "sha256": "ecfe93bbb257e87c",
+      "width": 41
+    },
+    "flat_medal5": {
+      "bytes": 1064,
+      "cloudUri": null,
+      "height": 74,
+      "key": "flat_medal5",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flat_medal5.png",
+      "relPath": "kenney_medals/flat_medal5.png",
+      "sha256": "73f6f0b59c984693",
+      "width": 41
+    },
+    "flat_medal6": {
+      "bytes": 1183,
+      "cloudUri": null,
+      "height": 74,
+      "key": "flat_medal6",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flat_medal6.png",
+      "relPath": "kenney_medals/flat_medal6.png",
+      "sha256": "69727964104f1d30",
+      "width": 41
+    },
+    "flat_medal7": {
+      "bytes": 1070,
+      "cloudUri": null,
+      "height": 74,
+      "key": "flat_medal7",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flat_medal7.png",
+      "relPath": "kenney_medals/flat_medal7.png",
+      "sha256": "7adcac2321844fc5",
+      "width": 41
+    },
+    "flat_medal8": {
+      "bytes": 1199,
+      "cloudUri": null,
+      "height": 74,
+      "key": "flat_medal8",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flat_medal8.png",
+      "relPath": "kenney_medals/flat_medal8.png",
+      "sha256": "fad53bbebd971947",
+      "width": 41
+    },
+    "flat_medal9": {
+      "bytes": 994,
+      "cloudUri": null,
+      "height": 74,
+      "key": "flat_medal9",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flat_medal9.png",
+      "relPath": "kenney_medals/flat_medal9.png",
+      "sha256": "3bd4ae494d00e898",
+      "width": 41
+    },
+    "flatshadow_medal1": {
+      "bytes": 1260,
+      "cloudUri": null,
+      "height": 75,
+      "key": "flatshadow_medal1",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flatshadow_medal1.png",
+      "relPath": "kenney_medals/flatshadow_medal1.png",
+      "sha256": "b4824700a6e11142",
+      "width": 41
+    },
+    "flatshadow_medal2": {
+      "bytes": 1381,
+      "cloudUri": null,
+      "height": 75,
+      "key": "flatshadow_medal2",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flatshadow_medal2.png",
+      "relPath": "kenney_medals/flatshadow_medal2.png",
+      "sha256": "0fed0f8d4c053e1a",
+      "width": 41
+    },
+    "flatshadow_medal3": {
+      "bytes": 1153,
+      "cloudUri": null,
+      "height": 75,
+      "key": "flatshadow_medal3",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flatshadow_medal3.png",
+      "relPath": "kenney_medals/flatshadow_medal3.png",
+      "sha256": "069260237d2c4780",
+      "width": 41
+    },
+    "flatshadow_medal4": {
+      "bytes": 1240,
+      "cloudUri": null,
+      "height": 75,
+      "key": "flatshadow_medal4",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flatshadow_medal4.png",
+      "relPath": "kenney_medals/flatshadow_medal4.png",
+      "sha256": "14bc663d97d765a9",
+      "width": 41
+    },
+    "flatshadow_medal5": {
+      "bytes": 1291,
+      "cloudUri": null,
+      "height": 75,
+      "key": "flatshadow_medal5",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flatshadow_medal5.png",
+      "relPath": "kenney_medals/flatshadow_medal5.png",
+      "sha256": "8f5ddb5ef1038f78",
+      "width": 41
+    },
+    "flatshadow_medal6": {
+      "bytes": 1411,
+      "cloudUri": null,
+      "height": 75,
+      "key": "flatshadow_medal6",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flatshadow_medal6.png",
+      "relPath": "kenney_medals/flatshadow_medal6.png",
+      "sha256": "9186a8a0400cd84d",
+      "width": 41
+    },
+    "flatshadow_medal7": {
+      "bytes": 1295,
+      "cloudUri": null,
+      "height": 75,
+      "key": "flatshadow_medal7",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flatshadow_medal7.png",
+      "relPath": "kenney_medals/flatshadow_medal7.png",
+      "sha256": "02ed23729d9d15da",
+      "width": 41
+    },
+    "flatshadow_medal8": {
+      "bytes": 1427,
+      "cloudUri": null,
+      "height": 75,
+      "key": "flatshadow_medal8",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flatshadow_medal8.png",
+      "relPath": "kenney_medals/flatshadow_medal8.png",
+      "sha256": "6154371addc5cc98",
+      "width": 41
+    },
+    "flatshadow_medal9": {
+      "bytes": 1244,
+      "cloudUri": null,
+      "height": 75,
+      "key": "flatshadow_medal9",
+      "localUri": "rbxasset://arena_assets/kenney_medals/flatshadow_medal9.png",
+      "relPath": "kenney_medals/flatshadow_medal9.png",
+      "sha256": "03642233870c9ce4",
+      "width": 41
+    },
+    "flip_head": {
+      "bytes": 1297,
+      "cloudUri": null,
+      "height": 128,
+      "key": "flip_head",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/flip_head.png",
+      "relPath": "kenney_rpg_combat/flip_head.png",
+      "sha256": "f6e2a956054be706",
       "width": 128
     },
     "frame_clear_000": {
@@ -1002,6 +1472,16 @@
       "sha256": "b6c4a80de1b38fd5",
       "width": 48
     },
+    "frog": {
+      "bytes": 3644,
+      "cloudUri": null,
+      "height": 152,
+      "key": "frog",
+      "localUri": "rbxasset://arena_assets/kenney_pets/frog.png",
+      "relPath": "kenney_pets/frog.png",
+      "sha256": "c31e89fddae08a07",
+      "width": 138
+    },
     "gauntlet_point": {
       "bytes": 1339,
       "cloudUri": null,
@@ -1011,6 +1491,36 @@
       "relPath": "kenney_cursors/gauntlet_point.png",
       "sha256": "fc548d03e8720d9e",
       "width": 64
+    },
+    "giraffe": {
+      "bytes": 5325,
+      "cloudUri": null,
+      "height": 170,
+      "key": "giraffe",
+      "localUri": "rbxasset://arena_assets/kenney_pets/giraffe.png",
+      "relPath": "kenney_pets/giraffe.png",
+      "sha256": "7e5526d3f8e34c42",
+      "width": 162
+    },
+    "goat": {
+      "bytes": 5994,
+      "cloudUri": null,
+      "height": 179,
+      "key": "goat",
+      "localUri": "rbxasset://arena_assets/kenney_pets/goat.png",
+      "relPath": "kenney_pets/goat.png",
+      "sha256": "1396df3ae6c96370",
+      "width": 192
+    },
+    "gorilla": {
+      "bytes": 3729,
+      "cloudUri": null,
+      "height": 136,
+      "key": "gorilla",
+      "localUri": "rbxasset://arena_assets/kenney_pets/gorilla.png",
+      "relPath": "kenney_pets/gorilla.png",
+      "sha256": "df17f378c7376b22",
+      "width": 137
     },
     "green_bar_round_gloss_large": {
       "bytes": 1799,
@@ -1300,6 +1810,46 @@
       "localUri": "rbxasset://arena_assets/textures/hazard_stripes.png",
       "relPath": "textures/hazard_stripes.png",
       "sha256": "6932629cb0917abe",
+      "width": 128
+    },
+    "hexagon": {
+      "bytes": 715,
+      "cloudUri": null,
+      "height": 128,
+      "key": "hexagon",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/hexagon.png",
+      "relPath": "kenney_rpg_combat/hexagon.png",
+      "sha256": "186d52a26988038c",
+      "width": 128
+    },
+    "hippo": {
+      "bytes": 3943,
+      "cloudUri": null,
+      "height": 136,
+      "key": "hippo",
+      "localUri": "rbxasset://arena_assets/kenney_pets/hippo.png",
+      "relPath": "kenney_pets/hippo.png",
+      "sha256": "a420fd0177ca6da6",
+      "width": 162
+    },
+    "horse": {
+      "bytes": 4771,
+      "cloudUri": null,
+      "height": 149,
+      "key": "horse",
+      "localUri": "rbxasset://arena_assets/kenney_pets/horse.png",
+      "relPath": "kenney_pets/horse.png",
+      "sha256": "8a4dfb8e31c6fc98",
+      "width": 137
+    },
+    "hourglass_top": {
+      "bytes": 995,
+      "cloudUri": null,
+      "height": 128,
+      "key": "hourglass_top",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/hourglass_top.png",
+      "relPath": "kenney_rpg_combat/hourglass_top.png",
+      "sha256": "acfb8a5479bf2cea",
       "width": 128
     },
     "ic_arrow_down": {
@@ -1842,6 +2392,226 @@
       "sha256": "0301d1d7ef9c3680",
       "width": 64
     },
+    "img_03_emote": {
+      "bytes": 163,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_03_emote",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/03_emote.png",
+      "relPath": "kenney_emotes/03_emote.png",
+      "sha256": "a45c1ab97ab89854",
+      "width": 16
+    },
+    "img_04_emote_dots3": {
+      "bytes": 174,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_04_emote_dots3",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/04_emote_dots3.png",
+      "relPath": "kenney_emotes/04_emote_dots3.png",
+      "sha256": "5ced7f88c4fe5c85",
+      "width": 16
+    },
+    "img_05_emote_hearts": {
+      "bytes": 203,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_05_emote_hearts",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/05_emote_hearts.png",
+      "relPath": "kenney_emotes/05_emote_hearts.png",
+      "sha256": "4f65e5457e4ed98c",
+      "width": 16
+    },
+    "img_06_emote": {
+      "bytes": 168,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_06_emote",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/06_emote.png",
+      "relPath": "kenney_emotes/06_emote.png",
+      "sha256": "16992d47dd7ba6ba",
+      "width": 16
+    },
+    "img_07_emote_dots3": {
+      "bytes": 175,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_07_emote_dots3",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/07_emote_dots3.png",
+      "relPath": "kenney_emotes/07_emote_dots3.png",
+      "sha256": "434856a183c650fa",
+      "width": 16
+    },
+    "img_08_emote_hearts": {
+      "bytes": 197,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_08_emote_hearts",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/08_emote_hearts.png",
+      "relPath": "kenney_emotes/08_emote_hearts.png",
+      "sha256": "8baef02d67b5d124",
+      "width": 16
+    },
+    "img_09_emote": {
+      "bytes": 187,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_09_emote",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/09_emote.png",
+      "relPath": "kenney_emotes/09_emote.png",
+      "sha256": "b6e9e27c84e5033d",
+      "width": 16
+    },
+    "img_10_emote_dots3": {
+      "bytes": 196,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_10_emote_dots3",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/10_emote_dots3.png",
+      "relPath": "kenney_emotes/10_emote_dots3.png",
+      "sha256": "fa72abfcf60a9176",
+      "width": 16
+    },
+    "img_11_emote_hearts": {
+      "bytes": 214,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_11_emote_hearts",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/11_emote_hearts.png",
+      "relPath": "kenney_emotes/11_emote_hearts.png",
+      "sha256": "9da6cdb33e8d8f44",
+      "width": 16
+    },
+    "img_12_emote": {
+      "bytes": 141,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_12_emote",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/12_emote.png",
+      "relPath": "kenney_emotes/12_emote.png",
+      "sha256": "025c42d2d8166092",
+      "width": 16
+    },
+    "img_13_emote_dots3": {
+      "bytes": 150,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_13_emote_dots3",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/13_emote_dots3.png",
+      "relPath": "kenney_emotes/13_emote_dots3.png",
+      "sha256": "6984d5d7e874a39d",
+      "width": 16
+    },
+    "img_13_texture_01": {
+      "bytes": 9911,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "img_13_texture_01",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/13_texture_01.png",
+      "relPath": "kenney_prototype/13_texture_01.png",
+      "sha256": "376fa10639295e46",
+      "width": 1024
+    },
+    "img_14_emote_hearts": {
+      "bytes": 181,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_14_emote_hearts",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/14_emote_hearts.png",
+      "relPath": "kenney_emotes/14_emote_hearts.png",
+      "sha256": "ea7c99d6215d670b",
+      "width": 16
+    },
+    "img_15_emote": {
+      "bytes": 152,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_15_emote",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/15_emote.png",
+      "relPath": "kenney_emotes/15_emote.png",
+      "sha256": "bc07d8b4bb100f7c",
+      "width": 16
+    },
+    "img_16_emote_dots3": {
+      "bytes": 165,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_16_emote_dots3",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/16_emote_dots3.png",
+      "relPath": "kenney_emotes/16_emote_dots3.png",
+      "sha256": "a2b158ee16c1cfe2",
+      "width": 16
+    },
+    "img_17_emote_hearts": {
+      "bytes": 194,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_17_emote_hearts",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/17_emote_hearts.png",
+      "relPath": "kenney_emotes/17_emote_hearts.png",
+      "sha256": "9bc7b4c0fd5bd680",
+      "width": 16
+    },
+    "img_18_emote": {
+      "bytes": 159,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_18_emote",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/18_emote.png",
+      "relPath": "kenney_emotes/18_emote.png",
+      "sha256": "80cad4bbbff98e2f",
+      "width": 16
+    },
+    "img_19_emote_dots3": {
+      "bytes": 170,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_19_emote_dots3",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/19_emote_dots3.png",
+      "relPath": "kenney_emotes/19_emote_dots3.png",
+      "sha256": "06029a62bf36afb2",
+      "width": 16
+    },
+    "img_20_emote_hearts": {
+      "bytes": 196,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_20_emote_hearts",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/20_emote_hearts.png",
+      "relPath": "kenney_emotes/20_emote_hearts.png",
+      "sha256": "55f5565d8a6ae76f",
+      "width": 16
+    },
+    "img_21_emote": {
+      "bytes": 113,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_21_emote",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/21_emote.png",
+      "relPath": "kenney_emotes/21_emote.png",
+      "sha256": "7e136302d0344399",
+      "width": 16
+    },
+    "img_22_emote_dots3": {
+      "bytes": 121,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_22_emote_dots3",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/22_emote_dots3.png",
+      "relPath": "kenney_emotes/22_emote_dots3.png",
+      "sha256": "a4ca3a3d8972750c",
+      "width": 16
+    },
+    "img_23_emote_hearts": {
+      "bytes": 141,
+      "cloudUri": null,
+      "height": 16,
+      "key": "img_23_emote_hearts",
+      "localUri": "rbxasset://arena_assets/kenney_emotes/23_emote_hearts.png",
+      "relPath": "kenney_emotes/23_emote_hearts.png",
+      "sha256": "d1b2d2649c434084",
+      "width": 16
+    },
     "keyboard_1": {
       "bytes": 712,
       "cloudUri": null,
@@ -2062,6 +2832,26 @@
       "sha256": "377a914286f54824",
       "width": 128
     },
+    "monkey": {
+      "bytes": 4483,
+      "cloudUri": null,
+      "height": 136,
+      "key": "monkey",
+      "localUri": "rbxasset://arena_assets/kenney_pets/monkey.png",
+      "relPath": "kenney_pets/monkey.png",
+      "sha256": "6f25390543561ab4",
+      "width": 182
+    },
+    "moose": {
+      "bytes": 7271,
+      "cloudUri": null,
+      "height": 170,
+      "key": "moose",
+      "localUri": "rbxasset://arena_assets/kenney_pets/moose.png",
+      "relPath": "kenney_pets/moose.png",
+      "sha256": "5e976cda95c3b026",
+      "width": 277
+    },
     "mouse_left": {
       "bytes": 1271,
       "cloudUri": null,
@@ -2101,6 +2891,36 @@
       "relPath": "kenney_vfx/muzzle_01.png",
       "sha256": "bb1e6e012817fd81",
       "width": 128
+    },
+    "narwhal": {
+      "bytes": 4938,
+      "cloudUri": null,
+      "height": 163,
+      "key": "narwhal",
+      "localUri": "rbxasset://arena_assets/kenney_pets/narwhal.png",
+      "relPath": "kenney_pets/narwhal.png",
+      "sha256": "cebad4e729ce0c1c",
+      "width": 146
+    },
+    "owl": {
+      "bytes": 4625,
+      "cloudUri": null,
+      "height": 136,
+      "key": "owl",
+      "localUri": "rbxasset://arena_assets/kenney_pets/owl.png",
+      "relPath": "kenney_pets/owl.png",
+      "sha256": "04d831bbedf6e7f3",
+      "width": 136
+    },
+    "panda": {
+      "bytes": 4491,
+      "cloudUri": null,
+      "height": 136,
+      "key": "panda",
+      "localUri": "rbxasset://arena_assets/kenney_pets/panda.png",
+      "relPath": "kenney_pets/panda.png",
+      "sha256": "8234ee9b045a11bd",
+      "width": 182
     },
     "panel_000": {
       "bytes": 234,
@@ -2322,6 +3142,256 @@
       "sha256": "57aa92bb326af01d",
       "width": 64
     },
+    "pawn_flip": {
+      "bytes": 1081,
+      "cloudUri": null,
+      "height": 128,
+      "key": "pawn_flip",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/pawn_flip.png",
+      "relPath": "kenney_rpg_combat/pawn_flip.png",
+      "sha256": "c23915c1718ec095",
+      "width": 128
+    },
+    "pentagon_outline": {
+      "bytes": 1142,
+      "cloudUri": null,
+      "height": 128,
+      "key": "pentagon_outline",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/pentagon_outline.png",
+      "relPath": "kenney_rpg_combat/pentagon_outline.png",
+      "sha256": "dd83b85efa8b5cc9",
+      "width": 128
+    },
+    "playstation3_button_select_outline": {
+      "bytes": 363,
+      "cloudUri": null,
+      "height": 64,
+      "key": "playstation3_button_select_outline",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation3_button_select_outline.png",
+      "relPath": "kenney_controls/playstation3_button_select_outline.png",
+      "sha256": "0acf95ef3d5554ae",
+      "width": 64
+    },
+    "playstation4_button_share": {
+      "bytes": 696,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation4_button_share",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation4_button_share.png",
+      "relPath": "kenney_controls/playstation4_button_share.png",
+      "sha256": "1f2b8f7f6114038a",
+      "width": 128
+    },
+    "playstation4_touchpad_press": {
+      "bytes": 399,
+      "cloudUri": null,
+      "height": 64,
+      "key": "playstation4_touchpad_press",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation4_touchpad_press.png",
+      "relPath": "kenney_controls/playstation4_touchpad_press.png",
+      "sha256": "dd5fa117bdb33eab",
+      "width": 64
+    },
+    "playstation4_touchpad_swipe_down": {
+      "bytes": 826,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation4_touchpad_swipe_down",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation4_touchpad_swipe_down.png",
+      "relPath": "kenney_controls/playstation4_touchpad_swipe_down.png",
+      "sha256": "3f4c7467309ed254",
+      "width": 128
+    },
+    "playstation4_touchpad_touch": {
+      "bytes": 481,
+      "cloudUri": null,
+      "height": 64,
+      "key": "playstation4_touchpad_touch",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation4_touchpad_touch.png",
+      "relPath": "kenney_controls/playstation4_touchpad_touch.png",
+      "sha256": "901f641a078fc582",
+      "width": 64
+    },
+    "playstation5_button_create_outline": {
+      "bytes": 770,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation5_button_create_outline",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation5_button_create_outline.png",
+      "relPath": "kenney_controls/playstation5_button_create_outline.png",
+      "sha256": "651968564725c135",
+      "width": 128
+    },
+    "playstation5_button_options_outline": {
+      "bytes": 389,
+      "cloudUri": null,
+      "height": 64,
+      "key": "playstation5_button_options_outline",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation5_button_options_outline.png",
+      "relPath": "kenney_controls/playstation5_button_options_outline.png",
+      "sha256": "9ee25eaa5817c83e",
+      "width": 64
+    },
+    "playstation5_elite_lb": {
+      "bytes": 767,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation5_elite_lb",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation5_elite_lb.png",
+      "relPath": "kenney_controls/playstation5_elite_lb.png",
+      "sha256": "414ba69a5e047f03",
+      "width": 128
+    },
+    "playstation5_touchpad_press": {
+      "bytes": 567,
+      "cloudUri": null,
+      "height": 64,
+      "key": "playstation5_touchpad_press",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation5_touchpad_press.png",
+      "relPath": "kenney_controls/playstation5_touchpad_press.png",
+      "sha256": "b2a355f7efcf4d18",
+      "width": 64
+    },
+    "playstation5_touchpad_swipe_down": {
+      "bytes": 1134,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation5_touchpad_swipe_down",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation5_touchpad_swipe_down.png",
+      "relPath": "kenney_controls/playstation5_touchpad_swipe_down.png",
+      "sha256": "f5042e29c267e0e5",
+      "width": 128
+    },
+    "playstation5_touchpad_touch": {
+      "bytes": 524,
+      "cloudUri": null,
+      "height": 64,
+      "key": "playstation5_touchpad_touch",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation5_touchpad_touch.png",
+      "relPath": "kenney_controls/playstation5_touchpad_touch.png",
+      "sha256": "75a96e35c8a23abd",
+      "width": 64
+    },
+    "playstation_button_circle_outline": {
+      "bytes": 1226,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation_button_circle_outline",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_button_circle_outline.png",
+      "relPath": "kenney_controls/playstation_button_circle_outline.png",
+      "sha256": "1845bdd5bc9d245b",
+      "width": 128
+    },
+    "playstation_button_color_square_outline": {
+      "bytes": 539,
+      "cloudUri": null,
+      "height": 64,
+      "key": "playstation_button_color_square_outline",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_button_color_square_outline.png",
+      "relPath": "kenney_controls/playstation_button_color_square_outline.png",
+      "sha256": "9af57bb1b8867005",
+      "width": 64
+    },
+    "playstation_button_l3": {
+      "bytes": 849,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation_button_l3",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_button_l3.png",
+      "relPath": "kenney_controls/playstation_button_l3.png",
+      "sha256": "8da19fcbbf5030f4",
+      "width": 128
+    },
+    "playstation_button_triangle": {
+      "bytes": 512,
+      "cloudUri": null,
+      "height": 64,
+      "key": "playstation_button_triangle",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_button_triangle.png",
+      "relPath": "kenney_controls/playstation_button_triangle.png",
+      "sha256": "73f646a94056a714",
+      "width": 64
+    },
+    "playstation_dpad_down_outline": {
+      "bytes": 628,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation_dpad_down_outline",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_dpad_down_outline.png",
+      "relPath": "kenney_controls/playstation_dpad_down_outline.png",
+      "sha256": "af74cef598dcbd5b",
+      "width": 128
+    },
+    "playstation_dpad_right": {
+      "bytes": 410,
+      "cloudUri": null,
+      "height": 64,
+      "key": "playstation_dpad_right",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_dpad_right.png",
+      "relPath": "kenney_controls/playstation_dpad_right.png",
+      "sha256": "68937ba4b0f0c648",
+      "width": 64
+    },
+    "playstation_dpad_vertical_outline": {
+      "bytes": 602,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation_dpad_vertical_outline",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_dpad_vertical_outline.png",
+      "relPath": "kenney_controls/playstation_dpad_vertical_outline.png",
+      "sha256": "7ce77f725dd7947d",
+      "width": 128
+    },
+    "playstation_stick_l_right": {
+      "bytes": 619,
+      "cloudUri": null,
+      "height": 64,
+      "key": "playstation_stick_l_right",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_stick_l_right.png",
+      "relPath": "kenney_controls/playstation_stick_l_right.png",
+      "sha256": "a0c1400bde55238f",
+      "width": 64
+    },
+    "playstation_stick_r_horizontal": {
+      "bytes": 1198,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation_stick_r_horizontal",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_stick_r_horizontal.png",
+      "relPath": "kenney_controls/playstation_stick_r_horizontal.png",
+      "sha256": "d4e1212b3367a869",
+      "width": 128
+    },
+    "playstation_stick_side_l": {
+      "bytes": 402,
+      "cloudUri": null,
+      "height": 64,
+      "key": "playstation_stick_side_l",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_stick_side_l.png",
+      "relPath": "kenney_controls/playstation_stick_side_l.png",
+      "sha256": "3f75a3bf92c69a95",
+      "width": 64
+    },
+    "playstation_trigger_l1_alternative": {
+      "bytes": 495,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation_trigger_l1_alternative",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_trigger_l1_alternative.png",
+      "relPath": "kenney_controls/playstation_trigger_l1_alternative.png",
+      "sha256": "84714b59ad0f7a0d",
+      "width": 128
+    },
+    "playstation_trigger_r2": {
+      "bytes": 760,
+      "cloudUri": null,
+      "height": 128,
+      "key": "playstation_trigger_r2",
+      "localUri": "rbxasset://arena_assets/kenney_controls/playstation_trigger_r2.png",
+      "relPath": "kenney_controls/playstation_trigger_r2.png",
+      "sha256": "2625a37e798df8af",
+      "width": 128
+    },
     "pointer_a": {
       "bytes": 357,
       "cloudUri": null,
@@ -2472,6 +3542,16 @@
       "sha256": "63c7aee6ea335f21",
       "width": 64
     },
+    "resource_planks": {
+      "bytes": 616,
+      "cloudUri": null,
+      "height": 128,
+      "key": "resource_planks",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/resource_planks.png",
+      "relPath": "kenney_rpg_combat/resource_planks.png",
+      "sha256": "8c43fbeb5d44e88c",
+      "width": 128
+    },
     "scifi_panel_tile": {
       "bytes": 422,
       "cloudUri": null,
@@ -2491,6 +3571,66 @@
       "relPath": "kenney_vfx/scorch_01.png",
       "sha256": "b6c02257eaa60280",
       "width": 128
+    },
+    "shaded_medal1": {
+      "bytes": 2925,
+      "cloudUri": null,
+      "height": 81,
+      "key": "shaded_medal1",
+      "localUri": "rbxasset://arena_assets/kenney_medals/shaded_medal1.png",
+      "relPath": "kenney_medals/shaded_medal1.png",
+      "sha256": "7db50886f5844c1c",
+      "width": 40
+    },
+    "shaded_medal2": {
+      "bytes": 2867,
+      "cloudUri": null,
+      "height": 80,
+      "key": "shaded_medal2",
+      "localUri": "rbxasset://arena_assets/kenney_medals/shaded_medal2.png",
+      "relPath": "kenney_medals/shaded_medal2.png",
+      "sha256": "43a70bd2b8e3a598",
+      "width": 40
+    },
+    "shaded_medal3": {
+      "bytes": 2983,
+      "cloudUri": null,
+      "height": 80,
+      "key": "shaded_medal3",
+      "localUri": "rbxasset://arena_assets/kenney_medals/shaded_medal3.png",
+      "relPath": "kenney_medals/shaded_medal3.png",
+      "sha256": "f5df4ff4c67a3ff8",
+      "width": 40
+    },
+    "shaded_medal4": {
+      "bytes": 2800,
+      "cloudUri": null,
+      "height": 80,
+      "key": "shaded_medal4",
+      "localUri": "rbxasset://arena_assets/kenney_medals/shaded_medal4.png",
+      "relPath": "kenney_medals/shaded_medal4.png",
+      "sha256": "f7a1a7775cb8ff10",
+      "width": 40
+    },
+    "shaded_medal5": {
+      "bytes": 3066,
+      "cloudUri": null,
+      "height": 80,
+      "key": "shaded_medal5",
+      "localUri": "rbxasset://arena_assets/kenney_medals/shaded_medal5.png",
+      "relPath": "kenney_medals/shaded_medal5.png",
+      "sha256": "fde873ba975d7834",
+      "width": 40
+    },
+    "shaded_medal6": {
+      "bytes": 2949,
+      "cloudUri": null,
+      "height": 80,
+      "key": "shaded_medal6",
+      "localUri": "rbxasset://arena_assets/kenney_medals/shaded_medal6.png",
+      "relPath": "kenney_medals/shaded_medal6.png",
+      "sha256": "5c86eb4f03b6a8e7",
+      "width": 40
     },
     "slash_01": {
       "bytes": 4865,
@@ -2562,6 +3702,16 @@
       "sha256": "e6ceba961f34cff9",
       "width": 128
     },
+    "spinner_segment": {
+      "bytes": 1418,
+      "cloudUri": null,
+      "height": 128,
+      "key": "spinner_segment",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/spinner_segment.png",
+      "relPath": "kenney_rpg_combat/spinner_segment.png",
+      "sha256": "efc7c782abdd3f5d",
+      "width": 128
+    },
     "star_04": {
       "bytes": 5418,
       "cloudUri": null,
@@ -2582,6 +3732,16 @@
       "sha256": "40104036a606a6ac",
       "width": 128
     },
+    "suit_diamonds": {
+      "bytes": 834,
+      "cloudUri": null,
+      "height": 128,
+      "key": "suit_diamonds",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/suit_diamonds.png",
+      "relPath": "kenney_rpg_combat/suit_diamonds.png",
+      "sha256": "bc7cdc8ff4558a95",
+      "width": 128
+    },
     "symbol_01": {
       "bytes": 2804,
       "cloudUri": null,
@@ -2590,6 +3750,36 @@
       "localUri": "rbxasset://arena_assets/kenney_vfx/symbol_01.png",
       "relPath": "kenney_vfx/symbol_01.png",
       "sha256": "0acd4b0773060caf",
+      "width": 128
+    },
+    "tag_4": {
+      "bytes": 634,
+      "cloudUri": null,
+      "height": 128,
+      "key": "tag_4",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/tag_4.png",
+      "relPath": "kenney_rpg_combat/tag_4.png",
+      "sha256": "721ffc790036d64b",
+      "width": 128
+    },
+    "tag_d6_3": {
+      "bytes": 531,
+      "cloudUri": null,
+      "height": 128,
+      "key": "tag_d6_3",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/tag_d6_3.png",
+      "relPath": "kenney_rpg_combat/tag_d6_3.png",
+      "sha256": "1b5177171e687cf3",
+      "width": 128
+    },
+    "tag_shield": {
+      "bytes": 554,
+      "cloudUri": null,
+      "height": 128,
+      "key": "tag_shield",
+      "localUri": "rbxasset://arena_assets/kenney_rpg_combat/tag_shield.png",
+      "relPath": "kenney_rpg_combat/tag_shield.png",
+      "sha256": "0724c2569a63c653",
       "width": 128
     },
     "target_a": {
@@ -2611,6 +3801,376 @@
       "relPath": "kenney_cursors/target_b.png",
       "sha256": "a90e20a8c05d65b5",
       "width": 64
+    },
+    "texture_01": {
+      "bytes": 2774,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_01",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_01.png",
+      "relPath": "kenney_prototype/texture_01.png",
+      "sha256": "07e28d7a86396fa4",
+      "width": 1024
+    },
+    "texture_02": {
+      "bytes": 2774,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_02",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_02.png",
+      "relPath": "kenney_prototype/texture_02.png",
+      "sha256": "2feb000e71001817",
+      "width": 1024
+    },
+    "texture_03": {
+      "bytes": 1338,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_03",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_03.png",
+      "relPath": "kenney_prototype/texture_03.png",
+      "sha256": "d150be820736ea50",
+      "width": 1024
+    },
+    "texture_04": {
+      "bytes": 2727,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_04",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_04.png",
+      "relPath": "kenney_prototype/texture_04.png",
+      "sha256": "0a195130e517022a",
+      "width": 1024
+    },
+    "texture_05": {
+      "bytes": 2739,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_05",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_05.png",
+      "relPath": "kenney_prototype/texture_05.png",
+      "sha256": "b124d28fc248ce53",
+      "width": 1024
+    },
+    "texture_06": {
+      "bytes": 2739,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_06",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_06.png",
+      "relPath": "kenney_prototype/texture_06.png",
+      "sha256": "a96d3b723fe47f5d",
+      "width": 1024
+    },
+    "texture_07": {
+      "bytes": 2739,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_07",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_07.png",
+      "relPath": "kenney_prototype/texture_07.png",
+      "sha256": "ff6fd42a8638c509",
+      "width": 1024
+    },
+    "texture_08": {
+      "bytes": 2743,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_08",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_08.png",
+      "relPath": "kenney_prototype/texture_08.png",
+      "sha256": "ddf268b8d4f30b61",
+      "width": 1024
+    },
+    "texture_09": {
+      "bytes": 637,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_09",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_09.png",
+      "relPath": "kenney_prototype/texture_09.png",
+      "sha256": "71a0ff68f911cc1a",
+      "width": 1024
+    },
+    "texture_10": {
+      "bytes": 8958,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_10",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_10.png",
+      "relPath": "kenney_prototype/texture_10.png",
+      "sha256": "cb926c559b593587",
+      "width": 1024
+    },
+    "texture_11": {
+      "bytes": 9048,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_11",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_11.png",
+      "relPath": "kenney_prototype/texture_11.png",
+      "sha256": "a1bdb8059b593936",
+      "width": 1024
+    },
+    "texture_12": {
+      "bytes": 9054,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_12",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_12.png",
+      "relPath": "kenney_prototype/texture_12.png",
+      "sha256": "e0ea3e3426aa8094",
+      "width": 1024
+    },
+    "texture_13": {
+      "bytes": 9588,
+      "cloudUri": null,
+      "height": 1024,
+      "key": "texture_13",
+      "localUri": "rbxasset://arena_assets/kenney_prototype/texture_13.png",
+      "relPath": "kenney_prototype/texture_13.png",
+      "sha256": "1607ac0a68d67b31",
+      "width": 1024
+    },
+    "tile_0000": {
+      "bytes": 124,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0000",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0000.png",
+      "relPath": "kenney_minimap/tile_0000.png",
+      "sha256": "2cb6de866371d7d9",
+      "width": 8
+    },
+    "tile_0001": {
+      "bytes": 115,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0001",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0001.png",
+      "relPath": "kenney_minimap/tile_0001.png",
+      "sha256": "c332b7ca54092eab",
+      "width": 8
+    },
+    "tile_0002": {
+      "bytes": 129,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0002",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0002.png",
+      "relPath": "kenney_minimap/tile_0002.png",
+      "sha256": "c3cc5366b0ee404c",
+      "width": 8
+    },
+    "tile_0003": {
+      "bytes": 117,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0003",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0003.png",
+      "relPath": "kenney_minimap/tile_0003.png",
+      "sha256": "7715505e5e3c62c0",
+      "width": 8
+    },
+    "tile_0004": {
+      "bytes": 108,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0004",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0004.png",
+      "relPath": "kenney_minimap/tile_0004.png",
+      "sha256": "53127e4b435efd55",
+      "width": 8
+    },
+    "tile_0005": {
+      "bytes": 103,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0005",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0005.png",
+      "relPath": "kenney_minimap/tile_0005.png",
+      "sha256": "ed921dcb50d0c6f4",
+      "width": 8
+    },
+    "tile_0006": {
+      "bytes": 118,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0006",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0006.png",
+      "relPath": "kenney_minimap/tile_0006.png",
+      "sha256": "dbc1021f20af6bc8",
+      "width": 8
+    },
+    "tile_0007": {
+      "bytes": 112,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0007",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0007.png",
+      "relPath": "kenney_minimap/tile_0007.png",
+      "sha256": "5679bfe49bbf9101",
+      "width": 8
+    },
+    "tile_0008": {
+      "bytes": 120,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0008",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0008.png",
+      "relPath": "kenney_minimap/tile_0008.png",
+      "sha256": "0cbac5e5d7839067",
+      "width": 8
+    },
+    "tile_0009": {
+      "bytes": 119,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0009",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0009.png",
+      "relPath": "kenney_minimap/tile_0009.png",
+      "sha256": "0591323a136f4643",
+      "width": 8
+    },
+    "tile_0010": {
+      "bytes": 109,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0010",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0010.png",
+      "relPath": "kenney_minimap/tile_0010.png",
+      "sha256": "8769bc5d6d21cdfb",
+      "width": 8
+    },
+    "tile_0011": {
+      "bytes": 106,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0011",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0011.png",
+      "relPath": "kenney_minimap/tile_0011.png",
+      "sha256": "cb1f47b7c86b5806",
+      "width": 8
+    },
+    "tile_0012": {
+      "bytes": 123,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0012",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0012.png",
+      "relPath": "kenney_minimap/tile_0012.png",
+      "sha256": "799711cb1375b4d2",
+      "width": 8
+    },
+    "tile_0013": {
+      "bytes": 105,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0013",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0013.png",
+      "relPath": "kenney_minimap/tile_0013.png",
+      "sha256": "5e455c21b7c97e2e",
+      "width": 8
+    },
+    "tile_0014": {
+      "bytes": 91,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0014",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0014.png",
+      "relPath": "kenney_minimap/tile_0014.png",
+      "sha256": "0bfbdeb4eb43dd7f",
+      "width": 8
+    },
+    "tile_0015": {
+      "bytes": 92,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0015",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0015.png",
+      "relPath": "kenney_minimap/tile_0015.png",
+      "sha256": "36ab7348c2eda795",
+      "width": 8
+    },
+    "tile_0016": {
+      "bytes": 108,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0016",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0016.png",
+      "relPath": "kenney_minimap/tile_0016.png",
+      "sha256": "04e78ebeee99e261",
+      "width": 8
+    },
+    "tile_0017": {
+      "bytes": 108,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0017",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0017.png",
+      "relPath": "kenney_minimap/tile_0017.png",
+      "sha256": "6b6f39924a37f5a8",
+      "width": 8
+    },
+    "tile_0018": {
+      "bytes": 124,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0018",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0018.png",
+      "relPath": "kenney_minimap/tile_0018.png",
+      "sha256": "ed41881ade572f57",
+      "width": 8
+    },
+    "tile_0020": {
+      "bytes": 92,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0020",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0020.png",
+      "relPath": "kenney_minimap/tile_0020.png",
+      "sha256": "231b0b112695b542",
+      "width": 8
+    },
+    "tile_0021": {
+      "bytes": 125,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0021",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0021.png",
+      "relPath": "kenney_minimap/tile_0021.png",
+      "sha256": "3786b569cf4b2cc5",
+      "width": 8
+    },
+    "tile_0022": {
+      "bytes": 108,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0022",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0022.png",
+      "relPath": "kenney_minimap/tile_0022.png",
+      "sha256": "ff2566e739783706",
+      "width": 8
+    },
+    "tile_0023": {
+      "bytes": 112,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0023",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0023.png",
+      "relPath": "kenney_minimap/tile_0023.png",
+      "sha256": "466f4e5ea1f9537b",
+      "width": 8
+    },
+    "tile_0024": {
+      "bytes": 122,
+      "cloudUri": null,
+      "height": 8,
+      "key": "tile_0024",
+      "localUri": "rbxasset://arena_assets/kenney_minimap/tile_0024.png",
+      "relPath": "kenney_minimap/tile_0024.png",
+      "sha256": "4e83846c7c6749c4",
+      "width": 8
     },
     "trace_01": {
       "bytes": 3774,

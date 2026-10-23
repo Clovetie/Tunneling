@@ -1,0 +1,81 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="ScreenGui" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">MinimapRadarGui</string>
+			<bool name="IgnoreGuiInset">false</bool>
+			<bool name="ResetOnSpawn">false</bool>
+		</Properties>
+		<Item class="UIScale" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">AutoScale</string>
+				<int name="Scale">1</int>
+			</Properties>
+		</Item>
+		<Item class="Frame" referent="RBXARENA00003">
+			<Properties>
+				<string name="Name">RadarFrame</string>
+				<Vector2 name="AnchorPoint"><X>1</X><Y>0</Y></Vector2>
+				<Color3 name="BackgroundColor3"><R>0.06</R><G>0.09</G><B>0.14</B></Color3>
+				<float name="BackgroundTransparency">0.12</float>
+				<UDim2 name="Position"><XS>1</XS><XO>-18</XO><YS>0</YS><YO>18</YO></UDim2>
+				<UDim2 name="Size"><XS>0</XS><XO>152</XO><YS>0</YS><YO>152</YO></UDim2>
+			</Properties>
+			<Item class="UICorner" referent="RBXARENA00004">
+				<Properties>
+					<string name="Name">Round</string>
+					<UDim name="CornerRadius"><S>1</S><O>0</O></UDim>
+				</Properties>
+			</Item>
+			<Item class="UIStroke" referent="RBXARENA00005">
+				<Properties>
+					<string name="Name">Rim</string>
+					<Color3 name="Color"><R>0.35</R><G>0.68</G><B>1.0</B></Color3>
+					<int name="Thickness">2</int>
+				</Properties>
+			</Item>
+			<Item class="TextLabel" referent="RBXARENA00006">
+				<Properties>
+					<string name="Name">NorthLabel</string>
+					<Vector2 name="AnchorPoint"><X>0.5</X><Y>0</Y></Vector2>
+					<int name="BackgroundTransparency">1</int>
+					<UDim2 name="Position"><XS>0.5</XS><XO>0</XO><YS>0</YS><YO>4</YO></UDim2>
+					<UDim2 name="Size"><XS>0</XS><XO>24</XO><YS>0</YS><YO>16</YO></UDim2>
+					<string name="Text">N</string>
+					<Color3 name="TextColor3"><R>0.98</R><G>0.82</G><B>0.25</B></Color3>
+					<bool name="TextScaled">true</bool>
+				</Properties>
+			</Item>
+			<Item class="Frame" referent="RBXARENA00007">
+				<Properties>
+					<string name="Name">PlayerArrow</string>
+					<Vector2 name="AnchorPoint"><X>0.5</X><Y>0.5</Y></Vector2>
+					<Color3 name="BackgroundColor3"><R>0.22</R><G>0.9</G><B>0.58</B></Color3>
+					<UDim2 name="Position"><XS>0.5</XS><XO>0</XO><YS>0.5</YS><YO>0</YO></UDim2>
+					<UDim2 name="Size"><XS>0</XS><XO>12</XO><YS>0</YS><YO>12</YO></UDim2>
+				</Properties>
+				<Item class="UICorner" referent="RBXARENA00008">
+					<Properties>
+						<string name="Name">Round</string>
+						<UDim name="CornerRadius"><S>1</S><O>0</O></UDim>
+					</Properties>
+				</Item>
+			</Item>
+			<Item class="Frame" referent="RBXARENA00009">
+				<Properties>
+					<string name="Name">QuestObjectiveBlip</string>
+					<Vector2 name="AnchorPoint"><X>0.5</X><Y>0.5</Y></Vector2>
+					<Color3 name="BackgroundColor3"><R>1.0</R><G>0.78</G><B>0.16</B></Color3>
+					<UDim2 name="Position"><XS>0.74</XS><XO>0</XO><YS>0.3</YS><YO>0</YO></UDim2>
+					<UDim2 name="Size"><XS>0</XS><XO>10</XO><YS>0</YS><YO>10</YO></UDim2>
+				</Properties>
+				<Item class="UICorner" referent="RBXARENA00010">
+					<Properties>
+						<string name="Name">Round</string>
+						<UDim name="CornerRadius"><S>1</S><O>0</O></UDim>
+					</Properties>
+				</Item>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

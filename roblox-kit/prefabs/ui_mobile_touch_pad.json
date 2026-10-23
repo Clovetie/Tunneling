@@ -1,0 +1,77 @@
+{
+  "category": "ui-hud",
+  "description": "Mobile-first virtual action cluster with 56px ergonomic Dash, Jump & Interact touch buttons.",
+  "defaultParent": "StarterGui",
+  "tree": [
+    {
+      "name": "MobileTouchPadGui",
+      "className": "ScreenGui",
+      "replaceExisting": true,
+      "properties": {
+        "ResetOnSpawn": false,
+        "IgnoreGuiInset": false
+      },
+      "children": [
+        {
+          "name": "AutoScale",
+          "className": "UIScale",
+          "properties": { "Scale": 1 }
+        },
+        {
+          "name": "ActionCluster",
+          "className": "Frame",
+          "properties": {
+            "AnchorPoint": { "__t": "Vector2", "v": [1, 1] },
+            "Position": { "__t": "UDim2", "v": [1, -24, 1, -24] },
+            "Size": { "__t": "UDim2", "v": [0, 150, 0, 150] },
+            "BackgroundTransparency": 1
+          },
+          "children": [
+            {
+              "name": "DashButton",
+              "className": "TextButton",
+              "properties": {
+                "Position": { "__t": "UDim2", "v": [0, 0, 0, 68] },
+                "Size": { "__t": "UDim2", "v": [0, 56, 0, 56] },
+                "BackgroundColor3": { "__t": "Color3", "v": [0.16, 0.52, 0.96] },
+                "BackgroundTransparency": 0.18,
+                "Text": "DASH",
+                "TextScaled": true,
+                "TextColor3": { "__t": "Color3", "v": [1, 1, 1] }
+              },
+              "children": [{ "name": "C", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [1, 0] } } }]
+            },
+            {
+              "name": "SprintButton",
+              "className": "TextButton",
+              "properties": {
+                "Position": { "__t": "UDim2", "v": [0, 68, 0, 0] },
+                "Size": { "__t": "UDim2", "v": [0, 56, 0, 56] },
+                "BackgroundColor3": { "__t": "Color3", "v": [0.2, 0.78, 0.52] },
+                "BackgroundTransparency": 0.18,
+                "Text": "RUN",
+                "TextScaled": true,
+                "TextColor3": { "__t": "Color3", "v": [1, 1, 1] }
+              },
+              "children": [{ "name": "C", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [1, 0] } } }]
+            },
+            {
+              "name": "AttackButton",
+              "className": "TextButton",
+              "properties": {
+                "Position": { "__t": "UDim2", "v": [0, 74, 0, 74] },
+                "Size": { "__t": "UDim2", "v": [0, 68, 0, 68] },
+                "BackgroundColor3": { "__t": "Color3", "v": [0.95, 0.35, 0.3] },
+                "BackgroundTransparency": 0.12,
+                "Text": "ATK",
+                "TextScaled": true,
+                "TextColor3": { "__t": "Color3", "v": [1, 1, 1] }
+              },
+              "children": [{ "name": "C", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [1, 0] } } }]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

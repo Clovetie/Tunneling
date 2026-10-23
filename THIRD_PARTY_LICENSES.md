@@ -11,7 +11,7 @@ This repository bundles curated public-domain (CC0 1.0), MIT, ISC, and Apache-2.
   - <https://github.com/shorepine/kenney>
   - <https://github.com/Calinou/kenney-interface-sounds>
   - <https://github.com/Calinou/kenney-ui-audio>
-- **Included Packs**: *UI Pack*, *Fantasy UI Borders*, *UI Pack — Sci-Fi*, *UI Pack — Adventure*, *Mobile Controls*, *Cursor Pack*, *Game Icons*, *Game Icons Expansion*, *Input Prompts*, *Particle Pack*, *Interface Sounds*, *UI Audio*
+- **Included Packs**: *UI Pack*, *Fantasy UI Borders*, *UI Pack — Sci-Fi*, *UI Pack — Adventure*, *Mobile Controls*, *Cursor Pack*, *Game Icons*, *Game Icons Expansion*, *Game Icons Fighter Expansion*, *Board Game Icons*, *Input Prompts (PC/Xbox/PlayStation/Switch/Touch)*, *Medals*, *Ranks Pack*, *Minimap Pack*, *Emote Pack*, *Animal Pack Remastered*, *Prototype Textures*, *Light Masks*, *Particle Pack*, *Interface Sounds*, *UI Audio*
 - **License**: **Creative Commons Zero v1.0 Universal (CC0 1.0 — Public Domain)** (<https://creativecommons.org/publicdomain/zero/1.0/>)
 
 ---
@@ -23,9 +23,12 @@ This repository bundles curated public-domain (CC0 1.0), MIT, ISC, and Apache-2.
 
 ---
 
-## 3. Lucide Icons & LucideBlox (`LucideIcons.lua`)
+## 3. Lucide Icons, `nrbx-ts/rbxts-lucide` & `lucideblox` (`LucideIcons.lua`, `LucideFilledIcons.lua`)
 
-- **Repositories**: <https://github.com/frappedevs/lucideblox> (Copyright (c) 2021 nanako, MIT License) & <https://lucide.dev> (ISC License)
+- **Repositories**:
+  - <https://github.com/nrbx-ts/rbxts-lucide> (Copyright (c) 2023 wad4444, **MIT License** — 1,894 outline & 1,895 solid filled `rbxassetid://` assets)
+  - <https://github.com/frappedevs/lucideblox> (Copyright (c) 2021 nanako, **MIT License**)
+  - <https://lucide.dev> (**ISC License**)
 
 ---
 

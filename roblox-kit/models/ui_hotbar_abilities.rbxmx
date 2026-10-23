@@ -1,0 +1,132 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="ScreenGui" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">AbilityHotbarGui</string>
+			<bool name="IgnoreGuiInset">false</bool>
+			<bool name="ResetOnSpawn">false</bool>
+		</Properties>
+		<Item class="UIScale" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">AutoScale</string>
+				<int name="Scale">1</int>
+			</Properties>
+		</Item>
+		<Item class="Frame" referent="RBXARENA00003">
+			<Properties>
+				<string name="Name">BarContainer</string>
+				<Vector2 name="AnchorPoint"><X>0.5</X><Y>1</Y></Vector2>
+				<Color3 name="BackgroundColor3"><R>0.08</R><G>0.1</G><B>0.15</B></Color3>
+				<float name="BackgroundTransparency">0.14</float>
+				<UDim2 name="Position"><XS>0.5</XS><XO>0</XO><YS>1</YS><YO>-14</YO></UDim2>
+				<UDim2 name="Size"><XS>0</XS><XO>326</XO><YS>0</YS><YO>68</YO></UDim2>
+			</Properties>
+			<Item class="UICorner" referent="RBXARENA00004">
+				<Properties>
+					<string name="Name">Corner</string>
+					<UDim name="CornerRadius"><S>0</S><O>12</O></UDim>
+				</Properties>
+			</Item>
+			<Item class="UIStroke" referent="RBXARENA00005">
+				<Properties>
+					<string name="Name">Border</string>
+					<Color3 name="Color"><R>0.28</R><G>0.56</G><B>0.96</B></Color3>
+					<int name="Thickness">2</int>
+				</Properties>
+			</Item>
+			<Item class="UIPadding" referent="RBXARENA00006">
+				<Properties>
+					<string name="Name">Padding</string>
+					<UDim name="PaddingLeft"><S>0</S><O>10</O></UDim>
+					<UDim name="PaddingTop"><S>0</S><O>8</O></UDim>
+				</Properties>
+			</Item>
+			<Item class="UIListLayout" referent="RBXARENA00007">
+				<Properties>
+					<string name="Name">RowLayout</string>
+					<UDim name="Padding"><S>0</S><O>10</O></UDim>
+				</Properties>
+			</Item>
+			<Item class="TextButton" referent="RBXARENA00008">
+				<Properties>
+					<string name="Name">Slot1</string>
+					<Color3 name="BackgroundColor3"><R>0.16</R><G>0.24</G><B>0.38</B></Color3>
+					<UDim2 name="Size"><XS>0</XS><XO>52</XO><YS>0</YS><YO>52</YO></UDim2>
+					<string name="Text">Q</string>
+					<Color3 name="TextColor3"><R>1</R><G>1</G><B>1</B></Color3>
+					<bool name="TextScaled">true</bool>
+				</Properties>
+				<Item class="UICorner" referent="RBXARENA00009">
+					<Properties>
+						<string name="Name">C</string>
+						<UDim name="CornerRadius"><S>0</S><O>8</O></UDim>
+					</Properties>
+				</Item>
+			</Item>
+			<Item class="TextButton" referent="RBXARENA00010">
+				<Properties>
+					<string name="Name">Slot2</string>
+					<Color3 name="BackgroundColor3"><R>0.16</R><G>0.24</G><B>0.38</B></Color3>
+					<UDim2 name="Size"><XS>0</XS><XO>52</XO><YS>0</YS><YO>52</YO></UDim2>
+					<string name="Text">E</string>
+					<Color3 name="TextColor3"><R>1</R><G>1</G><B>1</B></Color3>
+					<bool name="TextScaled">true</bool>
+				</Properties>
+				<Item class="UICorner" referent="RBXARENA00011">
+					<Properties>
+						<string name="Name">C</string>
+						<UDim name="CornerRadius"><S>0</S><O>8</O></UDim>
+					</Properties>
+				</Item>
+			</Item>
+			<Item class="TextButton" referent="RBXARENA00012">
+				<Properties>
+					<string name="Name">Slot3</string>
+					<Color3 name="BackgroundColor3"><R>0.22</R><G>0.32</G><B>0.52</B></Color3>
+					<UDim2 name="Size"><XS>0</XS><XO>52</XO><YS>0</YS><YO>52</YO></UDim2>
+					<string name="Text">R</string>
+					<Color3 name="TextColor3"><R>1</R><G>0.86</G><B>0.32</B></Color3>
+					<bool name="TextScaled">true</bool>
+				</Properties>
+				<Item class="UICorner" referent="RBXARENA00013">
+					<Properties>
+						<string name="Name">C</string>
+						<UDim name="CornerRadius"><S>0</S><O>8</O></UDim>
+					</Properties>
+				</Item>
+			</Item>
+			<Item class="TextButton" referent="RBXARENA00014">
+				<Properties>
+					<string name="Name">Slot4</string>
+					<Color3 name="BackgroundColor3"><R>0.16</R><G>0.24</G><B>0.38</B></Color3>
+					<UDim2 name="Size"><XS>0</XS><XO>52</XO><YS>0</YS><YO>52</YO></UDim2>
+					<string name="Text">F</string>
+					<Color3 name="TextColor3"><R>1</R><G>1</G><B>1</B></Color3>
+					<bool name="TextScaled">true</bool>
+				</Properties>
+				<Item class="UICorner" referent="RBXARENA00015">
+					<Properties>
+						<string name="Name">C</string>
+						<UDim name="CornerRadius"><S>0</S><O>8</O></UDim>
+					</Properties>
+				</Item>
+			</Item>
+			<Item class="TextButton" referent="RBXARENA00016">
+				<Properties>
+					<string name="Name">Slot5</string>
+					<Color3 name="BackgroundColor3"><R>0.35</R><G>0.2</G><B>0.45</B></Color3>
+					<UDim2 name="Size"><XS>0</XS><XO>52</XO><YS>0</YS><YO>52</YO></UDim2>
+					<string name="Text">ULT</string>
+					<Color3 name="TextColor3"><R>1</R><G>0.9</G><B>0.4</B></Color3>
+					<bool name="TextScaled">true</bool>
+				</Properties>
+				<Item class="UICorner" referent="RBXARENA00017">
+					<Properties>
+						<string name="Name">C</string>
+						<UDim name="CornerRadius"><S>0</S><O>8</O></UDim>
+					</Properties>
+				</Item>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

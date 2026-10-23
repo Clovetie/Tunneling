@@ -1,0 +1,58 @@
+{
+  "category": "gameplay-3d",
+  "description": "Complete grounded, physics-safe Obby Stage module: start deck, 3 stepped neon pads, hazard lava bar, and finish checkpoint.",
+  "defaultParent": "Workspace",
+  "tree": [
+    {
+      "name": "ObbyStageCourse",
+      "className": "Model",
+      "replaceExisting": true,
+      "children": [
+        {
+          "name": "StartDeck",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Size": { "__t": "Vector3", "v": [10, 1, 10] },
+            "Position": { "__t": "Vector3", "v": [-14, 0.5, -18] },
+            "Color": { "__t": "Color3", "v": [0.2, 0.72, 0.48] }
+          }
+        },
+        {
+          "name": "JumpPad1",
+          "className": "Part",
+          "tags": ["Floating"],
+          "properties": {
+            "Anchored": true,
+            "Size": { "__t": "Vector3", "v": [5, 1, 5] },
+            "Position": { "__t": "Vector3", "v": [-14, 2.0, -30] },
+            "Color": { "__t": "Color3", "v": [0.24, 0.62, 0.98] }
+          }
+        },
+        {
+          "name": "HazardLavaBar",
+          "className": "Part",
+          "tags": ["Hazard", "Floating"],
+          "properties": {
+            "Anchored": true,
+            "Material": { "__t": "Enum", "v": "Enum.Material.Neon" },
+            "Size": { "__t": "Vector3", "v": [8, 0.8, 1.5] },
+            "Position": { "__t": "Vector3", "v": [-14, 3.0, -37] },
+            "Color": { "__t": "Color3", "v": [1.0, 0.24, 0.16] }
+          }
+        },
+        {
+          "name": "FinishDeck",
+          "className": "Part",
+          "tags": ["Floating"],
+          "properties": {
+            "Anchored": true,
+            "Size": { "__t": "Vector3", "v": [10, 1, 10] },
+            "Position": { "__t": "Vector3", "v": [-14, 3.5, -46] },
+            "Color": { "__t": "Color3", "v": [0.98, 0.78, 0.2] }
+          }
+        }
+      ]
+    }
+  ]
+}

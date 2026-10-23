@@ -82,7 +82,7 @@ def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str 
 
     def walk_gui(node: dict, path: str, parent_rect: tuple, eff_scale: float, has_scale_anc: bool):
         cls = node.get("className") or "Instance"
-        props = node.get("properties") or {}
+        props = {**(node.get("properties") or {}), **(node.get("structuredProperties") or {})}
         children = node.get("children") or []
 
         local_scale_node = _find_child_class(node, "UIScale")
