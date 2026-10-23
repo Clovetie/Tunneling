@@ -1,0 +1,31 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="Model" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">DisplayBoard</string>
+		</Properties>
+		<Item class="Part" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">ScreenPart</string>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>0.11</R><G>0.14</G><B>0.18</B></Color3>
+				<Vector3 name="Position"><X>0</X><Y>5.5</Y><Z>-14</Z></Vector3>
+				<Vector3 name="Size"><X>12</X><Y>7</Y><Z>0.6</Z></Vector3>
+			</Properties>
+			<Item class="SurfaceGui" referent="RBXARENA00003">
+				<Properties>
+					<string name="Name">FrontDisplay</string>
+					<int name="PixelsPerStud">64</int>
+				</Properties>
+				<Item class="ImageLabel" referent="RBXARENA00004">
+					<Properties>
+						<string name="Name">Poster</string>
+						<Color3 name="BackgroundColor3"><R>0.08</R><G>0.1</G><B>0.14</B></Color3>
+						<Content name="Image"><url>rbxasset://arena_assets/ui/panel_glass_9slice.png</url></Content>
+						<UDim2 name="Size"><XS>1</XS><XO>0</XO><YS>1</YS><YO>0</YO></UDim2>
+					</Properties>
+				</Item>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

@@ -80,7 +80,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 
 ---
 
-## Full 45-Tool MCP Suite + Open-Source UI Kit, Assets & Skills
+## Full 50-Tool MCP Suite + Dual UI Kits, 1,587 Cloud Icons, LiveOps Systems, Audio & `.rbxmx`
 
 | Domain | MCP Tools |
 |---|---|
@@ -92,7 +92,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 | **Attributes & Tags (2)** | `manage_attributes` (`get`/`set`/`delete`), `manage_tags` (`list_all`/`find_tagged`/`get`/`add`/`remove`) |
 | **World, Camera, Undo & Assets (5)** | `manage_selection`, `manage_camera`, `undo_redo`, `edit_terrain`, `insert_asset` (auto script-strip safety) |
 | **Toolchain, Sync & Snapshots (3)** | `luau_check` (offline compiler + undefined globals), `drift_and_sync` (`check`/`push`/`pull`), `manage_snapshots` (`create`/`list`/`get`/`restore`) |
-| **Open-Source UI Kit, 1,022 Cloud Icons, Direct Image Import & Prefabs (8)** | `install_template` (`full_stud_ui_suite`, `stud_shop_window`, `stud_hud_shell`, `stud_daily_rewards`, `stud_rebirth_window`, `stud_rarity_index`), `search_cloud_icons` (1,022 live `rbxassetid://` icons), `import_image` (file / base64 / URL / 249 curated Kenney CC0 + procedural PNGs -> `rbxasset://arena_assets/...` + live `EditableImage` + Studio/Open Cloud `rbxassetid://`), `import_images_batch`, `generate_procedural_image`, `browse_kit`, `install_kit_module` (12 verified Luau modules), `spawn_prefab` (14 3D/UI/VFX/Lighting prefabs) |
+| **Dual UI Kits, 1,587 Cloud Icons, Multi-Device UI Linter, LiveOps Systems, Audio, Images & `.rbxmx` (13)** | `audit_ui_layout` (`desktop`/`tablet`/`mobile`), `install_dropin_system` (14 `ProfileStore`/LiveOps/Monetization systems), `import_audio` (45 CC0 WAVs + custom audio), `import_rbxmx`, `export_rbxmx`, `install_template` (6 full UI suites), `search_cloud_icons` (1,022 `stud` + 565 `lucide` = **1,587** `rbxassetid://` icons), `import_image` (249 PNGs + custom files/URLs/base64), `import_images_batch`, `generate_procedural_image`, `browse_kit`, `install_kit_module` (15 verified Luau modules), `spawn_prefab` (14 prefabs) |
 
 ### Repo-Committed Skills, Assets & Modules
 - **Agent Skills (`.claude/skills/*/SKILL.md` + `skill://{name}` MCP resources + root `AGENTS.md`)**:

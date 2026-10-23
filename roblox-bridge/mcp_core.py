@@ -26,7 +26,7 @@ import urllib.request
 from pathlib import Path
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "3.2.0"
+MCP_SERVER_VERSION = "3.3.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2025-06-18",
     "2025-03-26",
@@ -1230,30 +1230,30 @@ TOOL_SPECS = [
     },
     {
         "name": "browse_kit",
-        "description": "List or read built-in Roblox Studio Skills (.claude/skills), reusable Luau Modules (roblox-kit/modules including StudUI, StudMotion, CheckUIIcons), full multi-script UI/Gameplay System Templates (roblox-kit/templates), 3D/UI/Lighting Prefabs (roblox-kit/prefabs), and 249 Repo PNG Assets (Kenney CC0 + procedural).",
+        "description": "List or read built-in Roblox Studio Skills (.claude/skills), 15 reusable Luau Modules (StudUI, ModernUI, LucideIcons, CheckUIIcons, SoundFX, etc.), 14 modular Drop-In Server/Client Game Systems (roblox-kit/systems), 6 full Screen Templates, 14 Prefabs, 14 drag-and-drop .rbxmx Models, 249 Repo PNGs, and 45 CC0 WAV Sound Effects.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["all", "skills", "modules", "templates", "prefabs", "images", "presets", "cloud_icons"],
+                    "enum": ["all", "skills", "modules", "systems", "templates", "prefabs", "models", "images", "audio", "presets", "cloud_icons"],
                     "default": "all",
                 },
-                "item": {"type": "string", "description": "Optional specific skill/module/template/prefab/image name to return full Markdown/Luau/JSON source."},
+                "item": {"type": "string", "description": "Optional specific skill/module/system/template/prefab/model/image/audio name to inspect."},
             },
         },
-        "annotations": _ann("Browse Skills, Modules, Templates, Prefabs & Assets", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Browse Skills, Modules, Systems, Templates, Prefabs, Models & Assets", read_only=True, destructive=False, idempotent=True),
     },
     {
         "name": "install_kit_module",
-        "description": "Install one or all 12 production-verified Luau ModuleScripts (Maid, Signal, NetGuard, TagBinder, SpringUI, StateStore, Assets, StudUI, StudMotion, CheckUIIcons, FormatNumber, DataStoreSafe) from `roblox-kit/modules/` into `ReplicatedStorage.Shared` (or `ReplicatedStorage`).",
+        "description": "Install one or all 15 production-verified Luau ModuleScripts (Maid, Signal, NetGuard, TagBinder, SpringUI, StateStore, Assets, StudUI, StudMotion, CheckUIIcons, ModernUI, LucideIcons, SoundFX, FormatNumber, DataStoreSafe) into `ReplicatedStorage.Shared` (or `ReplicatedStorage`).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "module": {
                     "type": "string",
                     "default": "all",
-                    "description": "Module stem ('Maid', 'Signal', 'NetGuard', 'TagBinder', 'SpringUI', 'StateStore', 'Assets', 'StudUI', 'StudMotion', 'CheckUIIcons', 'FormatNumber', 'DataStoreSafe') or 'all'.",
+                    "description": "Module stem or 'all'.",
                 },
                 "parent": {"type": "string", "default": "ReplicatedStorage.Shared", "description": "Target Studio folder/service path."},
                 "peerId": PEER_PROP,
@@ -1298,16 +1298,102 @@ TOOL_SPECS = [
     },
     {
         "name": "search_cloud_icons",
-        "description": "Search 1,022 verified pre-uploaded Roblox `rbxassetid://` UI icons from `CheckUIIcons` by keyword (e.g. 'coin', 'gem', 'potion', 'cat', 'sword', 'crown', 'cart', 'rebirth', 'key') or category. Returns ready-to-use `rbxassetid://` URIs that work immediately in Studio and published multiplayer servers with zero uploads.",
+        "description": "Search 1,587 verified pre-uploaded Roblox `rbxassetid://` UI icons across BOTH `CheckUIIcons` (1,022 glossy 3D Stud cartoon icons) AND `LucideIcons` (565 crisp modern flat vector icons). Works immediately in Studio and published multiplayer servers with zero uploads.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "default": "", "description": "Case-insensitive search keywords, e.g. 'golden cat', 'shopping cart', 'potion', 'coin'."},
-                "category": {"type": "string", "description": "Optional top-level folder filter, e.g. 'Main', 'Item', 'Animal', 'Currency', 'UI'."},
+                "query": {"type": "string", "default": "", "description": "Case-insensitive search keywords, e.g. 'shopping cart', 'shield', 'settings', 'golden cat', 'coin', 'swords'."},
+                "pack": {"type": "string", "enum": ["all", "stud", "lucide"], "default": "all", "description": "Filter icon style pack: 'stud' (glossy 3D cartoon), 'lucide' (minimalist flat vector), or 'all'."},
+                "category": {"type": "string", "description": "Optional category filter, e.g. 'Main', 'Item', 'Animal', 'Currency', 'Lucide'."},
                 "limit": {"type": "integer", "default": 40, "minimum": 1, "maximum": 250},
             },
         },
-        "annotations": _ann("Search 1,022 Live rbxassetid:// UI Icons", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Search 1,587 Live rbxassetid:// UI Icons (Stud + Lucide)", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "import_audio",
+        "description": "Import a `.wav`/`.ogg`/`.mp3` sound file (from local path, base64, or any of the 45 curated CC0 Kenney UI/Interface SFX in `roblox-kit/assets/audio/`) into Studio `content/arena_assets/audio/...` (`rbxasset://arena_assets/audio/...`), update `Assets.lua`, and optionally create a `Sound` instance in Studio.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repoAudio": {"type": "string", "description": "Built-in CC0 sound filename, e.g. 'click_001.wav', 'confirmation_001.wav', 'error_001.wav', 'open_001.wav'."},
+                "filePath": {"type": "string", "description": "Local `.wav`/`.ogg`/`.mp3` file path."},
+                "base64Data": {"type": "string", "description": "Optional base64 audio bytes."},
+                "name": {"type": "string", "description": "Sound asset name."},
+                "targetPath": {"type": "string", "default": "SoundService", "description": "Optional Studio parent path to create a `Sound` instance inside (pass '' to skip)."},
+                "volume": {"type": "number", "default": 0.6},
+                "playbackSpeed": {"type": "number", "default": 1.0},
+                "looped": {"type": "boolean", "default": False},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Import Sound Effect into Studio & Repo", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "import_rbxmx",
+        "description": "Parse any Roblox `.rbxmx` XML model or UI file (from `filePath`, `repoModel` in `roblox-kit/models/`, or inline `xmlContent`) and build the full Instance tree (with scripts, properties, tags, and optional `[x, y, z]` world offset) directly into Studio in one undo step.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filePath": {"type": "string", "description": "Path to a `.rbxmx` file on disk."},
+                "repoModel": {"type": "string", "description": "Built-in `.rbxmx` name from `roblox-kit/models/`, e.g. 'ui_kenney_shop_window.rbxmx' or 'vfx_portal_gate'."},
+                "xmlContent": {"type": "string", "description": "Inline `.rbxmx` XML string."},
+                "parent": {"type": "string", "default": "Workspace", "description": "Target Studio parent path (e.g. 'Workspace' or 'StarterGui')."},
+                "position": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "Optional [x, y, z] offset for 3D parts."},
+                "stripScripts": {"type": "boolean", "default": False, "description": "Strip embedded Script/LocalScript/ModuleScript items when importing untrusted external models."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Import Roblox .rbxmx XML Model / UI into Studio", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "export_rbxmx",
+        "description": "Export any live Studio subtree (including properties, script sources, tags, and children) OR repo prefab into a standards-compliant Roblox `.rbxmx` XML file ready to drag-and-drop into any `.rbxl` place or commit to Git.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Live Studio dot path to export, e.g. 'Workspace.SpawnPlaza' or 'StarterGui.KenneyShopGui'."},
+                "prefab": {"type": "string", "description": "Optional repo prefab stem instead of reading from live Studio."},
+                "outputFile": {"type": "string", "description": "Destination `.rbxmx` file path (defaults to `roblox-kit/models/<name>.rbxmx`)."},
+                "depth": {"type": "integer", "default": 8, "minimum": 1, "maximum": 16},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Export Studio Instance Subtree to .rbxmx XML", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "audit_ui_layout",
+        "description": "Multi-device responsive Roblox UI layout solver & UX linter. Evaluates a live Studio `ScreenGui`/`StarterGui` path OR a repo UI prefab across Desktop (1920x1080), Tablet (1024x768), and Mobile (844x390), computing exact `[x, y, w, h]` bounds and flagging overflow, missing `UIScale`, `ResetOnSpawn=true`, tiny mobile buttons (<36px), sibling overlaps, and stretched 9-slice images.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Live Studio GUI path (e.g. 'StarterGui' or 'StarterGui.KenneyShopGui')."},
+                "prefab": {"type": "string", "description": "Optional repo UI prefab name (e.g. 'ui_kenney_shop_window', 'hud_modern_shell', 'ui_fantasy_quest_dialog')."},
+                "viewports": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["desktop", "tablet", "mobile"]},
+                    "description": "Target viewports to evaluate (defaults to all 3: desktop, tablet, mobile).",
+                },
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Audit Multi-Device Responsive UI Layout & Bounds", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "install_dropin_system",
+        "description": "Install any of the 14 modular server+shared+client production systems from `roblox-kit/systems/` (`core/data` with ProfileStore, `core/economy`, `core/format`, `core/remotes`, `ui/kit`, `liveops/codes`, `liveops/playtime-gifts`, `liveops/group-rewards`, `liveops/social-prompts`, `liveops/badges`, `monetization/gamepasses`, `monetization/offline-earnings`, `monetization/paid-random-items`, `monetization/receipts`) directly into `ReplicatedStorage.Shared`, `ServerScriptService`, and `StarterPlayer.StarterPlayerScripts`.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "system": {
+                    "type": "string",
+                    "description": "System path such as 'liveops/codes', 'liveops/playtime-gifts', 'monetization/offline-earnings', 'monetization/paid-random-items', 'core/data', 'ui/kit', or 'all'.",
+                },
+                "peerId": PEER_PROP,
+            },
+            "required": ["system"],
+        },
+        "annotations": _ann("Install Modular LiveOps / Monetization / Data System", read_only=False, destructive=False, idempotent=True),
     },
 ]
 
@@ -1828,6 +1914,7 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
     if name == "search_cloud_icons":
         return search_cloud_icons_helper(
             query=args.get("query", ""),
+            pack=args.get("pack", "all"),
             category=args.get("category"),
             limit=int(args.get("limit", 40)),
         )
@@ -1838,6 +1925,21 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
             template_name=args["template"],
             peer_id=peer_id,
         )
+
+    if name == "import_audio":
+        return import_audio_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "import_rbxmx":
+        return import_rbxmx_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "export_rbxmx":
+        return export_rbxmx_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "audit_ui_layout":
+        return audit_ui_layout_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "install_dropin_system":
+        return install_dropin_system_helper(client=client, system_arg=args["system"], peer_id=peer_id)
 
     if name == "generate_procedural_image":
         return import_image_helper(
@@ -2141,15 +2243,16 @@ def _load_cloud_icons() -> list:
         return _CLOUD_ICONS_CACHE
     from image_pipeline import find_kit_root
 
-    icons_file = find_kit_root() / "modules" / "CheckUIIcons.lua"
+    mod_dir = find_kit_root() / "modules"
     entries = []
+    icons_file = mod_dir / "CheckUIIcons.lua"
     if icons_file.is_file():
         src = icons_file.read_text(encoding="utf-8")
-        # Matches FlatMap entries: ["Category/Sub/Icon Name"] = "rbxassetid://1234567890"
         for m in re.finditer(r'\[\s*"([^"]+)"\s*\]\s*=\s*"rbxassetid://(\d+)"', src):
             path_key, aid = m.group(1), m.group(2)
             parts = path_key.split("/")
             entries.append({
+                "pack": "stud",
                 "path": path_key,
                 "category": parts[0] if parts else "General",
                 "subCategory": parts[1] if len(parts) > 2 else "",
@@ -2157,21 +2260,47 @@ def _load_cloud_icons() -> list:
                 "assetId": int(aid),
                 "uri": f"rbxassetid://{aid}",
             })
+    lucide_file = mod_dir / "LucideIcons.lua"
+    if lucide_file.is_file():
+        lsrc = lucide_file.read_text(encoding="utf-8")
+        for m in re.finditer(r'\[\s*"([^"]+)"\s*\]\s*=\s*"rbxassetid://(\d+)"', lsrc):
+            lname, aid = m.group(1), m.group(2)
+            entries.append({
+                "pack": "lucide",
+                "path": f"Lucide/{lname}",
+                "category": "Lucide",
+                "subCategory": "Vector",
+                "name": lname,
+                "assetId": int(aid),
+                "uri": f"rbxassetid://{aid}",
+            })
     _CLOUD_ICONS_CACHE = entries
     return entries
 
 
-def search_cloud_icons_helper(query: str = "", category: str = None, limit: int = 40) -> dict:
+def search_cloud_icons_helper(
+    query: str = "",
+    pack: str = "all",
+    category: str = None,
+    limit: int = 40,
+) -> dict:
     all_icons = _load_cloud_icons()
     cat_counts = {}
+    pack_counts = {}
     for ic in all_icons:
-        c = ic["category"]
-        cat_counts[c] = cat_counts.get(c, 0) + 1
+        pk = ic["pack"]
+        pack_counts[pk] = pack_counts.get(pk, 0) + 1
+        if pack in ("all", None, "") or pk == pack:
+            c = ic["category"]
+            cat_counts[c] = cat_counts.get(c, 0) + 1
 
     terms = [t.lower() for t in (query or "").strip().split() if t]
     cat_filter = (category or "").strip().lower()
+    pack_filter = (pack or "all").strip().lower()
     matched = []
     for ic in all_icons:
+        if pack_filter not in ("all", "") and ic["pack"] != pack_filter:
+            continue
         if cat_filter and ic["category"].lower() != cat_filter:
             continue
         hay = ic["path"].lower()
@@ -2182,6 +2311,8 @@ def search_cloud_icons_helper(query: str = "", category: str = None, limit: int 
 
     return {
         "totalCatalogIcons": len(all_icons),
+        "packs": pack_counts,
+        "pack": pack_filter,
         "query": query or "",
         "category": category or "all",
         "returnedCount": len(matched),
@@ -2422,10 +2553,352 @@ def browse_kit_helper(category: str = "all", item: str = None) -> dict:
         out["imageCategories"] = cat_counts
     if category in ("all", "presets"):
         out["proceduralPresets"] = list(PROCEDURAL_PRESETS.keys())
+    if category in ("all", "audio"):
+        audio_dir = kit / "assets" / "audio"
+        out["audio"] = [
+            {
+                "name": af.stem,
+                "fileName": af.name,
+                "localUri": f"rbxasset://arena_assets/audio/{af.name}",
+                "bytes": af.stat().st_size,
+            }
+            for af in sorted(audio_dir.glob("*"))
+            if af.is_file() and af.suffix.lower() in (".wav", ".ogg", ".mp3")
+        ] if audio_dir.is_dir() else []
+    if category in ("all", "models"):
+        models_dir = kit / "models"
+        out["models"] = [
+            {"name": mf.stem, "fileName": mf.name, "bytes": mf.stat().st_size, "path": str(mf)}
+            for mf in sorted(models_dir.glob("*.rbxmx"))
+        ] if models_dir.is_dir() else []
+    if category in ("all", "systems"):
+        out["systems"] = _discover_dropin_systems(kit)
     if category in ("all", "cloud_icons"):
         ci = _load_cloud_icons()
         out["cloudIconsCount"] = len(ci)
     return out
+
+
+def _discover_dropin_systems(kit: Path) -> list:
+    sys_root = kit / "systems"
+    if not sys_root.is_dir():
+        return []
+    found = []
+    for group_dir in sorted(sys_root.iterdir()):
+        if not group_dir.is_dir():
+            continue
+        for sys_dir in sorted(group_dir.iterdir()):
+            if not sys_dir.is_dir():
+                continue
+            lua_files = sorted(sys_dir.rglob("*.lua"))
+            if not lua_files:
+                continue
+            readme = sys_dir / "README.md"
+            first_line = ""
+            if readme.is_file():
+                for ln in readme.read_text(encoding="utf-8").splitlines():
+                    ln = ln.strip().lstrip("#").strip()
+                    if ln:
+                        first_line = ln
+                        break
+            found.append({
+                "system": f"{group_dir.name}/{sys_dir.name}",
+                "group": group_dir.name,
+                "name": sys_dir.name,
+                "scriptCount": len(lua_files),
+                "summary": first_line or f"Drop-in {group_dir.name}/{sys_dir.name} system",
+            })
+    return found
+
+
+def install_dropin_system_helper(client: BridgeClient, system_arg: str, peer_id: str = None) -> dict:
+    from image_pipeline import find_kit_root
+
+    kit = find_kit_root()
+    sys_root = kit / "systems"
+    all_sys = _discover_dropin_systems(kit)
+    if system_arg == "all":
+        targets = [s["system"] for s in all_sys]
+    else:
+        norm = system_arg.strip().strip("/")
+        matches = [s["system"] for s in all_sys if s["system"] == norm or s["name"] == norm]
+        if not matches:
+            raise KeyError(f"System {system_arg!r} not found. Available: {[s['system'] for s in all_sys]}")
+        targets = matches
+
+    shared_children = []
+    server_writes = []
+    client_writes = []
+    for sys_id in targets:
+        sdir = sys_root / sys_id
+        for subdir_name in ("shared", "server", "client"):
+            sub = sdir / subdir_name
+            if not sub.is_dir():
+                continue
+            for lf in sorted(sub.glob("*.lua")):
+                src = lf.read_text(encoding="utf-8")
+                if lf.name.endswith(".server.lua"):
+                    stem = lf.name[:-len(".server.lua")]
+                    server_writes.append((stem, "Script", src))
+                elif lf.name.endswith(".client.lua"):
+                    stem = lf.name[:-len(".client.lua")]
+                    client_writes.append((stem, "LocalScript", src))
+                else:
+                    stem = lf.stem
+                    if subdir_name == "server":
+                        server_writes.append((stem, "ModuleScript", src))
+                    elif subdir_name == "client":
+                        client_writes.append((stem, "ModuleScript", src))
+                    else:
+                        shared_children.append({
+                            "name": stem,
+                            "className": "ModuleScript",
+                            "replaceExisting": True,
+                            "source": src,
+                        })
+
+    installed_paths = []
+    if shared_children:
+        _unwrap_job(client.submit_job("build", {
+            "parent": "ReplicatedStorage",
+            "tree": [{
+                "name": "Shared",
+                "className": "Folder",
+                "replaceExisting": False,
+                "children": shared_children,
+            }],
+            "select": False,
+        }, note=f"system_shared:{system_arg}", wait=45.0, dm="edit", peer_id=peer_id))
+        installed_paths.extend(f"ReplicatedStorage.Shared.{c['name']}" for c in shared_children)
+
+    for nm, cls, src in server_writes:
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "ServerScriptService",
+            "name": nm,
+            "className": cls,
+            "source": src,
+            "replaceInstance": True,
+        }, note=f"system_server:{nm}", wait=30.0, dm="edit", peer_id=peer_id))
+        installed_paths.append(f"ServerScriptService.{nm}")
+
+    for nm, cls, src in client_writes:
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "StarterPlayer.StarterPlayerScripts",
+            "name": nm,
+            "className": cls,
+            "source": src,
+            "replaceInstance": True,
+        }, note=f"system_client:{nm}", wait=30.0, dm="edit", peer_id=peer_id))
+        installed_paths.append(f"StarterPlayer.StarterPlayerScripts.{nm}")
+
+    return {
+        "systemsInstalled": targets,
+        "installedCount": len(installed_paths),
+        "installedPaths": installed_paths,
+    }
+
+
+def import_audio_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    import base64 as _b64
+    from image_pipeline import find_kit_root, install_into_studio_content, update_repo_asset_manifest
+
+    kit = find_kit_root()
+    audio_dir = kit / "assets" / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.get("repoAudio"):
+        cand = audio_dir / Path(args["repoAudio"]).name
+        if not cand.is_file():
+            raise FileNotFoundError(f"Repo audio not found: {cand}")
+        raw = cand.read_bytes()
+        fname = cand.name
+        stem = cand.stem
+    elif args.get("filePath"):
+        p = Path(args["filePath"]).expanduser()
+        if not p.is_file():
+            raise FileNotFoundError(f"Audio file not found: {p}")
+        raw = p.read_bytes()
+        ext = p.suffix.lower() or ".wav"
+        stem = re.sub(r"[^A-Za-z0-9_\-]", "_", args.get("name") or p.stem) or "sfx"
+        fname = f"{stem}{ext}"
+        (audio_dir / fname).write_bytes(raw)
+    elif args.get("base64Data"):
+        b64 = args["base64Data"].strip()
+        if b64.startswith("data:"):
+            _, _, b64 = b64.partition(",")
+        raw = _b64.b64decode(b64)
+        stem = re.sub(r"[^A-Za-z0-9_\-]", "_", args.get("name") or "imported_sfx") or "imported_sfx"
+        fname = f"{stem}.wav"
+        (audio_dir / fname).write_bytes(raw)
+    else:
+        raise ValueError("Provide 'repoAudio', 'filePath', or 'base64Data'.")
+
+    inst = install_into_studio_content(raw, f"audio/{fname}")
+    manifest = update_repo_asset_manifest()
+
+    created = []
+    target_path = args.get("targetPath")
+    if target_path is None:
+        target_path = "SoundService"
+    if target_path and client.health().get("studio_connected"):
+        res = _unwrap_job(client.submit_job("build", {
+            "parent": target_path,
+            "tree": [{
+                "name": args.get("name") or stem,
+                "className": "Sound",
+                "replaceExisting": True,
+                "properties": {
+                    "SoundId": inst["uri"],
+                    "Volume": float(args.get("volume", 0.6)),
+                    "PlaybackSpeed": float(args.get("playbackSpeed", 1.0)),
+                    "Looped": bool(args.get("looped", False)),
+                },
+            }],
+            "select": True,
+        }, note=f"import_audio:{stem}", wait=30.0, dm="edit", peer_id=peer_id))
+        created = res.get("created", [])
+
+    return {
+        "name": stem,
+        "fileName": fname,
+        "uri": inst["uri"],
+        "bytes": len(raw),
+        "localStudioContentInstalled": inst["installed"],
+        "studioCreated": created,
+        "audioManifestCount": manifest.get("audioCount", 0),
+    }
+
+
+def import_rbxmx_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from image_pipeline import find_kit_root
+    from rbxmx_pipeline import parse_rbxmx_to_tree
+
+    kit = find_kit_root()
+    if args.get("xmlContent"):
+        xml_str = args["xmlContent"]
+    elif args.get("repoModel"):
+        mname = args["repoModel"]
+        if not mname.endswith(".rbxmx"):
+            mname = f"{mname}.rbxmx"
+        mp = kit / "models" / mname
+        if not mp.is_file():
+            raise FileNotFoundError(f"Repo .rbxmx model not found: {mp}")
+        xml_str = mp.read_text(encoding="utf-8")
+    elif args.get("filePath"):
+        fp = Path(args["filePath"]).expanduser()
+        if not fp.is_file():
+            raise FileNotFoundError(f"File not found: {fp}")
+        xml_str = fp.read_text(encoding="utf-8")
+    else:
+        raise ValueError("Provide 'filePath', 'repoModel', or 'xmlContent'.")
+
+    tree, stats = parse_rbxmx_to_tree(xml_str, strip_scripts=bool(args.get("stripScripts", False)))
+    pos = args.get("position")
+    if isinstance(pos, list) and len(pos) == 3:
+        for root_node in tree:
+            _offset_tree_positions(root_node, float(pos[0]), float(pos[1]), float(pos[2]))
+
+    parent_path = args.get("parent") or "Workspace"
+    res = _unwrap_job(client.submit_job("build", {
+        "parent": parent_path,
+        "tree": tree,
+        "select": True,
+    }, note="import_rbxmx", wait=60.0, dm="edit", peer_id=peer_id))
+
+    return {
+        "parent": parent_path,
+        "created": res.get("created", []),
+        "itemsParsed": stats["itemsParsed"],
+        "scriptsStripped": stats["scriptsStripped"],
+    }
+
+
+def _live_inspect_to_export_node(node: dict, client: BridgeClient, peer_id: str = None) -> dict:
+    cls = node.get("className") or "Folder"
+    out = {
+        "name": node.get("name") or cls,
+        "className": cls,
+        "properties": node.get("properties") or {},
+        "tags": node.get("tags") or [],
+        "children": [],
+    }
+    if cls in ("Script", "LocalScript", "ModuleScript") and node.get("path"):
+        try:
+            sr = _unwrap_job(client.submit_job("read_scripts", {"paths": [node["path"]]}, wait=20.0, dm="edit", peer_id=peer_id))
+            arr = sr.get("scripts") or []
+            if arr and arr[0].get("source") is not None:
+                out["source"] = arr[0]["source"]
+        except Exception:
+            pass
+    for ch in node.get("children") or []:
+        out["children"].append(_live_inspect_to_export_node(ch, client, peer_id))
+    return out
+
+
+def export_rbxmx_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from image_pipeline import find_kit_root
+    from rbxmx_pipeline import serialize_tree_to_rbxmx
+
+    kit = find_kit_root()
+    if args.get("prefab"):
+        stem = args["prefab"][:-5] if args["prefab"].endswith(".json") else args["prefab"]
+        pf = kit / "prefabs" / f"{stem}.json"
+        if not pf.is_file():
+            raise FileNotFoundError(f"Prefab not found: {pf}")
+        spec = json.loads(pf.read_text(encoding="utf-8"))
+        nodes = spec.get("tree") or []
+        default_name = stem
+    elif args.get("path"):
+        insp = _unwrap_job(client.submit_job("inspect", {
+            "path": args["path"],
+            "depth": int(args.get("depth", 8)),
+            "includeProperties": True,
+        }, wait=45.0, dm="edit", peer_id=peer_id))
+        nodes = [_live_inspect_to_export_node(insp, client, peer_id)]
+        default_name = args["path"].split(".")[-1]
+    else:
+        raise ValueError("Provide either live Studio 'path' or repo 'prefab'.")
+
+    xml_str = serialize_tree_to_rbxmx(nodes)
+    out_file = Path(args["outputFile"]).expanduser() if args.get("outputFile") else (kit / "models" / f"{default_name}.rbxmx")
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_text(xml_str, encoding="utf-8")
+    return {
+        "outputFile": str(out_file),
+        "bytes": len(xml_str.encode("utf-8")),
+        "rootItems": len(nodes),
+    }
+
+
+def audit_ui_layout_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from image_pipeline import find_kit_root
+    from ui_linter import run_multi_viewport_audit
+
+    kit = find_kit_root()
+    if args.get("prefab"):
+        stem = args["prefab"][:-5] if args["prefab"].endswith(".json") else args["prefab"]
+        pf = kit / "prefabs" / f"{stem}.json"
+        if not pf.is_file():
+            raise FileNotFoundError(f"Prefab not found: {pf}")
+        spec = json.loads(pf.read_text(encoding="utf-8"))
+        tree = spec.get("tree") or []
+        source_label = f"prefab:{stem}"
+    else:
+        target_path = args.get("path") or "StarterGui"
+        insp = _unwrap_job(client.submit_job("inspect", {
+            "path": target_path,
+            "depth": 10,
+            "includeProperties": True,
+        }, wait=45.0, dm="edit", peer_id=peer_id))
+        if insp.get("className") == "StarterGui":
+            tree = insp.get("children") or []
+        else:
+            tree = [insp]
+        source_label = f"studio:{target_path}"
+
+    audit = run_multi_viewport_audit(tree, viewports=args.get("viewports"))
+    audit["source"] = source_label
+    return audit
 
 
 def import_image_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:

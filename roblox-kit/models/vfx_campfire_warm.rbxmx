@@ -1,0 +1,66 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="Model" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">WarmCampfire</string>
+		</Properties>
+		<Item class="Part" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">StoneRing</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame"><X>0</X><Y>0.4</Y><Z>0</Z><R00>0</R00><R01>0</R01><R02>1</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>-1</R20><R21>0</R21><R22>0</R22></CoordinateFrame>
+				<Color3 name="Color"><R>0.32</R><G>0.31</G><B>0.33</B></Color3>
+				<Vector3 name="Size"><X>0.8</X><Y>5</Y><Z>5</Z></Vector3>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBXARENA00003">
+			<Properties>
+				<string name="Name">EmberCore</string>
+				<bool name="Anchored">true</bool>
+				<bool name="CanCollide">false</bool>
+				<Color3 name="Color"><R>1.0</R><G>0.44</G><B>0.08</B></Color3>
+				<Vector3 name="Position"><X>0</X><Y>0.9</Y><Z>0</Z></Vector3>
+				<Vector3 name="Size"><X>1.8</X><Y>1.2</Y><Z>1.8</Z></Vector3>
+			</Properties>
+			<Item class="PointLight" referent="RBXARENA00004">
+				<Properties>
+					<string name="Name">FireLight</string>
+					<float name="Brightness">2.6</float>
+					<Color3 name="Color"><R>1.0</R><G>0.62</G><B>0.24</B></Color3>
+					<int name="Range">22</int>
+					<bool name="Shadows">true</bool>
+				</Properties>
+			</Item>
+			<Item class="ParticleEmitter" referent="RBXARENA00005">
+				<Properties>
+					<string name="Name">Flames</string>
+					<NumberRange name="Lifetime">0.5 0.95 </NumberRange>
+					<float name="LightEmission">1.0</float>
+					<int name="Rate">26</int>
+					<NumberRange name="Speed">3.5 6.0 </NumberRange>
+					<Content name="Texture"><url>rbxasset://arena_assets/kenney_vfx/fire_01.png</url></Content>
+				</Properties>
+			</Item>
+			<Item class="ParticleEmitter" referent="RBXARENA00006">
+				<Properties>
+					<string name="Name">Embers</string>
+					<NumberRange name="Lifetime">1.2 2.2 </NumberRange>
+					<float name="LightEmission">1.0</float>
+					<int name="Rate">10</int>
+					<NumberRange name="Speed">5.0 9.0 </NumberRange>
+					<Content name="Texture"><url>rbxasset://arena_assets/kenney_vfx/spark_05.png</url></Content>
+				</Properties>
+			</Item>
+			<Item class="ParticleEmitter" referent="RBXARENA00007">
+				<Properties>
+					<string name="Name">Smoke</string>
+					<NumberRange name="Lifetime">2.2 3.6 </NumberRange>
+					<float name="LightEmission">0.1</float>
+					<int name="Rate">7</int>
+					<NumberRange name="Speed">2.5 4.2 </NumberRange>
+					<Content name="Texture"><url>rbxasset://arena_assets/kenney_vfx/smoke_04.png</url></Content>
+				</Properties>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

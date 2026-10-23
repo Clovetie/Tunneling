@@ -1,0 +1,84 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="Model" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">MysticPortalGate</string>
+			<BinaryString name="Tags">UG9ydGFs</BinaryString>
+		</Properties>
+		<Item class="Part" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">PillarLeft</string>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>0.16</R><G>0.16</G><B>0.2</B></Color3>
+				<Vector3 name="Position"><X>-5</X><Y>6</Y><Z>0</Z></Vector3>
+				<Vector3 name="Size"><X>2</X><Y>12</Y><Z>2</Z></Vector3>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBXARENA00003">
+			<Properties>
+				<string name="Name">PillarRight</string>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>0.16</R><G>0.16</G><B>0.2</B></Color3>
+				<Vector3 name="Position"><X>5</X><Y>6</Y><Z>0</Z></Vector3>
+				<Vector3 name="Size"><X>2</X><Y>12</Y><Z>2</Z></Vector3>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBXARENA00004">
+			<Properties>
+				<string name="Name">LintelTop</string>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>0.18</R><G>0.18</G><B>0.24</B></Color3>
+				<Vector3 name="Position"><X>0</X><Y>13</Y><Z>0</Z></Vector3>
+				<Vector3 name="Size"><X>13</X><Y>2</Y><Z>2.4</Z></Vector3>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBXARENA00005">
+			<Properties>
+				<string name="Name">PortalVortex</string>
+				<bool name="Anchored">true</bool>
+				<bool name="CanCollide">false</bool>
+				<Color3 name="Color"><R>0.38</R><G>0.62</G><B>1.0</B></Color3>
+				<Vector3 name="Position"><X>0</X><Y>6.2</Y><Z>0</Z></Vector3>
+				<Vector3 name="Size"><X>8</X><Y>11.5</Y><Z>0.35</Z></Vector3>
+				<float name="Transparency">0.25</float>
+			</Properties>
+			<Item class="PointLight" referent="RBXARENA00006">
+				<Properties>
+					<string name="Name">PortalGlow</string>
+					<float name="Brightness">3.0</float>
+					<Color3 name="Color"><R>0.42</R><G>0.66</G><B>1.0</B></Color3>
+					<int name="Range">20</int>
+				</Properties>
+			</Item>
+			<Item class="ParticleEmitter" referent="RBXARENA00007">
+				<Properties>
+					<string name="Name">SwirlVortex</string>
+					<NumberRange name="Lifetime">1.5 2.2 </NumberRange>
+					<float name="LightEmission">1.0</float>
+					<int name="Rate">8</int>
+					<NumberRange name="RotSpeed">90 140 </NumberRange>
+					<NumberRange name="Speed">0 0.3 </NumberRange>
+					<Content name="Texture"><url>rbxasset://arena_assets/kenney_vfx/twirl_01.png</url></Content>
+				</Properties>
+			</Item>
+			<Item class="ParticleEmitter" referent="RBXARENA00008">
+				<Properties>
+					<string name="Name">MagicRunes</string>
+					<NumberRange name="Lifetime">1.0 1.8 </NumberRange>
+					<float name="LightEmission">1.0</float>
+					<int name="Rate">6</int>
+					<NumberRange name="Speed">1.5 3.0 </NumberRange>
+					<Content name="Texture"><url>rbxasset://arena_assets/kenney_vfx/magic_05.png</url></Content>
+				</Properties>
+			</Item>
+			<Item class="ProximityPrompt" referent="RBXARENA00009">
+				<Properties>
+					<string name="Name">EnterPrompt</string>
+					<string name="ActionText">Enter Portal</string>
+					<int name="MaxActivationDistance">12</int>
+					<string name="ObjectText">Ancient Gate</string>
+				</Properties>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

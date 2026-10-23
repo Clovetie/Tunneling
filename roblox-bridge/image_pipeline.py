@@ -919,6 +919,25 @@ def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
                 "cloudUri": prev.get("cloudUri") or (entry.get("cloudUri") if entry and entry.get("key") == key else None),
             }
 
+    # Also auto-index any WAV/OGG/MP3 audio files sitting in `roblox-kit/assets/audio/**`
+    audio_dir = kit / "assets" / "audio"
+    lock_data.setdefault("audio", {})
+    if audio_dir.is_dir():
+        for aud_file in sorted(audio_dir.rglob("*")):
+            if aud_file.is_file() and aud_file.suffix.lower() in (".wav", ".ogg", ".mp3"):
+                rel_a = aud_file.relative_to(audio_dir).as_posix()
+                akey = _slugify_key(aud_file.name)
+                raw_a = aud_file.read_bytes()
+                prev_a = lock_data["audio"].get(akey, {})
+                lock_data["audio"][akey] = {
+                    "key": akey,
+                    "relPath": rel_a,
+                    "sha256": hashlib.sha256(raw_a).hexdigest()[:16],
+                    "bytes": len(raw_a),
+                    "localUri": f"rbxasset://arena_assets/audio/{rel_a}",
+                    "cloudUri": prev_a.get("cloudUri"),
+                }
+
     lock_path.write_text(json.dumps(lock_data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     # Emit clean zero-warning Luau `Assets.lua` module
@@ -935,6 +954,13 @@ def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
         lines.append(f'\t{key} = "{preferred}",')
     lines.append("}")
     lines.append("")
+    lines.append("Assets.Audio = {")
+    for akey in sorted(lock_data["audio"].keys()):
+        aitem = lock_data["audio"][akey]
+        preferred_a = aitem.get("cloudUri") or aitem.get("localUri")
+        lines.append(f'\t{akey} = "{preferred_a}",')
+    lines.append("}")
+    lines.append("")
     lines.append("Assets.Meta = {")
     for key in sorted(lock_data["images"].keys()):
         item = lock_data["images"][key]
@@ -945,7 +971,7 @@ def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
     lines.append("}")
     lines.append("")
     lines.append("function Assets.get(name)")
-    lines.append("\treturn Assets.Images[name]")
+    lines.append("\treturn Assets.Images[name] or Assets.Audio[name]")
     lines.append("end")
     lines.append("")
     lines.append("return Assets")
@@ -957,7 +983,9 @@ def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
         "lockFile": str(lock_path),
         "moduleFile": str(assets_lua_path),
         "count": len(lock_data["images"]),
+        "audioCount": len(lock_data["audio"]),
         "images": lock_data["images"],
+        "audio": lock_data["audio"],
     }
 
 

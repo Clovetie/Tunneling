@@ -378,10 +378,31 @@ def main() -> int:
     p = sub.add_parser("template", help="install a full UI screen or multi-script gameplay system template into Studio")
     p.add_argument("name", help="full_stud_ui_suite | stud_shop_window | stud_hud_shell | stud_daily_rewards | stud_rebirth_window | stud_rarity_index")
 
-    p = sub.add_parser("icons", help="search 1,022 verified cloud rbxassetid:// UI icons from CheckUIIcons")
+    p = sub.add_parser("icons", help="search 1,587 verified cloud rbxassetid:// UI icons (Stud + Lucide)")
     p.add_argument("query", nargs="?", default="")
+    p.add_argument("--pack", default="all", choices=["all", "stud", "lucide"])
     p.add_argument("--category", default=None)
     p.add_argument("--limit", type=int, default=40)
+
+    p = sub.add_parser("system", help="install a drop-in server+shared+client system from roblox-kit/systems")
+    p.add_argument("name", help="e.g. liveops/codes | liveops/playtime-gifts | monetization/offline-earnings | core/data | all")
+
+    p = sub.add_parser("import-audio", help="import a WAV/OGG/MP3 or built-in CC0 sound into Studio")
+    p.add_argument("source", help="local audio file path or repo audio filename (e.g. click_001.wav)")
+    p.add_argument("--target", default="SoundService")
+
+    p = sub.add_parser("import-rbxmx", help="import a .rbxmx XML model/UI file into Studio")
+    p.add_argument("source", help="path to .rbxmx file or repo model name")
+    p.add_argument("--parent", default="Workspace")
+    p.add_argument("--strip-scripts", action="store_true")
+
+    p = sub.add_parser("export-rbxmx", help="export a live Studio path to a .rbxmx XML file")
+    p.add_argument("path")
+    p.add_argument("--out", default=None)
+
+    p = sub.add_parser("audit-ui", help="run multi-viewport responsive UI layout & overlap linter")
+    p.add_argument("--path", default="StarterGui")
+    p.add_argument("--prefab", default=None)
 
     args = ap.parse_args()
     client = BridgeClient(base_url=BASE, token=TOKEN)
@@ -794,8 +815,45 @@ def main() -> int:
     if args.cmd == "icons":
         return show_tool_output("search_cloud_icons", client, "search_cloud_icons", {
             "query": args.query,
+            "pack": args.pack,
             "category": args.category,
             "limit": args.limit,
+        }, True, args.raw_json)
+
+    if args.cmd == "system":
+        return show_tool_output("install_dropin_system", client, "install_dropin_system", {
+            "system": args.name,
+            "peerId": args.peer,
+        }, args.full, args.raw_json)
+
+    if args.cmd == "import-audio":
+        targs = {"targetPath": args.target, "peerId": args.peer}
+        if Path(args.source).is_file():
+            targs["filePath"] = str(Path(args.source).resolve())
+        else:
+            targs["repoAudio"] = args.source
+        return show_tool_output("import_audio", client, "import_audio", targs, args.full, args.raw_json)
+
+    if args.cmd == "import-rbxmx":
+        targs = {"parent": args.parent, "stripScripts": args.strip_scripts, "peerId": args.peer}
+        if Path(args.source).is_file():
+            targs["filePath"] = str(Path(args.source).resolve())
+        else:
+            targs["repoModel"] = args.source
+        return show_tool_output("import_rbxmx", client, "import_rbxmx", targs, args.full, args.raw_json)
+
+    if args.cmd == "export-rbxmx":
+        return show_tool_output("export_rbxmx", client, "export_rbxmx", {
+            "path": args.path,
+            "outputFile": args.out,
+            "peerId": args.peer,
+        }, args.full, args.raw_json)
+
+    if args.cmd == "audit-ui":
+        return show_tool_output("audit_ui_layout", client, "audit_ui_layout", {
+            "path": args.path,
+            "prefab": args.prefab,
+            "peerId": args.peer,
         }, True, args.raw_json)
 
     return 0

@@ -32,7 +32,7 @@ import uuid
 
 from mcp_core import BridgeClient, MCPDispatcher, TOOL_SPECS
 
-VERSION = "3.2.0"
+VERSION = "3.3.0"
 PEER_ONLINE_WINDOW = 25.0  # seconds since last poll before a peer is considered stale
 HERE = Path(__file__).resolve().parent
 
@@ -640,6 +640,16 @@ def make_http_handler(state: BridgeState):
                 mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".bmp": "image/bmp"}
                 return self._send(200, target_img.read_bytes(), mime_map.get(target_img.suffix.lower(), "application/octet-stream"))
 
+            if path.startswith("/api/kit/audio/"):
+                from image_pipeline import find_kit_root
+                rel_aud = path[len("/api/kit/audio/") :].lstrip("/")
+                audio_root = (find_kit_root() / "assets" / "audio").resolve()
+                target_aud = (audio_root / rel_aud).resolve()
+                if not str(target_aud).startswith(str(audio_root)) or not target_aud.is_file():
+                    return self._send(404, {"error": "audio not found"})
+                amime = {".wav": "audio/wav", ".ogg": "audio/ogg", ".mp3": "audio/mpeg"}
+                return self._send(200, target_aud.read_bytes(), amime.get(target_aud.suffix.lower(), "application/octet-stream"))
+
             # Loopback-only bootstrap so localhost:8077 auto-fills token, paths & tools safely
             if path == "/api/local-boot":
                 is_local = self._is_loopback()
@@ -829,7 +839,7 @@ def make_http_handler(state: BridgeState):
 def dashboard_html() -> str:
     return r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<title>Roblox Studio MCP &amp; Open-Source UI Kit Control Center (v3.2)</title>
+<title>Roblox Studio MCP &amp; Open-Source UI/Audio/LiveOps Kit (v3.3)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
  :root{color-scheme:dark;--bg:#0b0f16;--panel:#131922;--panel2:#0e131b;--border:#232c3a;
@@ -1000,28 +1010,78 @@ def dashboard_html() -> str:
         <div class="prompt-head">
           <div>
             <h3>1-Click Full Stud UI &amp; Gameplay System Templates</h3>
-            <div class="sub">Installs <code>StudUI</code> + <code>StudMotion</code> + <code>CheckUIIcons</code>, builds real editable <code>ScreenGui</code>s straight into <code>StarterGui</code>, and wires controllers &amp; server economy.</div>
+            <div class="sub">Installs <code>StudUI</code> / <code>ModernUI</code> + icons, builds live editable <code>ScreenGui</code>s in <code>StarterGui</code>, and wires controllers &amp; server economy.</div>
           </div>
-          <button class="primary sm" onclick="installAllModules()">Install All 12 Luau Modules</button>
+          <button class="primary sm" onclick="installAllModules()">Install All 15 Luau Modules</button>
         </div>
         <div id="template-list" style="display:flex;flex-direction:column;gap:7px"></div>
-        <pre id="kit-action-out">Click any template, prefab, or module button to install straight into Studio.</pre>
+        <pre id="kit-action-out">Click any template, system, prefab, audio clip, or module button to install straight into Studio.</pre>
       </div>
     </div>
 
     <div class="card" style="margin-bottom:16px">
       <div class="prompt-head" style="flex-wrap:wrap;gap:10px">
         <div>
-          <h2>1,022 Cloud <code>rbxassetid://</code> UI Icon Search (<code>CheckUIIcons</code> — Zero Upload Needed)</h2>
-          <div class="sub">Search 1,022 pre-uploaded live Roblox icons (<code>coin</code>, <code>gem</code>, <code>cat</code>, <code>potion</code>, <code>sword</code>, <code>crown</code>, <code>cart</code>, <code>rebirth</code>, <code>box</code>). Works immediately in Studio AND published multiplayer games!</div>
+          <h2>Multi-Device Live UI Preview &amp; Layout Linter (Desktop / Tablet / Mobile)</h2>
+          <div class="sub">Inspect exact pixel bounds, real PNG sprites, overflow warnings, <code>UIScale</code> responsiveness, and touch targets across <strong>1920&times;1080</strong>, <strong>1024&times;768</strong>, and <strong>844&times;390</strong>.</div>
         </div>
-        <div style="display:flex;gap:8px;min-width:340px">
-          <input id="cloud-icon-q" placeholder="Search 1,022 rbxassetid:// icons (e.g. coin, cat, cart, crown, box)..." oninput="searchCloudIconsUI()">
-          <button class="primary sm" onclick="searchCloudIconsUI()">Search</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <select id="ui-audit-src" onchange="runUiPreviewAndAudit()" style="width:240px">
+            <option value="prefab:ui_kenney_shop_window">Prefab: ui_kenney_shop_window</option>
+            <option value="prefab:ui_fantasy_quest_dialog">Prefab: ui_fantasy_quest_dialog</option>
+            <option value="prefab:ui_scifi_hud_visor">Prefab: ui_scifi_hud_visor</option>
+            <option value="prefab:ui_input_prompt_bar">Prefab: ui_input_prompt_bar</option>
+            <option value="prefab:hud_modern_shell">Prefab: hud_modern_shell</option>
+            <option value="studio:StarterGui">Live Studio: StarterGui</option>
+          </select>
+          <button class="sm primary" id="vp-btn-desktop" onclick="switchPreviewViewport('desktop')">Desktop 1920&times;1080</button>
+          <button class="sm" id="vp-btn-tablet" onclick="switchPreviewViewport('tablet')">Tablet 1024&times;768</button>
+          <button class="sm" id="vp-btn-mobile" onclick="switchPreviewViewport('mobile')">Mobile 844&times;390</button>
+          <button class="sm" onclick="runUiPreviewAndAudit()">Re-Audit</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:14px;margin-top:12px;align-items:start">
+        <div style="background:#070a10;border:1px solid var(--border);border-radius:10px;padding:12px;overflow:hidden">
+          <div id="ui-stage-meta" class="sub" style="margin-bottom:8px">Hover any rendered widget to inspect its path &amp; pixel bounds.</div>
+          <div id="ui-preview-stage" style="position:relative;margin:0 auto;background:radial-gradient(circle at 50% 35%, #1a2436, #0b0f17);border:1px dashed #334155;overflow:hidden;border-radius:6px"></div>
+        </div>
+        <div>
+          <h3 id="ui-issues-title">Layout Lint Report</h3>
+          <div id="ui-issues-list" style="display:flex;flex-direction:column;gap:6px;max-height:330px;overflow:auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="prompt-head" style="flex-wrap:wrap;gap:10px">
+        <div>
+          <h2>1,587 Cloud <code>rbxassetid://</code> Icons (1,022 Glossy 3D Stud + 565 Flat Vector Lucide)</h2>
+          <div class="sub">Zero-upload cloud icons for both chunky simulator/cartoon UIs (<code>Stud</code>) and sleek minimalist/tactical dark UIs (<code>Lucide</code>).</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;min-width:360px">
+          <button class="sm primary" id="pk-all" onclick="setIconPack('all')">All (1,587)</button>
+          <button class="sm" id="pk-stud" onclick="setIconPack('stud')">3D Stud (1,022)</button>
+          <button class="sm" id="pk-lucide" onclick="setIconPack('lucide')">Lucide Vector (565)</button>
+          <input id="cloud-icon-q" placeholder="Search icons (shield, sword, settings, coin, cat)..." oninput="searchCloudIconsUI()" style="width:230px">
         </div>
       </div>
       <div id="cloud-icon-cats" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
       <div id="cloud-icon-results" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin-top:8px"></div>
+    </div>
+
+    <div class="two-col" style="margin-bottom:16px">
+      <div class="card">
+        <h2>45 Curated CC0 Sound Effects Soundboard (<code>.wav</code> Preview + Send to Studio)</h2>
+        <div class="sub" style="margin-bottom:8px">Genuine public-domain Kenney UI &amp; Interface SFX. Click <strong>&#9654;</strong> to audition in browser or <strong>Send</strong> to install in <code>SoundService</code>.</div>
+        <audio id="sfx-player" style="display:none"></audio>
+        <div id="audio-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:6px;max-height:320px;overflow:auto"></div>
+      </div>
+
+      <div class="card">
+        <h2>14 Drop-In Server/Client Game Systems (<code>roblox-kit/systems/</code>)</h2>
+        <div class="sub" style="margin-bottom:8px">Production LiveOps, Monetization (<code>PolicyService</code> compliant), <code>ProfileStore</code> Data, &amp; Cartoon UI systems.</div>
+        <div id="dropin-system-list" style="display:flex;flex-direction:column;gap:6px;max-height:320px;overflow:auto"></div>
+      </div>
     </div>
 
     <div class="card" style="margin-bottom:16px">
@@ -1040,7 +1100,16 @@ def dashboard_html() -> str:
     </div>
 
     <div class="card">
-      <h2>14 Ready-to-Spawn 3D, UI &amp; Lighting Prefabs (<code>roblox-kit/prefabs/</code>)</h2>
+      <div class="prompt-head">
+        <div>
+          <h2>14 Prefabs &amp; Drag-and-Drop <code>.rbxmx</code> Models (<code>roblox-kit/prefabs/</code> &amp; <code>models/</code>)</h2>
+          <div class="sub">Spawn directly into Studio OR export any live Studio path to a standalone <code>.rbxmx</code> model file.</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input id="export-rbxmx-path" value="StarterGui" placeholder="Studio path to export" style="width:170px">
+          <button class="sm primary" onclick="exportLiveRbxmx()">Export .rbxmx</button>
+        </div>
+      </div>
       <div id="prefab-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:8px;margin-top:10px"></div>
     </div>
   </section>
@@ -1083,7 +1152,7 @@ def dashboard_html() -> str:
 
       <div class="prompt-card">
         <div class="prompt-head">
-          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 45 tools enabled (read + write + UI kit + images + playtest + sync)</div></div>
+          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 50 tools enabled (UI linter + .rbxmx + audio + LiveOps + images + playtest + sync)</div></div>
           <button class="primary sm" onclick="copyById('cfg-json')">Copy</button>
         </div>
         <pre id="cfg-json"></pre>
@@ -1129,7 +1198,7 @@ def dashboard_html() -> str:
       </div>
 
       <div class="prompt-card">
-        <h3>Invoke Any of the 45 MCP Tools Directly</h3>
+        <h3>Invoke Any of the 50 MCP Tools Directly</h3>
         <div class="sub" id="tool-desc">Select any MCP tool to inspect its fields and call it over <code>POST /mcp</code>.</div>
         <div style="display:flex;gap:8px;align-items:center">
           <select id="tool-select" onchange="onSelectTool()"></select>
@@ -1349,9 +1418,13 @@ codex mcp add roblox-studio -- python "${mcpPath}" --auto-install-plugin`;
     [".\\ab.ps1 sync ./src ServerScriptService.App", "Validate + snapshot + atomic single-undo sync to Studio"],
     [".\\ab.ps1 import-image ./icon.png --target StarterGui --apply-mode screen_gui", "Import PNG/JPG into repo + Studio directly"],
     [".\\ab.ps1 gen-image icon_coin --size 128 --target StarterGui --apply-mode screen_gui", "Generate crisp procedural icon/texture PNG"],
-    [".\\ab.ps1 icons \"golden cat\"", "Search 1,022 verified live rbxassetid:// UI icons"],
+    [".\\ab.ps1 icons \"shield\" --pack lucide", "Search 1,587 cloud icons across Stud (1,022) & Lucide (565)"],
+    [".\\ab.ps1 system liveops/codes", "Install any of 14 drop-in LiveOps / Monetization / Data systems"],
+    [".\\ab.ps1 import-audio click_001.wav --target SoundService", "Import any of 45 CC0 WAVs or custom audio straight into Studio"],
+    [".\\ab.ps1 audit-ui --path StarterGui", "Lint responsive UI bounds across Desktop, Tablet & Mobile"],
+    [".\\ab.ps1 export-rbxmx StarterGui --out ./ui.rbxmx", "Export live Studio hierarchy to .rbxmx XML model file"],
     [".\\ab.ps1 template full_stud_ui_suite", "Install full HUD + Shop + Daily + Rebirth + Index + Economy"],
-    [".\\ab.ps1 install-module all --parent ReplicatedStorage.Shared", "Install all 12 reusable Luau modules (StudUI, Maid, Signal, etc.)"],
+    [".\\ab.ps1 install-module all --parent ReplicatedStorage.Shared", "Install all 15 reusable Luau modules (StudUI, ModernUI, SoundFX, etc.)"],
     [".\\ab.ps1 prefab ui_kenney_shop_window", "Spawn Kenney 9-slice UI / VFX / Lighting prefab into Studio"],
     [".\\ab.ps1 scenario --mode play --server-code \"return {ok=true}\"", "Run automated Play Solo test & stop cleanly"]
   ];
@@ -1397,7 +1470,7 @@ Start by running a quick recon (\`.\\ab.ps1 state\` and \`.\\ab.ps1 survey\`) so
 `Connect directly to my live Roblox Studio Bridge & MCP Server:
 - Base URL: ${pubUrl}
 - Auth Header: \`Authorization: Bearer ${tok}\` (or \`X-Arena-Token: ${tok}\`)
-- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (45 tools, 7 skills, 6 full UI templates, 14 prefabs, 249 PNGs, 1,022 cloud icons)
+- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (50 tools, 14 skills, 14 LiveOps/Monetization systems, 6 UI templates, 14 .rbxmx models, 249 PNGs, 45 CC0 WAVs, 1,587 cloud icons)
 - Agent Onboarding & Live State Endpoint: \`GET ${pubUrl}/api/agent-guide\`
 - Built-in Repo Kit: call \`browse_kit\` to inspect all 7 Roblox Studio Skills (\`.claude/skills/*\`), 12 Luau modules (\`install_kit_module\`), 6 complete \`StudUI\` screen & economy templates (\`install_template\`), 14 3D/UI/Lighting prefabs (\`spawn_prefab\`), 1,022 cloud \`rbxassetid://\` icons (\`search_cloud_icons\`), and 249 curated Kenney CC0 + procedural PNG assets (\`import_image\`).
 
@@ -1621,26 +1694,145 @@ function renderFilteredAssets(){
     </div>`).join('') + (filtered.length > 96 ? `<div class="sub" style="grid-column:1/-1">Showing 96 of ${filtered.length} matching PNGs — pick a pack pill or type a filter above to narrow further.</div>` : '');
 }
 
+let ACTIVE_ICON_PACK = 'all';
+let ACTIVE_PREVIEW_VP = 'desktop';
+let LAST_UI_AUDIT = null;
+
+function playBrowserAudio(fname){
+  const player = document.getElementById('sfx-player');
+  player.src = '/api/kit/audio/' + encodeURIComponent(fname);
+  player.currentTime = 0;
+  player.play().catch(_ => {});
+}
+
+async function sendAudioToStudio(fname){
+  const out = document.getElementById('kit-action-out');
+  out.textContent = 'Installing CC0 audio ' + fname + ' -> SoundService...';
+  try {
+    const res = await callMcp('import_audio', { repoAudio: fname, targetPath: 'SoundService' });
+    out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    toast('Installed Sound ' + fname + ' in SoundService');
+    tick();
+  } catch (e) { out.textContent = String(e); }
+}
+
+async function installDropinSystemUI(sysName){
+  const out = document.getElementById('kit-action-out');
+  out.textContent = 'Installing drop-in system ' + sysName + ' -> ReplicatedStorage.Shared + ServerScriptService + StarterPlayerScripts...';
+  try {
+    const res = await callMcp('install_dropin_system', { system: sysName });
+    out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    toast('Installed system ' + sysName);
+    tick();
+  } catch (e) { out.textContent = String(e); }
+}
+
+async function exportLiveRbxmx(){
+  const p = (document.getElementById('export-rbxmx-path').value || 'StarterGui').trim();
+  const out = document.getElementById('kit-action-out');
+  out.textContent = 'Exporting ' + p + ' -> .rbxmx XML model file...';
+  try {
+    const res = await callMcp('export_rbxmx', { path: p });
+    out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    toast('Exported ' + p + ' to .rbxmx');
+  } catch (e) { out.textContent = String(e); }
+}
+
+function switchPreviewViewport(vp){
+  ACTIVE_PREVIEW_VP = vp;
+  ['desktop', 'tablet', 'mobile'].forEach(k => {
+    const b = document.getElementById('vp-btn-' + k);
+    if(b) b.classList.toggle('primary', k === vp);
+  });
+  renderUiPreviewStage();
+}
+
+async function runUiPreviewAndAudit(){
+  const raw = document.getElementById('ui-audit-src').value || 'prefab:ui_kenney_shop_window';
+  const args = raw.startsWith('prefab:')
+    ? { prefab: raw.slice('prefab:'.length) }
+    : { path: raw.slice('studio:'.length) };
+  try {
+    const res = await callMcp('audit_ui_layout', args);
+    LAST_UI_AUDIT = res.structuredContent || null;
+    renderUiPreviewStage();
+  } catch (e) {
+    document.getElementById('ui-issues-list').innerHTML = `<div class="sub">${esc(String(e))}</div>`;
+  }
+}
+
+function renderUiPreviewStage(){
+  if(!LAST_UI_AUDIT || !LAST_UI_AUDIT.viewports) return;
+  const rep = LAST_UI_AUDIT.viewports[ACTIVE_PREVIEW_VP] || LAST_UI_AUDIT.viewports.desktop;
+  if(!rep) return;
+  const maxStageW = 540;
+  const scale = Math.min(1, maxStageW / rep.width);
+  const stage = document.getElementById('ui-preview-stage');
+  stage.style.width = Math.round(rep.width * scale) + 'px';
+  stage.style.height = Math.round(rep.height * scale) + 'px';
+
+  stage.innerHTML = (rep.elements || []).map(el => {
+    const [x, y, w, h] = el.rect;
+    let imgHtml = '';
+    if(el.image && el.image.startsWith('rbxasset://arena_assets/')){
+      const rel = el.image.slice('rbxasset://arena_assets/'.length);
+      imgHtml = `<img src="/api/kit/image/${esc(rel)}" style="width:100%;height:100%;object-fit:fill;display:block;pointer-events:none">`;
+    }
+    const txtHtml = el.text != null && el.text !== ''
+      ? `<span style="position:relative;z-index:2;color:${esc(el.textColor||'#fff')};font-size:${Math.max(8, Math.round((el.textSize||14)*scale))}px;font-weight:700;padding:0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(el.text)}</span>`
+      : '';
+    return `<div onmouseenter="document.getElementById('ui-stage-meta').textContent='${esc(el.path)} (' + '${esc(el.className)}' + ') — [${x}, ${y}, ${w}x${h}px]'"
+      style="position:absolute;left:${(x*scale).toFixed(1)}px;top:${(y*scale).toFixed(1)}px;width:${Math.max(2, w*scale).toFixed(1)}px;height:${Math.max(2, h*scale).toFixed(1)}px;background:${esc(el.bg||'transparent')};border:${esc(el.border||'1px solid rgba(88,166,255,0.22)')};border-radius:${Math.round((el.radius||0)*scale)}px;display:flex;align-items:center;justify-content:center;overflow:hidden;box-sizing:border-box">
+      ${imgHtml ? `<div style="position:absolute;inset:0">${imgHtml}</div>` : ''}${txtHtml}
+    </div>`;
+  }).join('');
+
+  const allIssues = Object.values(LAST_UI_AUDIT.viewports).flatMap(v => v.issues || []);
+  document.getElementById('ui-issues-title').textContent =
+    `Layout Lint Report — ${allIssues.length === 0 ? '0 Issues Across All 3 Devices!' : allIssues.length + ' Advisory / Overflow Notes'}`;
+  document.getElementById('ui-issues-list').innerHTML = allIssues.length === 0
+    ? '<div class="pill on" style="display:inline-block">Clean responsive bounds across Desktop, Tablet &amp; Mobile</div>'
+    : allIssues.map(iss => `
+      <div class="card" style="padding:8px 10px">
+        <div style="display:flex;gap:6px;align-items:center">
+          <span class="pill ${iss.severity==='error'?'off':'ro'}" style="font-size:10px;padding:1px 7px">${esc(iss.viewport)} &bull; ${esc(iss.code)}</span>
+          <code style="font-size:11px">${esc(iss.path)}</code>
+        </div>
+        <div class="sub" style="margin-top:4px">${esc(iss.message)}</div>
+      </div>`).join('');
+}
+
+function setIconPack(pk){
+  ACTIVE_ICON_PACK = pk;
+  ['all', 'stud', 'lucide'].forEach(k => {
+    const b = document.getElementById('pk-' + k);
+    if(b) b.classList.toggle('primary', k === pk);
+  });
+  ACTIVE_CLOUD_CAT = '';
+  searchCloudIconsUI('');
+}
+
 async function searchCloudIconsUI(catOverride){
   if(catOverride !== undefined) ACTIVE_CLOUD_CAT = catOverride;
   const q = (document.getElementById('cloud-icon-q').value || '').trim();
   try {
     const res = await callMcp('search_cloud_icons', {
       query: q,
+      pack: ACTIVE_ICON_PACK,
       category: ACTIVE_CLOUD_CAT || undefined,
       limit: 32
     });
     const d = res.structuredContent || {};
     const cats = d.categories || {};
     document.getElementById('cloud-icon-cats').innerHTML =
-      `<button class="sm ${ACTIVE_CLOUD_CAT===''?'primary':''}" onclick="searchCloudIconsUI('')">All (${d.totalCatalogIcons||1022})</button>` +
+      `<button class="sm ${ACTIVE_CLOUD_CAT===''?'primary':''}" onclick="searchCloudIconsUI('')">All (${d.totalCatalogIcons||1587})</button>` +
       Object.entries(cats).map(([c, n]) =>
         `<button class="sm ${ACTIVE_CLOUD_CAT===c?'primary':''}" onclick="searchCloudIconsUI('${esc(c)}')">${esc(c)} (${n})</button>`
       ).join('');
     document.getElementById('cloud-icon-results').innerHTML = (d.icons || []).map(ic => `
       <div class="cmd-row" style="align-items:center;justify-content:space-between">
         <div style="min-width:0">
-          <strong style="font-size:12px">${esc(ic.name)}</strong>
+          <strong style="font-size:12px">${esc(ic.name)}</strong> <span class="sub">[${esc(ic.pack)}]</span>
           <div class="sub" style="font-size:11px;overflow:hidden;text-overflow:ellipsis">${esc(ic.path)} &bull; <code>${esc(ic.uri)}</code></div>
         </div>
         <div style="display:flex;gap:4px;flex-shrink:0">
@@ -1664,6 +1856,24 @@ async function loadKitGallery(){
         <button class="sm primary" onclick="installTemplateUI('${esc(t.name)}')">Install</button>
       </div>`).join('');
 
+    const systems = data.systems || [];
+    document.getElementById('dropin-system-list').innerHTML = systems.map(s => `
+      <div class="cmd-row">
+        <div><strong>${esc(s.system)}</strong> <span class="sub">(${s.scriptCount} scripts)</span><div class="sub">${esc(s.summary)}</div></div>
+        <div class="spacer"></div>
+        <button class="sm primary" onclick="installDropinSystemUI('${esc(s.system)}')">Install</button>
+      </div>`).join('');
+
+    const audios = data.audio || [];
+    document.getElementById('audio-list').innerHTML = audios.map(a => `
+      <div class="cmd-row" style="justify-content:space-between;padding:6px 8px">
+        <code style="font-size:11px">${esc(a.name)}</code>
+        <div style="display:flex;gap:4px">
+          <button class="sm" onclick="playBrowserAudio('${esc(a.fileName)}')">&#9654;</button>
+          <button class="sm primary" onclick="sendAudioToStudio('${esc(a.fileName)}')">Send</button>
+        </div>
+      </div>`).join('');
+
     const prefabs = data.prefabs || [];
     document.getElementById('prefab-list').innerHTML = prefabs.map(p => `
       <div class="cmd-row">
@@ -1681,6 +1891,7 @@ async function loadKitGallery(){
       ).join('');
     renderFilteredAssets();
     searchCloudIconsUI('');
+    runUiPreviewAndAudit();
   } catch(_){}
 }
 

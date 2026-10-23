@@ -1,0 +1,74 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="Model" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">InteractPad</string>
+			<BinaryString name="Tags">SW50ZXJhY3RQYWQ=</BinaryString>
+		</Properties>
+		<Item class="Part" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">BaseRim</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame"><X>0</X><Y>0.3</Y><Z>0</Z><R00>0</R00><R01>0</R01><R02>1</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>-1</R20><R21>0</R21><R22>0</R22></CoordinateFrame>
+				<Color3 name="Color"><R>0.16</R><G>0.2</G><B>0.26</B></Color3>
+				<Vector3 name="Size"><X>0.6</X><Y>8</Y><Z>8</Z></Vector3>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBXARENA00003">
+			<Properties>
+				<string name="Name">GlowCore</string>
+				<bool name="Anchored">true</bool>
+				<CoordinateFrame name="CFrame"><X>0</X><Y>0.36</Y><Z>0</Z><R00>0</R00><R01>0</R01><R02>1</R02><R10>0</R10><R11>1</R11><R12>0</R12><R20>-1</R20><R21>0</R21><R22>0</R22></CoordinateFrame>
+				<Color3 name="Color"><R>0.22</R><G>0.72</G><B>1.0</B></Color3>
+				<Vector3 name="Size"><X>0.7</X><Y>6.6</Y><Z>6.6</Z></Vector3>
+			</Properties>
+			<Item class="PointLight" referent="RBXARENA00004">
+				<Properties>
+					<string name="Name">PadLight</string>
+					<float name="Brightness">2.2</float>
+					<Color3 name="Color"><R>0.22</R><G>0.72</G><B>1.0</B></Color3>
+					<int name="Range">16</int>
+				</Properties>
+			</Item>
+			<Item class="ProximityPrompt" referent="RBXARENA00005">
+				<Properties>
+					<string name="Name">Prompt</string>
+					<string name="ActionText">Interact</string>
+					<int name="HoldDuration">0</int>
+					<int name="MaxActivationDistance">12</int>
+					<string name="ObjectText">Station</string>
+				</Properties>
+			</Item>
+			<Item class="BillboardGui" referent="RBXARENA00006">
+				<Properties>
+					<string name="Name">FloatingBadge</string>
+					<bool name="AlwaysOnTop">true</bool>
+					<UDim2 name="Size"><XS>0</XS><XO>140</XO><YS>0</YS><YO>64</YO></UDim2>
+					<Vector3 name="StudsOffset"><X>0</X><Y>5.2</Y><Z>0</Z></Vector3>
+				</Properties>
+				<Item class="ImageLabel" referent="RBXARENA00007">
+					<Properties>
+						<string name="Name">BadgeIcon</string>
+						<Vector2 name="AnchorPoint"><X>0.5</X><Y>0</Y></Vector2>
+						<int name="BackgroundTransparency">1</int>
+						<Content name="Image"><url>rbxasset://arena_assets/ui/icon_star.png</url></Content>
+						<UDim2 name="Position"><XS>0.5</XS><XO>0</XO><YS>0</YS><YO>0</YO></UDim2>
+						<UDim2 name="Size"><XS>0</XS><XO>36</XO><YS>0</YS><YO>36</YO></UDim2>
+					</Properties>
+				</Item>
+				<Item class="TextLabel" referent="RBXARENA00008">
+					<Properties>
+						<string name="Name">Title</string>
+						<int name="BackgroundTransparency">1</int>
+						<UDim2 name="Position"><XS>0</XS><XO>0</XO><YS>0</YS><YO>36</YO></UDim2>
+						<UDim2 name="Size"><XS>1</XS><XO>0</XO><YS>0</YS><YO>26</YO></UDim2>
+						<string name="Text">REWARDS</string>
+						<Color3 name="TextColor3"><R>1</R><G>1</G><B>1</B></Color3>
+						<int name="TextSize">18</int>
+						<float name="TextStrokeTransparency">0.4</float>
+					</Properties>
+				</Item>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

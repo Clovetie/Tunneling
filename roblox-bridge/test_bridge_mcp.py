@@ -197,10 +197,10 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         self.assertEqual(st_n, 202)
         self.assertIsNone(body_n)
 
-        # Tools list returns all 45 annotated tools
+        # Tools list returns all 50 annotated tools
         _, list_resp, _ = self.mcp_http({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, auth_mode="header")
         tools = list_resp["result"]["tools"]
-        self.assertEqual(len(tools), 45)
+        self.assertEqual(len(tools), 50)
         self.assertEqual(len(tools), len(TOOL_SPECS))
         for t in tools:
             self.assertIn("annotations", t)
@@ -454,26 +454,33 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             boot_data = json.loads(boot_resp.read().decode("utf-8"))
             self.assertTrue(boot_data["local"])
             self.assertEqual(boot_data["token"], self.token)
-            self.assertEqual(len(boot_data["tools"]), 45)
+            self.assertEqual(len(boot_data["tools"]), 50)
 
         with urllib.request.urlopen(f"{self.base_url}/api/agent-guide", timeout=5) as guide_resp:
             guide_data = json.loads(guide_resp.read().decode("utf-8"))
-            self.assertEqual(guide_data["toolCounts"]["total"], 45)
+            self.assertEqual(guide_data["toolCounts"]["total"], 50)
             self.assertGreaterEqual(len(guide_data["keyTips"]), 5)
 
-        # 8. Direct Image Import, Open-Source Kenney Packs, 1,022 Cloud Icons, Templates, Prefabs & Skills
+        # 8. Direct Image/Audio Import, Dual Cloud Icons (1,587), 14 Drop-In Systems, .rbxmx & Multi-Viewport UI Linter
         kit_all = self.call_tool("browse_kit", {"category": "all"})
-        self.assertGreaterEqual(len(kit_all["skills"]), 7)
-        self.assertGreaterEqual(len(kit_all["modules"]), 12)
+        self.assertGreaterEqual(len(kit_all["skills"]), 14)
+        self.assertGreaterEqual(len(kit_all["modules"]), 15)
+        self.assertGreaterEqual(len(kit_all["systems"]), 14)
+        self.assertGreaterEqual(len(kit_all["models"]), 14)
+        self.assertGreaterEqual(len(kit_all["audio"]), 45)
         self.assertGreaterEqual(len(kit_all["templates"]), 6)
         self.assertGreaterEqual(len(kit_all["prefabs"]), 14)
         self.assertGreaterEqual(len(kit_all["images"]), 240)
-        self.assertEqual(kit_all["cloudIconsCount"], 1022)
+        self.assertEqual(kit_all["cloudIconsCount"], 1587)
 
         icon_search = self.call_tool("search_cloud_icons", {"query": "shopping cart", "limit": 10})
-        self.assertEqual(icon_search["totalCatalogIcons"], 1022)
+        self.assertEqual(icon_search["totalCatalogIcons"], 1587)
         self.assertGreaterEqual(icon_search["returnedCount"], 1)
         self.assertTrue(icon_search["icons"][0]["uri"].startswith("rbxassetid://"))
+
+        lucide_search = self.call_tool("search_cloud_icons", {"query": "shield", "pack": "lucide", "limit": 10})
+        self.assertGreaterEqual(lucide_search["returnedCount"], 1)
+        self.assertEqual(lucide_search["icons"][0]["pack"], "lucide")
 
         _, skill_read, _ = self.mcp_http({
             "jsonrpc": "2.0",
@@ -486,6 +493,29 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         with urllib.request.urlopen(f"{self.base_url}/api/kit/image/kenney_ui/blue_btn_depth_gloss.png", timeout=5) as png_resp:
             png_bytes = png_resp.read()
             self.assertEqual(png_bytes[:8], b"\x89PNG\r\n\x1a\n")
+
+        with urllib.request.urlopen(f"{self.base_url}/api/kit/audio/click_001.wav", timeout=5) as wav_resp:
+            wav_bytes = wav_resp.read()
+            self.assertEqual(wav_bytes[:4], b"RIFF")
+
+        aud_res = self.call_tool("import_audio", {"repoAudio": "click_001.wav", "targetPath": "SoundService"})
+        self.assertEqual(aud_res["studioCreated"], ["SoundService.click_001"])
+
+        sys_res = self.call_tool("install_dropin_system", {"system": "liveops/codes"})
+        self.assertIn("liveops/codes", sys_res["systemsInstalled"])
+        self.assertGreaterEqual(sys_res["installedCount"], 3)
+
+        ui_audit = self.call_tool("audit_ui_layout", {"prefab": "ui_kenney_shop_window"})
+        self.assertIn("mobile", ui_audit["viewports"])
+        self.assertGreaterEqual(ui_audit["viewports"]["desktop"]["elementCount"], 5)
+
+        with tempfile.TemporaryDirectory() as rbx_tmp:
+            out_rbx = Path(rbx_tmp) / "exported_shop.rbxmx"
+            exp_res = self.call_tool("export_rbxmx", {"prefab": "ui_kenney_shop_window", "outputFile": str(out_rbx)})
+            self.assertTrue(out_rbx.is_file())
+            self.assertGreater(exp_res["bytes"], 500)
+            imp_rbx = self.call_tool("import_rbxmx", {"filePath": str(out_rbx), "parent": "StarterGui"})
+            self.assertEqual(len(imp_rbx["created"]), 1)
 
         import base64 as _b64
         from image_pipeline import encode_png_rgba, generate_procedural_rgba
@@ -598,7 +628,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             msg = json.loads(line)
             self.assertEqual(msg["id"], 201)
             self.assertFalse(msg["result"]["isError"])
-            self.assertEqual(msg["result"]["structuredContent"]["bridge"]["mcp_tools"], 45)
+            self.assertEqual(msg["result"]["structuredContent"]["bridge"]["mcp_tools"], 50)
         finally:
             proc.stdin.close()
             proc.stdout.close()

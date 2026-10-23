@@ -1,0 +1,44 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="Model" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">CollectibleOrb</string>
+			<BinaryString name="Tags">Q29sbGVjdGlibGU=</BinaryString>
+		</Properties>
+		<Item class="Part" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">Orb</string>
+				<bool name="Anchored">true</bool>
+				<bool name="CanCollide">false</bool>
+				<Color3 name="Color"><R>1.0</R><G>0.82</G><B>0.22</B></Color3>
+				<Vector3 name="Position"><X>0</X><Y>3.5</Y><Z>0</Z></Vector3>
+				<Vector3 name="Size"><X>2.2</X><Y>2.2</Y><Z>2.2</Z></Vector3>
+			</Properties>
+			<Item class="Highlight" referent="RBXARENA00003">
+				<Properties>
+					<string name="Name">RimHighlight</string>
+					<float name="FillTransparency">0.65</float>
+					<Color3 name="OutlineColor"><R>1</R><G>1</G><B>1</B></Color3>
+				</Properties>
+			</Item>
+			<Item class="PointLight" referent="RBXARENA00004">
+				<Properties>
+					<string name="Name">Glow</string>
+					<float name="Brightness">2.0</float>
+					<Color3 name="Color"><R>1.0</R><G>0.82</G><B>0.25</B></Color3>
+					<int name="Range">11</int>
+				</Properties>
+			</Item>
+			<Item class="ParticleEmitter" referent="RBXARENA00005">
+				<Properties>
+					<string name="Name">Sparkles</string>
+					<NumberRange name="Lifetime">0.7 1.3 </NumberRange>
+					<float name="LightEmission">1.0</float>
+					<int name="Rate">14</int>
+					<NumberRange name="Speed">1.2 2.8 </NumberRange>
+					<Content name="Texture"><url>rbxasset://arena_assets/vfx/particle_spark_star.png</url></Content>
+				</Properties>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

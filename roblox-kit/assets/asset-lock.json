@@ -1,4 +1,366 @@
 {
+  "audio": {
+    "bong_001": {
+      "bytes": 5868,
+      "cloudUri": null,
+      "key": "bong_001",
+      "localUri": "rbxasset://arena_assets/audio/bong_001.wav",
+      "relPath": "bong_001.wav",
+      "sha256": "7be77b2e77dee462"
+    },
+    "click1": {
+      "bytes": 4588,
+      "cloudUri": null,
+      "key": "click1",
+      "localUri": "rbxasset://arena_assets/audio/click1.wav",
+      "relPath": "click1.wav",
+      "sha256": "988704753b922220"
+    },
+    "click2": {
+      "bytes": 2540,
+      "cloudUri": null,
+      "key": "click2",
+      "localUri": "rbxasset://arena_assets/audio/click2.wav",
+      "relPath": "click2.wav",
+      "sha256": "dcd6fa32a30b1cdf"
+    },
+    "click3": {
+      "bytes": 3948,
+      "cloudUri": null,
+      "key": "click3",
+      "localUri": "rbxasset://arena_assets/audio/click3.wav",
+      "relPath": "click3.wav",
+      "sha256": "30aa7e684a82a76d"
+    },
+    "click_001": {
+      "bytes": 5100,
+      "cloudUri": null,
+      "key": "click_001",
+      "localUri": "rbxasset://arena_assets/audio/click_001.wav",
+      "relPath": "click_001.wav",
+      "sha256": "5b0baf03b6b1e7dd"
+    },
+    "click_002": {
+      "bytes": 556,
+      "cloudUri": null,
+      "key": "click_002",
+      "localUri": "rbxasset://arena_assets/audio/click_002.wav",
+      "relPath": "click_002.wav",
+      "sha256": "edc0ef2614b78796"
+    },
+    "click_003": {
+      "bytes": 876,
+      "cloudUri": null,
+      "key": "click_003",
+      "localUri": "rbxasset://arena_assets/audio/click_003.wav",
+      "relPath": "click_003.wav",
+      "sha256": "76f2b3e5b1c096fe"
+    },
+    "click_004": {
+      "bytes": 1004,
+      "cloudUri": null,
+      "key": "click_004",
+      "localUri": "rbxasset://arena_assets/audio/click_004.wav",
+      "relPath": "click_004.wav",
+      "sha256": "8c3d7c1f49511d5a"
+    },
+    "close_001": {
+      "bytes": 6572,
+      "cloudUri": null,
+      "key": "close_001",
+      "localUri": "rbxasset://arena_assets/audio/close_001.wav",
+      "relPath": "close_001.wav",
+      "sha256": "9dbbda3849dd2093"
+    },
+    "close_002": {
+      "bytes": 14444,
+      "cloudUri": null,
+      "key": "close_002",
+      "localUri": "rbxasset://arena_assets/audio/close_002.wav",
+      "relPath": "close_002.wav",
+      "sha256": "2400d8f042d401d1"
+    },
+    "confirmation_001": {
+      "bytes": 13036,
+      "cloudUri": null,
+      "key": "confirmation_001",
+      "localUri": "rbxasset://arena_assets/audio/confirmation_001.wav",
+      "relPath": "confirmation_001.wav",
+      "sha256": "8eba600c1d954805"
+    },
+    "confirmation_002": {
+      "bytes": 24812,
+      "cloudUri": null,
+      "key": "confirmation_002",
+      "localUri": "rbxasset://arena_assets/audio/confirmation_002.wav",
+      "relPath": "confirmation_002.wav",
+      "sha256": "2974e429546c1347"
+    },
+    "confirmation_003": {
+      "bytes": 14316,
+      "cloudUri": null,
+      "key": "confirmation_003",
+      "localUri": "rbxasset://arena_assets/audio/confirmation_003.wav",
+      "relPath": "confirmation_003.wav",
+      "sha256": "f729be85fa50ca2a"
+    },
+    "confirmation_004": {
+      "bytes": 22124,
+      "cloudUri": null,
+      "key": "confirmation_004",
+      "localUri": "rbxasset://arena_assets/audio/confirmation_004.wav",
+      "relPath": "confirmation_004.wav",
+      "sha256": "43be192b69c779d5"
+    },
+    "drop_001": {
+      "bytes": 5868,
+      "cloudUri": null,
+      "key": "drop_001",
+      "localUri": "rbxasset://arena_assets/audio/drop_001.wav",
+      "relPath": "drop_001.wav",
+      "sha256": "b07fcda16d6a2a30"
+    },
+    "drop_002": {
+      "bytes": 8940,
+      "cloudUri": null,
+      "key": "drop_002",
+      "localUri": "rbxasset://arena_assets/audio/drop_002.wav",
+      "relPath": "drop_002.wav",
+      "sha256": "e7adcde1e9b6049f"
+    },
+    "error_001": {
+      "bytes": 7660,
+      "cloudUri": null,
+      "key": "error_001",
+      "localUri": "rbxasset://arena_assets/audio/error_001.wav",
+      "relPath": "error_001.wav",
+      "sha256": "21c2053d4a659f99"
+    },
+    "error_002": {
+      "bytes": 7340,
+      "cloudUri": null,
+      "key": "error_002",
+      "localUri": "rbxasset://arena_assets/audio/error_002.wav",
+      "relPath": "error_002.wav",
+      "sha256": "ebd7266991d41411"
+    },
+    "error_003": {
+      "bytes": 24556,
+      "cloudUri": null,
+      "key": "error_003",
+      "localUri": "rbxasset://arena_assets/audio/error_003.wav",
+      "relPath": "error_003.wav",
+      "sha256": "1e8d7feb02fdae98"
+    },
+    "error_004": {
+      "bytes": 4652,
+      "cloudUri": null,
+      "key": "error_004",
+      "localUri": "rbxasset://arena_assets/audio/error_004.wav",
+      "relPath": "error_004.wav",
+      "sha256": "8a899afa01303adb"
+    },
+    "glass_001": {
+      "bytes": 12908,
+      "cloudUri": null,
+      "key": "glass_001",
+      "localUri": "rbxasset://arena_assets/audio/glass_001.wav",
+      "relPath": "glass_001.wav",
+      "sha256": "9b487ad487a91de0"
+    },
+    "glass_002": {
+      "bytes": 5740,
+      "cloudUri": null,
+      "key": "glass_002",
+      "localUri": "rbxasset://arena_assets/audio/glass_002.wav",
+      "relPath": "glass_002.wav",
+      "sha256": "e74d4986b4d5852b"
+    },
+    "maximize_001": {
+      "bytes": 11564,
+      "cloudUri": null,
+      "key": "maximize_001",
+      "localUri": "rbxasset://arena_assets/audio/maximize_001.wav",
+      "relPath": "maximize_001.wav",
+      "sha256": "07a2525979a1cb58"
+    },
+    "maximize_002": {
+      "bytes": 11436,
+      "cloudUri": null,
+      "key": "maximize_002",
+      "localUri": "rbxasset://arena_assets/audio/maximize_002.wav",
+      "relPath": "maximize_002.wav",
+      "sha256": "d4aec15a5c5e731a"
+    },
+    "minimize_001": {
+      "bytes": 12012,
+      "cloudUri": null,
+      "key": "minimize_001",
+      "localUri": "rbxasset://arena_assets/audio/minimize_001.wav",
+      "relPath": "minimize_001.wav",
+      "sha256": "19b4fef4df7a552a"
+    },
+    "minimize_002": {
+      "bytes": 11436,
+      "cloudUri": null,
+      "key": "minimize_002",
+      "localUri": "rbxasset://arena_assets/audio/minimize_002.wav",
+      "relPath": "minimize_002.wav",
+      "sha256": "bd7c425672138335"
+    },
+    "open_001": {
+      "bytes": 6572,
+      "cloudUri": null,
+      "key": "open_001",
+      "localUri": "rbxasset://arena_assets/audio/open_001.wav",
+      "relPath": "open_001.wav",
+      "sha256": "a9a306c68b794670"
+    },
+    "open_002": {
+      "bytes": 13996,
+      "cloudUri": null,
+      "key": "open_002",
+      "localUri": "rbxasset://arena_assets/audio/open_002.wav",
+      "relPath": "open_002.wav",
+      "sha256": "07542a1f50b48fed"
+    },
+    "pluck_001": {
+      "bytes": 4972,
+      "cloudUri": null,
+      "key": "pluck_001",
+      "localUri": "rbxasset://arena_assets/audio/pluck_001.wav",
+      "relPath": "pluck_001.wav",
+      "sha256": "a38098af0932c19c"
+    },
+    "pluck_002": {
+      "bytes": 8044,
+      "cloudUri": null,
+      "key": "pluck_002",
+      "localUri": "rbxasset://arena_assets/audio/pluck_002.wav",
+      "relPath": "pluck_002.wav",
+      "sha256": "647b8878b8ecbf7c"
+    },
+    "question_001": {
+      "bytes": 22124,
+      "cloudUri": null,
+      "key": "question_001",
+      "localUri": "rbxasset://arena_assets/audio/question_001.wav",
+      "relPath": "question_001.wav",
+      "sha256": "80623caa97659d22"
+    },
+    "rollover1": {
+      "bytes": 10476,
+      "cloudUri": null,
+      "key": "rollover1",
+      "localUri": "rbxasset://arena_assets/audio/rollover1.wav",
+      "relPath": "rollover1.wav",
+      "sha256": "68b890c78eb9a7a0"
+    },
+    "rollover2": {
+      "bytes": 2796,
+      "cloudUri": null,
+      "key": "rollover2",
+      "localUri": "rbxasset://arena_assets/audio/rollover2.wav",
+      "relPath": "rollover2.wav",
+      "sha256": "ba5262c541dbe76e"
+    },
+    "rollover3": {
+      "bytes": 3820,
+      "cloudUri": null,
+      "key": "rollover3",
+      "localUri": "rbxasset://arena_assets/audio/rollover3.wav",
+      "relPath": "rollover3.wav",
+      "sha256": "96e00efa98726689"
+    },
+    "rollover4": {
+      "bytes": 5484,
+      "cloudUri": null,
+      "key": "rollover4",
+      "localUri": "rbxasset://arena_assets/audio/rollover4.wav",
+      "relPath": "rollover4.wav",
+      "sha256": "c045eebaad3483f5"
+    },
+    "select_001": {
+      "bytes": 2796,
+      "cloudUri": null,
+      "key": "select_001",
+      "localUri": "rbxasset://arena_assets/audio/select_001.wav",
+      "relPath": "select_001.wav",
+      "sha256": "2463ea58b91ab2a1"
+    },
+    "select_002": {
+      "bytes": 2796,
+      "cloudUri": null,
+      "key": "select_002",
+      "localUri": "rbxasset://arena_assets/audio/select_002.wav",
+      "relPath": "select_002.wav",
+      "sha256": "355bcc47fa3e95a1"
+    },
+    "switch1": {
+      "bytes": 14316,
+      "cloudUri": null,
+      "key": "switch1",
+      "localUri": "rbxasset://arena_assets/audio/switch1.wav",
+      "relPath": "switch1.wav",
+      "sha256": "6eeac52451f2e8f6"
+    },
+    "switch2": {
+      "bytes": 14060,
+      "cloudUri": null,
+      "key": "switch2",
+      "localUri": "rbxasset://arena_assets/audio/switch2.wav",
+      "relPath": "switch2.wav",
+      "sha256": "5bab1f92d0a202b1"
+    },
+    "switch_001": {
+      "bytes": 27372,
+      "cloudUri": null,
+      "key": "switch_001",
+      "localUri": "rbxasset://arena_assets/audio/switch_001.wav",
+      "relPath": "switch_001.wav",
+      "sha256": "884a3fb161cad3a7"
+    },
+    "switch_002": {
+      "bytes": 27372,
+      "cloudUri": null,
+      "key": "switch_002",
+      "localUri": "rbxasset://arena_assets/audio/switch_002.wav",
+      "relPath": "switch_002.wav",
+      "sha256": "c6914950e36ef74a"
+    },
+    "tick_001": {
+      "bytes": 2028,
+      "cloudUri": null,
+      "key": "tick_001",
+      "localUri": "rbxasset://arena_assets/audio/tick_001.wav",
+      "relPath": "tick_001.wav",
+      "sha256": "eae05710e57084fc"
+    },
+    "tick_002": {
+      "bytes": 1068,
+      "cloudUri": null,
+      "key": "tick_002",
+      "localUri": "rbxasset://arena_assets/audio/tick_002.wav",
+      "relPath": "tick_002.wav",
+      "sha256": "cc8717284dec8f66"
+    },
+    "toggle_001": {
+      "bytes": 7020,
+      "cloudUri": null,
+      "key": "toggle_001",
+      "localUri": "rbxasset://arena_assets/audio/toggle_001.wav",
+      "relPath": "toggle_001.wav",
+      "sha256": "de3f7448d18c92ab"
+    },
+    "toggle_002": {
+      "bytes": 6252,
+      "cloudUri": null,
+      "key": "toggle_002",
+      "localUri": "rbxasset://arena_assets/audio/toggle_002.wav",
+      "relPath": "toggle_002.wav",
+      "sha256": "7c5631f0943a19e7"
+    }
+  },
   "images": {
     "banner_classic_curtain": {
       "bytes": 11652,

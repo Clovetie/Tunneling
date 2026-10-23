@@ -1,0 +1,37 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="Atmosphere" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">SunsetAtmosphere</string>
+			<Color3 name="Color"><R>0.98</R><G>0.72</G><B>0.52</B></Color3>
+			<Color3 name="Decay"><R>0.44</R><G>0.28</G><B>0.34</B></Color3>
+			<float name="Density">0.31</float>
+			<float name="Glare">0.35</float>
+			<float name="Haze">1.8</float>
+			<float name="Offset">0.18</float>
+		</Properties>
+	</Item>
+	<Item class="BloomEffect" referent="RBXARENA00002">
+		<Properties>
+			<string name="Name">SunsetBloom</string>
+			<float name="Intensity">0.45</float>
+			<int name="Size">26</int>
+			<float name="Threshold">1.35</float>
+		</Properties>
+	</Item>
+	<Item class="ColorCorrectionEffect" referent="RBXARENA00003">
+		<Properties>
+			<string name="Name">SunsetColorGrade</string>
+			<float name="Contrast">0.08</float>
+			<float name="Saturation">0.12</float>
+			<Color3 name="TintColor"><R>1.0</R><G>0.96</G><B>0.92</B></Color3>
+		</Properties>
+	</Item>
+	<Item class="SunRaysEffect" referent="RBXARENA00004">
+		<Properties>
+			<string name="Name">SunsetRays</string>
+			<float name="Intensity">0.11</float>
+			<float name="Spread">0.65</float>
+		</Properties>
+	</Item>
+</roblox>

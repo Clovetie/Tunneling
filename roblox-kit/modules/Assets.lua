@@ -254,6 +254,54 @@ Assets.Images = {
 	yellow_slide_horizontal_color_section_wide = "rbxasset://arena_assets/kenney_ui/yellow_slide_horizontal_color_section_wide.png",
 }
 
+Assets.Audio = {
+	bong_001 = "rbxasset://arena_assets/audio/bong_001.wav",
+	click1 = "rbxasset://arena_assets/audio/click1.wav",
+	click2 = "rbxasset://arena_assets/audio/click2.wav",
+	click3 = "rbxasset://arena_assets/audio/click3.wav",
+	click_001 = "rbxasset://arena_assets/audio/click_001.wav",
+	click_002 = "rbxasset://arena_assets/audio/click_002.wav",
+	click_003 = "rbxasset://arena_assets/audio/click_003.wav",
+	click_004 = "rbxasset://arena_assets/audio/click_004.wav",
+	close_001 = "rbxasset://arena_assets/audio/close_001.wav",
+	close_002 = "rbxasset://arena_assets/audio/close_002.wav",
+	confirmation_001 = "rbxasset://arena_assets/audio/confirmation_001.wav",
+	confirmation_002 = "rbxasset://arena_assets/audio/confirmation_002.wav",
+	confirmation_003 = "rbxasset://arena_assets/audio/confirmation_003.wav",
+	confirmation_004 = "rbxasset://arena_assets/audio/confirmation_004.wav",
+	drop_001 = "rbxasset://arena_assets/audio/drop_001.wav",
+	drop_002 = "rbxasset://arena_assets/audio/drop_002.wav",
+	error_001 = "rbxasset://arena_assets/audio/error_001.wav",
+	error_002 = "rbxasset://arena_assets/audio/error_002.wav",
+	error_003 = "rbxasset://arena_assets/audio/error_003.wav",
+	error_004 = "rbxasset://arena_assets/audio/error_004.wav",
+	glass_001 = "rbxasset://arena_assets/audio/glass_001.wav",
+	glass_002 = "rbxasset://arena_assets/audio/glass_002.wav",
+	maximize_001 = "rbxasset://arena_assets/audio/maximize_001.wav",
+	maximize_002 = "rbxasset://arena_assets/audio/maximize_002.wav",
+	minimize_001 = "rbxasset://arena_assets/audio/minimize_001.wav",
+	minimize_002 = "rbxasset://arena_assets/audio/minimize_002.wav",
+	open_001 = "rbxasset://arena_assets/audio/open_001.wav",
+	open_002 = "rbxasset://arena_assets/audio/open_002.wav",
+	pluck_001 = "rbxasset://arena_assets/audio/pluck_001.wav",
+	pluck_002 = "rbxasset://arena_assets/audio/pluck_002.wav",
+	question_001 = "rbxasset://arena_assets/audio/question_001.wav",
+	rollover1 = "rbxasset://arena_assets/audio/rollover1.wav",
+	rollover2 = "rbxasset://arena_assets/audio/rollover2.wav",
+	rollover3 = "rbxasset://arena_assets/audio/rollover3.wav",
+	rollover4 = "rbxasset://arena_assets/audio/rollover4.wav",
+	select_001 = "rbxasset://arena_assets/audio/select_001.wav",
+	select_002 = "rbxasset://arena_assets/audio/select_002.wav",
+	switch1 = "rbxasset://arena_assets/audio/switch1.wav",
+	switch2 = "rbxasset://arena_assets/audio/switch2.wav",
+	switch_001 = "rbxasset://arena_assets/audio/switch_001.wav",
+	switch_002 = "rbxasset://arena_assets/audio/switch_002.wav",
+	tick_001 = "rbxasset://arena_assets/audio/tick_001.wav",
+	tick_002 = "rbxasset://arena_assets/audio/tick_002.wav",
+	toggle_001 = "rbxasset://arena_assets/audio/toggle_001.wav",
+	toggle_002 = "rbxasset://arena_assets/audio/toggle_002.wav",
+}
+
 Assets.Meta = {
 	banner_classic_curtain = { width = 256, height = 64, relPath = "kenney_adventure/banner_classic_curtain.png" },
 	banner_hanging = { width = 256, height = 64, relPath = "kenney_adventure/banner_hanging.png" },
@@ -507,7 +555,7 @@ Assets.Meta = {
 }
 
 function Assets.get(name)
-	return Assets.Images[name]
+	return Assets.Images[name] or Assets.Audio[name]
 end
 
 return Assets
