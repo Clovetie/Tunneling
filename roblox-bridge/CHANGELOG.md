@@ -21,6 +21,7 @@ All notable changes for the Roblox Studio bridge are documented here.
 - Added `roblox-kit/assets/screenshots/self-test-viewport.png` with a machine-readable sidecar. It demonstrates the peer-free software viewport and HUD regression path; it is explicitly not a live Studio screenshot.
 
 ### Fixed and improved
+- Added cursor-based pagination to `search_cloud_icons` and the dashboard cloud-icon browser, with visible result counts, Load More, and expandable per-family URI variants so all 4,811 catalog icons can be browsed instead of only the first 32 families.
 - Fixed the dashboard kit loader to request `browse_kit` full data rather than its summary-only default, so template, prefab, audio, system, and image import controls populate. Kit load errors are now shown in the dashboard instead of being silently swallowed.
 - Fixed string property coercion passing both return values from `string.gsub` into `tonumber`; nonnumeric asset URIs such as `rbxassetid://...` now remain intact, restoring cloud-icon and other image-library previews in Studio.
 - `luau_check` now supports inline/file/directory inputs, reports binary and Studio validation backends, provides fallback diagnostics, and treats unavailable optional syntax backends as warnings for otherwise valid writes. Invalid source continues to be rejected before Studio mutation.

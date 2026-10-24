@@ -1415,7 +1415,7 @@ TOOL_SPECS = [
     },
     {
         "name": "search_cloud_icons",
-        "description": "Search 4,811 verified pre-uploaded Roblox `rbxassetid://` UI icons across 3 packs: `stud` (1,022 glossy 3D cartoon icons), `lucide` (1,894 crisp outline vector icons), and `lucide_fill` (1,895 solid filled vector icons). Works immediately in Studio and published multiplayer servers with zero uploads.",
+        "description": "Search the complete 4,811 verified pre-uploaded Roblox `rbxassetid://` UI icon catalog across 3 packs: `stud` (1,022 glossy 3D cartoon icons), `lucide` (1,894 crisp outline vector icons), and `lucide_fill` (1,895 solid filled vector icons). Results are cursor-paginated and retain all URI variants for each icon family. Works immediately in Studio and published multiplayer servers with zero uploads.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1423,6 +1423,7 @@ TOOL_SPECS = [
                 "pack": {"type": "string", "enum": ["all", "stud", "lucide", "lucide_fill"], "default": "all", "description": "Filter icon style pack: 'stud' (glossy 3D cartoon), 'lucide' (outline vector), 'lucide_fill' (solid filled vector), or 'all'."},
                 "category": {"type": "string", "description": "Optional exact category filter, e.g. 'Main', 'Item', 'Animal', 'Currency', 'Lucide', 'LucideFill'."},
                 "variant": {"type": "string", "enum": ["any", "plain", "outline", "filled"], "default": "any"},
+                "cursor": {"type": "integer", "minimum": 0, "default": 0, "description": "Offset into matching icon families for pagination."},
                 "limit": {"type": "integer", "default": 40, "minimum": 1, "maximum": 250},
             },
         },
@@ -2470,6 +2471,7 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
             pack=args.get("pack", "all"),
             category=args.get("category"),
             variant=args.get("variant", "any"),
+            cursor=int(args.get("cursor", 0)),
             limit=int(args.get("limit", 40)),
         )
 
@@ -3017,6 +3019,7 @@ def search_cloud_icons_helper(
     pack: str = "all",
     category: str = None,
     variant: str = "any",
+    cursor: int = 0,
     limit: int = 40,
 ) -> dict:
     all_icons = _load_cloud_icons()
@@ -3066,12 +3069,17 @@ def search_cloud_icons_helper(
         matches = build_groups(all_icons)
         fallback_used = bool(matches)
     matches.sort(key=lambda ic: (0 if ic["family"] == (query or "").strip().lower() else 1, ic["family"], ic["pack"]))
-    final = matches[:max(1, min(int(limit), 250))]
+    start = max(0, int(cursor))
+    page_size = max(1, min(int(limit), 250))
+    final = matches[start:start + page_size]
+    next_cursor = start + len(final) if start + len(final) < len(matches) else None
     return {
         "ok": True, "warnings": [], "totalCatalogIcons": len(all_icons), "packs": pack_counts,
         "pack": requested_pack, "packUsed": "all" if fallback_used else requested_pack,
         "fallbackUsed": fallback_used, "query": query or "", "category": category or "all",
-        "returnedCount": len(final), "categories": cat_counts, "icons": final,
+        "totalMatches": len(matches), "cursor": start, "nextCursor": next_cursor,
+        "hasMore": next_cursor is not None, "returnedCount": len(final),
+        "categories": cat_counts, "icons": final,
     }
 
 

@@ -1166,6 +1166,10 @@ def dashboard_html() -> str:
       </div>
       <div id="cloud-icon-cats" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
       <div id="cloud-icon-results" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin-top:8px"></div>
+      <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-top:12px">
+        <span id="cloud-icon-count" class="sub" aria-live="polite"></span>
+        <button class="sm" id="cloud-icon-more" onclick="loadMoreCloudIcons()" style="display:none">Load more</button>
+      </div>
     </div>
 
     <div class="two-col" style="margin-bottom:16px">
@@ -1815,6 +1819,12 @@ function renderFilteredAssets(){
 }
 
 let ACTIVE_ICON_PACK = 'all';
+let CLOUD_ICON_ROWS = [];
+let CLOUD_ICON_CURSOR = 0;
+let CLOUD_ICON_HAS_MORE = false;
+let CLOUD_ICON_TOTAL_MATCHES = 0;
+let CLOUD_ICON_SEARCH_SEQ = 0;
+const CLOUD_ICON_PAGE_SIZE = 100;
 let ACTIVE_PREVIEW_VP = 'desktop';
 let LAST_UI_AUDIT = null;
 
@@ -1992,35 +2002,87 @@ function setIconPack(pk){
   searchCloudIconsUI('');
 }
 
-async function searchCloudIconsUI(catOverride){
-  if(catOverride !== undefined) ACTIVE_CLOUD_CAT = catOverride;
+function renderCloudIconRows(){
+  document.getElementById('cloud-icon-results').innerHTML = CLOUD_ICON_ROWS.map(ic => {
+    const variants = ic.variants || [];
+    const variantHtml = variants.length > 1 ? `
+      <details style="margin-top:6px">
+        <summary class="sub" style="cursor:pointer">Show all ${variants.length} variants</summary>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-top:5px">
+          ${variants.map(v => `<div class="cmd-row" style="padding:5px 7px;margin:0">
+            <code style="font-size:10px">${esc(v.name)}</code>
+            <button class="sm" onclick="copyText('${esc(v.uri)}')">Copy</button>
+            <button class="sm primary" onclick="spawnCloudIconPreview('${esc(v.uri)}', '${esc(v.name)}')">Preview</button>
+          </div>`).join('')}
+        </div>
+      </details>` : '';
+    return `<div class="card" style="padding:9px;min-width:0">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px">
+        <strong style="font-size:12px">${esc(ic.name)}</strong><span class="sub">${esc(ic.pack)}</span>
+      </div>
+      <div class="sub" style="font-size:10px;overflow:hidden;text-overflow:ellipsis;margin:4px 0"><code>${esc(ic.uri)}</code></div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap">
+        <button class="sm" onclick="copyText('${esc(ic.uri)}')">Copy URI</button>
+        <button class="sm primary" onclick="spawnCloudIconPreview('${esc(ic.uri)}', '${esc(ic.name)}')">Preview in Studio</button>
+      </div>${variantHtml}
+    </div>`;
+  }).join('');
+  const displayedAssets = CLOUD_ICON_ROWS.reduce((n, ic) => n + Math.max(1, (ic.variants || []).length), 0);
+  document.getElementById('cloud-icon-count').textContent =
+    `Showing ${CLOUD_ICON_ROWS.length} icon families (${displayedAssets} asset variants) of ${CLOUD_ICON_TOTAL_MATCHES} matching families; ${CLOUD_ICON_HAS_MORE ? 'more available' : 'all matches loaded'}. Catalog: 4,811 icons.`;
+  const more = document.getElementById('cloud-icon-more');
+  more.style.display = CLOUD_ICON_HAS_MORE ? 'inline-block' : 'none';
+  more.disabled = false;
+  more.textContent = 'Load more';
+}
+
+async function loadMoreCloudIcons(){
+  if(CLOUD_ICON_HAS_MORE) await searchCloudIconsUI(undefined, true);
+}
+
+async function searchCloudIconsUI(catOverride, append=false){
+  if(catOverride !== undefined && !append) ACTIVE_CLOUD_CAT = catOverride;
+  if(!append){
+    CLOUD_ICON_ROWS = [];
+    CLOUD_ICON_CURSOR = 0;
+    CLOUD_ICON_HAS_MORE = false;
+    CLOUD_ICON_TOTAL_MATCHES = 0;
+    CLOUD_ICON_SEARCH_SEQ += 1;
+    document.getElementById('cloud-icon-results').innerHTML = '';
+    document.getElementById('cloud-icon-count').textContent = 'Searching…';
+  }
+  const requestSeq = CLOUD_ICON_SEARCH_SEQ;
   const q = (document.getElementById('cloud-icon-q').value || '').trim();
+  const more = document.getElementById('cloud-icon-more');
+  if(append){ more.disabled = true; more.textContent = 'Loading…'; }
   try {
     const res = await callMcp('search_cloud_icons', {
       query: q,
       pack: ACTIVE_ICON_PACK,
       category: ACTIVE_CLOUD_CAT || undefined,
-      limit: 32
+      cursor: append ? CLOUD_ICON_CURSOR : 0,
+      limit: CLOUD_ICON_PAGE_SIZE
     });
+    if(requestSeq !== CLOUD_ICON_SEARCH_SEQ) return;
     const d = res.structuredContent || {};
     const cats = d.categories || {};
+    CLOUD_ICON_ROWS = append ? CLOUD_ICON_ROWS.concat(d.icons || []) : (d.icons || []);
+    CLOUD_ICON_CURSOR = d.nextCursor == null ? 0 : d.nextCursor;
+    CLOUD_ICON_HAS_MORE = Boolean(d.hasMore);
+    CLOUD_ICON_TOTAL_MATCHES = Number(d.totalMatches || 0);
     document.getElementById('cloud-icon-cats').innerHTML =
-      `<button class="sm ${ACTIVE_CLOUD_CAT===''?'primary':''}" onclick="searchCloudIconsUI('')">All (${d.totalCatalogIcons||1587})</button>` +
+      `<button class="sm ${ACTIVE_CLOUD_CAT===''?'primary':''}" onclick="searchCloudIconsUI('')">All (${d.totalCatalogIcons||4811})</button>` +
       Object.entries(cats).map(([c, n]) =>
         `<button class="sm ${ACTIVE_CLOUD_CAT===c?'primary':''}" onclick="searchCloudIconsUI('${esc(c)}')">${esc(c)} (${n})</button>`
       ).join('');
-    document.getElementById('cloud-icon-results').innerHTML = (d.icons || []).map(ic => `
-      <div class="cmd-row" style="align-items:center;justify-content:space-between">
-        <div style="min-width:0">
-          <strong style="font-size:12px">${esc(ic.name)}</strong> <span class="sub">[${esc(ic.pack)}]</span>
-          <div class="sub" style="font-size:11px;overflow:hidden;text-overflow:ellipsis">${esc(ic.path)} &bull; <code>${esc(ic.uri)}</code></div>
-        </div>
-        <div style="display:flex;gap:4px;flex-shrink:0">
-          <button class="sm" onclick="copyText('${esc(ic.uri)}')">Copy</button>
-          <button class="sm primary" onclick="spawnCloudIconPreview('${esc(ic.uri)}', '${esc(ic.name)}')">Spawn</button>
-        </div>
-      </div>`).join('');
-  } catch(_){}
+    renderCloudIconRows();
+  } catch(e){
+    if(requestSeq !== CLOUD_ICON_SEARCH_SEQ) return;
+    document.getElementById('cloud-icon-count').textContent = 'Cloud icon search failed: ' + String(e);
+    more.disabled = false;
+    more.textContent = 'Retry';
+    more.style.display = 'inline-block';
+  }
 }
 
 async function loadKitGallery(){

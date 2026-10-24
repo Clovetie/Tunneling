@@ -602,6 +602,9 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             self.assertIn("sendAudioToStudio", dash_html)
             self.assertIn("installDropinSystemUI", dash_html)
             self.assertIn("Kit inventory failed to load:", dash_html)
+            self.assertIn("loadMoreCloudIcons", dash_html)
+            self.assertIn("CLOUD_ICON_PAGE_SIZE = 100", dash_html)
+            self.assertIn("Show all ${variants.length} variants", dash_html)
 
         with urllib.request.urlopen(f"{self.base_url}/api/local-boot", timeout=5) as boot_resp:
             boot_data = json.loads(boot_resp.read().decode("utf-8"))
@@ -642,6 +645,18 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         self.assertEqual(icon_search["totalCatalogIcons"], 4811)
         self.assertGreaterEqual(icon_search["returnedCount"], 1)
         self.assertTrue(icon_search["icons"][0]["uri"].startswith("rbxassetid://"))
+        self.assertIn("totalMatches", icon_search)
+
+        icon_page_1 = self.call_tool("search_cloud_icons", {"pack": "all", "cursor": 0, "limit": 50})
+        self.assertTrue(icon_page_1["hasMore"])
+        self.assertEqual(icon_page_1["nextCursor"], 50)
+        icon_page_2 = self.call_tool("search_cloud_icons", {"pack": "all", "cursor": icon_page_1["nextCursor"], "limit": 50})
+        self.assertEqual(icon_page_2["cursor"], 50)
+        self.assertEqual(icon_page_2["totalMatches"], icon_page_1["totalMatches"])
+        page_1_keys = {(x["pack"], x["family"]) for x in icon_page_1["icons"]}
+        page_2_keys = {(x["pack"], x["family"]) for x in icon_page_2["icons"]}
+        self.assertFalse(page_1_keys & page_2_keys)
+        self.assertTrue(all(x["variants"] for x in icon_page_1["icons"]))
 
         lucide_search = self.call_tool("search_cloud_icons", {"query": "shield", "pack": "lucide_fill", "limit": 10})
         self.assertGreaterEqual(lucide_search["returnedCount"], 1)
