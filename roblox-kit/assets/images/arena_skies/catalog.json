@@ -1,0 +1,2559 @@
+{
+  "baseSeed": 4042026,
+  "dynamicRange": "8-bit LDR; not HDRI",
+  "generator": "tools/build_skies.py",
+  "projection": "equirectangular-latlong",
+  "schemaVersion": 1,
+  "skies": [
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_001_bk.png",
+          "sha256": "d33b7dca7f91aea06e3db6318f15884566f7c2da604557c2784c261467085d59",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_001_dn.png",
+          "sha256": "802a0b097078f12acee3b51e65d036abc47e1f6080f4455961deef189ef725c7",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_001_ft.png",
+          "sha256": "f1454e78b6a51dcb24aeedca0642577aedfda6166f458975133f0cc4972e8c00",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_001_lf.png",
+          "sha256": "94ee56ea1b4f61463c752b8fa0e160c8a56835c3bf2739f3e23c140d376d14e8",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_001_rt.png",
+          "sha256": "06d53691cb8b0c24065e383ee7539454f82e7fc7e5d3dc4600e0585040da999e",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_001_up.png",
+          "sha256": "ef0c8214c904b9d016322f2aeee679dabb7f340b1627cead3cc946de8a43859b",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-001",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_001.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4049945,
+      "sha256": "b5475c7c7ba6b83dc6b580a1d8b8c0cfd01274fe86d6013f8b82f3b4dc8a4eb5",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_001.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_002_bk.png",
+          "sha256": "339c8919eea5e4ce6a047cb626d9646be816caddbcc1f641628eaf7d97987286",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_002_dn.png",
+          "sha256": "9f51bd96b73a30701721f721a641cd0c7605d96b5641d8c715e6e490e50b469c",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_002_ft.png",
+          "sha256": "5fb865b51598f4464b6881a70af0fdf58aab4aef1d3ce9ab2841736d06786863",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_002_lf.png",
+          "sha256": "d22ecf2360aca4384b891f4e74738d7a1dbfa815d4fcb301dfd7d606315e4006",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_002_rt.png",
+          "sha256": "cfd4daa9eb5691f425729cc6c9d4a4d8244e715403a675d042d805b0a878ab67",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_002_up.png",
+          "sha256": "4293bf1986f3b3e1dba6da2328d15900a23b6033a86d96bc277f39020ec46499",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-002",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_002.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4057864,
+      "sha256": "403185c1ec32070ce77c711c693535bfa10c94d6de3f5b36aa633570ca8af700",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_002.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_003_bk.png",
+          "sha256": "69a0768533f7fd748c36b63fd64efc5d9e54f442c6a851029b8cb1ac263c13c5",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_003_dn.png",
+          "sha256": "7de653dff1d553d54767eb46a90e370f7876c73375d5243efc4eee9dd2544ccb",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_003_ft.png",
+          "sha256": "8d8345c0132093d55908b66ab476f13ed8f3a35de851341b61f768294441c1a8",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_003_lf.png",
+          "sha256": "68ef6c80a6286bc424c7937e173beb3e09466f72bb7ee16962dfe921c34d0add",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_003_rt.png",
+          "sha256": "3b1501889a0548f8caacfbe74eacb45f0dfc093ef039551d6f6700bb48e8df8b",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_003_up.png",
+          "sha256": "59426457380ed11b9af38a66db9e50a0f0d28212dd610f614fed60d6e0b1c651",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-003",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_003.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4065783,
+      "sha256": "d8137c7bdb95d652684582942797053f60a823eea1f63f41412103e3982f0abb",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_003.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_004_bk.png",
+          "sha256": "fc72bfa81151ba3a9bc45b9ca6989e63863a92123283e0ac7e00a07e6a2aeee9",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_004_dn.png",
+          "sha256": "b72ac4b1aacd6d29855f089d861bf1fd4c31fbb5db7e4cec5538bad73403d2dd",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_004_ft.png",
+          "sha256": "aa134831c8adc3c3058db131575937fa50ca307d6d0daf172af83af5e9c8ee4b",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_004_lf.png",
+          "sha256": "df93e7b8e8f8e7bba89068d5df2bb07d99f60945c0224d5323160efcb0fc4250",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_004_rt.png",
+          "sha256": "6400cde25d44a4efc1dc726bbcb304d571744527f351b2feaa4e94d968ec6a01",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_004_up.png",
+          "sha256": "9d3e3c0c4ecec7c7314b38340cef5f28fcfc14dee46117845daaf4ec557aa8c2",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-004",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_004.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4073702,
+      "sha256": "d72bece29d56c8c08543f2c3177ea044707c12f4d5d6b836e121f17621c540f8",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_004.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_005_bk.png",
+          "sha256": "bd81a81cf575da225f4b5c9315e9d1cef3d944e633072d64119eeaa2ce413ca6",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_005_dn.png",
+          "sha256": "2188ad49b81bf1e0a291ff2521ced9081286222b89732b96d8e7488d8d2fb6b2",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_005_ft.png",
+          "sha256": "18c7af9399b0f270fd746585321152959a5bc2af07860ba8f494b7b5901d0701",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_005_lf.png",
+          "sha256": "e8270ce5eaa20114e17eb9ee78892c45de78317110f756a361974627d28d484c",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_005_rt.png",
+          "sha256": "9733250f615b36f59089e60affcfd932d7c08fee106d98b90df17da6ad795066",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_005_up.png",
+          "sha256": "1e39d27f74473a02de5c9775accbe43fe8bdf969de44ac1b74d95941e9db3439",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-005",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_005.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4081621,
+      "sha256": "124ce1573b625d94522f86e8d386dab1fc44c99234790d0eb30a61de62b15e8a",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_005.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_006_bk.png",
+          "sha256": "f38e5edb36a8d337c9339d4f4fa88965cb8ee29b6b0708e9209dbf9b2be40389",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_006_dn.png",
+          "sha256": "e66e3dac4aad9bbcb491a9bca603d5c11a99535cacc17b8452a080a5908ea706",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_006_ft.png",
+          "sha256": "10e75f504443c35442cc6d86c6fb65ee0f0ee71f1f7acff2945a7464dc2dcd4c",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_006_lf.png",
+          "sha256": "54969ef9e3fc1eae5e6405417a2afda2349dfd68032a0b181084611b49ab9b71",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_006_rt.png",
+          "sha256": "70f970a3332b9076cbfa9417bcaf63cb542ca853929cf4f5a8bfcd840f069591",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_006_up.png",
+          "sha256": "48884bcc917ce652e511723d662ac10162c633a5f05202ec7c497a02f9dddd5a",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-006",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_006.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4089540,
+      "sha256": "9f9691758811bd47b47dcd25de2143a948b555cc7669e7b7584c90a9db962307",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_006.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_007_bk.png",
+          "sha256": "c618d63737440a72e84b9a84a5dc9c335ccebc4de820587be870746e4a1150ba",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_007_dn.png",
+          "sha256": "16fb6192ddda3806fa50d34b95d412d8bccda5fa5955dc861194c79dc657609e",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_007_ft.png",
+          "sha256": "76e095977d0cec9ef3064203f4b8e711e0a8fd184c4ce8eb9a5d8ebe40426a01",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_007_lf.png",
+          "sha256": "2e1acb862cabb821b115ac4090f7071fea693f808f3e30683393afb18e2b7ff1",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_007_rt.png",
+          "sha256": "b9659f990cfff81ce37b2e3c45abb1bb71fdb9828831782e72649b77e7dad2d0",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_007_up.png",
+          "sha256": "a7d466e1b793021ca123e9989535214ae2035929803010b3250dd37619331fbb",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-007",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_007.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4097459,
+      "sha256": "950a017f2190e866a8ca986036cc5c9cc96962a135d32eb424a1ed70697733e1",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_007.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_008_bk.png",
+          "sha256": "512932a81dd6ccc5d92a986aca44fa860b494f322e48d7a0b3c5d4865f440848",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_008_dn.png",
+          "sha256": "4b7efa95389f53835387b5613419133dbc60928664b432fea9a0ee4f73b50e08",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_008_ft.png",
+          "sha256": "cfed24b1e1a3b5925ce337c0765025a019de502aa92ade595a694703a92dbd3e",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_008_lf.png",
+          "sha256": "142a410c4fa72212211279b4b942816c5d9a29a15a9fd71d3276b5c07130ef97",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_008_rt.png",
+          "sha256": "4e6ac4c11ab27823f442b3b7801d2c1a59c234c5ee781ab8b584eaafbaca80e4",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_008_up.png",
+          "sha256": "9f5c2cc6b5f9bfcefd9688f04b731fcda4172e1a2c156dc9d08c010f51657f34",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-008",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_008.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4105378,
+      "sha256": "dc03c641bf5d9de152f30a4abe3fb1a19bc6149c6110c4fcd82046a0cc786818",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_008.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_009_bk.png",
+          "sha256": "686f0f36c590ac370948a7a77cbd8d6ec2a783ba80518513187f6b7d99edef0e",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_009_dn.png",
+          "sha256": "758c6bfc5cc760bbd21eb2afb26064865b408ed66fb9f8ada8662fe1da627b39",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_009_ft.png",
+          "sha256": "bed0d6db7400bde58996849367a4b4da6580d9359e60cb227aafb886e8e2af0f",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_009_lf.png",
+          "sha256": "c7fc563916ec92036386b0e7cee627ec17f58fec32178929039dee536dcd5725",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_009_rt.png",
+          "sha256": "413106ace252732961781ff8a3a565276469962d4a5ef0c052136be58ff29c1c",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_009_up.png",
+          "sha256": "190d5fc0dd55bc83a0fbbba60e2d8cd33a06e3e0827478703c6e0541f682db85",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-009",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_009.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4113297,
+      "sha256": "59974fa8245dd37852b611259b541945db6db7eab1a597b0c2c9bba1f91e7a8d",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_009.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_010_bk.png",
+          "sha256": "5d8fa0e3447d3b1f99a658fddb96f34a01fb19d2cb46bf5051657d1332a2ed08",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_010_dn.png",
+          "sha256": "dc5369c6ec8f6991ed63f34ccb85227258cc3dfb75308d60ffdc3f317e6a56e3",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_010_ft.png",
+          "sha256": "7ebdb966c5934f4eec2e51e2e6a235e6fcfe114f13f80b40bd01547b33062c08",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_010_lf.png",
+          "sha256": "c7a019302abc5a617e6f4bc2d1bd0d17d3134d2fb731d75b28ea37428da2f3c6",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_010_rt.png",
+          "sha256": "13e94714d5e2717be89b926e9f0bfcec259d398870d185cb648dd439f09bf7a3",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_010_up.png",
+          "sha256": "40e300ef490d50c4e2264349d76efe5402539615c37bdb68a480f3b17abcb83f",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-010",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_010.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4121216,
+      "sha256": "95f1e97625c9e6a34e7abd374a78f195dad1698999f18ce489bc94f3ced71f77",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_010.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_011_bk.png",
+          "sha256": "22b433cd71679d1bcc8341e5456a7be07c70aaf32eef87bd11b8269a62892e90",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_011_dn.png",
+          "sha256": "aeb2a691cf79e00ec8e26c09b002b3b6e6a5e67cc03992c0fc92cf99f768336a",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_011_ft.png",
+          "sha256": "3a05fa681555400c476126e6dd36fa19052011847b0c5e6d6dc8aca0701341ee",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_011_lf.png",
+          "sha256": "b36fdf0105f583ec60e9af1a966248c1a27c416ec0028db5231a4a3031d123e9",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_011_rt.png",
+          "sha256": "d6b82ecd7cefb3c2e4bc61d2e11f54eac403cb2aa2f679d49c602b20fb3aa26e",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_011_up.png",
+          "sha256": "46fdb6c0f1bd0819de21c8cf356d2778cdd33b5b414dcb6ca973121cf04d13a2",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-011",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_011.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4129135,
+      "sha256": "b9f4786b5431d3dce42140c522c28553a9d3494c916a06dac9358580c29ff2a1",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_011.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_012_bk.png",
+          "sha256": "3023c1e62137764748a567b12aaec70a54c65db334bdb1f21e3e76c4e8915f39",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_012_dn.png",
+          "sha256": "f129691daabeed823881b8bb518e8da485215b10d582774aca8f190631641bf9",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_012_ft.png",
+          "sha256": "bb20243b2ce8447c420d197f5200b6f349e1cfa792bd8b6d195dd4f95570c3fa",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_012_lf.png",
+          "sha256": "2fb7362744d00f73c7177b13ca3160969433e657c308b9d98fdc132ca0f9c6d1",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_012_rt.png",
+          "sha256": "88bb6c99f6cc74045473dece9167c2badcc9a9f1e77eb22cf2d58035e612b08c",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_012_up.png",
+          "sha256": "f078df04cfa013c95ef39d01a4e37a1096a1862eaa3a8e5dd2d81ebcf7261347",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-012",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_012.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4137054,
+      "sha256": "4228fa8c4655898c3995ea4a69f82c1ae5b60f863ded4071720da506ffa7cdaa",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_012.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_013_bk.png",
+          "sha256": "54893df69421b123c5ce20a96051ef9e1a371d43839f54a07d7d826e69263717",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_013_dn.png",
+          "sha256": "1f6f391485e6805465ec0ae4578c62ba2665c24c512801d7be7f59090546617a",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_013_ft.png",
+          "sha256": "8d9e6739fb5488b928e9be1055704c8f7b39d99d6baa141bd4730232c572d3c8",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_013_lf.png",
+          "sha256": "3d3f2b9e01e6df96c9f77fb7c4d323abcc9237de88309c4e3b3250d488f904c5",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_013_rt.png",
+          "sha256": "dc98e82d0b8d7ba8ff700ea96e5c02b1c1f69d0054bd49a793420c1e039c5be0",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_013_up.png",
+          "sha256": "b5898bd1b218c7b8bf63866cda7d6d2a4791b1dbc8bca4466d9e560eb898e7dd",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-013",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_013.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4144973,
+      "sha256": "29938bf85486dbcea21183f2e883f8e087c7ebbf73fec4dd4f3e8dfe1c394c35",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_013.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_014_bk.png",
+          "sha256": "268bc55a55b82670a1ae6bb536d77828276ea0f6bceeb4caa26d7bd3fe6afbf3",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_014_dn.png",
+          "sha256": "a4ab780fd41748160e4fed7574ff18ede62a674e15c709e3a50e1a2397228905",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_014_ft.png",
+          "sha256": "44b9a1bcc3f47dde4437d3504a72b5fb08d046fb71b49d5f85117e552ef2a157",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_014_lf.png",
+          "sha256": "8ba258a2f65518d6cf404690c5916d8e2da34bdb2cb12695e0d1794deb79a5b0",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_014_rt.png",
+          "sha256": "e4bd7494fbd027ff1f77ff8c819e67d60b2c3127fcaa8edf1982d841010bdb92",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_014_up.png",
+          "sha256": "b9d053ec21b7a75037e4464e938dac47cd059e7f2d3eb7758968366d47e81c0e",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-014",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_014.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4152892,
+      "sha256": "c0b812d45022d987ad56443bd1a1eab37b5954d18cda611cf6b359906814767b",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_014.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_015_bk.png",
+          "sha256": "a24c2834ec88db2b610a2c1284bc7962e7850fb7257f3b6e226ac50b9670686f",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_015_dn.png",
+          "sha256": "e160e510dfa3b4cde3d627083b2b03385976d831cb194b8288a7b8c063d4595c",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_015_ft.png",
+          "sha256": "4920fa5e8a88208cafd04de441b7f631eb51f714837ad12d7fc2326438ecd560",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_015_lf.png",
+          "sha256": "07e24bb9dc15721a2a08c38ee6ecaf7f277ee1caded2dc9a068d8a8dc37e973c",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_015_rt.png",
+          "sha256": "765497f2c9bc0ab4187a5f8c83b5fa7d12f4ec0a35828f43c8105043367384e9",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_015_up.png",
+          "sha256": "4eafab47de2b5ace7c3280bc6c5ed27e958f4a8fc5070a5ccf473a607e558aac",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-015",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_015.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4160811,
+      "sha256": "d9a4b8c8f00e03031d74597a2b847a4d7fa6de8e242e845bd8a1f5073f759952",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_015.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_016_bk.png",
+          "sha256": "8062aa0178c62c80aeacdd4ec78e57327dec6d7cd39bf4cac562674670745de8",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_016_dn.png",
+          "sha256": "62c9d720af4aa4fcf2dcfe9f0878252616b7269c2c5ffeaaa95b79bbe0c42332",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_016_ft.png",
+          "sha256": "b0c1f84d03583fb98ed834091860f7280cd2ac2dc77fb4efa505e30ac26226a0",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_016_lf.png",
+          "sha256": "f773250063056c4ad0f5bae2268835be4f65e57516203b00d69f7e7ca9dcd309",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_016_rt.png",
+          "sha256": "57fc3a67d2734632cf4fea1d5872a67f3d35a7e6611f425dec1c5d3eabd1c836",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_016_up.png",
+          "sha256": "4caa64377239e383beb71bccb51af30bda2406e0b6929ef10a044e76b5e676b9",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-016",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_016.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4168730,
+      "sha256": "e96215745287d62b12078f39615c71e3edae813ef75e4226803e5cb017a18ee0",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_016.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_017_bk.png",
+          "sha256": "3c65deef8277b27aeac955239d3258091018bda2bbbcd8d4bf0c6413699b07be",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_017_dn.png",
+          "sha256": "d21e6d705b9ed3c7b0cb5dc3e700ec32f017ef9a4de04a155e94e0c26bf3047c",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_017_ft.png",
+          "sha256": "b81e3d9b8e5ea782a56b41d58d7f0efb3f549e065f53843f7c3a3f6bf1325871",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_017_lf.png",
+          "sha256": "0fa2c5785758a1fbed3d6c27efe03b3c3721fb9f07c9945709aeb590cedc2f51",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_017_rt.png",
+          "sha256": "17dab7e9d877640dbe5132fd29dd98c8cee3e6467fe1e51cc9f81c7eb5b43813",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_017_up.png",
+          "sha256": "6c9bcf33d4505c1a531248042644f3c096bcffb5330e07208e6a2683c5a84a6e",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-017",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_017.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4176649,
+      "sha256": "23db4533483d84e6cda448961a3df59f2d5c90e3096af4cc1a2ad8bb5abddd5a",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_017.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_018_bk.png",
+          "sha256": "5cff1581a2f2c41a688a7f6376bf6264bbbd2ff3955a8c887f5f659aa2a69c3a",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_018_dn.png",
+          "sha256": "06c4bfee8defa39821ef4aab2f6618cae607679efb5e2a31cf17d5bc343ef905",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_018_ft.png",
+          "sha256": "9d9449335960b9ebc88e767c059dda31843f8d94cdfb76019c0fc2eb1804214f",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_018_lf.png",
+          "sha256": "71c0ffe7a16eb95eb370734e37f90d8b13a64ebeecffbc5f57f8a47e092fee15",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_018_rt.png",
+          "sha256": "50998ce5334ee460b55f8c924515911185acda738619020439a1692f626135c7",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_018_up.png",
+          "sha256": "2fb6daf940a4b3a7b96232fcd65daf3a6411ee53658c0ca3c0122afe11e6ebb8",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-018",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_018.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4184568,
+      "sha256": "aa28c7e7ae8e097590e1849321e5683cd1e32616655172dafb47d41a795953ad",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_018.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_019_bk.png",
+          "sha256": "aae22b01d0eadc88fc2dcee6330440ebc3ed9d0149a1d0332287ade6071ceaee",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_019_dn.png",
+          "sha256": "5bf3735af3af590ef35a60caafdce1852687a5e737db140fe2441f54f37b1892",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_019_ft.png",
+          "sha256": "b425d2e6ee9e6458210a8febf7f8af00405907e9c1750b9476e613f194bf4d43",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_019_lf.png",
+          "sha256": "bac30ce23e34f508cac7824868eb4fa877c033c5ab60641d389b5b4ab293f8eb",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_019_rt.png",
+          "sha256": "34b0f897ee9ef5eff4c5949b451e123d84bf11e620bffadc10b69352cb3528b8",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_019_up.png",
+          "sha256": "306f256f39f2ae4c84335f9875fb01fb188ffdd97a73c0c8cb22b4ee5d7aa89d",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-019",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_019.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4192487,
+      "sha256": "5c39a9997f6cd9d8c7b1a8aebe4c2f6f05565f99413ef88b1a6ac14ccc354ff0",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_019.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_020_bk.png",
+          "sha256": "4838411eb5bead3f67a3fa2645788f646b72356100711d0047f88179e8c583cb",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_020_dn.png",
+          "sha256": "1e2fb7d11c9c29f724b95d32d68947b9e0b886514f5d86efd141f56b968080f0",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_020_ft.png",
+          "sha256": "b775cbc90430317e06efbc264211121bc902e9ce2b0ae708d3efddfeecca8acc",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_020_lf.png",
+          "sha256": "8d3cfd1a8413dfc31db95adbddf11524036ba828a73883243510b95dbb12b6e5",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_020_rt.png",
+          "sha256": "f274f2cd75c63f63509754b5877eed41d31a77a42d5e1f22d9999daf28923786",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_020_up.png",
+          "sha256": "c21f2d2a4993b917668e4f89042dbf93ecdb908896b6387cba6224575e986799",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-020",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_020.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4200406,
+      "sha256": "adef32cb617bc020d3e5d8824b6165d7c297fb79a8017c553232c620bb790cf8",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_020.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_021_bk.png",
+          "sha256": "2f99d379b86c42ca76394f59b62a1a152ad0889d676994c5731d6f8c24a4e66b",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_021_dn.png",
+          "sha256": "e1d0ca684299dccd6f9cb902f901f5cf16a78b0c5d90bf3faa57fc949f3a749e",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_021_ft.png",
+          "sha256": "7a1687c51b1326e6ecbf964b3a77aa0779ac199db6a9136cc29f630707dda951",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_021_lf.png",
+          "sha256": "a739ab6e6bbf732ef176863b9341f7bfa4849e6997608d44b6e7845f839a3f07",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_021_rt.png",
+          "sha256": "b9bfd68413618ffdff521ba6a22e4d8e20095d9b22bab76a0d6c6f7308852348",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_021_up.png",
+          "sha256": "49962b862be9f87466458cec981668ad04c46eafccc0693cbfa7f70ce5a0895e",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-021",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_021.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4208325,
+      "sha256": "6275a2035d35b72d5c6ace28e8b61f8d9505739d9bb0a30b3293c6a41dc9b08d",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_021.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_022_bk.png",
+          "sha256": "67c859240e346d6249b60f02944d7b6f1f8c3a234e45b8f9b3333ad35a0fc68c",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_022_dn.png",
+          "sha256": "9bd7ce0eaccd91e062dde366af26a9fc72f6a8a0cb9763e35da50fb522355318",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_022_ft.png",
+          "sha256": "d419e8fa980dd066ab888bf138a9577df3a2dbbee82fc3baf3eae307bbc5a7ee",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_022_lf.png",
+          "sha256": "8cbb19b2ff97ded577ffb6fe652a1226980d2a0ed2f2628cc811cb640ddd916a",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_022_rt.png",
+          "sha256": "98499578a7e8ceb4d2108b882de08c029b8d231150120293fed0039d3acb3129",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_022_up.png",
+          "sha256": "3c4cac007458c19ce5d40c3d0040d45c51e2a2c0f6f790dc3d4b40cdb8be6e29",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-022",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_022.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4216244,
+      "sha256": "22bfdcf5b5ea662e63914ac897ed11b6c56aa5ac2241c756dd0a2bb9f2767355",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_022.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_023_bk.png",
+          "sha256": "d2ef42a9dd7438eddda252e7fcd486269a501ac5f86ae1554d3b66a12194f163",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_023_dn.png",
+          "sha256": "6e57d91d7e58a0258c32290294b33738b6ce2770628a5ccbee1dd01d555f6d5f",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_023_ft.png",
+          "sha256": "26eefa8cab5e1363aa6c64aedf8fe5018d08e0f9af179f682ed9e6ee9e13cad4",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_023_lf.png",
+          "sha256": "df7b3ad0e8c25377db6b10552d96618dfc8a41bfff35417106460b6882cce7dd",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_023_rt.png",
+          "sha256": "88a2ed2d2f54d3adb106e684fb17bee334d8e15fa37567cbc21485ef65f3a536",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_023_up.png",
+          "sha256": "4d3df467c09811a46395699c9cf2b418991896cade4e66c6dbb05a58d0c48cc9",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-023",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_023.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4224163,
+      "sha256": "4eda0c07c463499ed327a42e43c3d44fa5ff3d5cdbd8fe550306028959e70490",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_023.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_024_bk.png",
+          "sha256": "8b70b942ea665cfb4c41ceda74f6526b1af1d6c7c7a107e8d49495893dbecb71",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_024_dn.png",
+          "sha256": "699bd78b1d44005353e5bdae9ba276b99d5ce45fc959799e901822e85f29f317",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_024_ft.png",
+          "sha256": "f7d3cfdaab604b18b55cc8c455f5e0719910dc803e6d18d933d6151e4b545a95",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_024_lf.png",
+          "sha256": "fd52a0281bc4b91cfc9ab736c1b5fbc581742982551c04a229166d723012a121",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_024_rt.png",
+          "sha256": "46dfb2f673d0f93733ad1c17faea5be7936696a3057d958f0272c5e19a8ec84a",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_024_up.png",
+          "sha256": "447f882cf5ebe7c421a41a482a8b164a38b6d3e7fb15c81a88c8d8342d3de0c5",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-024",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_024.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4232082,
+      "sha256": "59435cacaefe3243943823f41999a311bc91b41a1e170d5a0e368577c38caf44",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_024.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_025_bk.png",
+          "sha256": "5e1603f0f6b0bcceda094f735c4fcadcb3786de464273cdcd6da9e46fbed4b8d",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_025_dn.png",
+          "sha256": "6f8b87ca672264ddf11ec4898bdb52563fa61a3f5a4e55f3978aff319c781745",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_025_ft.png",
+          "sha256": "22d4f161f46788d976ea404276eefb2389172cc7961a8caa0520a1c84c3ec94a",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_025_lf.png",
+          "sha256": "cb7ba141ec7a654c635eda0287c1b509ce54d50a340e3e09a9563b542fa7ef0d",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_025_rt.png",
+          "sha256": "2a40c263056d591ea3676aa3edd2f1fe7f48a8206b6581802199e158031b3429",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_025_up.png",
+          "sha256": "fa4db6b03c7304f87d76af0e2f66baad2cdfb312b560f85eac50ed972eab26b0",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-025",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_025.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4240001,
+      "sha256": "7d136e96c25f22b19e764fa4af8e08f64f5d25389114bb1741447e6b5731ab64",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_025.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_026_bk.png",
+          "sha256": "fd0e118943c74f8f5161b2fda87be2a9fe031d70c069d7c95ec789305b428658",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_026_dn.png",
+          "sha256": "88f4b304c21184e7729e61baa8c24cd2e149e4371e4c82b8bb5ed969ea91bb02",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_026_ft.png",
+          "sha256": "5dd106af81d14159fba036167fb5d4029eac96ac32fc2115fa3e8b5524156c3c",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_026_lf.png",
+          "sha256": "23e72453d174cdb71bb528c89573c73a55ade7dc615bfa6fc248a24878fc1a6f",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_026_rt.png",
+          "sha256": "7c3bfc8f4fb2fb0ac1149c036a399ded651aea4cb3d2cc9b865467340575222f",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_026_up.png",
+          "sha256": "0d8a9cf218a96d7c72a06bfe428de05d5a2e9b856a35eed053bd2e56f13ba07a",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-026",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_026.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4247920,
+      "sha256": "2897ef225fc2363a520fd394ea9b9b102140deb07d5932534bcf8c92f2508894",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_026.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_027_bk.png",
+          "sha256": "d7b3fd774d8e01fc1d29724037755a13e69fd2f50fa68579ee4b4951365edc8a",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_027_dn.png",
+          "sha256": "5ba7a5e99c7eb8078101fd1d66d008737cb863fc9636dd03bd770f3953db2c22",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_027_ft.png",
+          "sha256": "12f70d277184f8c2e4237fc965796dc359e7af7c4fc69183911771a4fdcd01c9",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_027_lf.png",
+          "sha256": "a1fdbf09b8298bd7fa112ed3561dce4c58c01eecd459d75616d6562388e21e83",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_027_rt.png",
+          "sha256": "3daa6eec11afa16031cb8e3ec3455a4e3335a56bde649fffa808a58c3d759943",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_027_up.png",
+          "sha256": "1017cf6a27069bf2d3910847c0555793bd72b305a7a72f95d01aa6a99ee6b088",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-027",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_027.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4255839,
+      "sha256": "309638f70947bbdb5a038ccf71939736e73e1324181e2f2120df94c6af19d2e1",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_027.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_028_bk.png",
+          "sha256": "a18369e411801ad46a3304112c8b24018632f2b4e82a3b0b09befaa3a263db72",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_028_dn.png",
+          "sha256": "7a8e720dabe4e8a4dfec5b853bffb28029e7e4bf96f95aec484e7f4b3ce5e0ef",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_028_ft.png",
+          "sha256": "03e260c3dce952d10def7bdbdaf9f9002e6ae22d856a3a7f220ba9c1c28b5480",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_028_lf.png",
+          "sha256": "a0896713ea3e4b2844efd6c500bcaceabe92355eebae2e720ab43a5ad43bfe78",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_028_rt.png",
+          "sha256": "913bfa22b300ce97951a0e326051069cdee0f08c33813ff33c8b6ec41f827abd",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_028_up.png",
+          "sha256": "1d85ae6b5e74ef6b45840f8fbe194093d8664ca9068876f1e5b42a590e8b5b07",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-028",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_028.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4263758,
+      "sha256": "790c0449164c2a2662e4646557700b2a85e6d4b167022bcf2ea1387f42b5b3b3",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_028.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_029_bk.png",
+          "sha256": "3c8da4f1c73f1093b512e8366bbd3977d11ef53611f4a83c8c344da44e4202f6",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_029_dn.png",
+          "sha256": "1a24d6297f7f543ba62fa85c11cb66c3eb0ee2a0adf4926f334feef831d4aa45",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_029_ft.png",
+          "sha256": "19ae12b5144e1162ff0032f5ff977cd44d2e1280d4ccdeabb3fd52c562f18e5d",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_029_lf.png",
+          "sha256": "90e9cb56b996a2b01e7c995cf7203199a3108019fe94ecfe56b010f4af9d2912",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_029_rt.png",
+          "sha256": "219aef898b640162635f832960644076a57ee9aaa83831cd6deb378a56c85319",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_029_up.png",
+          "sha256": "0dff2c9cf77e43b381ebd409839110ce2033d5021f5798edd307db42dfa5582c",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-029",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_029.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4271677,
+      "sha256": "203f6b71bb4d2bdb27ff09bb9b8be791611d775f357c906a8c00c2e9e803824d",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_029.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_030_bk.png",
+          "sha256": "395e062231480aa43b950ca25449cee7dd81239ae47b14e6977f589be173992d",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_030_dn.png",
+          "sha256": "8caa7c4f5348a6994a299f25b6c83e4b4ae02c68737c1605ce12878dbe03c343",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_030_ft.png",
+          "sha256": "0b3fac99eff9bd9275d972cb08bfceb0e6a113a278471697208c834e806aab5e",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_030_lf.png",
+          "sha256": "a64854810efc8a37e5e3a1a112ff6da794469b0576adfb4056d4cefe8598101d",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_030_rt.png",
+          "sha256": "c6b3f4a067f693cb9dfd9099efaecce6818af6faf214e590849e68ded2285efa",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_030_up.png",
+          "sha256": "059f8ba68aeb28d68c329b9d5d2690ade5e59691abf70fd7451913f78befe0e0",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-030",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_030.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4279596,
+      "sha256": "0e1e1c66f1a73ff07fe009d1157c8c4beb7d8c1cde52c9af4aaa6e796d029557",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_030.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_031_bk.png",
+          "sha256": "7f6ed2a193b80d9270f0da99b709c648ff773aea30ea2880a6d2b81744de148f",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_031_dn.png",
+          "sha256": "689c96a03a14b038e8906f5bc423638eafa43c1caad4bf0f82fe6c9a79e9a2e4",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_031_ft.png",
+          "sha256": "d53f0d830b7ef1b618579583cac588f3abff68d222ca8be4db155c72daf931da",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_031_lf.png",
+          "sha256": "035a5ae42c067f20fca09a615065dda209f13863846dcf1f179f83560caad436",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_031_rt.png",
+          "sha256": "8060b2539293b7099ed7ae3c670c68a5164f4fc39341893f98a8f7d23a2f6f24",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_031_up.png",
+          "sha256": "70624848bc670183bf73d4d33fc2fa314f2ba6bbd34bb54fb9cfa9ac5b98b9cb",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-031",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_031.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4287515,
+      "sha256": "b3258e9f50060219668de71f35364f1d5026ed275ba18ce1cab027254b111763",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_031.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_032_bk.png",
+          "sha256": "06a7db96acfe34f162e75e26c63ddc9489eb7989f9ee430b5d19fab15d1275d1",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_032_dn.png",
+          "sha256": "f0b654fe63c3b4484ada5cd7f09f78faa5ee5b12ed916ac947fdd4503ced9e61",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_032_ft.png",
+          "sha256": "e230b1da44c35523fc7fde05a025d1bd95318cc3858df4cc94c2f944b47b2a9b",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_032_lf.png",
+          "sha256": "7ec124e45d20b74f3c17960839a32175dafb5964795c05a283ed6cec0355231e",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_032_rt.png",
+          "sha256": "676d2a59be8b5e86f35e157042867e754fe53338a40d6ceeca4bd565425ec924",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_032_up.png",
+          "sha256": "9f8be682dd75cc1e127054d194f2292d60e09dec4ce66a0cfcd0671ca287f771",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-032",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_032.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4295434,
+      "sha256": "c964695bb61283c79f3966a8d21ccce8bf366803bf447ccb56f4adc7723f67d8",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_032.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_033_bk.png",
+          "sha256": "6001fee2d1453da87a39064f6a9e73a1ee11f6e8def89e3f2317f25fdef507e1",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_033_dn.png",
+          "sha256": "220e97bceb9510cdb2de1c1e84c04942dba6c8a59d33faa445b4cd1bbe8849b2",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_033_ft.png",
+          "sha256": "5695ab9d96f285e0fdd976ff36f25a3f98d2da155c11491e42faa218f3ed2b56",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_033_lf.png",
+          "sha256": "97aee8a6533ebb828f70ab277382de6a7d3e379491f724221dd6044ca0b5e767",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_033_rt.png",
+          "sha256": "f2e091d0eeb8ddf2ec858ef5cb685cf42b4d193aacf2d56dae190505793e758a",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_033_up.png",
+          "sha256": "301d6b728513221521f7efd83eb759723bdce42930204f601d4f7f49ac3b1806",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-033",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_033.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4303353,
+      "sha256": "580ae7be77f1fed709fa93135e94ea76fe10a1d885652e99874cef4742660f76",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_033.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_034_bk.png",
+          "sha256": "c5a2955d44e415e3a2dad8e102eb1860fb1f878bcb2e32c09bb2c5f1edff5197",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_034_dn.png",
+          "sha256": "cc062cafd70db86bb335e0f887fa9b22bd17d8eaa46de90dd54b0580f7a5c694",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_034_ft.png",
+          "sha256": "0d1168b7ef7f385010473d3408b32059c90c1476893ebe911ea0d6359a4ea4e5",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_034_lf.png",
+          "sha256": "55c07799e78d62b65a50693922b0938b1b0011d7ac605c02b65075b0c7596e80",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_034_rt.png",
+          "sha256": "8bd3ec7ec1b4c2a22c388253b60827da777338b474c63e7cd69c858de5031b04",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_034_up.png",
+          "sha256": "6fdc146ce4e2e73f8895e10e45a089a93192790572c31c67a7dbd28087a9e3f4",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-034",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_034.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4311272,
+      "sha256": "53182a4c50765dd2d898fd18b31a5d6cef203125359b12688e7e9d313408cac8",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_034.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_035_bk.png",
+          "sha256": "ab00597d8f5f22456191e31dc8732b02c41637c33f8ef0da7715a9f9ef98eb3c",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_035_dn.png",
+          "sha256": "91c9cf925399c0e414c24eec7cee5b16063a9027180b1e9d651bf54e5ea568cc",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_035_ft.png",
+          "sha256": "48cb60a6730fa6504881bf37e273e4fa0b7d752aba3124f637e0d5ccaa011d88",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_035_lf.png",
+          "sha256": "cee067bdb7b0d0842b55c42f1613c451fcc3e6d611abf9a846a69271912b6a40",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_035_rt.png",
+          "sha256": "502d2a9188daa63e23abd22d9b636bd858e0922b2c325ed6a81b6b41c1305d27",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_035_up.png",
+          "sha256": "9d7f53908f10d973dc8714cb2d773089eb883b0971be9888bdebd44d3b600d44",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-035",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_035.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4319191,
+      "sha256": "380b21302372ffcc95dd3f49389cdba4601dbe59a07d3d26331c24249d0af168",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_035.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_036_bk.png",
+          "sha256": "f4a57c8691c34fbd76fd9735a9db61ce5c87ae6f4ec6d9e34ed53598a2d68f7a",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_036_dn.png",
+          "sha256": "09dcfa60227d898c9f8461fba021106e294ab602704e7e8e58207a53683ef44f",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_036_ft.png",
+          "sha256": "dd1dc8d65b3d0fbc8ce6dd38ded312bfc124be34bf56c1883e01f058e16ecc6d",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_036_lf.png",
+          "sha256": "e365957fc99c8863e247eba1a606faea420a21e96c60c58bee175ee30d103d5a",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_036_rt.png",
+          "sha256": "14be5c49ed307a08b5c831cac935fba92f2af20a6ea00b25904557207b0b013f",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_036_up.png",
+          "sha256": "655ff9b17dbd2bd9a336352b2159b4c7fe6f1390bf396cdad47205e1568f4048",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-036",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_036.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4327110,
+      "sha256": "14f31f6d6638ea1399cc681f74cc1e9d58e8e8892bca886e93c699de5b417839",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_036.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_037_bk.png",
+          "sha256": "3e61c105fd113da0f1f8d35a8d4d525a6c3b1c2bdac6f5ea63616d20784e5f4d",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_037_dn.png",
+          "sha256": "8a4457443dd8f213df27cded689710f2ad724add2e3027f006c279fa4aa81fad",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_037_ft.png",
+          "sha256": "d41208677c6b809c6a212443cb64f9ea8bdb2ed7d60547662d7d629abc9954e2",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_037_lf.png",
+          "sha256": "d60e368523534df4a8bd3daf358b491bd6041398eb7bb2f1687ba7e47930f455",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_037_rt.png",
+          "sha256": "c456e212ba23a6627e25c8e8acd0787a1645d78eb54f863d17bb501e862269cf",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_037_up.png",
+          "sha256": "564a58891d9572f31a6e8ffc44e49b454b157d063b1adde37a5df31cdf690495",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-037",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_037.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4335029,
+      "sha256": "5d9ca8a70635f2a82b7fb7c02f5096a1df311c9cde9c27ff5963d4a9bb191f49",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_037.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_038_bk.png",
+          "sha256": "5c246385a3f77c96fc13f5049069e8e71694f950bf745fe45ac6cebd3d22ea57",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_038_dn.png",
+          "sha256": "5959c61e7481a0b49bc0b05b8aa7bce64c4a81b7dc89e767ab4d28380c40f6bb",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_038_ft.png",
+          "sha256": "02fd15ed05dfbb5e8886bd591db888fe06a5515c2cec311f66279c4664a840c4",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_038_lf.png",
+          "sha256": "c5923d0f5a385141ce6be5c2ca51725d53a2b65aaf70f9c5c0114b73866d2e8c",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_038_rt.png",
+          "sha256": "3de8bb190ad32d03211b6888ae7bef10936a7bd77d837572f15be0937773321e",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_038_up.png",
+          "sha256": "252129caf67d4982326f5298e86d13a0270bc86175aa3dfdf652fad81d229b1f",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-038",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_038.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4342948,
+      "sha256": "7843dbdb1c7c1b91fc86f7ab3dece84ed954b01e1e9586e9a9a170a3901be5b0",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_038.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_039_bk.png",
+          "sha256": "5239f9c0be256b36b1336124032d5374faa5bcad4664859bdd81ae06b473cfd8",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_039_dn.png",
+          "sha256": "353f624451f174f6db6f79ec46594a31332817693df60abf674ee6a09a2dfc8d",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_039_ft.png",
+          "sha256": "226d1554f02f2167925c23352e1888446c5dfb5f3fbff64220559b46539125d4",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_039_lf.png",
+          "sha256": "7d3fce29111a32eaf750d182a892c2eb56a7c0ced72f37ee65cc1fb59af66dcf",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_039_rt.png",
+          "sha256": "5b908cb9030c6720f50652bd22ebfa7c66377ea6537c1b9a5914993973d645c6",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_039_up.png",
+          "sha256": "884dea8b6a9185697b42d57901bf1ffe623c4d53222e9dabcf55bd1aace36cb4",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-039",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_039.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4350867,
+      "sha256": "0189a90ee8de3d7fd5c17a128828352bbcd9bebda0806362a2db32f48c3399b7",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_039.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_040_bk.png",
+          "sha256": "3d451acb277963a604600894faf8eddf60f33103a1d0aacbdb5f53fbacce19e1",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_040_dn.png",
+          "sha256": "50f691683aceefd745e3d20a83446ccb423b4b11ceead11091e1c667b186dd17",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_040_ft.png",
+          "sha256": "0eccf573c187f1991415cda0d8f7c32de854a7aa29a0ac7cdfcb5243ff4de00d",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_040_lf.png",
+          "sha256": "93e7b1d4069867d6ea74ded85b02eab80583887c1884ae21b7f1d612703c249c",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_040_rt.png",
+          "sha256": "756665839539aecfe28e9d7046cb31937af470804606a6bfabc237ed575428c4",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_040_up.png",
+          "sha256": "88cbbbfd802a5d54ad43e5e40023174725013d09e581b3ea9fe4d0b6bf255512",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-040",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_040.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4358786,
+      "sha256": "deb562f4475a4efa624cbf3336f44756e3e78fba69cbd14be4a17aac88e556ef",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_040.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_041_bk.png",
+          "sha256": "b0cb39e397c319ae5c7825e144c27add211763e666ed793bb6d628e00dbad897",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_041_dn.png",
+          "sha256": "ea12d1175721354a9575021949a4edae3a55f0cf0bee2905e571531bc307b9f6",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_041_ft.png",
+          "sha256": "f838a68963b81def18011cb782cd77541ce02230d938d49c93c32656411ef5b5",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_041_lf.png",
+          "sha256": "39b41c42125fbd5d5bdbc41808790e5df36de41ad6495a9ed1eb6ba7ae457ad1",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_041_rt.png",
+          "sha256": "3a1cc84dcae372283470ddfdde5f749fb79d64e236cd1a48601e73c9aaf17304",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_041_up.png",
+          "sha256": "c3e5158aa26485dc61f24607223d8b48bdb0cf4f70dde9bb99d188b24f963385",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-041",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_041.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4366705,
+      "sha256": "8078133439e4b73345a0cc75da564aa392b66e94b37dc4428d096fba71ba31e7",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_041.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_042_bk.png",
+          "sha256": "dd77366d76480ef585de76aad1ca42c2be4e6413b7f07df4f4882589aae975cb",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_042_dn.png",
+          "sha256": "d8f1f5e742a1649b9c5711e726cb017068d25a69b3ec6947bc34e72b6cd64947",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_042_ft.png",
+          "sha256": "cfe2ec3b9cc03d428cc0ea716b9cbdd609decffdce9d69ec8e29f3d926089301",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_042_lf.png",
+          "sha256": "9a222227b65d6600d21cdab84c4f0bfe91ed61a26369a2fe94b9b1caffee0b68",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_042_rt.png",
+          "sha256": "0a8cc97c01f72614f7655c978fde9c2d4e70b5b54dfddc15008fc645858b4919",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_042_up.png",
+          "sha256": "c345954e7132e71a6a3a7b495f36f580c15d2184aa0505085f73398cb6599580",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-042",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_042.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4374624,
+      "sha256": "6f952782cd66d4b7713674b93fe98c052cf1f87d0bb4bf26b2f2c2b390e986c2",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_042.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_043_bk.png",
+          "sha256": "582e5c46ff52ce06d2d2060a2c589185d57660fb40cc5455c8aeb49ccd6317b4",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_043_dn.png",
+          "sha256": "ca117ead2ecc7e5fe3ad84719430d5a6d8f822d1e18c1bd0f2f2ff9a4b0b88f9",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_043_ft.png",
+          "sha256": "1276b711ab765e584c7d470058d2f049042d7c8dae3493fc11f3af71d9f72538",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_043_lf.png",
+          "sha256": "e0e391427d368522515ed60ac70481943ca23c10de85ee0ee9822c28f24aaa48",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_043_rt.png",
+          "sha256": "c838636304532c5919ba94d56eb7876bde29434bd63e5ce6f9d1f118eba0c542",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_043_up.png",
+          "sha256": "c7ec909e736db627084a18c8ceea2f4d1a622454a554d28adca593591daa1ad4",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-043",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_043.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4382543,
+      "sha256": "14fd610b7746cb7110150889bd7b914df69bb938f74bfaa04ef388e1ebe4d50a",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_043.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_044_bk.png",
+          "sha256": "fe16f9e5847a30ce4e1810926b26eeec9f68702792ec16c5041fbdbbd1de09e5",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_044_dn.png",
+          "sha256": "af6ad5cc46ee3df9f9b5a25b932a646180ecd771cbf9e78d33d8a8cebf8bf352",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_044_ft.png",
+          "sha256": "0ea182337694c65a07471ad6b65881e9bdb1e8f793b4ddfe15dac93215f3258e",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_044_lf.png",
+          "sha256": "9353ba9447c0ea5472cc7a5672d9609034133b840135db9c9e9366896c59682c",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_044_rt.png",
+          "sha256": "b916a1890ee7ee877c4edc4f4f236b41f6c7ac31d2f0a0dcab06ccd8fbd42c5b",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_044_up.png",
+          "sha256": "e2237a9817654e591a20b1876a9ca4f68c5196b3563d87dc842b486849dbcf1d",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-044",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_044.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4390462,
+      "sha256": "99af12d7191950dee2189fb6d5182802f4e82dbb0601f73435d96cb1d8ad3467",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_044.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_045_bk.png",
+          "sha256": "e13e1541bb03ef267b351aff0f5119f6ff32e88c9c281d8c22489434b69031ff",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_045_dn.png",
+          "sha256": "26735062dc3fefc89062d7c593c929b719f18e98405613020bfd4de641c4d283",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_045_ft.png",
+          "sha256": "1b627cec2c37e699bd623d4cf125e02d6aed307e2e06146661d14fbd0d0d4eb6",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_045_lf.png",
+          "sha256": "15a3465426205ed66f5126c2e5cf4ee84b979aa182755310cc3ec930daa92af5",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_045_rt.png",
+          "sha256": "ad55d8de7fb43782faf1ead5b978022628fde18c1375629673abba1ac6d74659",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_045_up.png",
+          "sha256": "83e3a497aa8d159561d9b171400520865f2c89fa6a6d6987da6f0504326cf397",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-045",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_045.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4398381,
+      "sha256": "75442b0b1414adfd8cd1b6263276cceff50fc97f88c1efc8d3171981719b8c25",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_045.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_046_bk.png",
+          "sha256": "d9eaa575dde919d797aa0bd16defda5267842d6952b11543b860dda539461090",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_046_dn.png",
+          "sha256": "a2bc94fde41dc4f7736fa9781d42d7b1e9ca4cfa2ab19b116faa97a6f16d81e8",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_046_ft.png",
+          "sha256": "8ef446286445708f71e4989ca2a91e69df46cedeb5c7443d96100f020b10bfc0",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_046_lf.png",
+          "sha256": "dd001046ad947bfa1e74f24f6723140669faab2f2384d3cd9a98741a6da8bd00",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_046_rt.png",
+          "sha256": "23c81902e10020b86dd8ec09a0d04999401d43f82acda7381136cb6d7dad7f29",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_046_up.png",
+          "sha256": "07fde505f2e49a0a28c5cb64557d042f99f0dde08db01444dac8034a66c5fd25",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-046",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_046.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4406300,
+      "sha256": "6d136b0a57305751b3f6cf55bb403704a9f17160e28cbc3dd2a6c32623ab7f13",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_046.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_047_bk.png",
+          "sha256": "85f6689509ccd4f968b04cac104ba8054edbd757c3696552d52bf44efc2d86f9",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_047_dn.png",
+          "sha256": "377411ab0bedff9e42f9b366e0e5b9632bdd4c75fe0a14c5057aa90bb4537f79",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_047_ft.png",
+          "sha256": "17480874a71c7815d2b762c4a10b50b87790a3a836c9da840c0e8533cbc9b570",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_047_lf.png",
+          "sha256": "58664515daa92c27eab6a0eb5f78713465bb62c1efc048f634b95f47baffc68a",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_047_rt.png",
+          "sha256": "30e396b4611c150eb210ab61284b169a3500722cfaf8eca8e7a3cda83b1344a3",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_047_up.png",
+          "sha256": "766d3b202a57737af37cde45fbfc5df4e60a3f7b5901b3fede145a2a8446750f",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-047",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_047.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4414219,
+      "sha256": "cb34dfe223d6a79b986ca9f01772bcfa179fd9d0e1e63dcd7ba3cb9c3da48eed",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_047.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_048_bk.png",
+          "sha256": "76d3189b3d7ef6b223801049415661e0bd900856f0c4ac12493d01c0a496952d",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_048_dn.png",
+          "sha256": "b82a6618a6d15af79582801c6d932d4ec1fe478a9cce0b3a64e2613cd638402a",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_048_ft.png",
+          "sha256": "1a19bead70c7cb03d30efc73cbcad9a3ddc05c4de61cb9b401c4683dc3809464",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_048_lf.png",
+          "sha256": "4dfe5c20fef7d3e31408022b12b0f91d7c8ddb4fdf7002cbc853267f908dbb26",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_048_rt.png",
+          "sha256": "ca38023dbbfe3bad456aeb6ee1dcdc5feafa71ad53f51e39c0ea7fc799ab0578",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_048_up.png",
+          "sha256": "6db776e0a7d6480800f61ec7e35afe572a18b0117428755bf6934c8bd81c4002",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-048",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_048.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4422138,
+      "sha256": "2481430a307fb96ca791d1b71d79468599f64f0eb2c44e1593a5ce389ae3e84f",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_048.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_049_bk.png",
+          "sha256": "0e774cc757dd289fe1b724c632be0fda84b7e17cab5794c637c348fb68fe97e3",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_049_dn.png",
+          "sha256": "cf5e5639c1b5db18a6220213ceca4ffc2020e6448fcc692a0cd1be3fbed0f9c5",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_049_ft.png",
+          "sha256": "2f97b9480e036c74cb77c19bee3681a42f850d3601637bea25402583364ff951",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_049_lf.png",
+          "sha256": "28b910ee4082283178d6c594700452656fc1915af96e4be661d7567a8c8c380d",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_049_rt.png",
+          "sha256": "d1ad6bf35c2640114d327ae452d0ceec448c2016b28a41ed893c1161ecd16533",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_049_up.png",
+          "sha256": "2af1aeda963ae255b4cb856d6a76fbd7bab1eeeb15672d39ac8e778368de9233",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-049",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_049.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4430057,
+      "sha256": "3432745ec9fe98d572d85f65b636faa43e256aec665f843ad16f4066fb620d36",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_049.png",
+      "width": 512
+    },
+    {
+      "author": "Tunneling contributors",
+      "dynamicRange": "8-bit LDR (not HDRI)",
+      "faces": {
+        "bk": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_050_bk.png",
+          "sha256": "b2f3c515217e468d887c22fcec0aa95e4f30978c408124b11f1abbf8e493d249",
+          "width": 256
+        },
+        "dn": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_050_dn.png",
+          "sha256": "a42e3c08be9e72d962e575116769452b3dae81dc4676250048b09e6fd9a44c77",
+          "width": 256
+        },
+        "ft": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_050_ft.png",
+          "sha256": "7f15226d449ef05faf178dfe7406501decd03c33129909c87132637b7d556853",
+          "width": 256
+        },
+        "lf": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_050_lf.png",
+          "sha256": "0d6d5c167e50f6a5f6620023d0fcbdab799da384772b509ea7c774b942174e68",
+          "width": 256
+        },
+        "rt": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_050_rt.png",
+          "sha256": "c310f1de6aa899e8df93961e9783bb6e06a59e47765340662b1355eab751a166",
+          "width": 256
+        },
+        "up": {
+          "height": 256,
+          "path": "roblox-kit/assets/images/arena_skies/sky_050_up.png",
+          "sha256": "fcec6d89a61e80252e2325c2b6c4bcc8bb2ac19beed25ed71d08f4e63d387911",
+          "width": 256
+        }
+      },
+      "height": 256,
+      "id": "arena-sky-050",
+      "license": "CC0-1.0",
+      "path": "roblox-kit/assets/images/arena_skies/sky_050.png",
+      "projection": "equirectangular-latlong",
+      "seed": 4437976,
+      "sha256": "7b636652b30d8a54c397c8ba27fc3ea1a710174eb0d7cd32caf7758b96f38eb5",
+      "thumbnail": "roblox-kit/assets/images/arena_skies/sky_050.png",
+      "width": 512
+    }
+  ]
+}

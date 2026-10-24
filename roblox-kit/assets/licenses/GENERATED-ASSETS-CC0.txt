@@ -1,0 +1,3 @@
+Original procedural image outputs and repository-authored model XML in this folder are released under the Creative Commons CC0 1.0 Universal dedication by the Tunneling contributors.
+
+https://creativecommons.org/publicdomain/zero/1.0/

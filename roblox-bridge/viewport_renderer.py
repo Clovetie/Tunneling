@@ -247,7 +247,11 @@ _TINY_FONT = {
 
 
 def _draw_text(buf: bytearray, w: int, h: int, x: int, y: int, text: str, rgb: Tuple[int, int, int], scale: int = 2) -> None:
-    cx = x
+    # Layout-derived GUI positions can be fractional at scaled viewport sizes.
+    # Pixel indices stay integral; placement is rounded once at rasterization.
+    cx = int(round(x))
+    y = int(round(y))
+    scale = max(1, int(round(scale)))
     r, g, b = rgb
     for ch in text.upper()[:34]:
         if ch == " ":
@@ -281,11 +285,18 @@ def _blit_scaled_rgba(
 ) -> None:
     if tw <= 0 or th <= 0 or sw <= 0 or sh <= 0:
         return
-    for y in range(max(0, ty), min(dh, ty + th)):
+    # Roblox UI layout can produce fractional pixel rectangles at non-integer
+    # viewport scales. Keep the sampling math fractional, but raster bounds must
+    # be integers or range() raises TypeError.
+    top = max(0, math.floor(ty))
+    bottom = min(dh, math.ceil(ty + th))
+    left = max(0, math.floor(tx))
+    right = min(dw, math.ceil(tx + tw))
+    for y in range(top, bottom):
         sy = min(sh - 1, int((y - ty) * sh / th))
         s_row = sy * sw * 4
         d_row = y * dw * 4
-        for x in range(max(0, tx), min(dw, tx + tw)):
+        for x in range(left, right):
             sx = min(sw - 1, int((x - tx) * sw / tw))
             si = s_row + sx * 4
             sa = src[si + 3]
@@ -405,6 +416,8 @@ def render_scene_png(
     fov_deg: float = 70.0,
     include_hud: bool = True,
     show_labels: bool = True,
+    explicit_ortho: bool = False,
+    show_grid: bool = True,
 ) -> Tuple[bytes, dict]:
     w = max(240, min(1280, int(width)))
     h = max(160, min(800, int(height)))
@@ -444,9 +457,10 @@ def render_scene_png(
         buf[y * w * 4 : (y + 1) * w * 4] = row_bytes
 
     if explicit_cam_pos and explicit_look_at:
-        cam_pos, look_at, ortho = explicit_cam_pos, explicit_look_at, False
+        cam_pos, look_at, ortho = tuple(map(float, explicit_cam_pos)), tuple(map(float, explicit_look_at)), bool(explicit_ortho)
     else:
         cam_pos, look_at, ortho = _compute_auto_camera(parts, camera_preset)
+        ortho = bool(ortho or explicit_ortho)
 
     fwd = _v_norm(_v_sub(look_at, cam_pos))
     up_hint = (0.0, 0.0, -1.0) if abs(fwd[1]) > 0.985 else (0.0, 1.0, 0.0)
@@ -456,11 +470,8 @@ def render_scene_png(
     focal = (h * 0.5) / math.tan(math.radians(max(25.0, min(110.0, fov_deg))) * 0.5)
     ortho_scale = (h * 0.42) / max(8.0, math.sqrt(_v_dot(_v_sub(look_at, cam_pos), _v_sub(look_at, cam_pos))) * 0.55)
 
-    def project(pt):
-        rel = _v_sub(pt, cam_pos)
-        cx = _v_dot(rel, right)
-        cy = _v_dot(rel, cam_up)
-        cz = _v_dot(rel, fwd)
+    def project_camera(c):
+        cx, cy, cz = c
         if ortho:
             return (w * 0.5 + cx * ortho_scale, h * 0.5 - cy * ortho_scale, cz)
         if cz <= 0.25:
@@ -468,20 +479,42 @@ def render_scene_png(
         inv = focal / cz
         return (w * 0.5 + cx * inv, h * 0.5 - cy * inv, cz)
 
+    def camera_coords(pt):
+        rel = _v_sub(pt, cam_pos)
+        return (_v_dot(rel, right), _v_dot(rel, cam_up), _v_dot(rel, fwd))
+
+    def project(pt):
+        return project_camera(camera_coords(pt))
+
+    def clip_near(poly):
+        if ortho:
+            return poly
+        clipped = []
+        for i, cur in enumerate(poly):
+            prev = poly[i - 1]
+            cin, pin = cur[2] > 0.25, prev[2] > 0.25
+            if cin != pin:
+                t = (0.25 - prev[2]) / (cur[2] - prev[2])
+                clipped.append(tuple(prev[k] + t * (cur[k] - prev[k]) for k in range(3)))
+            if cin:
+                clipped.append(cur)
+        return clipped
+
     # Subtle world grid lines on Y = 0 plane so scale & alignment are visually crystal clear
-    grid_step = 8
-    grid_col = (255, 255, 255, 24)
-    gx_center = round(look_at[0] / grid_step) * grid_step
-    gz_center = round(look_at[2] / grid_step) * grid_step
-    for i in range(-8, 9):
-        p0 = project((gx_center + i * grid_step, 0.02, gz_center - 8 * grid_step))
-        p1 = project((gx_center + i * grid_step, 0.02, gz_center + 8 * grid_step))
-        if p0 and p1:
-            _draw_line(buf, w, h, p0[0], p0[1], p1[0], p1[1], grid_col)
-        q0 = project((gx_center - 8 * grid_step, 0.02, gz_center + i * grid_step))
-        q1 = project((gx_center + 8 * grid_step, 0.02, gz_center + i * grid_step))
-        if q0 and q1:
-            _draw_line(buf, w, h, q0[0], q0[1], q1[0], q1[1], grid_col)
+    if show_grid:
+        grid_step = 8
+        grid_col = (255, 255, 255, 24)
+        gx_center = round(look_at[0] / grid_step) * grid_step
+        gz_center = round(look_at[2] / grid_step) * grid_step
+        for i in range(-8, 9):
+            p0 = project((gx_center + i * grid_step, 0.02, gz_center - 8 * grid_step))
+            p1 = project((gx_center + i * grid_step, 0.02, gz_center + 8 * grid_step))
+            if p0 and p1:
+                _draw_line(buf, w, h, p0[0], p0[1], p1[0], p1[1], grid_col)
+            q0 = project((gx_center - 8 * grid_step, 0.02, gz_center + i * grid_step))
+            q1 = project((gx_center + 8 * grid_step, 0.02, gz_center + i * grid_step))
+            if q0 and q1:
+                _draw_line(buf, w, h, q0[0], q0[1], q1[0], q1[1], grid_col)
 
     sun_dir = _v_norm((0.46, 0.78, 0.42))
     draw_faces = []
@@ -492,20 +525,14 @@ def render_scene_png(
         sx, sy, sz = p["size"]
         ax, ay, az = p["axes"]
         wverts = []
-        proj_verts = []
-        visible_any = True
+        cam_verts = []
         for lx, ly, lz in _CUBE_VERTS:
             wx = px + ax[0] * (lx * sx) + ay[0] * (ly * sy) + az[0] * (lz * sz)
             wy = py + ax[1] * (lx * sx) + ay[1] * (ly * sy) + az[1] * (lz * sz)
             wz = pz + ax[2] * (lx * sx) + ay[2] * (ly * sy) + az[2] * (lz * sz)
-            wverts.append((wx, wy, wz))
-            pr = project((wx, wy, wz))
-            if pr is None:
-                visible_any = False
-                break
-            proj_verts.append(pr)
-        if not visible_any:
-            continue
+            wv = (wx, wy, wz)
+            wverts.append(wv)
+            cam_verts.append(camera_coords(wv))
 
         alpha = max(35, min(255, int(round((1.0 - p["transparency"]) * 255))))
         base_r, base_g, base_b = p["color"]
@@ -530,9 +557,13 @@ def render_scene_png(
                 to_cam = _v_sub(cam_pos, fc)
                 if _v_dot(wnrm, to_cam) <= 0.0:
                     continue
-            else:
-                if _v_dot(wnrm, fwd) >= 0.0:
-                    continue
+            elif _v_dot(wnrm, fwd) >= 0.0:
+                continue
+            camera_poly = clip_near([cam_verts[i] for i in idxs])
+            projected = [project_camera(v) for v in camera_poly]
+            projected = [v for v in projected if v is not None]
+            if len(projected) < 3:
+                continue
 
             if p["neon"]:
                 shade = 1.18
@@ -544,8 +575,8 @@ def render_scene_png(
             cr = max(0, min(255, int(round(base_r * shade))))
             cg = max(0, min(255, int(round(base_g * shade))))
             cb = max(0, min(255, int(round(base_b * shade))))
-            depth = sum(proj_verts[i][2] for i in idxs) * 0.25
-            pts2d = [(proj_verts[i][0], proj_verts[i][1]) for i in idxs]
+            depth = sum(v[2] for v in projected) / len(projected)
+            pts2d = [(v[0], v[1]) for v in projected]
             draw_faces.append((depth, pts2d, (cr, cg, cb, alpha), p["neon"]))
 
     # Painter's sort back-to-front
@@ -569,9 +600,11 @@ def render_scene_png(
 
     # Optional 2D ScreenGui HUD overlay right on top of the 3D viewport!
     hud_count = 0
+    hud_audit = None
     if include_hud and gui_tree:
         kit_images = find_kit_root() / "assets" / "images"
-        audit = audit_tree_on_viewport(gui_tree, "render", w, h)
+        hud_audit = audit_tree_on_viewport(gui_tree, w, h, "render")
+        audit = hud_audit
         img_cache: Dict[str, Tuple[int, int, bytes]] = {}
         for el in audit.get("elements") or []:
             rx, ry, rw, rh = el["rect"]
@@ -631,6 +664,11 @@ def render_scene_png(
         "hudElementsComposited": hud_count,
         "bytes": len(png_bytes),
     }
+    if hud_audit is not None:
+        meta["hudMeasuredFrom"] = hud_audit.get("measuredFrom", "derived")
+        meta["safeArea"] = hud_audit.get("safeArea", [])
+        if hud_audit.get("warnings"):
+            meta["warnings"] = list(hud_audit["warnings"])
     return png_bytes, meta
 
 

@@ -874,6 +874,14 @@ def _slugify_key(name: str) -> str:
     return clean
 
 
+def _slugify_rel_key(rel_path: str) -> str:
+    """Create a stable collision-resistant key from an image's relative path."""
+    clean = re.sub(r"[^A-Za-z0-9_]", "_", Path(rel_path).with_suffix("").as_posix())
+    if not clean or clean[0].isdigit():
+        clean = "img_" + clean
+    return clean
+
+
 def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
     """Record or refresh all repo assets in `roblox-kit/assets/asset-lock.json`
     and regenerate `roblox-kit/modules/Assets.lua` cleanly.
@@ -893,31 +901,60 @@ def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
         except Exception:
             pass
 
+    # Keep cloud publish metadata keyed by the actual relative file path, not stale
+    # basename keys. This collapses legacy collisions while preserving each file's
+    # existing cloudUri and dimensions. Asset records without a local path remain.
+    old_images = lock_data.get("images", {})
+    previous_images_by_rel = {}
+    standalone_images = {}
+    for old_key, old_item in old_images.items():
+        old_rel = old_item.get("relPath") if isinstance(old_item, dict) else None
+        if old_rel:
+            prior = previous_images_by_rel.get(old_rel)
+            if prior is None or (not prior.get("cloudUri") and old_item.get("cloudUri")):
+                previous_images_by_rel[old_rel] = old_item
+        else:
+            standalone_images[old_key] = old_item
+    lock_data["images"] = standalone_images
     if entry and entry.get("key"):
-        lock_data.setdefault("images", {})[entry["key"]] = entry
+        if entry.get("relPath"):
+            previous_images_by_rel[entry["relPath"]] = entry
+        else:
+            lock_data["images"][entry["key"]] = entry
 
-    # Also auto-index any PNG/JPG/BMP files sitting in `roblox-kit/assets/images/**`
-    for img_file in sorted(images_dir.rglob("*")):
-        if img_file.is_file() and img_file.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp"):
-            rel = img_file.relative_to(images_dir).as_posix()
-            key = _slugify_key(img_file.name)
-            raw = img_file.read_bytes()
-            sha = hashlib.sha256(raw).hexdigest()[:16]
-            prev = lock_data["images"].get(key, {})
-            w = prev.get("width", 0)
-            h = prev.get("height", 0)
-            if (not w or prev.get("sha256") != sha) and raw[:8] == PNG_SIG:
-                w, h = struct.unpack(">II", raw[16:24])
-            lock_data["images"][key] = {
-                "key": key,
-                "relPath": rel,
-                "sha256": sha,
-                "bytes": len(raw),
-                "width": w,
-                "height": h,
-                "localUri": f"rbxasset://arena_assets/{rel}",
-                "cloudUri": prev.get("cloudUri") or (entry.get("cloudUri") if entry and entry.get("key") == key else None),
-            }
+    # Also auto-index any PNG/JPG/BMP files sitting in `roblox-kit/assets/images/**`.
+    # Preserve familiar basename keys where unique, but disambiguate same-named files
+    # by stable relative-path keys instead of silently overwriting one asset with another.
+    image_files = [p for p in sorted(images_dir.rglob("*")) if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp")]
+    base_counts: dict[str, int] = {}
+    for img_file in image_files:
+        base = _slugify_key(img_file.name)
+        base_counts[base] = base_counts.get(base, 0) + 1
+    occupied_keys = set()
+    for img_file in image_files:
+        rel = img_file.relative_to(images_dir).as_posix()
+        base_key = _slugify_key(img_file.name)
+        key = base_key if base_counts[base_key] == 1 else _slugify_rel_key(rel)
+        if key in occupied_keys or (key in lock_data["images"] and lock_data["images"][key].get("relPath") not in (None, rel)):
+            key = f"{_slugify_rel_key(rel)}_{hashlib.sha256(rel.encode('utf-8')).hexdigest()[:8]}"
+        occupied_keys.add(key)
+        raw = img_file.read_bytes()
+        sha = hashlib.sha256(raw).hexdigest()[:16]
+        prev = lock_data["images"].get(key) or previous_images_by_rel.get(rel, {})
+        w = prev.get("width", 0)
+        h = prev.get("height", 0)
+        if (not w or prev.get("sha256") != sha) and raw[:8] == PNG_SIG:
+            w, h = struct.unpack(">II", raw[16:24])
+        lock_data["images"][key] = {
+            "key": key,
+            "relPath": rel,
+            "sha256": sha,
+            "bytes": len(raw),
+            "width": w,
+            "height": h,
+            "localUri": f"rbxasset://arena_assets/{rel}",
+            "cloudUri": prev.get("cloudUri") or (entry.get("cloudUri") if entry and entry.get("key") == key else None),
+        }
 
     # Also auto-index any WAV/OGG/MP3 audio files sitting in `roblox-kit/assets/audio/**`
     audio_dir = kit / "assets" / "audio"
@@ -938,7 +975,9 @@ def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
                     "cloudUri": prev_a.get("cloudUri"),
                 }
 
-    lock_path.write_text(json.dumps(lock_data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    lock_text = json.dumps(lock_data, indent=2, sort_keys=True) + "\n"
+    if not lock_path.is_file() or lock_path.read_text(encoding="utf-8") != lock_text:
+        lock_path.write_text(lock_text, encoding="utf-8")
 
     # Emit clean zero-warning Luau `Assets.lua` module
     lines = [
@@ -978,7 +1017,9 @@ def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
     lines.append("")
 
     assets_lua_path = modules_dir / "Assets.lua"
-    assets_lua_path.write_text("\n".join(lines), encoding="utf-8")
+    module_text = "\n".join(lines)
+    if not assets_lua_path.is_file() or assets_lua_path.read_text(encoding="utf-8") != module_text:
+        assets_lua_path.write_text(module_text, encoding="utf-8")
     return {
         "lockFile": str(lock_path),
         "moduleFile": str(assets_lua_path),

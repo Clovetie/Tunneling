@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_bridge_mcp.py — Comprehensive automated test suite for the v3.0
+test_bridge_mcp.py — Comprehensive automated test suite for the v4.0.0
 Arena <-> Roblox Studio Bridge, CLI, and MCP Server (stdio + Streamable HTTP).
 
 Tests:
@@ -10,7 +10,7 @@ Tests:
   4. Streamable HTTP MCP (`POST /mcp`, `GET /mcp`, `DELETE /mcp`, notifications `202`, batches, auth)
   5. MCP `stdio` subprocess transport (BOTH newline-delimited JSON and LSP `Content-Length` framing,
      auto-attach to running bridge AND standalone embedded bridge mode)
-  6. All 37 MCP tools end-to-end against stateful `MockWorld` v3.0:
+  6. All 68 MCP tools end-to-end against stateful `MockWorld` v4.0.0:
      - Session/State (`get_studio_state`, `list_studios`, `ping_studio`)
      - Exploration (`survey_place`, `inspect_instance`, `search_game_tree`, `get_properties`, `compare_instances`)
      - Scripts (`script_read` with line ranges, `read_scripts_batch`, `write_script` with luau_check + expectedHash,
@@ -34,17 +34,31 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+TOOL_TEST_METRICS = {}
+
+def record_tool_metric(name: str, elapsed: float, passed: bool = True):
+    metric = TOOL_TEST_METRICS.setdefault(name, {"status": "pass", "calls": 0, "durationSec": 0.0})
+    metric["calls"] += 1
+    metric["durationSec"] = round(metric["durationSec"] + elapsed, 4)
+    if not passed:
+        metric["status"] = "fail"
+
 sys.path.insert(0, str(HERE))
 
-from mcp_core import TOOL_SPECS, fnv1a_32, fnv1a_hex, run_luau_check  # noqa: E402
+from mcp_core import BridgeClient, TOOL_SPECS, execute_tool, fnv1a_32, fnv1a_hex, run_luau_check  # noqa: E402
 from mock_studio import run_mock_loop  # noqa: E402
-from server import create_http_server  # noqa: E402
+from scene_auditor import audit_3d_hierarchy  # noqa: E402
+from ui_linter import audit_tree_on_viewport, run_multi_viewport_audit  # noqa: E402
+from viewport_renderer import _blit_scaled_rgba, render_scene_png  # noqa: E402
+from server import BridgeState, create_http_server  # noqa: E402
+import server as bridge_server  # noqa: E402
 import setup as bridge_setup  # noqa: E402
 
 
@@ -80,6 +94,116 @@ class TestHashAndToolchain(unittest.TestCase):
         res = run_luau_check(path=str(HERE / "ArenaBridge.lua"))
         self.assertTrue(res["ok"], msg=json.dumps(res, indent=2))
         self.assertEqual(res["results"][0]["unusedVariables"], [])
+
+
+class TestV4RegressionFixtures(unittest.TestCase):
+    def test_viewport_scaled_blit_accepts_fractional_ui_rectangles(self):
+        dst = bytearray([0, 0, 0, 255] * 24 * 16)
+        src = bytes([255, 80, 40, 255] * 4)
+        _blit_scaled_rgba(dst, 24, 16, src, 2, 2, 3.25, 2.5, 10.5, 7.25)
+        self.assertIn(bytes([255, 80, 40, 255]), [dst[i:i+4] for i in range(0, len(dst), 4)])
+
+    def test_property_coercion_failures_are_explicit_in_plugin(self):
+        source = (HERE / "ArenaBridge.lua").read_text(encoding="utf-8")
+        self.assertIn("unsupported property coercion tag:", source)
+        self.assertIn("unknown Enum item:", source)
+        self.assertIn("Instance reference did not resolve:", source)
+        self.assertIn("Color3 components must be finite normalized numbers", source)
+        self.assertIn("One or more properties were not applied.", source)
+        self.assertIn("ok = not anyFailed", source)
+        self.assertIn("build transaction rolled back:", source)
+        self.assertNotIn("parseHexColor(v) or Color3.new(1, 1, 1)", source)
+
+    def test_viewport_renders_geometry_camera_and_hud(self):
+        workspace = {"name": "Workspace", "className": "Workspace", "children": [{
+            "name": "VisibleCrate", "className": "Part", "properties": {},
+            "structuredProperties": {"Size": {"__t": "Vector3", "v": [8, 6, 8]}, "Position": {"__t": "Vector3", "v": [0, 3, 0]}, "Color": {"__t": "Color3", "v": [0.9, 0.2, 0.1]}, "Anchored": True},
+        }]}
+        a, ma = render_scene_png(workspace, width=480, height=270, include_hud=False, show_grid=False)
+        b, mb = render_scene_png(workspace, width=480, height=270, explicit_cam_pos=(16, 12, 24), explicit_look_at=(0, 3, 0), include_hud=False, show_grid=False)
+        from image_pipeline import decode_any_to_rgba
+        wa, ha, pa = decode_any_to_rgba(a)
+        self.assertEqual((wa, ha), (480, 270))
+        self.assertGreater(ma["partsRendered"], 0)
+        self.assertGreater(ma["facesRasterized"], 0)
+        self.assertNotEqual(a, b)
+        bg = pa[:4]
+        self.assertGreater(sum(1 for i in range(0, len(pa), 4) if pa[i:i+4] != bg), 500)
+        gui = [{"name": "HUD", "className": "ScreenGui", "structuredProperties": {"ResetOnSpawn": False}, "children": [{"name": "Panel", "className": "Frame", "structuredProperties": {"Size": {"__t": "UDim2", "v": [0, 140, 0, 80]}, "Position": {"__t": "UDim2", "v": [0, 12, 0, 16]}, "BackgroundColor3": {"__t": "Color3", "v": [0.1, 0.3, 0.8]}, "BackgroundTransparency": 0}}]}]
+        _, mh = render_scene_png(workspace, gui_tree=gui, width=480, height=270, include_hud=True, show_grid=False)
+        self.assertGreater(mh["hudElementsComposited"], 0)
+
+    def test_ui_bounds_and_reset_property_are_read_from_typed_data(self):
+        tree = [{"name": "Root", "className": "ScreenGui", "structuredProperties": {"ResetOnSpawn": False}, "children": [{"name": "Card", "className": "Frame", "structuredProperties": {"Position": {"__t": "UDim2", "v": [0, 0, 0, 0]}, "Size": {"__t": "UDim2", "v": [0, 140, 0, 126]}, "BackgroundTransparency": 0}}]}]
+        report = audit_tree_on_viewport(tree, 640, 470, "desktop")
+        card = next(e for e in report["elements"] if e["name"] == "Card")
+        self.assertEqual(card["rect"], [0.0, 0.0, 140.0, 126.0])
+        self.assertFalse(any(x["code"] == "reset_on_spawn_enabled" for x in report["issues"]))
+
+    def test_missing_live_peer_fast_fails(self):
+        state = BridgeState()
+        client = BridgeClient(direct_dispatch=state.direct_dispatch)
+        job = client.submit_job("inspect", {"path": "Workspace"}, wait=60, dm="edit")
+        self.assertEqual(job["status"], "error")
+        self.assertEqual(job["reason"], "no_peer")
+
+    def test_offline_renderer_accepts_exported_tree_without_peer(self):
+        state = BridgeState()
+        client = BridgeClient(direct_dispatch=state.direct_dispatch)
+        tree = {"name": "Workspace", "className": "Workspace", "children": [{
+            "name": "OfflinePart", "className": "Part", "structuredProperties": {
+                "Size": {"__t": "Vector3", "v": [8, 4, 8]},
+                "Position": {"__t": "Vector3", "v": [0, 2, 0]},
+                "Color": {"__t": "Color3", "v": [0.2, 0.7, 0.3]},
+            },
+        }]}
+        result = execute_tool(client, "render_offline", {"tree": tree, "width": 480, "height": 270})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["source"], "exported_tree")
+        self.assertGreater(result["facesRasterized"], 0)
+
+    def test_live_ui_measurements_and_device_safe_area_are_reported(self):
+        tree = [{
+            "name": "RuntimeGui", "className": "ScreenGui",
+            "structuredProperties": {
+                "ScreenInsets": {"__t": "Enum", "v": "Enum.ScreenInsets.DeviceSafeInsets"},
+                "DeviceSafeAreaInsets": [12, 24, 12, 18],
+            },
+            "children": [{
+                "name": "Measured", "className": "Frame",
+                "structuredProperties": {
+                    "Position": {"__t": "UDim2", "v": [0, 0, 0, 0]},
+                    "Size": {"__t": "UDim2", "v": [0, 100, 0, 50]},
+                    "AbsolutePosition": {"__t": "Vector2", "v": [12, 24]},
+                    "AbsoluteSize": {"__t": "Vector2", "v": [100, 50]},
+                },
+            }],
+        }]
+        report = run_multi_viewport_audit(tree, ["mobile"])
+        self.assertEqual(report["measuredFrom"], "client")
+        self.assertTrue(report["safeArea"][0]["safeAreaAware"])
+        self.assertEqual(report["safeArea"][0]["insetsPx"], [12.0, 24.0, 12.0, 18.0])
+        self.assertEqual(report["viewports"]["mobile"]["elements"][0]["rect"], [12.0, 24.0, 100.0, 50.0])
+
+    def test_snapshots_persist_to_disk_and_reload(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(bridge_server, "SNAPSHOT_DIR", Path(folder)):
+                first = BridgeState()
+                saved = first.handle_snapshots({"action": "save", "label": "named-baseline", "root": "ServerStorage", "scripts": [{"path": "ServerStorage.A", "source": "return 1"}]})
+                second = BridgeState()
+                got = second.handle_snapshots({"action": "get", "id": saved["id"]})
+                self.assertEqual(got["label"], "named-baseline")
+                self.assertEqual(got["scripts"][0]["path"], "ServerStorage.A")
+                self.assertTrue((Path(folder) / f"{saved['id']}.json.gz").is_file())
+
+    def test_z_fighting_requires_real_overlap_and_collidable_surface(self):
+        def part(name, pos, color, collide=True):
+            return {"name": name, "className": "Part", "properties": {}, "structuredProperties": {"Size": [10, 1, 10], "Position": pos, "Anchored": True, "CanCollide": collide, "Color": color}}
+        clean = {"name": "Workspace", "className": "Workspace", "children": [part("FarA", [0, 5, 0], [1, 0, 0]), part("FarB", [30, 5, 0], [0, 1, 0])]}
+        self.assertFalse(any(x["code"] == "Z_FIGHTING_COPLANAR" for x in audit_3d_hierarchy(clean)["issues"]))
+        overlap = {"name": "Workspace", "className": "Workspace", "children": [part("A", [0, 5, 0], [1, 0, 0]), part("B", [1, 5, 0], [0, 1, 0])]}
+        self.assertTrue(any(x["code"] == "Z_FIGHTING_COPLANAR" for x in audit_3d_hierarchy(overlap)["issues"]))
 
 
 class TestSetupTokenRecovery(unittest.TestCase):
@@ -158,16 +282,22 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             return resp.status, json.loads(raw) if raw else None, dict(resp.headers)
 
     def call_tool(self, name: str, arguments: dict = None) -> dict:
-        status, body, _ = self.mcp_http({
-            "jsonrpc": "2.0",
-            "id": f"call-{name}",
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments or {}},
-        })
-        self.assertEqual(status, 200)
-        res = body["result"]
-        self.assertFalse(res.get("isError"), msg=f"Tool {name} errored: {res}")
-        return res["structuredContent"]
+        started = time.monotonic()
+        passed = False
+        try:
+            status, body, _ = self.mcp_http({
+                "jsonrpc": "2.0",
+                "id": f"call-{name}",
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments or {}},
+            })
+            self.assertEqual(status, 200)
+            res = body["result"]
+            self.assertFalse(res.get("isError"), msg=f"Tool {name} errored: {res}")
+            passed = True
+            return res["structuredContent"]
+        finally:
+            record_tool_metric(name, time.monotonic() - started, passed)
 
     def test_01_streamable_http_handshake_notifications_batches_and_auth(self):
         # Unauthorized without token -> 401
@@ -197,14 +327,26 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         self.assertEqual(st_n, 202)
         self.assertIsNone(body_n)
 
-        # Tools list returns all 55 annotated tools
+        # Tools list returns every annotated tool
         _, list_resp, _ = self.mcp_http({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, auth_mode="header")
         tools = list_resp["result"]["tools"]
-        self.assertEqual(len(tools), 55)
         self.assertEqual(len(tools), len(TOOL_SPECS))
+        self.assertEqual(len(tools), len(TOOL_SPECS))
+        _, unknown_arg, _ = self.mcp_http({"jsonrpc": "2.0", "id": "unknown-arg", "method": "tools/call", "params": {"name": "browse_kit", "arguments": {"typo": True}}})
+        self.assertEqual(unknown_arg["error"]["code"], -32602)
+        self.assertIn("Unknown parameter", unknown_arg["error"]["message"])
         for t in tools:
             self.assertIn("annotations", t)
             self.assertIn("readOnlyHint", t["annotations"])
+
+        # Dashboard/API self-test route includes the registered-tool matrix.
+        if not os.environ.get("ARENA_SELF_TEST_CHILD"):
+            self_test_req = urllib.request.Request(f"{self.base_url}/api/self-test", headers={"X-Arena-Token": self.token})
+            with urllib.request.urlopen(self_test_req, timeout=90) as self_test_resp:
+                self_test_api = json.loads(self_test_resp.read().decode("utf-8"))
+            self.assertTrue(self_test_api["ok"], msg=self_test_api["humanTable"])
+            self.assertEqual(len(self_test_api["toolMatrix"]), len(TOOL_SPECS))
+            self.assertTrue(all("durationSec" in row and row["calls"] > 0 for row in self_test_api["toolMatrix"]))
 
         # JSON-RPC batch call works cleanly
         st_b, batch_resp, _ = self.mcp_http([
@@ -224,7 +366,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         peers = self.call_tool("list_studios")
         self.assertGreaterEqual(peers["onlineCount"], 1)
         ping = self.call_tool("ping_studio")
-        self.assertEqual(ping["pluginVersion"], "3.0")
+        self.assertEqual(ping["pluginVersion"], "4.0.0")
 
         # 2. Survey, Inspect, Search, Properties, Compare
         survey = self.call_tool("survey_place", {"includeSource": True})
@@ -389,8 +531,12 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             "warmupSeconds": 0.2,
             "serverCode": "return {serverOk = true}",
             "clientCode": "return {clientOk = true}",
+            "consoleLimit": 1,
         })
         self.assertTrue(scen["ok"])
+        self.assertTrue(scen["sessionSurvived"])
+        self.assertTrue(scen["clientRouteReady"])
+        self.assertLessEqual(scen["consoleCount"], 1)
         self.assertEqual(scen["serverResult"]["dm"], "server")
         self.assertEqual(scen["clientResult"]["dm"], "client")
 
@@ -454,15 +600,27 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             boot_data = json.loads(boot_resp.read().decode("utf-8"))
             self.assertTrue(boot_data["local"])
             self.assertEqual(boot_data["token"], self.token)
-            self.assertEqual(len(boot_data["tools"]), 55)
+            self.assertEqual(len(boot_data["tools"]), len(TOOL_SPECS))
 
         with urllib.request.urlopen(f"{self.base_url}/api/agent-guide", timeout=5) as guide_resp:
             guide_data = json.loads(guide_resp.read().decode("utf-8"))
-            self.assertEqual(guide_data["toolCounts"]["total"], 55)
+            self.assertEqual(guide_data["toolCounts"]["total"], len(TOOL_SPECS))
             self.assertGreaterEqual(len(guide_data["keyTips"]), 5)
 
-        # 8. Direct Image/Audio Import, 4,811 Cloud Icons, 14 Systems, 3D Viewport Vision, 3D Physics QA & .rbxlx
-        kit_all = self.call_tool("browse_kit", {"category": "all"})
+        # 8. Direct Image/Audio Import, expanded asset catalog, 3D tools and bounded kit browsing
+        kit_summary = self.call_tool("browse_kit", {})
+        self.assertEqual(kit_summary["format"], "summary")
+        self.assertNotIn("images", kit_summary)
+        self.assertGreaterEqual(kit_summary["counts"]["images"], 400)
+        image_page = self.call_tool("browse_kit", {"section": "images", "cursor": 0, "limit": 10})
+        self.assertEqual(len(image_page["items"]), 10)
+        self.assertTrue(image_page["hasMore"])
+        self.assertTrue(all(item.get("license") == "CC0-1.0" for item in image_page["items"]))
+        self.assertTrue(all(item.get("provenance") for item in image_page["items"]))
+        asset_lock = json.loads((HERE.parent / "roblox-kit" / "assets" / "asset-lock.json").read_text(encoding="utf-8"))
+        image_relpaths = [asset.get("relPath") for asset in asset_lock.get("images", {}).values() if asset.get("relPath")]
+        self.assertEqual(len(image_relpaths), len(set(image_relpaths)), "Assets.lua index must not silently alias duplicate basenames")
+        kit_all = self.call_tool("browse_kit", {"category": "all", "format": "full"})
         self.assertGreaterEqual(len(kit_all["skills"]), 16)
         self.assertGreaterEqual(len(kit_all["modules"]), 18)
         self.assertGreaterEqual(len(kit_all["systems"]), 14)
@@ -481,6 +639,9 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         lucide_search = self.call_tool("search_cloud_icons", {"query": "shield", "pack": "lucide_fill", "limit": 10})
         self.assertGreaterEqual(lucide_search["returnedCount"], 1)
         self.assertEqual(lucide_search["icons"][0]["pack"], "lucide_fill")
+        egg_search = self.call_tool("search_cloud_icons", {"query": "egg", "pack": "stud", "limit": 10})
+        self.assertGreaterEqual(egg_search["returnedCount"], 1)
+        self.assertGreaterEqual(len(egg_search["icons"][0]["variants"]), 1)
 
         # Multimodal 3D Viewport + HUD capture emits genuine MCP image/png content block!
         _, vp_raw, _ = self.mcp_http({
@@ -497,6 +658,95 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         vp_png = _b64_vp.b64decode(vp_res["content"][0]["data"])
         self.assertEqual(vp_png[:8], b"\x89PNG\r\n\x1a\n")
         self.assertGreaterEqual(vp_res["structuredContent"]["partsRendered"], 2)
+        no_hud_default = self.call_tool("capture_viewport", {"width": 480, "height": 270, "returnInline": False})
+        self.assertEqual(no_hud_default["hudElementsComposited"], 0)
+        native = self.call_tool("capture_viewport", {"mode": "native"})
+        self.assertFalse(native["ok"])
+        self.assertEqual(native["reason"], "native_capture_unsafe")
+
+        geometry = self.call_tool("export_geometry", {"path": "Workspace"})
+        self.assertGreaterEqual(geometry["count"], 2)
+        self.assertTrue(all(len(part["s"]) == 3 and len(part["r"]) == 9 for part in geometry["parts"]))
+        offline = self.call_tool("render_offline", {"path": "Workspace", "width": 480, "height": 270, "camera": {"position": [20, 18, 26], "target": [0, 2, 0], "fov": 58}})
+        self.assertEqual(offline["renderer"], "software_3d_hud_rasterizer")
+        self.assertGreater(offline["facesRasterized"], 0)
+        gui_shot = self.call_tool("screenshot_gui", {"path": "StarterGui", "width": 480, "height": 270})
+        self.assertIn(gui_shot["measuredFrom"], ("derived", "client"))
+        self.assertIn("safeArea", gui_shot)
+        perf = self.call_tool("perf_audit", {"path": "Workspace"})
+        self.assertGreaterEqual(perf["partCount"], 2)
+        mesh_caps = self.call_tool("mesh_capabilities", {})
+        self.assertEqual(mesh_caps["editableMesh"]["status"], "not_probed_by_mock")
+        self.assertIn("Mock", mesh_caps["warnings"][0])
+        asset_search = self.call_tool("search_assets", {"query": "coin", "assetType": "image", "license": "CC0-1.0", "limit": 5})
+        self.assertGreater(asset_search["totalMatches"], 0)
+        self.assertTrue(all(item["license"] == "CC0-1.0" for item in asset_search["results"]))
+        sky_search = self.call_tool("search_assets", {"assetType": "sky", "limit": 1})
+        self.assertEqual(sky_search["results"][0]["thumbnailKind"], "equirectangular-panorama")
+        self.assertIsNotNone(sky_search["nextCursor"])
+
+        batch = self.call_tool("batch_write", {"files": [
+            {"parent": "ServerStorage", "name": "BatchA", "className": "Script", "source": "return 1"},
+            {"parent": "ServerStorage", "name": "BatchB", "className": "ModuleScript", "source": "return 2"},
+        ]})
+        self.assertEqual(batch["count"], 2)
+        self.call_tool("delete_instance", {"paths": ["ServerStorage.BatchA", "ServerStorage.MissingScratch"]})
+        probe = self.call_tool("probe", {"code": "return {ready=true}", "dm": "edit"})
+        self.assertTrue(probe["ok"])
+        peer_wait = self.call_tool("wait_for", {"peer": "edit", "condition": "peer_online", "timeout": 1})
+        self.assertTrue(peer_wait["ok"])
+        checked = self.call_tool("luau_check", {"code": "local value = 42\nreturn value"})
+        self.assertTrue(checked["ok"])
+        written = self.call_tool("write_script", {"parent": "ServerStorage", "name": "SelfTestScript", "className": "Script", "source": "return 'written'"})
+        self.assertEqual(written["path"], "ServerStorage.SelfTestScript")
+        self.assertIn("written", self.call_tool("script_read", {"path": "ServerStorage.SelfTestScript"})["source"])
+        executed = self.call_tool("execute_luau", {"code": "return 'execute-ok'", "dm": "edit"})
+        self.assertTrue(executed["ok"])
+        console = self.call_tool("get_console_output", {"limit": 5, "source": "game", "dm": "edit"})
+        self.assertLessEqual(len(console["lines"]), 5)
+        self.call_tool("delete_instance", {"paths": ["ServerStorage.SelfTestScript"]})
+        generated = self.call_tool("generate_procedural_image", {"preset": "icon_coin", "name": "self_test_transient", "width": 32, "height": 32, "saveToRepo": False})
+        self.assertTrue(generated["ok"])
+        sample_image = str(HERE.parent / "roblox-kit" / "assets" / "images" / "kenney_ui" / "blue_btn_depth_gloss.png")
+        batched_images = self.call_tool("import_images_batch", {"files": [sample_image], "saveSubdir": "self_test", "syncAssetsModule": False})
+        self.assertEqual(batched_images["importedCount"], 1)
+        play_started = self.call_tool("start_stop_play", {"action": "start_run", "waitForPeer": True})
+        self.assertTrue(play_started["started"])
+        play_status = self.call_tool("start_stop_play", {"action": "status"})
+        self.assertTrue(play_status["playtestActive"] or play_status["isRunning"])
+        self.call_tool("start_stop_play", {"action": "stop"})
+        stopped_scenario = self.call_tool("run_playtest_scenario", {"mode": "run", "warmupSeconds": 0.1, "keepAlive": False})
+        self.assertTrue(stopped_scenario["ok"])
+        self.assertTrue(stopped_scenario["sessionStopped"])
+        self.assertFalse(stopped_scenario["sessionSurvived"])
+        cloud_started = time.monotonic()
+        cloud_passed = False
+        try:
+            _, cloud_error, _ = self.mcp_http({"jsonrpc": "2.0", "id": "cloud-no-key", "method": "tools/call", "params": {"name": "open_cloud_action", "arguments": {"action": "datastore_list", "universeId": 1}}})
+            self.assertTrue(cloud_error["result"]["isError"])
+            self.assertIn("Missing Open Cloud API key", cloud_error["result"]["content"][0]["text"])
+            cloud_passed = True
+        finally:
+            record_tool_metric("open_cloud_action", time.monotonic() - cloud_started, cloud_passed)
+        import os as _os
+        if not _os.environ.get("ARENA_SELF_TEST_CHILD"):
+            self_test = self.call_tool("self_test", {"includeStudioSmoke": False, "timeout": 120})
+            self.assertTrue(self_test["ok"], msg=json.dumps(self_test.get("suite"), indent=2))
+            self.assertEqual(len(self_test["toolMatrix"]), len(TOOL_SPECS))
+            self.assertTrue(all(row["status"] == "pass" for row in self_test["toolMatrix"]))
+
+        biome = self.call_tool("build_biome", {"preset": "tundra", "center": [0, 0, 0], "size": [24, 24], "tileSize": 12, "seed": 7, "decorationDensity": 0})
+        self.assertEqual(biome["tiles"], 4)
+        self.assertEqual(biome["created"][0], "Workspace.ArenaBiome")
+        sky = self.call_tool("build_skybox", {"faces": {k: f"rbxassetid://{1000+i}" for i, k in enumerate(("bk", "dn", "ft", "lf", "rt", "up"))}, "atmosphere": {"Density": 0.25, "Color": [0.5, 0.6, 0.8]}})
+        self.assertTrue(sky["atmosphereCreated"])
+        _, bad_sky, _ = self.mcp_http({"jsonrpc": "2.0", "id": "bad-sky-nested", "method": "tools/call", "params": {"name": "build_skybox", "arguments": {"faces": {"bk": "x", "dn": "x", "ft": "x", "lf": "x", "rt": "x", "up": "x", "silentlyIgnored": True}}}})
+        self.assertTrue(bad_sky["result"]["isError"])
+        self.assertIn("unknown", bad_sky["result"]["structuredContent"]["error"])
+        self.call_tool("build_tree", {"parent": "Workspace", "tree": [{"name": "ScatterTemplate", "className": "Part", "properties": {"Anchored": True, "Position": [0, 2, 0]}}], "select": False})
+        scattered = self.call_tool("scatter_props", {"sourcePath": "Workspace.ScatterTemplate", "center": [10, 2, 10], "radius": 12, "count": 4, "minSpacing": 0, "seed": 11})
+        self.assertEqual(scattered["count"], 4)
+        self.assertEqual(scattered["requestedCount"], 4)
 
         # 3D Scene & Physics Auditor catches unanchored parts and auto-fixes cleanly
         self.call_tool("build_tree", {
@@ -672,7 +922,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             msg = json.loads(line)
             self.assertEqual(msg["id"], 201)
             self.assertFalse(msg["result"]["isError"])
-            self.assertEqual(msg["result"]["structuredContent"]["bridge"]["mcp_tools"], 55)
+            self.assertEqual(msg["result"]["structuredContent"]["bridge"]["mcp_tools"], len(TOOL_SPECS))
         finally:
             proc.stdin.close()
             proc.stdout.close()
@@ -704,4 +954,8 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    if os.environ.get("ARENA_SELF_TEST_CHILD"):
+        print("ARENA_TOOL_METRICS=" + json.dumps(TOOL_TEST_METRICS, sort_keys=True))
+    raise SystemExit(0 if result.wasSuccessful() else 1)

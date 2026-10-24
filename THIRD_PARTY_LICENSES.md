@@ -4,6 +4,11 @@ This repository bundles curated public-domain (CC0 1.0), MIT, ISC, and Apache-2.
 
 ---
 
+## Luau compiler & analyzer (`roblox-bridge/tools/`)
+
+- **Repository**: <https://github.com/luau-lang/luau>
+- **License**: MIT. Windows x64 release installer pins official release `0.744` and verifies SHA-256 `fde3e22c557aac6afe20a34e8050b7d8c290fa42638c04274a307ed5d0ef0db8` before installing. See `roblox-bridge/tools/install_luau_windows.ps1`.
+
 ## 1. Kenney Game UI, Icons, Input Prompts, Particles & Audio (`roblox-kit/assets/`)
 
 - **Author**: Kenney (<https://www.kenney.nl>)
@@ -13,6 +18,9 @@ This repository bundles curated public-domain (CC0 1.0), MIT, ISC, and Apache-2.
   - <https://github.com/Calinou/kenney-ui-audio>
 - **Included Packs**: *UI Pack*, *Fantasy UI Borders*, *UI Pack — Sci-Fi*, *UI Pack — Adventure*, *Mobile Controls*, *Cursor Pack*, *Game Icons*, *Game Icons Expansion*, *Game Icons Fighter Expansion*, *Board Game Icons*, *Input Prompts (PC/Xbox/PlayStation/Switch/Touch)*, *Medals*, *Ranks Pack*, *Minimap Pack*, *Emote Pack*, *Animal Pack Remastered*, *Prototype Textures*, *Light Masks*, *Particle Pack*, *Interface Sounds*, *UI Audio*
 - **License**: **Creative Commons Zero v1.0 Universal (CC0 1.0 — Public Domain)** (<https://creativecommons.org/publicdomain/zero/1.0/>)
+- **Pinned asset registry**: source commits, preserved README/license evidence, per-file SHA-256 values, thumbnail metadata, and exact-versus-pack-level provenance states are recorded in `roblox-kit/assets/sources.json`, `registry.json`, and `ATTRIBUTION.md`. The art mirror is pinned to `3694c6879e487c108f55677be7dd2ca75b07cc3b`; the sound mirrors are pinned to their recorded commits in `sources.json`.
+- **Verification note**: exact upstream Git blob matches are separately labeled from assets with a pack-level CC0 attestation. `python3 -B tools/verify_licences.py` checks the local evidence and hashes; `python3 -B tools/fetch_assets.py --build-registry --verify-upstream` performs the online pinned-tree match check.
+- **Original generated content**: procedural assets, 50 8-bit LDR sky panoramas and their six cube faces are released under CC0-1.0 with a local license notice. They are not HDRIs; no NC, ND, SA, unclear, or marketplace assets are included.
 
 ---
 

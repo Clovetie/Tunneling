@@ -60,6 +60,21 @@ def _find_child_class(node: dict, cls: str):
     return None
 
 
+def _properties(node: dict) -> dict:
+    return {**(node.get("properties") or {}), **(node.get("structuredProperties") or {})}
+
+
+def _has_absolute_measurements(nodes) -> bool:
+    stack = list(nodes or [])
+    while stack:
+        node = stack.pop()
+        props = _properties(node)
+        if all(k in props for k in ("AbsolutePosition", "AbsoluteSize")):
+            return True
+        stack.extend(node.get("children") or [])
+    return False
+
+
 def _enum_str(val) -> str:
     if isinstance(val, dict) and val.get("__t") == "Enum":
         return str(val.get("v") or "")
@@ -69,6 +84,7 @@ def _enum_str(val) -> str:
 def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str = "desktop") -> dict:
     elements = []
     issues = []
+    safe_area_records = []
 
     def add_issue(severity: str, code: str, path: str, message: str, rect=None):
         issues.append({
@@ -88,19 +104,46 @@ def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str 
         local_scale_node = _find_child_class(node, "UIScale")
         if local_scale_node:
             has_scale_anc = True
-            sc_val = float((local_scale_node.get("properties") or {}).get("Scale", 1.0))
+            sc_val = float(_properties(local_scale_node).get("Scale", 1.0))
             eff_scale = eff_scale * sc_val
 
         if cls == "ScreenGui":
-            if props.get("ResetOnSpawn", True) is True:
+            if props.get("Enabled") is False:
+                return
+            if props.get("ResetOnSpawn") is True:
                 add_issue(
                     "warning",
                     "reset_on_spawn_enabled",
                     path,
-                    "ScreenGui has ResetOnSpawn=true; player respawn will destroy runtime UI state unless intentional.",
+                    "ScreenGui ResetOnSpawn was read as true; respawn destroys runtime UI state unless intentional.",
                 )
+            inset = props.get("IgnoreGuiInset")
+            screen_insets = _enum_str(props.get("ScreenInsets"))
+            root_rect = (0.0, 0.0, vw, vh)
+            safe = props.get("DeviceSafeAreaInsets") or props.get("SafeAreaInsets") or props.get("deviceSafeArea")
+            inset_values = None
+            if isinstance(safe, dict) and all(k in safe for k in ("left", "top", "right", "bottom")):
+                inset_values = [float(safe[k]) for k in ("left", "top", "right", "bottom")]
+            elif safe is not None:
+                vals = _unwrap_vec(safe, [])
+                if len(vals) >= 4:
+                    inset_values = vals[:4]
+            if inset_values:
+                left, top, right, bottom = inset_values
+                root_rect = (left, top, max(0.0, vw - left - right), max(0.0, vh - top - bottom))
+            elif inset is False and viewport_name == "mobile":
+                # Conservative legacy top-bar inset when explicit device-safe measurements are unavailable.
+                root_rect = (0.0, 24.0, vw, max(0.0, vh - 24.0))
+            safe_mode = "DeviceSafeInsets" in screen_insets or "CoreUISafeInsets" in screen_insets
+            safe_area_records.append({
+                "path": path,
+                "screenInsets": screen_insets or None,
+                "safeAreaAware": bool(safe_mode or inset is False or inset_values),
+                "insetsPx": inset_values,
+                "insetsMeasured": bool(inset_values),
+            })
             for ch in children:
-                walk_gui(ch, f"{path}.{ch.get('name','Child')}", (0.0, 0.0, vw, vh), eff_scale, has_scale_anc)
+                walk_gui(ch, f"{path}.{ch.get('name','Child')}", root_rect, eff_scale, has_scale_anc)
             return
 
         if cls not in GUI_OBJECT_CLASSES:
@@ -118,14 +161,21 @@ def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str 
 
         w = pw * sz[0] + sz[1] * eff_scale
         h = ph * sz[2] + sz[3] * eff_scale
+        abs_size = _unwrap_vec(props.get("AbsoluteSize"), [])
+        abs_pos = _unwrap_vec(props.get("AbsolutePosition"), [])
+        has_absolute = len(abs_size) >= 2 and len(abs_pos) >= 2 and abs_size[0] >= 0 and abs_size[1] >= 0
+        if has_absolute:
+            w, h = abs_size[0], abs_size[1]
         aspect_node = _find_child_class(node, "UIAspectRatioConstraint")
         if aspect_node:
-            ratio = float((aspect_node.get("properties") or {}).get("AspectRatio", 1.0))
+            ratio = float(_properties(aspect_node).get("AspectRatio", 1.0))
             if ratio > 0 and h > 0:
                 w = min(w, h * ratio)
 
         x = px + pw * pos[0] + pos[1] * eff_scale - anc[0] * w
         y = py + ph * pos[2] + pos[3] * eff_scale - anc[1] * h
+        if has_absolute:
+            x, y = abs_pos[0], abs_pos[1]
 
         if not has_scale_anc and (sz[1] >= 540 or sz[3] >= 360) and viewport_name == "mobile":
             add_issue(
@@ -170,12 +220,12 @@ def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str 
         corner_node = _find_child_class(node, "UICorner")
         radius_px = 0
         if corner_node:
-            cr = _unwrap_vec((corner_node.get("properties") or {}).get("CornerRadius"), [0, 8])
+            cr = _unwrap_vec(_properties(corner_node).get("CornerRadius"), [0, 8])
             radius_px = int(round(min(w, h) * cr[0] + cr[1] * eff_scale))
         stroke_node = _find_child_class(node, "UIStroke")
         stroke_css = None
         if stroke_node:
-            sp = stroke_node.get("properties") or {}
+            sp = _properties(stroke_node)
             st_alpha = 1.0 - float(sp.get("Transparency", 0.0))
             stroke_css = f"{max(1, round(float(sp.get('Thickness', 1.0))))}px solid {_color_css(sp.get('Color', [1,1,1]), st_alpha)}"
 
@@ -197,7 +247,7 @@ def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str 
         pad_node = _find_child_class(node, "UIPadding")
         pad_l = pad_t = pad_r = pad_b = 0.0
         if pad_node:
-            pp = pad_node.get("properties") or {}
+            pp = _properties(pad_node)
             pad_l = _unwrap_vec(pp.get("PaddingLeft"), [0, 0])[1] * eff_scale
             pad_r = _unwrap_vec(pp.get("PaddingRight"), [0, 0])[1] * eff_scale
             pad_t = _unwrap_vec(pp.get("PaddingTop"), [0, 0])[1] * eff_scale
@@ -207,10 +257,10 @@ def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str 
         list_layout = _find_child_class(node, "UIListLayout")
         grid_layout = _find_child_class(node, "UIGridLayout")
 
-        gui_kids = [c for c in children if (c.get("className") in GUI_OBJECT_CLASSES and (c.get("properties") or {}).get("Visible") is not False)]
+        gui_kids = [c for c in children if (c.get("className") in GUI_OBJECT_CLASSES and _properties(c).get("Visible") is not False)]
 
         if grid_layout:
-            gp = grid_layout.get("properties") or {}
+            gp = _properties(grid_layout)
             csz = _unwrap_vec(gp.get("CellSize"), [0, 100, 0, 100])
             cpad = _unwrap_vec(gp.get("CellPadding"), [0, 8, 0, 8])
             cw = inner_rect[2] * csz[0] + csz[1] * eff_scale
@@ -222,14 +272,14 @@ def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str 
                 col = idx % cols
                 row = idx // cols
                 cp_copy = dict(ch)
-                cp_props = dict(ch.get("properties") or {})
+                cp_props = _properties(ch)
                 cp_props["Position"] = {"__t": "UDim2", "v": [0, col * (cw + gx) / max(eff_scale, 0.001), 0, row * (ch_h + gy) / max(eff_scale, 0.001)]}
                 cp_props["Size"] = {"__t": "UDim2", "v": [0, cw / max(eff_scale, 0.001), 0, ch_h / max(eff_scale, 0.001)]}
                 cp_props["AnchorPoint"] = {"__t": "Vector2", "v": [0, 0]}
                 cp_copy["properties"] = cp_props
                 walk_gui(cp_copy, f"{path}.{ch.get('name','Item')}", inner_rect, eff_scale, has_scale_anc)
         elif list_layout:
-            lp = list_layout.get("properties") or {}
+            lp = _properties(list_layout)
             dir_str = _enum_str(lp.get("FillDirection"))
             gap_ud = _unwrap_vec(lp.get("Padding"), [0, 0])
             horiz = "Horizontal" in dir_str
@@ -237,7 +287,7 @@ def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str 
             cursor = 0.0
             for ch in gui_kids:
                 cp_copy = dict(ch)
-                cp_props = dict(ch.get("properties") or {})
+                cp_props = _properties(ch)
                 ksz = _unwrap_vec(cp_props.get("Size"), [0, 100, 0, 32])
                 kw = inner_rect[2] * ksz[0] + ksz[1] * eff_scale
                 kh = inner_rect[3] * ksz[2] + ksz[3] * eff_scale
@@ -293,6 +343,8 @@ def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str 
         "issueCount": len(issues),
         "issues": issues,
         "elements": elements,
+        "measuredFrom": "client" if _has_absolute_measurements(tree) else "derived",
+        "safeArea": safe_area_records,
     }
 
 
@@ -305,8 +357,14 @@ def run_multi_viewport_audit(tree: list, viewports: list = None) -> dict:
         rep = audit_tree_on_viewport(tree, w, h, vp)
         reports[vp] = rep
         total_issues += rep["issueCount"]
+    measured_from = "client" if any(rep["measuredFrom"] == "client" for rep in reports.values()) else "derived"
+    safe_area = [record for rep in reports.values() for record in rep["safeArea"]]
+    warnings = [] if measured_from == "client" else ["Layout bounds were derived from UDim2; live AbsolutePosition/AbsoluteSize measurements were unavailable."]
     return {
         "ok": total_issues == 0,
         "totalIssues": total_issues,
+        "measuredFrom": measured_from,
+        "safeArea": safe_area,
+        "warnings": warnings,
         "viewports": reports,
     }

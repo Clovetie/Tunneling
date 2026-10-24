@@ -1,6 +1,6 @@
 --!nonstrict
 --[[
-	ArenaBridge v3.0 — Roblox Studio local MCP & bridge plugin
+	ArenaBridge v4.0.0 — Roblox Studio local MCP & bridge plugin
 	Connects your open Studio place (Edit, Server, and Client DataModels) to the
 	bridge & Model Context Protocol (MCP) server running on your machine.
 
@@ -11,7 +11,7 @@
 	  3. Restart Studio once when installing or rotating tokens.
 	     v2+/v3+ auto-connects on DataModel load — no toolbar click needed.
 
-	Key v3.0 upgrades:
+	Key v4.0.0 upgrades:
 	  - Multi-DataModel context routing: identifies Edit vs Play Server peers cleanly,
 	    eliminating Edit/Server race conditions during playtests.
 	  - Silent Client-Peer RPC bridge (__ArenaBridgeClientRPC): Client DataModels no
@@ -37,7 +37,7 @@ local BRIDGE_URL = "http://127.0.0.1:8077"  -- the bridge on YOUR machine
 local BRIDGE_TOKEN = "arena-demo-7f3a"      -- must match the server's --token
 local POLL_INTERVAL = 0.5                   -- idle pause between long-polls
 local AUTO_CONNECT = true                   -- connect on load if bridge is up
-local PLUGIN_VERSION = "3.0"
+local PLUGIN_VERSION = "4.0.0"
 local CLIENT_RPC_NAME = "__ArenaBridgeClientRPC"
 ------------------------------------------------------------------------------
 
@@ -98,7 +98,7 @@ if DM_MODE == "edit" then
 	toolbar = plugin:CreateToolbar("Arena")
 	button = toolbar:CreateButton(
 		"ArenaBridge",
-		"Connect this place to your Arena / MCP agent (v3.0)",
+		"Connect this place to your Arena / MCP agent (v4.0.0)",
 		"",
 		"Arena MCP"
 	)
@@ -109,6 +109,7 @@ local running = false
 local logs: { string } = {}
 local activePlaytestRunning = false
 local lastPlaytestResult: any = nil
+local playtestDiedReason: string? = nil
 local clientRpc: RemoteFunction? = nil
 
 local function log(fmt: string, ...: any)
@@ -344,7 +345,15 @@ local function coerce(value: any): any
 		return Vector2.new(v[1], v[2])
 	elseif tag == "Color3" then
 		if type(v) == "string" then
-			return parseHexColor(v) or Color3.new(1, 1, 1)
+			local parsed = parseHexColor(v)
+			if not parsed then error("invalid Color3 hex value: " .. v, 0) end
+			return parsed
+		end
+		if type(v) ~= "table" or #v ~= 3 then error("Color3 requires a hex string or three numeric components", 0) end
+		for i = 1, 3 do
+			if type(v[i]) ~= "number" or v[i] ~= v[i] or v[i] < 0 or v[i] > 1 then
+				error("Color3 components must be finite normalized numbers in [0, 1]", 0)
+			end
 		end
 		return Color3.new(v[1], v[2], v[3])
 	elseif tag == "Color3RGB" then
@@ -387,12 +396,18 @@ local function coerce(value: any): any
 	elseif tag == "Enum" then
 		local cleaned = string.gsub(tostring(v), "^Enum%.", "")
 		local enumName, itemName = string.match(cleaned, "^([%w_]+)%.([%w_]+)$")
-		if enumName and itemName then
-			return (Enum :: any)[enumName][itemName]
-		end
-		return v
+		if not enumName or not itemName then error("invalid Enum value: " .. tostring(v), 0) end
+		local enumType = (Enum :: any)[enumName]
+		if not enumType then error("unknown Enum type: " .. enumName, 0) end
+		local item = enumType[itemName]
+		if not item then error("unknown Enum item: " .. cleaned, 0) end
+		return item
 	elseif tag == "Instance" then
-		return resolve(v)
+		local inst = resolve(v)
+		if not inst then error("Instance reference did not resolve: " .. tostring(v), 0) end
+		return inst
+	elseif tag ~= nil then
+		error("unsupported property coercion tag: " .. tostring(tag), 0)
 	end
 	return value
 end
@@ -461,19 +476,46 @@ local function applyProps(inst: Instance, props: { [string]: any }?): ({ string 
 					elseif ct == "Vector2" and #coerced == 2 then
 						coerced = Vector2.new(coerced[1], coerced[2])
 					elseif ct == "Color3" and #coerced == 3 then
-						coerced = Color3.new(coerced[1], coerced[2], coerced[3])
+						local mx = math.max(coerced[1], coerced[2], coerced[3])
+						coerced = mx > 1 and Color3.fromRGB(coerced[1], coerced[2], coerced[3]) or Color3.new(coerced[1], coerced[2], coerced[3])
 					elseif ct == "UDim2" and #coerced == 4 then
 						coerced = UDim2.new(coerced[1], coerced[2], coerced[3], coerced[4])
 					elseif ct == "CFrame" and #coerced == 3 then
 						coerced = CFrame.new(coerced[1], coerced[2], coerced[3])
 					elseif ct == "CFrame" and #coerced >= 12 then
 						coerced = CFrame.new(table.unpack(coerced))
+					elseif ct == "NumberRange" and (#coerced == 1 or #coerced == 2) then
+						coerced = #coerced == 1 and NumberRange.new(coerced[1]) or NumberRange.new(coerced[1], coerced[2])
+					elseif ct == "Rect" and #coerced == 4 then
+						coerced = Rect.new(coerced[1], coerced[2], coerced[3], coerced[4])
 					end
 				end
 			elseif type(coerced) == "string" then
 				local okCur, curVal = pcall(function()
 					return (inst :: any)[key]
 				end)
+				local numbers = {}
+				for token in string.gmatch(coerced, "[^,]+") do
+					local n = tonumber(string.gsub(token, "^%s*(.-)%s*$", "%1"))
+					if n == nil then numbers = {}; break end
+					table.insert(numbers, n)
+				end
+				if okCur and typeof(curVal) == "Vector3" and #numbers == 3 then
+					coerced = Vector3.new(numbers[1], numbers[2], numbers[3])
+				elseif okCur and typeof(curVal) == "Vector2" and #numbers == 2 then
+					coerced = Vector2.new(numbers[1], numbers[2])
+				elseif okCur and typeof(curVal) == "Color3" and #numbers == 3 then
+					local mx = math.max(numbers[1], numbers[2], numbers[3])
+					coerced = mx > 1 and Color3.fromRGB(numbers[1], numbers[2], numbers[3]) or Color3.new(numbers[1], numbers[2], numbers[3])
+				elseif okCur and typeof(curVal) == "UDim2" and #numbers == 4 then
+					coerced = UDim2.new(numbers[1], numbers[2], numbers[3], numbers[4])
+				elseif okCur and typeof(curVal) == "CFrame" and (#numbers == 3 or #numbers >= 12) then
+					coerced = #numbers >= 12 and CFrame.new(table.unpack(numbers)) or CFrame.new(numbers[1], numbers[2], numbers[3])
+				elseif okCur and typeof(curVal) == "NumberRange" and (#numbers == 1 or #numbers == 2) then
+					coerced = #numbers == 1 and NumberRange.new(numbers[1]) or NumberRange.new(numbers[1], numbers[2])
+				elseif okCur and typeof(curVal) == "Rect" and #numbers == 4 then
+					coerced = Rect.new(numbers[1], numbers[2], numbers[3], numbers[4])
+				end
 				if okCur and typeof(curVal) == "EnumItem" then
 					local enumType = curVal.EnumType
 					local itemName = string.match(coerced, "([%w_]+)$")
@@ -498,47 +540,45 @@ end
 -- Build a tree of instances from a JSON spec
 ------------------------------------------------------------------------------
 
-local function buildNode(spec: any, parent: Instance): Instance
-	local className = spec.className or spec.class or "Part"
-	local inst: Instance
-
+local function buildNode(spec: any, parent: Instance, replaceQueue: { Instance }): Instance
+	local className = spec.className or spec.class or "Part"	local existingToReplace: Instance? = nil
 	if spec.replaceExisting and spec.name then
-		local existing = parent:FindFirstChild(spec.name)
-		if existing then
-			existing:Destroy()
+		existingToReplace = parent:FindFirstChild(spec.name)
+	end
+
+	local inst = Instance.new(className)
+	if spec.name then inst.Name = spec.name end
+	local okBuild, buildErr = pcall(function()
+		local _, failedProps = applyProps(inst, spec.properties)
+		if next(failedProps) ~= nil then
+			error("build node " .. tostring(spec.name or className) .. " has invalid properties: " .. HttpService:JSONEncode(failedProps), 0)
 		end
-	end
 
-	inst = Instance.new(className)
-	if spec.name then
-		inst.Name = spec.name
-	end
-	applyProps(inst, spec.properties)
-
-	if spec.attributes then
-		for k, v in pairs(spec.attributes) do
-			pcall(function()
+		if spec.attributes then
+			for k, v in pairs(spec.attributes) do
 				inst:SetAttribute(k, coerce(v))
-			end)
+			end
 		end
-	end
 
-	inst.Parent = parent
-
-	if spec.source and inst:IsA("LuaSourceContainer") then
-		writeScriptSource(inst, spec.source)
-	end
-
-	if spec.tags then
-		for _, tag in ipairs(spec.tags) do
-			pcall(function()
+		inst.Parent = parent
+		if spec.source and inst:IsA("LuaSourceContainer") then
+			writeScriptSource(inst, spec.source)
+		end
+		if spec.tags then
+			for _, tag in ipairs(spec.tags) do
 				CollectionService:AddTag(inst, tostring(tag))
-			end)
+			end
 		end
+		for _, childSpec in ipairs(spec.children or {}) do
+			buildNode(childSpec, inst, replaceQueue)
+		end
+	end)
+	if not okBuild then
+		pcall(function() inst:Destroy() end)
+		error("build node " .. tostring(spec.name or className) .. " failed: " .. tostring(buildErr), 0)
 	end
-
-	for _, childSpec in ipairs(spec.children or {}) do
-		buildNode(childSpec, inst)
+	if existingToReplace then
+		table.insert(replaceQueue, existingToReplace)
 	end
 	return inst
 end
@@ -580,6 +620,70 @@ local function executeLuau(code: string): any
 	return result
 end
 
+local function executePlayProbe(code: string, playerName: string?, timeout: number?): any
+	local nonce = string.gsub(tostring(os.clock()) .. tostring(math.random(100000, 999999)), "[^%w]", "")
+	local marker = "[[ARENA_PROBE:" .. nonce .. "]]"
+	local source = table.concat({
+		"local HttpService = game:GetService('HttpService')",
+		"local function runUserCode()",
+		code,
+		"end",
+		"local okRun, value = pcall(runUserCode)",
+		"local payload = {ok=okRun, result=value}",
+		"local okJson, encoded = pcall(function() return HttpService:JSONEncode(payload) end)",
+		"if not okJson then encoded = HttpService:JSONEncode({ok=false, error='result_not_json: ' .. tostring(value)}) end",
+		"print(" .. string.format("%q", marker) .. " .. encoded)",
+		"script:Destroy()",
+	}, "\n")
+
+	local target: Instance
+	if DM_MODE == "server" then
+		target = game:GetService("ServerScriptService")
+	else
+		local selected = playerName and Players:FindFirstChild(playerName) or Players:GetPlayers()[1]
+		if not selected then error("no_player: client probe requires a joined Player", 0) end
+		target = selected:FindFirstChildOfClass("PlayerGui") :: Instance
+		if not target then error("no_player_gui: client probe cannot find PlayerGui", 0) end
+	end
+
+	local probe = Instance.new(if DM_MODE == "server" then "Script" else "LocalScript")
+	probe.Name = "__ArenaProbe_" .. nonce
+	local created = false
+	local okCreate, createErr = pcall(function()
+		(probe :: any).Source = source
+		probe.Parent = target
+		created = true
+	end)
+	if not okCreate then
+		probe:Destroy()
+		error("probe_injection_failed: " .. tostring(createErr), 0)
+	end
+
+	local deadline = os.clock() + math.clamp(tonumber(timeout) or 30, 1, 120)
+	local result = nil
+	local history = nil
+	while os.clock() < deadline do
+		local okRead, rows = pcall(function() return LogService:GetLogHistory() end)
+		if okRead and rows then history = rows end
+		for _, entry in ipairs(history or {}) do
+			local msg = tostring(entry.message or "")
+			local at = string.find(msg, marker, 1, true)
+			if at then
+				local encoded = string.sub(msg, at + #marker)
+				local okDecode, parsed = pcall(function() return HttpService:JSONDecode(encoded) end)
+				if okDecode then result = parsed end
+				break
+			end
+		end
+		if result then break end
+		task.wait(0.05)
+	end
+	if created then pcall(function() probe:Destroy() end) end
+	if not result then error("probe_timeout: timed out waiting for runtime result; probe was cleaned up", 0) end
+	if result.ok ~= true then error(tostring(result.error or "play probe failed"), 0) end
+	return result
+end
+
 ------------------------------------------------------------------------------
 -- Describe the data model for the agent
 ------------------------------------------------------------------------------
@@ -592,6 +696,7 @@ local INTERESTING = {
 	"SoundId", "Volume", "PlaybackSpeed", "Looped", "Playing",
 	"Brightness", "Range", "Angle", "Shadows",
 	"Visible", "Active", "AnchorPoint", "ZIndex", "LayoutOrder",
+	"AbsolutePosition", "AbsoluteSize", "ScreenInsets", "IgnoreGuiInset", "AutomaticSize", "ClipsDescendants",
 	"Text", "TextColor3", "TextSize", "BackgroundColor3", "BackgroundTransparency",
 	"Image", "ImageColor3", "ImageTransparency",
 	"Enabled", "Disabled", "RunContext", "Value", "MaxHealth", "Health",
@@ -632,7 +737,7 @@ local function readAttributesMap(inst: Instance): { [string]: any }
 	return out
 end
 
-local function describe(inst: Instance, depth: number, maxChildren: number?, includeStructured: boolean?): any
+local function describe(inst: Instance, depth: number, maxChildren: number?, includeStructured: boolean?, structuredDescendants: boolean?): any
 	local childCap = maxChildren or 100
 	local node: any = {
 		name = inst.Name,
@@ -668,7 +773,7 @@ local function describe(inst: Instance, depth: number, maxChildren: number?, inc
 	if depth > 0 then
 		local kids = {}
 		for _, child in ipairs(allChildren) do
-			table.insert(kids, describe(child, depth - 1, childCap, false))
+			table.insert(kids, describe(child, depth - 1, childCap, structuredDescendants == true, structuredDescendants == true))
 			if #kids >= childCap then
 				node.childrenTruncated = true
 				break
@@ -826,8 +931,66 @@ handlers["studio_state"] = function(_)
 	}
 end
 
+handlers["mesh_capabilities"] = function(_p)
+	local okVer, studioVersion = pcall(function()
+		return version()
+	end)
+	local assetService = game:GetService("AssetService")
+	local createEditableMesh = (assetService :: any).CreateEditableMesh
+	local editable: any = {
+		apiPresent = typeof(createEditableMesh) == "function",
+		creationAttempted = false,
+		creationSucceeded = nil,
+		status = "api_missing",
+		detail = nil,
+	}
+	if editable.apiPresent then
+		editable.creationAttempted = true
+		local okCreate, result = pcall(function()
+			return createEditableMesh(assetService)
+		end)
+		if okCreate and result ~= nil then
+			local okDestroy, destroyErr = pcall(function()
+				(result :: any):Destroy()
+			end)
+			editable.creationSucceeded = true
+			editable.status = "creation_verified"
+			if not okDestroy then
+				editable.detail = "Created successfully; cleanup reported: " .. tostring(destroyErr)
+			end
+		elseif okCreate then
+			editable.creationSucceeded = false
+			editable.status = "creation_returned_nil"
+		else
+			editable.creationSucceeded = false
+			editable.status = "present_but_creation_failed"
+			editable.detail = tostring(result)
+		end
+	end
+	local meshPartOk, meshPart = pcall(function()
+		return Instance.new("MeshPart")
+	end)
+	if meshPartOk and meshPart then
+		pcall(function() meshPart:Destroy() end)
+	end
+	return {
+		ok = true,
+		studioVersion = okVer and studioVersion or "unknown",
+		peerId = PEER_ID,
+		meshPartClass = { available = meshPartOk, creationError = not meshPartOk and tostring(meshPart) or nil },
+		editableMesh = editable,
+		verifiedAtUnix = os.time(),
+		warnings = { "Capability results are runtime-probe evidence for this peer only; no support is inferred from the Studio version string." },
+	}
+end
+
 handlers["run_luau"] = function(p)
-	local result = executeLuau(p.code)
+	local result
+	if DM_MODE == "edit" then
+		result = executeLuau(p.code)
+	else
+		result = executePlayProbe(p.code, p._playerName, p._timeout)
+	end
 	local returnedStr: string
 	local structuredVal: any = nil
 	if result == nil then
@@ -933,9 +1096,22 @@ end
 handlers["build"] = function(p)
 	local parent = mustResolve(p.parent or "Workspace")
 	local created = {}
-	for _, spec in ipairs(p.tree or { p }) do
-		local inst = buildNode(spec, parent)
-		table.insert(created, fullName(inst))
+	local replaceQueue = {}
+	local okBuild, buildErr = pcall(function()
+		for _, spec in ipairs(p.tree or { p }) do
+			local inst = buildNode(spec, parent, replaceQueue)
+			table.insert(created, fullName(inst))
+		end
+	end)
+	if not okBuild then
+		for _, path in ipairs(created) do
+			local inst = resolve(path)
+			if inst then pcall(function() inst:Destroy() end) end
+		end
+		error("build transaction rolled back: " .. tostring(buildErr), 0)
+	end
+	for _, oldInst in ipairs(replaceQueue) do
+		if oldInst.Parent then oldInst:Destroy() end
 	end
 	if p.select ~= false and DM_MODE == "edit" then
 		local sel = {}
@@ -1012,6 +1188,23 @@ handlers["write_script"] = function(p)
 		hash = fnvHex(finalSrc),
 		replacedInstance = p.replaceInstance == true,
 	}
+end
+
+handlers["batch_write"] = function(p)
+	local results = {}
+	for index, spec in ipairs(p.files or {}) do
+		if type(spec.parent) ~= "string" or type(spec.name) ~= "string" or type(spec.source) ~= "string" then
+			error("batch_write files[" .. tostring(index) .. "] requires parent, name, and source", 0)
+		end
+		local result = handlers["write_script"]({
+			parent = spec.parent, name = spec.name, className = spec.className or "ModuleScript",
+			source = spec.source, expectedHash = spec.expectedHash,
+			replaceInstance = spec.replaceInstance ~= false, properties = spec.properties,
+			attributes = spec.attributes, tags = spec.tags, select = false,
+		})
+		table.insert(results, result)
+	end
+	return {ok = true, written = results, count = #results}
 end
 
 handlers["multi_edit"] = function(p)
@@ -1463,7 +1656,8 @@ handlers["inspect"] = function(p)
 		inst,
 		tonumber(p.depth) or 2,
 		tonumber(p.maxChildren) or 100,
-		p.includeStructured ~= false
+		p.includeStructured ~= false,
+		p.includeStructuredDescendants == true
 	)
 	if p.descendantSummary then
 		local classCounts: { [string]: number } = {}
@@ -1691,23 +1885,35 @@ handlers["get_properties"] = function(p)
 end
 
 handlers["set_properties"] = function(p)
+	if type(p.properties) ~= "table" or next(p.properties) == nil then
+		error("set_properties requires a non-empty properties object", 0)
+	end
 	local inst = mustResolve(p.path)
 	local applied, failed = applyProps(inst, p.properties)
+	local ok = next(failed) == nil
 	return {
+		ok = ok,
 		path = fullName(inst),
 		applied = applied,
 		failed = next(failed) and failed or nil,
+		warnings = ok and {} or { "One or more properties were not applied." },
 	}
 end
 
 handlers["mass_set_properties"] = function(p)
 	local paths = p.paths or {}
+	if #paths == 0 then error("mass_set_properties requires at least one path", 0) end
+	if (type(p.properties) ~= "table" or next(p.properties) == nil) and (type(p.relative) ~= "table" or next(p.relative) == nil) then
+		error("mass_set_properties requires non-empty properties or relative deltas", 0)
+	end
 	local updated = {}
 	local errors = {}
+	local anyFailed = false
 	for _, path in ipairs(paths) do
 		local inst = resolve(path)
 		if inst then
 			local applied, failed = applyProps(inst, p.properties)
+			if next(failed) ~= nil then anyFailed = true end
 			if p.relative then
 				for propName, deltaRaw in pairs(p.relative) do
 					local okRel, relErr = pcall(function()
@@ -1722,19 +1928,28 @@ handlers["mass_set_properties"] = function(p)
 						table.insert(applied, propName)
 					else
 						failed[propName] = tostring(relErr)
+						anyFailed = true
 					end
 				end
 			end
+			if next(failed) ~= nil then anyFailed = true end
 			table.insert(updated, {
 				path = fullName(inst),
 				applied = applied,
 				failed = next(failed) and failed or nil,
 			})
 		else
+			anyFailed = true
 			table.insert(errors, { path = path, error = "not found" })
 		end
 	end
-	return { updated = updated, count = #updated, errors = #errors > 0 and errors or nil }
+	return {
+		ok = not anyFailed,
+		updated = updated,
+		count = #updated,
+		errors = #errors > 0 and errors or nil,
+		warnings = anyFailed and { "One or more paths or properties failed; inspect updated[].failed and errors." } or {},
+	}
 end
 
 handlers["clone_instance"] = function(p)
@@ -1782,6 +1997,40 @@ handlers["clone_instance"] = function(p)
 	return { created = created, count = #created }
 end
 
+handlers["scatter_props"] = function(p)
+	local source = mustResolve(p.sourcePath)
+	if not source:IsA("PVInstance") then error("scatter_props source must be a BasePart or Model", 0) end
+	local parent = mustResolve(p.parent or "Workspace")
+	local points = p.points or {}
+	if #points < 1 or #points > 500 then error("scatter_props requires 1-500 positions", 0) end
+	local made = {}
+	local paths = {}
+	local okScatter, scatterErr = pcall(function()
+		for index, point in ipairs(points) do
+			if type(point) ~= "table" or #point < 4 then error("invalid scatter point at index " .. tostring(index), 0) end
+			local x, y, z, yaw = tonumber(point[1]), tonumber(point[2]), tonumber(point[3]), tonumber(point[4])
+			if not x or not y or not z or not yaw then error("scatter coordinates must be numeric", 0) end
+			local copy = source:Clone()
+			if not copy then error("source cannot be cloned (Archivable=false?)", 0) end
+			table.insert(made, copy)
+			copy.Name = tostring(p.namePrefix or "Scatter") .. string.format("_%03d", index)
+			if p.stripScripts ~= false then
+				for _, desc in ipairs(copy:GetDescendants()) do
+					if desc:IsA("LuaSourceContainer") then desc:Destroy() end
+				end
+			end
+			copy:PivotTo(CFrame.new(x, y, z) * CFrame.Angles(0, math.rad(yaw), 0))
+			copy.Parent = parent
+			table.insert(paths, fullName(copy))
+		end
+	end)
+	if not okScatter then
+		for _, copy in ipairs(made) do pcall(function() copy:Destroy() end) end
+		error("scatter transaction rolled back: " .. tostring(scatterErr), 0)
+	end
+	return { ok = true, created = paths, count = #paths, scriptsStripped = p.stripScripts ~= false, warnings = {} }
+end
+
 handlers["reparent_instance"] = function(p)
 	local paths = p.paths or (p.path and { p.path } or {})
 	local newParent = p.newParent and mustResolve(p.newParent) or nil
@@ -1813,15 +2062,22 @@ end
 handlers["delete"] = function(p)
 	local targets = p.paths or (p.path and { p.path } or {})
 	local deleted = {}
+	local missing = {}
 	for _, path in ipairs(targets) do
-		local inst = mustResolve(path)
-		local name = fullName(inst)
-		inst:Destroy()
-		table.insert(deleted, name)
+		local okFind, inst = pcall(function() return resolve(path) end)
+		if not okFind or not inst then
+			table.insert(missing, tostring(path))
+		else
+			local name = fullName(inst)
+			local okDestroy = pcall(function() inst:Destroy() end)
+			if okDestroy then table.insert(deleted, name) else table.insert(missing, tostring(path)) end
+		end
 	end
 	return {
-		deleted = #deleted == 1 and deleted[1] or deleted,
+		ok = #missing == 0,
+		deleted = deleted,
 		paths = deleted,
+		missing = missing,
 		count = #deleted,
 	}
 end
@@ -2126,6 +2382,7 @@ handlers["playtest"] = function(p)
 			dm = DM_MODE,
 			isRunning = RunService:IsRunning(),
 			playtestActive = activePlaytestRunning,
+			diedReason = playtestDiedReason,
 			lastResult = lastPlaytestResult,
 		}
 	elseif action == "stop" then
@@ -2133,6 +2390,7 @@ handlers["playtest"] = function(p)
 			StudioTestService:EndTest(p.reason or "stopped_by_mcp")
 		end)
 		activePlaytestRunning = false
+			if not okEnd then playtestDiedReason = tostring(endErr) end
 		return {
 			stopped = okEnd,
 			detail = okEnd and "EndTest called" or tostring(endErr),
@@ -2147,6 +2405,7 @@ handlers["playtest"] = function(p)
 		end
 		activePlaytestRunning = true
 		lastPlaytestResult = nil
+		playtestDiedReason = nil
 		local testArgs = p.args or { source = "ArenaBridgeMCP", startedAt = os.time() }
 		task.spawn(function()
 			local okRun, res = pcall(function()
@@ -2157,6 +2416,7 @@ handlers["playtest"] = function(p)
 				end
 			end)
 			activePlaytestRunning = false
+			if not okRun then playtestDiedReason = tostring(res) end
 			lastPlaytestResult = {
 				ok = okRun,
 				result = serializeValue(res),
@@ -2380,6 +2640,7 @@ handlers["console"] = function(p)
 	local sinceIndex = tonumber(p.sinceIndex) or 0
 	local levelFilter = p.level and string.lower(tostring(p.level)) or nil
 	local searchFilter = p.search and string.lower(tostring(p.search)) or nil
+	local sourceFilter = string.lower(tostring(p.source or "game"))
 
 	local okHist, history = pcall(function()
 		return LogService:GetLogHistory()
@@ -2395,6 +2656,10 @@ handlers["console"] = function(p)
 		local msgType = entry.messageType and entry.messageType.Name or "Output"
 		local msg = tostring(entry.message or "")
 		local keep = true
+		local lowerMsg = string.lower(msg)
+		local isBridge = string.sub(lowerMsg, 1, 6) == "[arena" or string.find(lowerMsg, "arenabridge", 1, true) ~= nil
+		if sourceFilter == "game" and isBridge then keep = false end
+		if sourceFilter == "bridge" and not isBridge then keep = false end
 		if levelFilter and levelFilter ~= "" and levelFilter ~= "all" then
 			if not string.find(string.lower(msgType), levelFilter, 1, true) then
 				keep = false
@@ -2424,7 +2689,8 @@ handlers["console"] = function(p)
 	return {
 		lines = out,
 		returned = #out,
-		total = #history,
+		total = #matched,
+		totalHistory = #history,
 		nextIndex = #history,
 		dm = DM_MODE,
 	}

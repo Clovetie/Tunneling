@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-server.py — Multi-Peer HTTP Bridge + Native Streamable HTTP MCP Server (v3.0)
+server.py — Multi-Peer HTTP Bridge + Native Streamable HTTP MCP Server (v4.0.0)
 
 Runs locally on your PC (127.0.0.1:8077 by default) with ZERO pip dependencies.
 Simultaneously serves:
   1. Roblox Studio local plugin peers (Edit + Play Server + Play Client bridge)
      via fast long-polling (`GET /api/poll`, `POST /api/result`).
   2. Native MCP Streamable HTTP endpoint (`POST /mcp`, `GET /mcp`, `DELETE /mcp`)
-     implementing MCP 2025-06-18 / 2024-11-05 JSON-RPC 2.0 (37 tools, 5 live
+     implementing MCP 2025-06-18 / 2024-11-05 JSON-RPC 2.0 (68 tools, 5 live
      resources, 2 resource templates, 4 workflow prompts).
   3. REST API for CLI (`arena_studio.py` / `ab.ps1`) & remote cloud agents
      (`GET /api/health`, `GET /api/state`, `GET /api/agent-guide`,
@@ -20,6 +20,7 @@ Simultaneously serves:
 """
 
 import argparse
+import gzip
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -30,11 +31,13 @@ import time
 from urllib.parse import parse_qs, urlparse
 import uuid
 
-from mcp_core import BridgeClient, MCPDispatcher, TOOL_SPECS
+from mcp_core import BridgeClient, MCPDispatcher, TOOL_SPECS, run_bridge_self_test
 
-VERSION = "3.4.0"
-PEER_ONLINE_WINDOW = 25.0  # seconds since last poll before a peer is considered stale
+VERSION = "4.0.0"
+PEER_ONLINE_WINDOW = 5.0  # play DataModel peers are transient; do not route work to stale peers
 HERE = Path(__file__).resolve().parent
+SNAPSHOT_DIR = HERE / "snapshots"
+SNAPSHOT_RETENTION = 30
 
 
 def _now() -> float:
@@ -61,6 +64,14 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             "jobs": f"{origin}/api/jobs",
             "snapshots": f"{origin}/api/snapshots",
             "agent_guide": f"{origin}/api/agent-guide",
+            "self_test": f"{origin}/api/self-test",
+        },
+        "runtimeRequirements": {
+            "editPeer": "Required for live inspection, writes, import, snapshots and persistent-place edits.",
+            "serverPeer": "Required for live server probes, playtest state and server console.",
+            "clientPeer": "Required for client-only runtime probes; some server peers can forward when a player client is attached.",
+            "offlineTools": ["browse_kit", "search_assets", "search_cloud_icons", "luau_check (when host binaries are installed)", "render_offline with an exported hierarchy tree"],
+            "peerFreshnessSeconds": 5,
         },
         "toolCounts": {
             "total": len(TOOL_SPECS),
@@ -93,7 +104,9 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
         "keyTips": [
             "Survey before building: run `survey_place` (includeSource=false on large places, then `script_read` / `script_grep` selectively).",
             "Validate Luau offline first: `luau_check` runs `luau-compile` + `luau-analyze` to catch syntax errors and non-strict undefined globals before touching Studio.",
-            "Target the right DataModel: use `dm='edit'` for persistent place changes, `dm='server'` for live Play/Run server state, and `dm='client'` for live player client state.",
+            "Target the right DataModel: use `dm='edit'` for persistent place changes, `dm='server'` for live Play/Run server state, and `dm='client'` for live player client state. Runtime tools fail fast when the required peer is absent.",
+            "`run_playtest_scenario` is successful only with a live server peer, successful requested probes, and a confirmed retained/stopped session; use `keepAlive` and the console cursor/slice fields deliberately.",
+            "`render_offline` can render a previously exported hierarchy tree without a Studio peer; use `screenshot_gui` with `dm='client', path='PlayerGui'` when live absolute UI measurements are needed."
             "Bust cached ModuleScripts when editing live packages: pass `replaceInstance=true` (or `--replace` in CLI) or evaluate via `require_fresh`.",
             "Protect refactors: pass `expectedHash` on edits and create a rollback point with `manage_snapshots(action='create')` before multi-script updates.",
             "All mutating operations wrap inside `ChangeHistoryService` recordings so a single Ctrl+Z in Studio cleanly undoes an entire build or sync.",
@@ -125,8 +138,9 @@ class BridgeState:
         self.pending = deque()
         # Bounded history of recent job IDs (max 500)
         self.history = deque(maxlen=500)
-        # Saved multi-script snapshots (max 30)
-        self.snapshots = deque(maxlen=30)
+        # Durable, compressed script snapshots with a bounded retention policy.
+        self.snapshots = deque(maxlen=SNAPSHOT_RETENTION)
+        self._load_snapshots()
         # Active Streamable HTTP session IDs
         self.session_id = "mcp-" + uuid.uuid4().hex[:16]
 
@@ -435,6 +449,36 @@ class BridgeState:
 
     # -- snapshots -----------------------------------------------------------
 
+    def _load_snapshots(self):
+        try:
+            files = sorted(SNAPSHOT_DIR.glob("snap-*.json.gz"), key=lambda p: p.stat().st_mtime)
+            loaded = []
+            for path in files[-SNAPSHOT_RETENTION:]:
+                try:
+                    with gzip.open(path, "rt", encoding="utf-8") as stream:
+                        snap = json.load(stream)
+                    if isinstance(snap, dict) and isinstance(snap.get("scripts"), list):
+                        loaded.append(snap)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+            self.snapshots.extend(loaded)
+        except OSError:
+            pass
+
+    def _persist_snapshot(self, snap: dict):
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        target = SNAPSHOT_DIR / f"{snap['id']}.json.gz"
+        temp = target.with_suffix(".tmp")
+        with gzip.open(temp, "wt", encoding="utf-8") as stream:
+            json.dump(snap, stream, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temp, target)
+        files = sorted(SNAPSHOT_DIR.glob("snap-*.json.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in files[SNAPSHOT_RETENTION:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
     def handle_snapshots(self, payload: dict) -> dict:
         action = payload.get("action", "list")
         with self.lock:
@@ -448,6 +492,7 @@ class BridgeState:
                     "scripts": payload.get("scripts") or [],
                 }
                 self.snapshots.append(snap)
+                self._persist_snapshot(snap)
                 return {k: v for k, v in snap.items() if k != "scripts"}
             if action == "list":
                 items = [
@@ -507,6 +552,11 @@ class BridgeState:
                 }
         if op == "snapshots":
             return self.handle_snapshots(body)
+        if op == "get_job":
+            with self.lock:
+                jid = body.get("id")
+                if jid not in self.jobs: raise KeyError(f"Unknown job id: {jid}")
+                return dict(self.jobs[jid])
         if op == "submit_job":
             job, evt = self.enqueue_job(
                 kind=body["type"],
@@ -694,6 +744,11 @@ def make_http_handler(state: BridgeState):
             if path == "/api/health":
                 return self._send(200, state.direct_dispatch("health", {}))
 
+            if path == "/api/self-test":
+                if not self._authorized(qs):
+                    return self._send(401, {"error": "bad token"})
+                return self._send(200, run_bridge_self_test(state.mcp_client, include_studio_smoke=True, timeout=180))
+
             if path == "/api/state":
                 return self._send(200, state.direct_dispatch("state", {}))
 
@@ -839,7 +894,7 @@ def make_http_handler(state: BridgeState):
 def dashboard_html() -> str:
     return r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<title>Roblox Studio MCP, 3D Viewport Vision &amp; Open-Source Kit (v3.4)</title>
+<title>Roblox Studio MCP, 3D Viewport Vision &amp; Open-Source Kit (v4.0)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
  :root{color-scheme:dark;--bg:#0b0f16;--panel:#131922;--panel2:#0e131b;--border:#232c3a;
@@ -913,10 +968,11 @@ def dashboard_html() -> str:
 </style></head><body>
 
 <header>
-  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v3.4</span></h1>
+  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v4.0</span></h1>
   <span id="status" class="pill off">checking&hellip;</span>
   <span id="ro-badge" class="pill ro" style="display:none">Read-Only Inspector</span>
   <span id="place" class="pill info-pill" style="display:none"></span>
+  <button class="sm" onclick="runSelfTest()">Run Self-Test</button>
   <div class="spacer"></div>
   <span class="sub">Token:</span>
   <input id="tok-input" type="password" placeholder="auto-loaded on localhost" style="width:185px;padding:4px 8px">
@@ -937,7 +993,7 @@ def dashboard_html() -> str:
   <section id="tab-monitor" class="tab-pane active">
     <div class="grid">
       <div class="card"><div class="k">Studio Peers</div><div class="v" id="c-peers">0 online</div></div>
-      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">55</div></div>
+      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">68</div></div>
       <div class="card"><div class="k">Queued</div><div class="v" id="c-queued">0</div></div>
       <div class="card"><div class="k">Completed</div><div class="v" id="c-done">0</div></div>
       <div class="card"><div class="k">Failed</div><div class="v" id="c-fail">0</div></div>
@@ -1130,11 +1186,11 @@ def dashboard_html() -> str:
     <div class="card" style="margin-bottom:16px">
       <div class="prompt-head" style="flex-wrap:wrap;gap:10px">
         <div>
-          <h2>Open-Source Repo PNG Packs (405 Curated Kenney CC0 + Procedural Assets across 18 Packs)</h2>
-          <div class="sub">CC0 UI buttons, 9-slice Fantasy/Sci-Fi/Adventure frames, Medals &amp; Ranks, Minimap &amp; Compass pins, NPC Emotes, RPG/Fighter skill icons, PS5/Switch/Xbox/Mobile controls, Pets &amp; Prototype Grids.</div>
+          <h2>Licensed Asset Library (4,320 registered · 3,705 images · 50 skies · 520 models · 45 audio)</h2>
+          <div class="sub">Browse source groups, local Studio URIs, SPDX licence, source, and provenance. Kenney assets are pinned CC0; generated skies are 8-bit LDR (not HDRI). GLB thumbnails are neutral placeholders, not model renders. Use <code>search_assets</code> for model/audio/provenance filters; Send imports the selected image directly into Studio.</div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
-          <input id="asset-search" placeholder="Filter 405 PNGs..." oninput="renderFilteredAssets()" style="width:210px">
+          <input id="asset-search" placeholder="Filter licensed local images..." oninput="renderFilteredAssets()" style="width:210px">
           <button class="sm" onclick="loadKitGallery()">Refresh</button>
         </div>
       </div>
@@ -1195,7 +1251,7 @@ def dashboard_html() -> str:
 
       <div class="prompt-card">
         <div class="prompt-head">
-          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 55 tools enabled (3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
+          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 68 tools enabled (3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
           <button class="primary sm" onclick="copyById('cfg-json')">Copy</button>
         </div>
         <pre id="cfg-json"></pre>
@@ -1241,7 +1297,7 @@ def dashboard_html() -> str:
       </div>
 
       <div class="prompt-card">
-        <h3>Invoke Any of the 55 MCP Tools Directly</h3>
+        <h3>Invoke Any of the 68 MCP Tools Directly</h3>
         <div class="sub" id="tool-desc">Select any MCP tool to inspect its fields and call it over <code>POST /mcp</code>.</div>
         <div style="display:flex;gap:8px;align-items:center">
           <select id="tool-select" onchange="onSelectTool()"></select>
@@ -1297,6 +1353,20 @@ function authHeaders(){
   const t = getToken();
   if(t) h['Authorization'] = 'Bearer ' + t;
   return h;
+}
+
+async function runSelfTest(){
+  toast('Running isolated bridge suite and Studio scratch test…');
+  const response = await fetch('/api/self-test', {headers: authHeaders()});
+  const result = await response.json();
+  if(!response.ok) throw new Error(result.error || ('HTTP ' + response.status));
+  const title = document.getElementById('quick-out-title');
+  const wrap = document.getElementById('quick-out-wrap');
+  const pre = document.getElementById('quick-out');
+  title.textContent = 'v4.0 Self-Test — ' + (result.ok ? 'PASS' : 'FAIL');
+  pre.textContent = result.humanTable + '\n\n' + JSON.stringify({suite:result.suite,studioSmoke:result.studioSmoke,toolCount:(result.toolMatrix||[]).length}, null, 2);
+  wrap.style.display = 'block';
+  toast(result.ok ? 'Self-test passed.' : 'Self-test reported failures or skipped Studio checks.');
 }
 
 function showTab(name, btn){
@@ -1495,7 +1565,7 @@ function renderPrompts(){
       sub: "Best when the next AI agent is in a cloud sandbox without tunnel access and you paste command outputs.",
       body:
 `We are working on a Roblox Studio project (${placeName}${placeId ? ', PlaceId ' + placeId : ''}).
-Roblox Studio MCP Bridge v3.0 is already running locally on my machine at ${window.location.origin} (directory: \`${dir}\`).
+Roblox Studio MCP Bridge v4.0.0 is already running locally on my machine at ${window.location.origin} (directory: \`${dir}\`).
 
 Use **HANDS MODE**: give me exact commands to run in PowerShell from \`${dir}\` using \`.\\ab.ps1 <subcommand>\` (or \`python arena_studio.py <subcommand>\`), and I will paste the output back.
 
@@ -1516,15 +1586,18 @@ Start by running a quick recon (\`.\\ab.ps1 state\` and \`.\\ab.ps1 survey\`) so
 `Connect directly to my live Roblox Studio Bridge & MCP Server:
 - Base URL: ${pubUrl}
 - Auth Header: \`Authorization: Bearer ${tok}\` (or \`X-Arena-Token: ${tok}\`)
-- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (55 tools, 16 skills, multimodal 3D viewport vision, 3D physics auditor, .rbxlx place export, 14 LiveOps/Monetization systems, 20 .rbxmx models, 405 PNGs, 45 CC0 WAVs, 4,811 cloud icons)
+- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (68 tools, 16 skills, multimodal 3D viewport vision, 3D physics auditor, runtime mesh capability probe, .rbxlx place export, 14 LiveOps/Monetization systems, 520 3D models, 3,705 raster images + 50 LDR skies (300 cube faces), 45 CC0 WAVs, 4,811 cloud icons)
 - Agent Onboarding & Live State Endpoint: \`GET ${pubUrl}/api/agent-guide\`
-- Built-in Repo Kit: call \`browse_kit\` to inspect all 7 Roblox Studio Skills (\`.claude/skills/*\`), 12 Luau modules (\`install_kit_module\`), 6 complete \`StudUI\` screen & economy templates (\`install_template\`), 14 3D/UI/Lighting prefabs (\`spawn_prefab\`), 1,022 cloud \`rbxassetid://\` icons (\`search_cloud_icons\`), and 249 curated Kenney CC0 + procedural PNG assets (\`import_image\`).
+- Built-in Repo Kit: call \`browse_kit\` for 16 skills, 19 modules, 6 templates, 20 prefabs, 3,755 image/sky-face files, 50 LDR sky panoramas, 520 models, and 45 CC0 audio files. Use \`search_assets\` for paginated type/category/source/license/provenance filters; exact Git blob matches and pack-level attestations are distinguished. Send supported images/audio/models into Studio with \`import_image\`, \`import_audio\`, and \`import_rbxmx\`.
 
 Rules of engagement:
 1. Inspect live ground truth first (\`get_studio_state\`, \`survey_place\` with \`includeSource=false\`, and \`browse_kit\`).
 2. Validate Luau edits with \`luau_check\` before writing, and create a rollback point via \`manage_snapshots(action="create")\` before multi-script changes.
 3. Pass \`replaceInstance=true\` when modifying \`ModuleScript\`s that may already be cached by \`require()\`.
-4. Verify behaviour via \`run_playtest_scenario\` across \`server\` and \`client\` DataModels and check \`get_console_output\` for zero errors.`
+4. Verify behaviour via \`run_playtest_scenario\` across \`server\` and \`client\` DataModels and check \`get_console_output\` for zero errors.
+5. Run \`self_test\` before completion; Studio-only scratch checks are \`no_peer\` skips when no peer is connected, never passes.
+6. Use \`mesh_capabilities\` to probe runtime APIs. A Studio version string is not proof of EditableMesh support; report the actual probe result and limitations.
+7. Run \`python3 -B tools/verify_licences.py\` before asset changes are accepted. Do not present pack-level attestations as exact file matches, or LDR skies/placeholders as HDRIs/rendered mesh previews.`
     },
     {
       title: "3. Generic Prompt — Full Place Recon & Architecture Map (Read-Only Safe)",
@@ -1597,7 +1670,7 @@ function renderTips(){
     ["Always Pre-Flight Luau with `luau_check`",
      "In non-strict Luau, deleting a helper function leaves callers compiling cleanly while crashing at runtime with `attempt to call a nil value`. `luau_check` runs both `luau-compile` and `luau-analyze` to catch undefined globals before code ever reaches Studio."],
     ["Open Script Editor Tabs & >200 KB Scripts",
-     "ArenaBridge v3.0 uses `ScriptEditorService:GetEditorSource` and `UpdateSourceAsync` with CRLF -> LF normalization instead of raw `.Source` assignment — safely supporting scripts over 200 KB and keeping open Studio tabs synchronized without cursor corruption."],
+     "ArenaBridge v4.0.0 uses `ScriptEditorService:GetEditorSource` and `UpdateSourceAsync` with CRLF -> LF normalization instead of raw `.Source` assignment — safely supporting scripts over 200 KB and keeping open Studio tabs synchronized without cursor corruption."],
     ["Single-Step Undo (`Ctrl+Z`) + Multi-Script Snapshots",
      "Every mutating tool wraps inside a `ChangeHistoryService` recording so one `Ctrl+Z` in Studio undoes an entire build or batch sync. Before sweeping refactors, call `manage_snapshots(action='create')` for instant 1-command rollback."],
     ["Safe Toolbox / Asset Insertion",
@@ -1647,7 +1720,7 @@ let ACTIVE_CLOUD_CAT = '';
 
 async function installAllModules(){
   const out = document.getElementById('kit-action-out');
-  out.textContent = 'Installing all 12 Luau modules -> ReplicatedStorage.Shared...';
+  out.textContent = 'Installing all 19 Luau modules -> ReplicatedStorage.Shared...';
   try {
     const res = await callMcp('install_kit_module', { module: 'all', parent: 'ReplicatedStorage.Shared' });
     out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
@@ -1731,13 +1804,14 @@ function renderFilteredAssets(){
       <div style="width:68px;height:68px;display:flex;align-items:center;justify-content:center;background:repeating-conic-gradient(#161d29 0% 25%, #0d121a 0% 50%) 50% / 14px 14px;border-radius:8px;padding:6px">
         <img src="/api/kit/image/${esc(im.relPath)}" alt="${esc(im.name)}" loading="lazy" style="max-width:54px;max-height:54px;image-rendering:auto">
       </div>
-      <div style="font-size:10px;color:var(--muted)">${esc(im.pack)}</div>
+      <div style="font-size:10px;color:var(--muted)">${esc(im.pack)} · ${esc(im.category||im.pack)}</div>
+      <div style="font-size:9px;color:var(--muted);max-width:100%;overflow-wrap:anywhere">${esc(im.license||'license undeclared')} · ${esc(im.provenance||'unverified')} · ${esc(im.sourceId||'unknown source')}</div>
       <code style="font-size:11px;word-break:break-all">${esc(im.name)}</code>
       <div style="display:flex;gap:4px">
         <button class="sm" onclick="copyText('${esc(im.localUri)}')">URI</button>
         <button class="sm primary" onclick="importRepoAssetToStudio('${esc(im.relPath)}')">Send</button>
       </div>
-    </div>`).join('') + (filtered.length > 96 ? `<div class="sub" style="grid-column:1/-1">Showing 96 of ${filtered.length} matching PNGs — pick a pack pill or type a filter above to narrow further.</div>` : '');
+    </div>`).join('') + (filtered.length > 96 ? `<div class="sub" style="grid-column:1/-1">Showing 96 of ${filtered.length} matching images — pick a source-group pill or type a filter above to narrow further.</div>` : '');
 }
 
 let ACTIVE_ICON_PACK = 'all';

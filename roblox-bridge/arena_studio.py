@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v3.0).
+arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v4.0.0).
 
 Supports every MCP tool and bridge operation from your terminal or HANDS MODE (`ab.ps1`),
 with strict UTF-8 handling on Windows, macOS, and Linux.

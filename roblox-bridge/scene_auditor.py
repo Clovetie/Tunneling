@@ -211,12 +211,14 @@ def audit_3d_hierarchy(root_tree: dict) -> dict:
                     })
 
         # 5. Coplanar Z-fighting check on visible opaque parts
-        if p["transparency"] < 0.9:
-            for j in range(i + 1, min(len(parts), i + 80)):
+        if p["transparency"] < 0.9 and p["canCollide"]:
+            for j in range(i + 1, len(parts)):
                 q = parts[j]
-                if q["transparency"] >= 0.9 or p["colorKey"] == q["colorKey"]:
+                if not q["canCollide"] or q["transparency"] >= 0.9 or p["colorKey"] == q["colorKey"]:
                     continue
-                if _xz_overlap(p, q, margin=0.25) and abs(p["max"][1] - q["max"][1]) < 0.005:
+                overlap_x = min(p["max"][0], q["max"][0]) - max(p["min"][0], q["min"][0])
+                overlap_z = min(p["max"][2], q["max"][2]) - max(p["min"][2], q["min"][2])
+                if overlap_x * overlap_z >= 0.25 and abs(p["max"][1] - q["max"][1]) < 0.005:
                     issues.append({
                         "severity": "warning",
                         "code": "Z_FIGHTING_COPLANAR",

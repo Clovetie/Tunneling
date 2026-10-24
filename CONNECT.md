@@ -388,9 +388,11 @@ mkdir jobs -ErrorAction SilentlyContinue
 
 ---
 
-## 11. v3.0 Upgrade — Full MCP Server + Multi-DataModel Routing + Zero-Drift Sync (2026-10-23)
+## 11. Historical v3.0 Upgrade Snapshot — Full MCP Server + Multi-DataModel Routing + Zero-Drift Sync (2026-10-23)
 
-Both `roblox-bridge/` and `nightloop/bridge/` are upgraded identically to **v3.0** (`PLUGIN_VERSION = "3.0"`, `SERVER_VERSION = "3.0.0"`, zero external pip dependencies):
+> Historical v3.0 notes below describe that earlier state. The current v4.0.0 work is in `roblox-bridge/`; the `nightloop/bridge/` mirror was not synchronized as part of this upgrade.
+
+At that time, `roblox-bridge/` and `nightloop/bridge/` were upgraded identically to **v3.0** (`PLUGIN_VERSION = "3.0"`, `SERVER_VERSION = "3.0.0"`, zero external pip dependencies):
 
 ### What was added & fixed in v3.0
 

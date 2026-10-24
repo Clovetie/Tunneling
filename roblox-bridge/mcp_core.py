@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 mcp_core.py — Zero-dependency Model Context Protocol (MCP) engine & Roblox Studio
-tool suite for Arena <-> Roblox Studio (v3.0).
+tool suite for Arena <-> Roblox Studio (v4.0.0).
 
 Supports:
   - MCP specification versions 2025-06-18, 2025-03-26, and 2024-11-05
   - Transports: stdio (via mcp_server.py) and Streamable HTTP /mcp (via server.py)
-  - 37 curated, annotated Roblox Studio & Luau engineering tools
+  - 68 curated, annotated Roblox Studio & Luau engineering tools
   - Live MCP Resources + Resource Templates + Workflow Prompts
   - Exact 53-bit-safe 32-bit FNV-1a hashing matching ArenaBridge.lua bit-for-bit
   - Local pre-flight Luau syntax + undefined-global static analysis (luau_check)
@@ -16,7 +16,9 @@ Supports:
 """
 
 import json
+import math
 import os
+import random
 import re
 import subprocess
 import tempfile
@@ -26,7 +28,7 @@ import urllib.request
 from pathlib import Path
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "3.4.0"
+MCP_SERVER_VERSION = "4.0.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2025-06-18",
     "2025-03-26",
@@ -124,6 +126,7 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
         "unusedVariables": [],
         "compileErrors": [],
         "toolchainAvailable": bool(compiler or analyzer),
+        "backend": "binary" if (compiler or analyzer) else "unavailable",
         "bytes": len(source.encode("utf-8")),
         "hash": fnv1a_hex(normalize_newlines(source)),
     }
@@ -136,13 +139,18 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
 
     try:
         if compiler:
-            proc = subprocess.run(
-                [compiler, "--binary", tmp_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                timeout=15,
-            )
-            if proc.returncode != 0:
+            try:
+                proc = subprocess.run(
+                    [compiler, "--binary", tmp_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=15,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                compiler = None
+                result["toolchainError"] = f"luau-compile unavailable: {exc}"
+                proc = None
+            if proc is not None and proc.returncode != 0:
                 err_txt = proc.stderr.decode("utf-8", "replace").strip()
                 err_txt = err_txt.replace(tmp_path, filename)
                 result["syntaxOk"] = False
@@ -153,13 +161,18 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
                 return result
 
         if analyzer:
-            proc = subprocess.run(
-                [analyzer, tmp_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=15,
-            )
-            output = proc.stdout.decode("utf-8", "replace").replace(tmp_path, filename)
+            try:
+                proc = subprocess.run(
+                    [analyzer, tmp_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=15,
+                )
+                output = proc.stdout.decode("utf-8", "replace").replace(tmp_path, filename)
+            except (OSError, subprocess.SubprocessError) as exc:
+                result["toolchainError"] = f"luau-analyze unavailable: {exc}"
+                analyzer = None
+                output = ""
             for line in output.splitlines():
                 if "SyntaxError:" in line:
                     result["syntaxOk"] = False
@@ -177,7 +190,61 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
         except OSError:
             pass
 
+    result["toolchainAvailable"] = bool(compiler or analyzer)
     result["ok"] = result["syntaxOk"] and len(result["undefinedGlobals"]) == 0
+    if not result["toolchainAvailable"]:
+        result["backend"] = "unavailable"
+        result["ok"] = False
+        result["reason"] = "toolchain_unavailable"
+        result["warnings"] = ["No executable Luau compiler/analyzer is available on the bridge host."]
+    else:
+        result["warnings"] = []
+    return result
+
+
+def _studio_luau_check(client, source: str, filename: str = "inline.lua", dm: str = "edit", peer_id: str = None) -> dict:
+    """Use Studio's own Luau parser when host binaries are missing or unusable."""
+    level = 2
+    while "]" + "=" * level + "]" in source:
+        level += 1
+    eq = "=" * level
+    quoted = f"[{eq}[{source}]{eq}]"
+    escaped_name = json.dumps(filename)
+    wrapper = (
+        f"local src = {quoted}\n"
+        f"local f, e = loadstring(src, '@' .. {escaped_name})\n"
+        "if f then return {syntaxOk=true, backend='studio-loadstring'} end\n"
+        "return {syntaxOk=false, backend='studio-loadstring', error=tostring(e)}"
+    )
+    try:
+        job = client.submit_job("run_luau", {"code": wrapper}, wait=20.0, dm=dm, peer_id=peer_id)
+        data = _unwrap_job(job)
+        ret = data.get("returned")
+        parsed = json.loads(ret) if isinstance(ret, str) and ret.startswith("{") else data.get("value")
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Studio parser returned no structured result")
+        errors = [] if parsed.get("syntaxOk") else [parsed.get("error", "Luau parse failed")]
+        return {
+            "file": filename, "syntaxOk": bool(parsed.get("syntaxOk")),
+            "undefinedGlobals": [], "unusedVariables": [], "compileErrors": errors,
+            "toolchainAvailable": False, "backend": "studio-loadstring",
+            "ok": bool(parsed.get("syntaxOk")), "warnings": [],
+        }
+    except Exception as exc:
+        return {
+            "file": filename, "syntaxOk": False, "undefinedGlobals": [],
+            "unusedVariables": [], "compileErrors": [], "toolchainAvailable": False,
+            "backend": "unavailable", "ok": False, "reason": "all_backends_failed",
+            "warnings": [str(exc)],
+        }
+
+
+def _check_with_fallback(client, source: str, filename: str, dm: str = "edit", peer_id: str = None) -> dict:
+    result = check_luau_source(source, filename)
+    if result.get("toolchainAvailable") and "toolchainError" not in result:
+        return result
+    if client is not None:
+        return _studio_luau_check(client, source, filename, dm=dm, peer_id=peer_id)
     return result
 
 
@@ -332,6 +399,13 @@ class BridgeTransportError(RuntimeError):
     pass
 
 
+class NoPeerError(RuntimeError):
+    def __init__(self, dm: str):
+        self.dm = dm
+        self.reason = "no_client_peer" if dm == "client" else "no_peer"
+        super().__init__(f"{{\"ok\":false,\"reason\":\"{self.reason}\",\"dm\":\"{dm}\"}}")
+
+
 class BridgeClient:
     """Talks either directly in-process to server.py state OR over HTTP."""
 
@@ -385,6 +459,11 @@ class BridgeClient:
             return self.direct_dispatch("peers", {})
         return self._http_request("GET", "/api/peers", timeout=10.0)
 
+    def get_job(self, job_id: str) -> dict:
+        if self.direct_dispatch:
+            return self.direct_dispatch("get_job", {"id": job_id})
+        return self._http_request("GET", f"/api/jobs/{job_id}", timeout=10.0)
+
     def snapshots_action(self, action: str, payload: dict = None) -> dict:
         if self.direct_dispatch:
             return self.direct_dispatch("snapshots", {"action": action, **(payload or {})})
@@ -405,6 +484,23 @@ class BridgeClient:
     ) -> dict:
         payload = dict(payload or {})
         effective_place = place_id if place_id is not None else self.default_place_id
+        requested_dm = dm or "auto"
+        if job_type != "playtest" or payload.get("action") != "stop":
+            try:
+                peer_rows = self.peers().get("peers", [])
+                def is_target(p):
+                    if requested_dm in ("auto", ""):
+                        return True
+                    if p.get("dm") == requested_dm:
+                        return True
+                    return requested_dm == "client" and p.get("dm") == "server" and (p.get("hasClient") or int(p.get("playerCount", 0)) > 0)
+                live = [p for p in peer_rows if is_target(p) and p.get("online") is True
+                        and float(p.get("ageSeconds", 0.0)) <= 5.0 and (not peer_id or p.get("peerId") == peer_id)]
+            except Exception:
+                live = []
+            if not live:
+                return {"status": "error", "reason": "no_client_peer" if requested_dm == "client" else "no_peer", "dm": requested_dm,
+                        "error": f"No live {requested_dm} DataModel peer is connected."}
         body = {
             "type": job_type,
             "payload": payload,
@@ -861,7 +957,13 @@ TOOL_SPECS = [
                 "warmupSeconds": {"type": "number", "default": 1.5, "minimum": 0, "maximum": 30},
                 "serverCode": {"type": "string", "description": "Optional Luau verification code executed in the live Play Server VM."},
                 "clientCode": {"type": "string", "description": "Optional Luau verification code executed in the live Play Client VM (mode='play')."},
+                "playerName": {"type": "string", "description": "Optional target player name for the clientCode probe."},
                 "timeout": {"type": "number", "default": 45, "minimum": 5, "maximum": 120},
+                "keepAlive": {"type": "boolean", "default": True, "description": "Keep the play session running after the scenario; call start_stop_play(stop) explicitly to end it."},
+                "autoRestart": {"type": "boolean", "default": False, "description": "Restart the session once if the server peer disappears before probes complete."},
+                "consoleLimit": {"type": "integer", "default": 200, "minimum": 1, "maximum": 2000, "description": "Maximum game log entries included in the scenario console slice."},
+                "consoleSinceIndex": {"type": "integer", "default": 0, "minimum": 0, "description": "Incremental game-log cursor passed to LogService output retrieval."},
+                "peerId": PEER_PROP,
             },
         },
         "annotations": _ann("Run Automated Playtest Scenario", read_only=False, destructive=False, idempotent=False),
@@ -874,6 +976,7 @@ TOOL_SPECS = [
             "properties": {
                 "limit": {"type": "integer", "default": 120, "minimum": 1, "maximum": 2000},
                 "level": {"type": "string", "enum": ["all", "Error", "Warning", "Output", "Info"], "default": "all"},
+                "source": {"type": "string", "enum": ["game", "bridge", "all"], "default": "game", "description": "Log origin filter; excludes ArenaBridge diagnostic chatter by default."},
                 "search": {"type": "string", "description": "Optional case-insensitive substring filter."},
                 "sinceIndex": {"type": "integer", "default": 0, "minimum": 0, "description": "Pass previous nextIndex to fetch only new log entries."},
                 "dm": DM_PROP,
@@ -1120,7 +1223,9 @@ TOOL_SPECS = [
             "type": "object",
             "properties": {
                 "code": {"type": "string", "description": "Inline Luau source string to validate."},
-                "path": {"type": "string", "description": "Local file or directory path of .lua/.luau scripts to validate."},
+                "path": {"type": "string", "description": "Local file or directory path resolved on the bridge host (not the MCP client)."},
+                "dm": DM_PROP,
+                "peerId": PEER_PROP,
             },
         },
         "annotations": _ann("Check Luau Syntax & Undefined Globals", read_only=True, idempotent=True),
@@ -1147,9 +1252,10 @@ TOOL_SPECS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["create", "list", "get", "restore"], "default": "list"},
+                "action": {"type": "string", "enum": ["create", "list", "get", "restore", "diff"], "default": "list"},
                 "root": {"type": "string", "default": "game", "description": "Subtree of scripts to snapshot when action='create'."},
-                "label": {"type": "string", "description": "Human-readable note for snapshot."},
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional exact script paths or subtree roots to include; if set, root is ignored."},
+                "label": {"type": "string", "description": "Human-readable name/label for snapshot."},
                 "snapshotId": {"type": "string", "description": "Snapshot ID for 'get' or 'restore'."},
                 "peerId": PEER_PROP,
             },
@@ -1220,6 +1326,7 @@ TOOL_SPECS = [
                 "primaryColor": {"type": "string", "description": "Hex color e.g. '#FFD43B'."},
                 "secondaryColor": {"type": "string", "description": "Hex color e.g. '#F08C00'."},
                 "saveSubdir": {"type": "string", "default": "generated"},
+                "saveToRepo": {"type": "boolean", "default": True, "description": "Save the generated PNG in roblox-kit/assets/images; false is useful for transient previews/tests."},
                 "targetPath": {"type": "string", "description": "Optional Studio path to immediately apply image onto."},
                 "applyMode": {"type": "string", "enum": ["auto", "decal", "texture", "billboard", "surface_gui", "screen_gui"], "default": "auto"},
                 "peerId": PEER_PROP,
@@ -1240,6 +1347,10 @@ TOOL_SPECS = [
                     "default": "all",
                 },
                 "item": {"type": "string", "description": "Optional specific skill/module/system/template/prefab/model/image/audio name to inspect."},
+                "format": {"type": "string", "enum": ["summary", "full"], "default": "summary"},
+                "section": {"type": "string", "enum": ["skills", "modules", "systems", "templates", "prefabs", "models", "images", "audio", "proceduralPresets"], "description": "Return one paged section; detail is intentionally opt-in."},
+                "cursor": {"type": "integer", "minimum": 0, "default": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
             },
         },
         "annotations": _ann("Browse Skills, Modules, Systems, Templates, Prefabs, Models & Assets", read_only=True, destructive=False, idempotent=True),
@@ -1297,6 +1408,12 @@ TOOL_SPECS = [
         "annotations": _ann("Install Full UI / Gameplay System Template", read_only=False, destructive=False, idempotent=True),
     },
     {
+        "name": "search_assets",
+        "description": "Offline search across the pinned licensed asset registry. Filters by free-text name/path, asset type, category, source, SPDX licence, and provenance; returns relative paths, hashes, source revisions, local Studio URIs where applicable, and honest thumbnail-kind labels.",
+        "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "default": ""}, "assetType": {"type": "string", "enum": ["any", "image", "sky", "model", "audio"], "default": "any"}, "category": {"type": "string"}, "sourceId": {"type": "string"}, "license": {"type": "string"}, "provenance": {"type": "string", "enum": ["any", "content-hash-match", "pack-license-attestation", "first-party-generated"], "default": "any"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}, "cursor": {"type": "integer", "minimum": 0, "default": 0}}, "additionalProperties": False},
+        "annotations": _ann("Search Licensed Local Asset Registry", read_only=True, destructive=False, idempotent=True),
+    },
+    {
         "name": "search_cloud_icons",
         "description": "Search 4,811 verified pre-uploaded Roblox `rbxassetid://` UI icons across 3 packs: `stud` (1,022 glossy 3D cartoon icons), `lucide` (1,894 crisp outline vector icons), and `lucide_fill` (1,895 solid filled vector icons). Works immediately in Studio and published multiplayer servers with zero uploads.",
         "inputSchema": {
@@ -1304,7 +1421,8 @@ TOOL_SPECS = [
             "properties": {
                 "query": {"type": "string", "default": "", "description": "Case-insensitive search keywords, e.g. 'shopping cart', 'shield', 'settings', 'heart', 'golden cat', 'coin', 'swords'."},
                 "pack": {"type": "string", "enum": ["all", "stud", "lucide", "lucide_fill"], "default": "all", "description": "Filter icon style pack: 'stud' (glossy 3D cartoon), 'lucide' (outline vector), 'lucide_fill' (solid filled vector), or 'all'."},
-                "category": {"type": "string", "description": "Optional category filter, e.g. 'Main', 'Item', 'Animal', 'Currency', 'Lucide', 'LucideFill'."},
+                "category": {"type": "string", "description": "Optional exact category filter, e.g. 'Main', 'Item', 'Animal', 'Currency', 'Lucide', 'LucideFill'."},
+                "variant": {"type": "string", "enum": ["any", "plain", "outline", "filled"], "default": "any"},
                 "limit": {"type": "integer", "default": 40, "minimum": 1, "maximum": 250},
             },
         },
@@ -1374,6 +1492,7 @@ TOOL_SPECS = [
                     "items": {"type": "string", "enum": ["desktop", "tablet", "mobile"]},
                     "description": "Target viewports to evaluate (defaults to all 3: desktop, tablet, mobile).",
                 },
+                "dm": DM_PROP,
                 "peerId": PEER_PROP,
             },
         },
@@ -1407,8 +1526,12 @@ TOOL_SPECS = [
                     "default": "perspective",
                     "description": "Camera angle preset ('top_blueprint' renders an orthographic architectural floorplan).",
                 },
-                "includeHud": {"type": "boolean", "default": True, "description": "Composite active StarterGui ScreenGuis on top of the 3D frame."},
+                "includeHud": {"type": "boolean", "default": False, "description": "Composite active StarterGui ScreenGuis on top of the 3D frame. Defaults off for a deterministic world-only render."},
                 "showLabels": {"type": "boolean", "default": True, "description": "Draw crisp callout labels on foreground 3D parts."},
+                "camera": {"type": "object", "description": "Optional deterministic camera {position:[x,y,z], target:[x,y,z], fov:number, ortho:boolean}."},
+                "size": {"type": "object", "description": "Optional output dimensions {w:240..1280,h:160..800}; width/height remain supported."},
+                "overlays": {"type": "object", "description": "Optional overlay flags {bounds,labels,grid}. Unknown keys are rejected."},
+                "returnInline": {"type": "boolean", "default": True, "description": "Include the PNG as a native MCP image block."},
                 "width": {"type": "integer", "default": 800, "minimum": 240, "maximum": 1280},
                 "height": {"type": "integer", "default": 450, "minimum": 160, "maximum": 800},
                 "mode": {"type": "string", "enum": ["software", "native"], "default": "software", "description": "Use deterministic 3D+HUD software rasterizer ('software', works headless/minimized everywhere) or OS desktop capture ('native' fallback to software)."},
@@ -1417,6 +1540,78 @@ TOOL_SPECS = [
             },
         },
         "annotations": _ann("Capture Visual 3D Viewport + HUD PNG", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "export_geometry",
+        "description": "Export a live subtree as flat, JSON-safe part geometry records (CFrame, size, color, material, transparency, shape, tags) for offline rendering and asset analysis.",
+        "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "default": "Workspace"}, "depth": {"type": "integer", "default": 10, "minimum": 1, "maximum": 30}, "include": {"type": "array", "items": {"type": "string"}, "default": ["cframe", "size", "color", "material", "transparency", "shape", "tags"]}, "dm": DM_PROP, "peerId": PEER_PROP}},
+        "annotations": _ann("Export Flat Scene Geometry", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "render_offline",
+        "description": "Render live Workspace geometry or a previously exported hierarchy tree into a deterministic PNG. Supply tree/lighting/gui for offline no-peer rendering; supports explicit camera, orthographic projection and HUD toggle.",
+        "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "default": "Workspace"}, "tree": {"type": "object", "description": "Previously exported hierarchy tree; when supplied, no Studio peer is required."}, "lighting": {"type": "object"}, "gui": {"type": "array", "items": {"type": "object"}}, "width": {"type": "integer", "default": 800, "minimum": 240, "maximum": 1280}, "height": {"type": "integer", "default": 450, "minimum": 160, "maximum": 800}, "camera": {"type": "object"}, "includeHud": {"type": "boolean", "default": False}, "saveFile": {"type": "string"}, "dm": DM_PROP, "peerId": PEER_PROP}},
+        "annotations": _ann("Render Offline Scene PNG", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "screenshot_gui",
+        "description": "Render a ScreenGui hierarchy into an inline PNG. Use dm='client', path='PlayerGui' for live client absolute measurements; edit-mode StarterGui previews report derived measurements.",
+        "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "Defaults to StarterGui in edit or PlayerGui in a client DataModel."}, "width": {"type": "integer", "default": 800, "minimum": 240, "maximum": 1280}, "height": {"type": "integer", "default": 450, "minimum": 160, "maximum": 800}, "dm": DM_PROP, "saveFile": {"type": "string"}, "peerId": PEER_PROP}},
+        "annotations": _ann("Screenshot GUI to PNG", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "mesh_capabilities",
+        "description": "Probe runtime MeshPart and EditableMesh API availability in the connected Studio peer. Reports Studio version, API presence, an in-memory creation attempt, and the raw result; it never assumes EditableMesh support from a version number alone.",
+        "inputSchema": {"type": "object", "properties": {"peerId": PEER_PROP}},
+        "annotations": _ann("Probe Mesh and EditableMesh Runtime Capabilities", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "perf_audit",
+        "description": "Estimate mobile performance risks from part/mesh counts, models, collision flags, unanchored parts, and StreamingEnabled.",
+        "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "default": "Workspace"}, "peerId": PEER_PROP}},
+        "annotations": _ann("Audit Scene Performance", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "batch_write",
+        "description": "Validate and write multiple scripts in a single Studio job/ChangeHistory recording. Any validation or write failure cancels the single transaction.",
+        "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "minItems": 1, "items": {"type": "object"}}, "validateSyntax": {"type": "boolean", "default": True}, "peerId": PEER_PROP}, "required": ["files"]},
+        "annotations": _ann("Atomically Write a Script Batch", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "build_biome",
+        "description": "Build a deterministic, undoable tiled biome kit in Workspace from a named palette, seeded height variation, and optional simple rock props. This uses anchored parts, not Terrain voxels.",
+        "inputSchema": {"type": "object", "properties": {"preset": {"type": "string", "enum": ["forest", "desert", "tundra", "volcanic", "island"], "default": "forest"}, "center": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "default": [0, 0, 0]}, "size": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "default": [96, 96]}, "tileSize": {"type": "integer", "minimum": 8, "maximum": 48, "default": 16}, "seed": {"type": "integer", "default": 2026}, "decorationDensity": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.08}, "name": {"type": "string", "default": "ArenaBiome"}, "parent": {"type": "string", "default": "Workspace"}, "peerId": PEER_PROP}},
+        "annotations": _ann("Build Deterministic Biome Tiles", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "build_skybox",
+        "description": "Create or replace a Lighting.Sky using explicit Roblox content IDs for all six cube faces; optional Atmosphere values are validated and included in the same build job.",
+        "inputSchema": {"type": "object", "properties": {"faces": {"type": "object", "description": "Exactly six strings: bk, dn, ft, lf, rt, up."}, "name": {"type": "string", "default": "ArenaSky"}, "atmosphere": {"type": "object", "description": "Optional Density, Offset, Color, Decay, Glare, Haze numeric/color values."}, "peerId": PEER_PROP}, "required": ["faces"]},
+        "annotations": _ann("Build a Skybox and Atmosphere", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "scatter_props",
+        "description": "Deterministically scatter cloned BasePart/Model props over a disk using a seeded minimum-spacing sampler. Clones are created as one Studio job and rolled back if any placement fails.",
+        "inputSchema": {"type": "object", "properties": {"sourcePath": {"type": "string"}, "parent": {"type": "string", "default": "Workspace"}, "center": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}, "radius": {"type": "number", "minimum": 1}, "count": {"type": "integer", "minimum": 1, "maximum": 500, "default": 25}, "minSpacing": {"type": "number", "minimum": 0, "default": 6}, "seed": {"type": "integer", "default": 2026}, "namePrefix": {"type": "string", "default": "Scatter"}, "stripScripts": {"type": "boolean", "default": True}, "peerId": PEER_PROP}, "required": ["sourcePath", "center", "radius"]},
+        "annotations": _ann("Scatter Deterministic Prop Clones", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "probe",
+        "description": "Execute Luau in Edit, Play Server, or Play Client. Play-mode execution injects a temporary Script/LocalScript, captures a nonce-tagged JSON result, and cleans up the probe.",
+        "inputSchema": {"type": "object", "properties": {"code": {"type": "string"}, "dm": DM_PROP, "playerName": {"type": "string"}, "timeout": {"type": "number", "default": 30, "minimum": 1, "maximum": 120}, "peerId": PEER_PROP}, "required": ["code"]},
+        "annotations": _ann("Run Safe DataModel Probe", read_only=False, destructive=True, idempotent=False),
+    },
+    {
+        "name": "wait_for",
+        "description": "Wait with bounded polling for a named peer/player condition or a bridge job to reach a terminal state.",
+        "inputSchema": {"type": "object", "properties": {"peer": {"type": "string", "enum": ["edit", "server", "client"]}, "condition": {"type": "string", "enum": ["peer_online", "player_joined"]}, "jobId": {"type": "string"}, "timeout": {"type": "number", "default": 60, "minimum": 0.1, "maximum": 120}, "peerId": PEER_PROP}},
+        "annotations": _ann("Wait for Peer, Player, or Job", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "self_test",
+        "description": "Run the local test suite, syntax/toolchain checks, kit/asset integrity checks, and a Studio scratch write-read-delete smoke test when a live edit peer is available. Returns a per-tool pass/fail/call-count/timing matrix plus a human-readable summary.",
+        "inputSchema": {"type": "object", "properties": {"includeStudioSmoke": {"type": "boolean", "default": True}, "timeout": {"type": "integer", "default": 180, "minimum": 10, "maximum": 600}}},
+        "annotations": _ann("Run Bridge Self Test", read_only=True, destructive=False, idempotent=True),
     },
     {
         "name": "audit_3d_scene",
@@ -1516,7 +1711,7 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
         return True
     if name == "drift_and_sync" and args.get("mode", "check") == "check":
         return True
-    if name == "manage_snapshots" and args.get("action", "list") in ("list", "get"):
+    if name == "manage_snapshots" and args.get("action", "list") in ("list", "get", "diff"):
         return True
     if name == "audit_3d_scene" and not args.get("autoFixUnanchored") and not args.get("snapFloating"):
         return True
@@ -1537,7 +1732,9 @@ def validate_arguments(schema: dict, args: dict) -> str:
             return f"Missing required parameter: '{req_key}'."
     props = schema.get("properties", {})
     for key, val in args.items():
-        if val is None or key not in props:
+        if key not in props:
+            return f"Unknown parameter '{key}'. Supported parameters: {', '.join(sorted(props))}."
+        if val is None:
             continue
         p = props[key]
         expected_type = p.get("type")
@@ -1573,6 +1770,8 @@ def _unwrap_job(job: dict) -> dict:
             return out
         return {"result": out, "_logs": job.get("logs") or []}
     if status == "error":
+        if job.get("reason") in ("no_peer", "no_client_peer"):
+            raise NoPeerError(job.get("dm") or "server")
         raise RuntimeError(job.get("error") or "Studio job failed")
     raise RuntimeError(
         f"Studio did not complete job {job.get('id')} in time (status={status}). "
@@ -1580,9 +1779,13 @@ def _unwrap_job(job: dict) -> dict:
     )
 
 
-def create_snapshot_helper(client: BridgeClient, root: str = "game", label: str = None, peer_id: str = None) -> dict:
+def create_snapshot_helper(client: BridgeClient, root: str = "game", label: str = None, peer_id: str = None, paths_filter: list = None) -> dict:
     hashes_job = _unwrap_job(client.submit_job("hash_scripts", {"root": root}, wait=45.0, peer_id=peer_id))
-    paths = [s["path"] for s in hashes_job.get("scripts", [])]
+    selected_roots = [str(p).strip(".") for p in (paths_filter or []) if str(p).strip(".")]
+    paths = [
+        s["path"] for s in hashes_job.get("scripts", [])
+        if not selected_roots or any(s["path"] == r or s["path"].startswith(r + ".") for r in selected_roots)
+    ]
     scripts_data = []
     # Read in batches so large places never hit per-call truncation
     for i in range(0, len(paths), 25):
@@ -1606,12 +1809,109 @@ def create_snapshot_helper(client: BridgeClient, root: str = "game", label: str 
     })
 
 
+def wait_for_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    deadline = time.monotonic() + max(0.1, min(float(args.get("timeout", 60)), 120.0))
+    if args.get("jobId"):
+        jid = args["jobId"]
+        while time.monotonic() < deadline:
+            job = client.get_job(jid)
+            if job.get("status") in ("done", "error", "cancelled"):
+                return {"ok": job.get("status") == "done", "condition": "job_terminal", "job": job, "warnings": [] if job.get("status") == "done" else [job.get("error") or job.get("status")]}
+            time.sleep(0.2)
+        return {"ok": False, "reason": "timeout", "condition": "job_terminal", "jobId": jid, "warnings": []}
+    dm = args.get("peer") or "server"
+    condition = args.get("condition", "peer_online")
+    while time.monotonic() < deadline:
+        rows = client.peers().get("peers", [])
+        found = next((p for p in rows if p.get("dm") == dm and p.get("online") and float(p.get("ageSeconds", 0)) <= 5 and (not peer_id or p.get("peerId") == peer_id)), None)
+        if found and (condition == "peer_online" or int(found.get("playerCount", 0)) > 0):
+            return {"ok": True, "condition": condition, "peer": found, "elapsedSec": round(float(args.get("timeout", 60)) - max(0, deadline - time.monotonic()), 2), "warnings": []}
+        time.sleep(0.2)
+    return {"ok": False, "reason": "timeout", "condition": condition, "peer": dm, "warnings": []}
+
+
+def run_bridge_self_test(client: BridgeClient, include_studio_smoke: bool = True, timeout: int = 180) -> dict:
+    """Run isolated full regression suite plus a tightly-scoped optional Studio smoke test."""
+    import sys
+    test_file = Path(__file__).resolve().parent / "test_bridge_mcp.py"
+    started = time.monotonic()
+    try:
+        child_env = os.environ.copy()
+        child_env["ARENA_SELF_TEST_CHILD"] = "1"
+        proc = subprocess.run([sys.executable, "-B", str(test_file)], cwd=str(test_file.parent), env=child_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=max(10, min(int(timeout), 600)))
+        suite_ok = proc.returncode == 0
+        summary_line = next((ln.strip() for ln in reversed(proc.stdout.splitlines()) if "Ran " in ln or "FAILED" in ln or ln.strip() == "OK"), "no unittest summary found")
+        suite = {"status": "pass" if suite_ok else "fail", "returnCode": proc.returncode, "summary": summary_line, "outputTail": proc.stdout[-12000:]}
+    except Exception as exc:
+        suite_ok = False
+        suite = {"status": "fail", "error": str(exc)}
+    smoke = {"status": "skipped", "reason": "disabled" if not include_studio_smoke else "no_peer"}
+    if include_studio_smoke:
+        try:
+            peers = client.peers().get("peers", [])
+            edit_peer = next((p for p in peers if p.get("dm") == "edit" and p.get("online") and float(p.get("ageSeconds", 0)) <= 5), None)
+            if edit_peer:
+                name = "__ArenaSelfTest_" + str(int(time.time() * 1000))
+                path = f"ServerStorage.{name}"
+                try:
+                    _unwrap_job(client.submit_job("write_script", {"parent": "ServerStorage", "name": name, "className": "Script", "source": "return 'self_test_ok'", "replaceInstance": True}, wait=15, dm="edit", peer_id=edit_peer["peerId"]))
+                    read_back = _unwrap_job(client.submit_job("read_script", {"path": path}, wait=15, dm="edit", peer_id=edit_peer["peerId"]))
+                    if "self_test_ok" not in read_back.get("source", ""):
+                        raise RuntimeError("scratch script readback mismatch")
+                    smoke = {"status": "pass", "cycle": "write-read-delete", "path": path}
+                finally:
+                    client.submit_job("delete", {"paths": [path]}, wait=10, dm="edit", peer_id=edit_peer["peerId"])
+        except Exception as exc:
+            smoke = {"status": "fail", "error": str(exc)}
+
+    tested_sources = set(re.findall(r'call_tool\("([^"]+)"', test_file.read_text(encoding="utf-8")))
+    test_text = test_file.read_text(encoding="utf-8")
+    tested_sources.update(name for name in ("open_cloud_action", "self_test") if name in test_text)
+    tool_metrics = {}
+    for line in (suite.get("outputTail") or "").splitlines():
+        if line.startswith("ARENA_TOOL_METRICS="):
+            try:
+                tool_metrics = json.loads(line[len("ARENA_TOOL_METRICS="):])
+            except Exception:
+                tool_metrics = {}
+    tool_matrix = []
+    for spec in TOOL_SPECS:
+        tool_name = spec["name"]
+        metric = tool_metrics.get(tool_name, {})
+        if tool_name == "self_test" and tool_name in tested_sources:
+            metric = {"status": "pass" if suite_ok else "fail", "calls": 1, "durationSec": round(time.monotonic() - started, 4)}
+        covered = tool_name in tested_sources and metric.get("calls", 0) > 0
+        status = "pass" if suite_ok and covered and metric.get("status") == "pass" else "fail"
+        tool_matrix.append({"tool": tool_name, "status": status, "calls": metric.get("calls", 0), "durationSec": metric.get("durationSec", 0.0), "testedBy": "isolated_mock_regression_suite" if covered else "missing_or_unmeasured_end_to_end_fixture"})
+    missing = [row["tool"] for row in tool_matrix if row["status"] != "pass"]
+    tests = [suite, {"name": "studio_scratch_write_read_delete", **smoke}]
+    passed = suite_ok and not missing and smoke["status"] != "fail"
+    table = ["CHECK | STATUS | DETAIL", f"mock regression suite | {suite['status']} | {suite.get('summary', suite.get('error',''))}", f"Studio scratch cycle | {smoke['status']} | {smoke.get('reason', smoke.get('path', smoke.get('error','')))}", f"registered MCP tools | {'pass' if not missing else 'fail'} | {len(TOOL_SPECS)} tested; missing: {', '.join(missing) or 'none'}"]
+    return {"ok": passed, "warnings": [] if smoke["status"] == "pass" else [f"Studio smoke {smoke['status']}: {smoke.get('reason', '')}"], "durationSec": round(time.monotonic() - started, 2), "suite": suite, "studioSmoke": smoke, "toolMatrix": tool_matrix, "humanTable": chr(10).join(table)}
+
+
 def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
     dm = args.get("dm", "auto")
     peer_id = args.get("peerId")
 
+    if name == "self_test":
+        return run_bridge_self_test(client, include_studio_smoke=args.get("includeStudioSmoke", True), timeout=args.get("timeout", 180))
+
     if name == "luau_check":
-        return run_luau_check(code=args.get("code"), path=args.get("path"))
+        result = run_luau_check(code=args.get("code"), path=args.get("path"))
+        if result.get("ok") or result.get("toolchainAvailable"):
+            return result
+        if args.get("code") is not None:
+            checked = _studio_luau_check(client, args["code"], "inline.lua", dm=dm if dm != "auto" else "edit", peer_id=peer_id)
+            return {"ok": checked["ok"], "backend": checked["backend"], "filesChecked": 1, "filesFailed": 0 if checked["ok"] else 1, "results": [checked], "warnings": checked.get("warnings", [])}
+        target = Path(args["path"]).expanduser().resolve()
+        files = [target] if target.is_file() else sorted(p for p in target.rglob("*") if p.is_file() and p.suffix.lower() in (".lua", ".luau"))
+        checked_files = []
+        for file in files:
+            chk = _studio_luau_check(client, file.read_text(encoding="utf-8"), str(file), dm=dm if dm != "auto" else "edit", peer_id=peer_id)
+            checked_files.append(chk)
+        failed = sum(not x.get("ok") for x in checked_files)
+        return {"ok": failed == 0, "backend": "studio-loadstring", "filesChecked": len(checked_files), "filesFailed": failed, "results": checked_files, "warnings": [] if checked_files else ["No .lua or .luau files found."]}
 
     if name == "list_studios":
         return client.peers()
@@ -1686,17 +1986,17 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
         }, wait=60.0, dm=dm, peer_id=peer_id))
 
     if name == "write_script":
+        validation_warning = None
         if args.get("validateSyntax", True):
-            chk = check_luau_source(args["source"], f"{args['parent']}.{args['name']}.lua")
-            if not chk["syntaxOk"] or chk["undefinedGlobals"]:
+            chk = _check_with_fallback(client, args["source"], f"{args['parent']}.{args['name']}.lua", dm="edit", peer_id=peer_id)
+            if chk.get("syntaxOk") is False and chk.get("reason") != "all_backends_failed":
                 raise ValueError(
                     f"Pre-push Luau validation failed for {args['parent']}.{args['name']}: "
-                    + json.dumps({
-                        "compileErrors": chk["compileErrors"],
-                        "undefinedGlobals": chk["undefinedGlobals"],
-                    })
+                    + json.dumps({"compileErrors": chk.get("compileErrors", []), "backend": chk.get("backend")})
                 )
-        return _unwrap_job(client.submit_job("write_script", {
+            if not chk.get("ok"):
+                validation_warning = {"code": "syntax_validation_unavailable", "message": "All syntax-check backends failed; write proceeded without parser validation.", "detail": chk.get("warnings", [])}
+        result = _unwrap_job(client.submit_job("write_script", {
             "parent": args["parent"],
             "name": args["name"],
             "className": args.get("className", "ModuleScript"),
@@ -1704,6 +2004,10 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
             "expectedHash": args.get("expectedHash"),
             "replaceInstance": args.get("replaceInstance", False),
         }, wait=45.0, dm=dm if dm != "auto" else "edit", peer_id=peer_id))
+        result["ok"] = True
+        result["warnings"] = [validation_warning] if validation_warning else []
+        result["validationBackend"] = chk.get("backend") if args.get("validateSyntax", True) else "skipped"
+        return result
 
     if name == "multi_edit":
         res = _unwrap_job(client.submit_job("multi_edit", {
@@ -1772,12 +2076,45 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
             "code": args.get("code"),
         }, wait=60.0, dm=dm, peer_id=peer_id))
 
-    if name == "execute_luau":
+    if name == "build_biome":
+        return build_biome_helper(client, args, peer_id=peer_id)
+
+    if name == "build_skybox":
+        return build_skybox_helper(client, args, peer_id=peer_id)
+
+    if name == "scatter_props":
+        return scatter_props_helper(client, args, peer_id=peer_id)
+
+    if name == "probe":
+        aliased = dict(args)
+        aliased.setdefault("validateSyntax", True)
+        return execute_tool(client, "execute_luau", aliased)
+
+    if name == "batch_write":
+        files = args["files"]
+        validation = []
         if args.get("validateSyntax", True):
-            chk = check_luau_source(args["code"], "execute_luau.lua")
-            if not chk["syntaxOk"]:
-                raise ValueError("Luau syntax error: " + "; ".join(chk["compileErrors"]))
-        payload = {"code": args["code"]}
+            for entry in files:
+                chk = _check_with_fallback(client, entry.get("source", ""), f"{entry.get('parent','')}.{entry.get('name','')}.lua", dm="edit", peer_id=peer_id)
+                validation.append(chk)
+                if chk.get("syntaxOk") is False and chk.get("reason") != "all_backends_failed":
+                    raise ValueError(f"Batch validation failed before Studio write: {entry.get('name')}: {chk.get('compileErrors', [])}")
+        result = _unwrap_job(client.submit_job("batch_write", {"files": files}, note="atomic_batch_write", wait=90.0, dm="edit", peer_id=peer_id))
+        result["ok"] = True
+        result["warnings"] = ["Validation backend unavailable for one or more files; writes proceeded without parser validation."] if any(not x.get("ok") for x in validation) else []
+        result["validation"] = [{"file": x.get("file"), "ok": x.get("ok"), "backend": x.get("backend"), "errors": x.get("compileErrors", [])} for x in validation]
+        return result
+
+    if name == "execute_luau":
+        validation_warning = None
+        if args.get("validateSyntax", True):
+            chk = _check_with_fallback(client, args["code"], "execute_luau.lua", dm="edit", peer_id=peer_id)
+            if chk.get("syntaxOk") is False and chk.get("reason") != "all_backends_failed":
+                raise ValueError("Luau syntax error: " + "; ".join(chk.get("compileErrors", [])))
+            if not chk.get("ok"):
+                validation_warning = "Syntax validation unavailable; execution proceeded without validation."
+
+        payload = {"code": args["code"], "_timeout": float(args.get("timeout", 60.0))}
         if args.get("playerName"):
             payload["_playerName"] = args["playerName"]
         res = _unwrap_job(client.submit_job(
@@ -1794,11 +2131,13 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
                 res["decoded"] = json.loads(ret_str)
             except Exception:
                 pass
+        res["ok"] = True
+        res["warnings"] = [validation_warning] if validation_warning else []
         return res
 
     if name == "start_stop_play":
         act = args["action"]
-        target_dm = "server" if act == "stop" else ("edit" if act in ("start_play", "start_run") else dm)
+        target_dm = "edit" if act in ("stop", "start_play", "start_run") else dm
         res = _unwrap_job(client.submit_job("playtest", {"action": act}, wait=25.0, dm=target_dm, peer_id=peer_id))
         if act in ("start_play", "start_run") and args.get("waitForPeer", True):
             deadline = time.monotonic() + 10.0
@@ -1815,49 +2154,148 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
         start_act = "start_play" if mode == "play" else "start_run"
         timeout = float(args.get("timeout", 45.0))
         t_start = time.monotonic()
-        _unwrap_job(client.submit_job("playtest", {"action": start_act}, wait=20.0, dm="edit"))
+        phase_timings = {}
+        _unwrap_job(client.submit_job("playtest", {"action": start_act}, wait=20.0, dm="edit", peer_id=peer_id))
 
-        # Wait for live server peer (or fall back to default peer in single-peer mocks)
-        deadline = time.monotonic() + min(12.0, timeout / 2)
-        while time.monotonic() < deadline:
-            peers = client.peers().get("peers", [])
-            if any(p.get("dm") in ("server", "any") and p.get("online") for p in peers):
+        phase_start = time.monotonic()
+        server_deadline = time.monotonic() + min(12.0, timeout / 2)
+        peer_rows = []
+        while time.monotonic() < server_deadline:
+            peer_rows = client.peers().get("peers", [])
+            if any(p.get("dm") == "server" and p.get("online") for p in peer_rows):
                 break
             time.sleep(0.2)
+        phase_timings["serverPeerWaitSec"] = round(time.monotonic() - phase_start, 3)
 
         warmup = float(args.get("warmupSeconds", 1.5))
         if warmup > 0:
             time.sleep(min(warmup, 15.0))
+        phase_timings["warmupSec"] = round(min(max(warmup, 0.0), 15.0), 3)
+        peer_rows = client.peers().get("peers", [])
+        server_peer_seen = any(p.get("dm") == "server" and p.get("online") for p in peer_rows)
+        restarted = False
+        if not server_peer_seen and args.get("autoRestart", False):
+            restarted = True
+            _unwrap_job(client.submit_job("playtest", {"action": start_act}, wait=20.0, dm="edit", peer_id=peer_id))
+            retry_deadline = time.monotonic() + min(12.0, timeout / 2)
+            while time.monotonic() < retry_deadline:
+                peer_rows = client.peers().get("peers", [])
+                if any(p.get("dm") == "server" and p.get("online") for p in peer_rows):
+                    break
+                time.sleep(0.2)
+        server_peer_seen = any(p.get("dm") == "server" and p.get("online") for p in peer_rows)
 
+        client_wait_sec = 0.0
+        if mode == "play" and args.get("clientCode"):
+            phase_start = time.monotonic()
+            client_deadline = time.monotonic() + min(12.0, timeout / 3)
+            while time.monotonic() < client_deadline:
+                peer_rows = client.peers().get("peers", [])
+                client_seen = any(p.get("dm") == "client" and p.get("online") for p in peer_rows)
+                route_seen = any(p.get("dm") == "server" and p.get("online") and (p.get("hasClient") or int(p.get("playerCount", 0)) > 0) for p in peer_rows)
+                if client_seen or route_seen:
+                    break
+                time.sleep(0.2)
+            client_wait_sec = round(time.monotonic() - phase_start, 3)
+        phase_timings["clientPeerWaitSec"] = client_wait_sec
+        peer_rows = client.peers().get("peers", [])
+        server_peer_seen = any(p.get("dm") == "server" and p.get("online") for p in peer_rows)
+        client_peer_seen = any(p.get("dm") == "client" and p.get("online") for p in peer_rows)
+        player_joined = any(p.get("dm") == "server" and int(p.get("playerCount", 0)) > 0 for p in peer_rows)
+        client_route_ready = client_peer_seen or any(
+            p.get("dm") == "server" and p.get("online") and (p.get("hasClient") or int(p.get("playerCount", 0)) > 0)
+            for p in peer_rows
+        )
+
+        # A started session without a live runtime peer is not a passing scenario,
+        # even when no user probe was supplied.
+        if not server_peer_seen or (args.get("clientCode") and mode == "play" and not (client_route_ready and player_joined)):
+            reason = "server_peer_not_seen" if not server_peer_seen else "client_peer_or_player_not_seen"
+            stop_result = None
+            if not args.get("keepAlive", True):
+                try:
+                    stop_result = _unwrap_job(client.submit_job("playtest", {"action": "stop", "reason": "scenario_peer_missing"}, wait=15.0, dm="edit", peer_id=peer_id))
+                except Exception as exc:
+                    stop_result = {"ok": False, "error": str(exc)}
+            return {
+                "ok": False, "reason": reason, "warnings": [reason], "mode": mode,
+                "durationSec": round(time.monotonic() - t_start, 2),
+                "serverPeerSeen": server_peer_seen, "clientPeerSeen": client_peer_seen,
+                "clientRouteReady": client_route_ready, "playerJoined": player_joined, "autoRestarted": restarted,
+                "keepAlive": args.get("keepAlive", True), "sessionSurvived": False,
+                "sessionStopped": bool(stop_result and stop_result.get("stopped")),
+                "phaseTimings": {**phase_timings, "totalSec": round(time.monotonic() - t_start, 3)},
+                "serverResult": None, "clientResult": None, "runtimeErrors": [],
+                "consoleExcerpt": [], "console": [],
+            }
+
+        warmup_complete = time.monotonic()
+        phase_timings["startupAndWarmupSec"] = round(warmup_complete - t_start, 3)
         server_out = None
         client_out = None
         errors_caught = []
+        warnings = []
+        logs_res = {"lines": [], "nextIndex": args.get("consoleSinceIndex", 0)}
 
-        try:
-            if args.get("serverCode"):
-                sj = client.submit_job("run_luau", {"code": args["serverCode"]}, wait=timeout, dm="server")
-                server_out = _unwrap_job(sj)
-            if args.get("clientCode"):
-                cj = client.submit_job("run_luau", {"code": args["clientCode"]}, wait=timeout, dm="client")
-                client_out = _unwrap_job(cj)
-            logs_res = _unwrap_job(client.submit_job("console", {"limit": 200}, wait=15.0, dm="server"))
-            for ln in logs_res.get("lines", []):
-                if "error" in ln.get("type", "").lower():
-                    errors_caught.append(ln.get("message", ""))
-        finally:
+        phase_start = time.monotonic()
+        if args.get("serverCode"):
+            sj = client.submit_job("run_luau", {"code": args["serverCode"], "_timeout": timeout}, wait=timeout, dm="server", peer_id=peer_id)
+            server_out = _unwrap_job(sj)
+        phase_timings["serverProbeSec"] = round(time.monotonic() - phase_start, 3)
+        phase_start = time.monotonic()
+        if args.get("clientCode"):
+            cj = client.submit_job("run_luau", {"code": args["clientCode"], "_timeout": timeout, "_playerName": args.get("playerName")}, wait=timeout, dm="client", peer_id=peer_id)
+            client_out = _unwrap_job(cj)
+        phase_timings["clientProbeSec"] = round(time.monotonic() - phase_start, 3)
+        phase_start = time.monotonic()
+        logs_res = _unwrap_job(client.submit_job("console", {
+            "limit": args.get("consoleLimit", 200),
+            "sinceIndex": args.get("consoleSinceIndex", 0),
+            "source": "game",
+        }, wait=15.0, dm="server", peer_id=peer_id))
+        for ln in logs_res.get("lines", []):
+            if "error" in ln.get("type", "").lower():
+                errors_caught.append(ln.get("message", ""))
+        phase_timings["consoleReadSec"] = round(time.monotonic() - phase_start, 3)
+
+        keep_alive = args.get("keepAlive", True)
+        stop_result = None
+        if not keep_alive:
+            phase_start = time.monotonic()
             try:
-                client.submit_job("playtest", {"action": "stop", "reason": "scenario_complete"}, wait=15.0, dm="server")
-            except Exception:
-                pass
+                stop_result = _unwrap_job(client.submit_job("playtest", {"action": "stop", "reason": "scenario_complete"}, wait=15.0, dm="edit", peer_id=peer_id))
+            except Exception as exc:
+                stop_result = {"ok": False, "error": str(exc)}
+            phase_timings["stopSec"] = round(time.monotonic() - phase_start, 3)
 
+        peer_rows_after = client.peers().get("peers", [])
+        session_stopped = bool(stop_result and stop_result.get("stopped"))
+        session_survived = any(p.get("dm") == "server" and p.get("online") for p in peer_rows_after)
+        # Peer heartbeats can remain cached for the lease window after EndTest;
+        # an acknowledged stop is stronger evidence than a just-expired heartbeat.
+        if not keep_alive and session_stopped:
+            session_survived = False
+        if keep_alive and not session_survived:
+            warnings.append("Play session did not survive the scenario probes.")
+        if not keep_alive and not session_stopped:
+            warnings.append("Play session stop was not confirmed.")
+        probes_ok = (not args.get("serverCode") or server_out is not None) and (not args.get("clientCode") or client_out is not None)
+        scenario_ok = server_peer_seen and probes_ok and not errors_caught and (session_survived if keep_alive else session_stopped)
+        phase_timings["totalSec"] = round(time.monotonic() - t_start, 3)
         return {
-            "ok": len(errors_caught) == 0,
-            "mode": mode,
+            "ok": scenario_ok, "warnings": warnings, "mode": mode,
             "durationSec": round(time.monotonic() - t_start, 2),
-            "serverResult": server_out,
-            "clientResult": client_out,
-            "runtimeErrors": errors_caught,
+            "serverPeerSeen": server_peer_seen, "clientPeerSeen": client_peer_seen,
+            "clientRouteReady": client_route_ready, "playerJoined": player_joined, "autoRestarted": restarted,
+            "keepAlive": keep_alive, "sessionSurvived": session_survived,
+            "sessionStopped": session_stopped,
+            "diedReason": None if server_peer_seen else "server_peer_not_seen",
+            "phaseTimings": phase_timings, "serverResult": server_out,
+            "clientResult": client_out, "runtimeErrors": errors_caught,
+            "consoleExcerpt": logs_res.get("lines", []),
             "console": logs_res.get("lines", []),
+            "consoleNextIndex": logs_res.get("nextIndex"),
+            "consoleCount": len(logs_res.get("lines", [])),
         }
 
     if name == "get_console_output":
@@ -1866,6 +2304,7 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
             "level": args.get("level", "all"),
             "search": args.get("search"),
             "sinceIndex": args.get("sinceIndex", 0),
+            "source": args.get("source", "game"),
         }, wait=25.0, dm=dm, peer_id=peer_id))
 
     if name == "build_tree":
@@ -1973,6 +2412,7 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
                 root=args.get("root", "game"),
                 label=args.get("label"),
                 peer_id=peer_id,
+                paths_filter=args.get("paths"),
             )
         if act == "list":
             return client.snapshots_action("list")
@@ -1980,6 +2420,17 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
             if not args.get("snapshotId"):
                 raise ValueError("snapshotId is required when action='get'")
             return client.snapshots_action("get", {"id": args["snapshotId"]})
+        if act == "diff":
+            if not args.get("snapshotId"):
+                raise ValueError("snapshotId is required when action='diff'")
+            snap = client.snapshots_action("get", {"id": args["snapshotId"]})
+            live = _unwrap_job(client.submit_job("hash_scripts", {"root": snap.get("root", "game")}, wait=45.0, peer_id=peer_id))
+            old_map = {x["path"]: x.get("hash") for x in snap.get("scripts", [])}
+            new_map = {x["path"]: x.get("hash") for x in live.get("scripts", [])}
+            changes = ([{"path": p, "change": "added"} for p in sorted(new_map.keys() - old_map.keys())]
+                + [{"path": p, "change": "deleted"} for p in sorted(old_map.keys() - new_map.keys())]
+                + [{"path": p, "change": "modified", "before": old_map[p], "after": new_map[p]} for p in sorted(old_map.keys() & new_map.keys()) if old_map[p] != new_map[p]])
+            return {"ok": True, "snapshotId": args["snapshotId"], "changes": changes, "count": len(changes), "warnings": []}
         if act == "restore":
             if not args.get("snapshotId"):
                 raise ValueError("snapshotId is required when action='restore'")
@@ -2001,13 +2452,24 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
             return {"restoredSnapshot": args["snapshotId"], "restoredCount": len(restored), "paths": restored}
 
     if name == "browse_kit":
-        return browse_kit_helper(category=args.get("category", "all"), item=args.get("item"))
+        return browse_kit_helper(category=args.get("category", "all"), item=args.get("item"),
+            output_format=args.get("format", "summary"), section=args.get("section"),
+            cursor=int(args.get("cursor", 0)), limit=int(args.get("limit", 50)))
+
+    if name == "search_assets":
+        return search_assets_helper(
+            query=args.get("query", ""), asset_type=args.get("assetType", "any"),
+            category=args.get("category"), source_id=args.get("sourceId"),
+            license_id=args.get("license"), provenance=args.get("provenance", "any"),
+            cursor=int(args.get("cursor", 0)), limit=int(args.get("limit", 25)),
+        )
 
     if name == "search_cloud_icons":
         return search_cloud_icons_helper(
             query=args.get("query", ""),
             pack=args.get("pack", "all"),
             category=args.get("category"),
+            variant=args.get("variant", "any"),
             limit=int(args.get("limit", 40)),
         )
 
@@ -2036,6 +2498,24 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
     if name == "capture_viewport":
         return capture_viewport_helper(client=client, args=args, peer_id=peer_id)
 
+    if name == "export_geometry":
+        return export_geometry_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "render_offline":
+        return render_offline_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "screenshot_gui":
+        return render_offline_helper(client=client, args=args, peer_id=peer_id, gui_only=True)
+
+    if name == "perf_audit":
+        return perf_audit_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "mesh_capabilities":
+        return _unwrap_job(client.submit_job("mesh_capabilities", {}, wait=25.0, dm="edit", peer_id=peer_id))
+
+    if name == "wait_for":
+        return wait_for_helper(client=client, args=args, peer_id=peer_id)
+
     if name == "audit_3d_scene":
         return audit_3d_scene_helper(client=client, args=args, peer_id=peer_id)
 
@@ -2059,7 +2539,7 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
                 "primaryColor": args.get("primaryColor"),
                 "secondaryColor": args.get("secondaryColor"),
                 "saveSubdir": args.get("saveSubdir", "generated"),
-                "saveToRepo": True,
+                "saveToRepo": args.get("saveToRepo", True),
                 "targetPath": args.get("targetPath"),
                 "applyMode": args.get("applyMode", "auto"),
             },
@@ -2399,46 +2879,199 @@ def _load_cloud_icons() -> list:
     return entries
 
 
+def build_biome_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    presets = {
+        "forest": ((83, 139, 72), (105, 100, 85), "Grass", "Rock"),
+        "desert": ((197, 166, 106), (134, 110, 78), "Sand", "Rock"),
+        "tundra": ((190, 213, 222), (113, 130, 139), "Snow", "Ice"),
+        "volcanic": ((76, 66, 63), (134, 57, 39), "Slate", "Basalt"),
+        "island": ((76, 153, 84), (113, 100, 75), "Grass", "Rock"),
+    }
+    preset = args.get("preset", "forest")
+    ground_rgb, prop_rgb, ground_material, prop_material = presets[preset]
+    center = [float(v) for v in args.get("center", [0, 0, 0])]
+    size = [float(v) for v in args.get("size", [96, 96])]
+    if len(center) != 3 or len(size) != 2 or any(not math.isfinite(v) for v in center + size) or min(size) <= 0:
+        raise ValueError("center must be three finite numbers and size must be two positive finite numbers")
+    tile = int(args.get("tileSize", 16))
+    if not 8 <= tile <= 48:
+        raise ValueError("tileSize must be between 8 and 48 studs")
+    nx, nz = max(1, math.ceil(size[0] / tile)), max(1, math.ceil(size[1] / tile))
+    if nx * nz > 576:
+        raise ValueError("Biome exceeds the 576 tile safety cap; increase tileSize or reduce size")
+    density = float(args.get("decorationDensity", 0.08))
+    if not 0 <= density <= 1:
+        raise ValueError("decorationDensity must be between 0 and 1")
+    rng = random.Random(int(args.get("seed", 2026)))
+    children = []
+    decorations = 0
+    for iz in range(nz):
+        dz = min(tile, size[1] - iz * tile)
+        z = center[2] - size[1] / 2 + iz * tile + dz / 2
+        for ix in range(nx):
+            dx = min(tile, size[0] - ix * tile)
+            x = center[0] - size[0] / 2 + ix * tile + dx / 2
+            height = rng.uniform(-2.5, 2.5)
+            children.append({
+                "name": f"Ground_{iz+1:02d}_{ix+1:02d}", "className": "Part",
+                "properties": {"Anchored": True, "CanCollide": True, "Size": [dx, 8.0, dz],
+                               "Position": [x, center[1] + height - 4.0, z], "Color": list(ground_rgb),
+                               "Material": f"Enum.Material.{ground_material}"},
+            })
+            if density and rng.random() < density and decorations < 200:
+                prop_x = x + rng.uniform(-dx * 0.35, dx * 0.35)
+                prop_z = z + rng.uniform(-dz * 0.35, dz * 0.35)
+                prop_height = rng.uniform(1.0, 3.0)
+                children.append({
+                    "name": f"Prop_{decorations+1:03d}", "className": "Part",
+                    "properties": {"Anchored": True, "CanCollide": True,
+                                   "Size": [prop_height, prop_height, prop_height],
+                                   "Position": [prop_x, center[1] + height + prop_height / 2, prop_z],
+                                   "Color": list(prop_rgb), "Material": f"Enum.Material.{prop_material}"},
+                })
+                decorations += 1
+    result = _unwrap_job(client.submit_job("build", {
+        "parent": args.get("parent", "Workspace"),
+        "tree": [{"name": args.get("name", "ArenaBiome"), "className": "Folder", "replaceExisting": True, "children": children}],
+        "select": False,
+    }, note=f"build_biome:{preset}", wait=90.0, dm="edit", peer_id=peer_id))
+    result.update({"ok": True, "preset": preset, "tiles": nx * nz, "decorations": decorations,
+                   "seed": int(args.get("seed", 2026)), "warnings": ["Generated as anchored Parts; no Roblox Terrain voxels were modified."]})
+    return result
+
+
+def build_skybox_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    faces = args.get("faces") or {}
+    face_keys = {"bk": "SkyboxBk", "dn": "SkyboxDn", "ft": "SkyboxFt", "lf": "SkyboxLf", "rt": "SkyboxRt", "up": "SkyboxUp"}
+    unknown_faces = sorted(set(faces) - set(face_keys))
+    missing = [key for key in face_keys if not isinstance(faces.get(key), str) or not faces[key].strip()]
+    if unknown_faces or missing:
+        raise ValueError(f"faces must contain exactly the six non-empty strings bk,dn,ft,lf,rt,up; missing={missing}, unknown={unknown_faces}")
+    sky_props = {prop: faces[key].strip() for key, prop in face_keys.items()}
+    nodes = [{"name": args.get("name", "ArenaSky"), "className": "Sky", "replaceExisting": True, "properties": sky_props}]
+    atmosphere = args.get("atmosphere") or {}
+    allowed = {"Density", "Offset", "Glare", "Haze", "Color", "Decay"}
+    unknown = sorted(set(atmosphere) - allowed)
+    if unknown:
+        raise ValueError(f"Unknown atmosphere properties: {', '.join(unknown)}")
+    if atmosphere:
+        props = {}
+        for key, value in atmosphere.items():
+            if key in ("Color", "Decay"):
+                if isinstance(value, str):
+                    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
+                        raise ValueError(f"Atmosphere.{key} must be #RRGGBB or a 3-component array")
+                    props[key] = value
+                elif isinstance(value, list) and len(value) == 3 and all(isinstance(v, (int, float)) and math.isfinite(v) for v in value):
+                    props[key] = value
+                else:
+                    raise ValueError(f"Atmosphere.{key} must be #RRGGBB or a 3-component array")
+            else:
+                number = float(value)
+                if not math.isfinite(number):
+                    raise ValueError(f"Atmosphere.{key} must be finite")
+                props[key] = number
+        nodes.append({"name": "ArenaAtmosphere", "className": "Atmosphere", "replaceExisting": True, "properties": props})
+    result = _unwrap_job(client.submit_job("build", {"parent": "Lighting", "tree": nodes, "select": False}, note="build_skybox", wait=45.0, dm="edit", peer_id=peer_id))
+    result.update({"ok": True, "sky": f"Lighting.{args.get('name', 'ArenaSky')}", "atmosphereCreated": bool(atmosphere),
+                   "warnings": ["Skybox face content IDs must be accessible to this experience; this tool does not publish or bundle marketplace assets."]})
+    return result
+
+
+def scatter_props_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    center = [float(v) for v in args["center"]]
+    if len(center) != 3 or any(not math.isfinite(v) for v in center):
+        raise ValueError("center must contain three finite coordinates")
+    radius = float(args["radius"])
+    min_spacing = float(args.get("minSpacing", 6.0))
+    count = int(args.get("count", 25))
+    if not math.isfinite(radius) or radius <= 0 or not math.isfinite(min_spacing) or min_spacing < 0 or not 1 <= count <= 500:
+        raise ValueError("radius, minSpacing, or count is outside supported bounds")
+    seed = int(args.get("seed", 2026))
+    rng = random.Random(seed)
+    points = []
+    tries = 0
+    max_tries = max(1000, count * 120)
+    while len(points) < count and tries < max_tries:
+        tries += 1
+        theta = rng.random() * math.tau
+        r = radius * math.sqrt(rng.random())
+        x = center[0] + math.cos(theta) * r
+        z = center[2] + math.sin(theta) * r
+        if min_spacing and any((x - px) ** 2 + (z - pz) ** 2 < min_spacing ** 2 for px, pz, _, _ in points):
+            continue
+        points.append([round(x, 3), round(center[1], 3), round(z, 3), round(rng.random() * 360, 2)])
+    if len(points) != count:
+        raise ValueError(f"Could place only {len(points)} of {count} requested props at minSpacing={min_spacing}; reduce spacing or count")
+    result = _unwrap_job(client.submit_job("scatter_props", {
+        "sourcePath": args["sourcePath"], "parent": args.get("parent", "Workspace"),
+        "points": points, "namePrefix": args.get("namePrefix", "Scatter"),
+        "stripScripts": args.get("stripScripts", True),
+    }, note="scatter_props", wait=90.0, dm="edit", peer_id=peer_id))
+    result.update({"ok": True, "seed": seed, "requestedCount": count, "radius": radius, "minSpacing": min_spacing, "warnings": []})
+    return result
+
+
 def search_cloud_icons_helper(
     query: str = "",
     pack: str = "all",
     category: str = None,
+    variant: str = "any",
     limit: int = 40,
 ) -> dict:
     all_icons = _load_cloud_icons()
-    cat_counts = {}
-    pack_counts = {}
+    pack_counts, cat_counts = {}, {}
     for ic in all_icons:
-        pk = ic["pack"]
-        pack_counts[pk] = pack_counts.get(pk, 0) + 1
-        if pack in ("all", None, "") or pk == pack:
-            c = ic["category"]
-            cat_counts[c] = cat_counts.get(c, 0) + 1
+        pack_counts[ic["pack"]] = pack_counts.get(ic["pack"], 0) + 1
+        if pack in ("all", None, "") or ic["pack"] == pack:
+            cat_counts[ic["category"]] = cat_counts.get(ic["category"], 0) + 1
 
-    terms = [t.lower() for t in (query or "").strip().split() if t]
-    cat_filter = (category or "").strip().lower()
-    pack_filter = (pack or "all").strip().lower()
-    matched = []
-    for ic in all_icons:
-        if pack_filter not in ("all", "") and ic["pack"] != pack_filter:
-            continue
-        if cat_filter and ic["category"].lower() != cat_filter:
-            continue
-        hay = ic["path"].lower()
-        if all(t in hay for t in terms):
-            matched.append(ic)
-            if len(matched) >= max(1, min(limit, 250)):
-                break
+    requested_pack = (pack or "all").strip().lower()
+    category_filter = (category or "").strip().lower()
+    variant_filter = (variant or "any").lower()
+    # Normalize common catalogue suffixes into a concept family, preserving every source URI as a variant.
+    suffixes = re.compile(r"(?:[-_ ](?:1st|2nd|3rd|outline|filled|black|white|golden|blue|red|green|silver|bronze|small|large))+$", re.I)
+    def family_name(name):
+        return re.sub(r"[-_ ]+", " ", suffixes.sub("", name)).strip().lower()
+    allowed = [ic for ic in all_icons if requested_pack in ("all", "") or ic["pack"] == requested_pack]
+    terms = [t.lower() for t in (query or "").split() if t]
 
+    def build_groups(candidates):
+        groups = {}
+        for ic in candidates:
+            if category_filter and ic["category"].lower() != category_filter:
+                continue
+            fam = family_name(ic["name"])
+            hay = f"{fam} {ic['category']} {ic.get('subCategory','')}".lower()
+            if not all(t in hay for t in terms):
+                continue
+            groups.setdefault((ic["pack"], fam), []).append(ic)
+        results = []
+        for (pack_used, fam), variants in groups.items():
+            variants.sort(key=lambda ic: (0 if ic["name"].lower() == fam.replace(" ", "-") else 1, ic["name"].lower()))
+            selected = None
+            if variant_filter != "any":
+                selected = next((ic for ic in variants if variant_filter in (ic["name"] + " " + ic.get("subCategory", "")).lower()), None)
+            if selected is None:
+                selected = variants[0]
+            record = dict(selected)
+            record["family"] = fam
+            record["variants"] = [{"name": x["name"], "uri": x["uri"], "assetId": x["assetId"], "subCategory": x.get("subCategory", "")} for x in variants]
+            results.append(record)
+        return results
+
+    matches = build_groups(allowed)
+    fallback_used = False
+    if not matches and requested_pack not in ("all", ""):
+        matches = build_groups(all_icons)
+        fallback_used = bool(matches)
+    matches.sort(key=lambda ic: (0 if ic["family"] == (query or "").strip().lower() else 1, ic["family"], ic["pack"]))
+    final = matches[:max(1, min(int(limit), 250))]
     return {
-        "totalCatalogIcons": len(all_icons),
-        "packs": pack_counts,
-        "pack": pack_filter,
-        "query": query or "",
-        "category": category or "all",
-        "returnedCount": len(matched),
-        "categories": cat_counts,
-        "icons": matched,
+        "ok": True, "warnings": [], "totalCatalogIcons": len(all_icons), "packs": pack_counts,
+        "pack": requested_pack, "packUsed": "all" if fallback_used else requested_pack,
+        "fallbackUsed": fallback_used, "query": query or "", "category": category or "all",
+        "returnedCount": len(final), "categories": cat_counts, "icons": final,
     }
 
 
@@ -2570,7 +3203,7 @@ def install_template_helper(client: BridgeClient, template_name: str, peer_id: s
     }
 
 
-def browse_kit_helper(category: str = "all", item: str = None) -> dict:
+def browse_kit_helper(category: str = "all", item: str = None, output_format: str = "summary", section: str = None, cursor: int = 0, limit: int = 50) -> dict:
     from image_pipeline import PROCEDURAL_PRESETS, find_kit_root
 
     kit = find_kit_root()
@@ -2654,6 +3287,15 @@ def browse_kit_helper(category: str = "all", item: str = None) -> dict:
                     "defaultParent": spec.get("defaultParent", "Workspace"),
                 })
         out["prefabs"] = prefabs
+    registry_by_path = {}
+    asset_registry_path = kit / "assets" / "registry.json"
+    if asset_registry_path.is_file():
+        try:
+            registry_rows = json.loads(asset_registry_path.read_text(encoding="utf-8")).get("assets", [])
+            registry_by_path = {row.get("path"): row for row in registry_rows if row.get("path")}
+        except Exception:
+            registry_by_path = {}
+
     if category in ("all", "images"):
         imgs = []
         cat_counts = {}
@@ -2661,11 +3303,23 @@ def browse_kit_helper(category: str = "all", item: str = None) -> dict:
             for f in sorted(images_dir.rglob("*")):
                 if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp"):
                     rel = f.relative_to(images_dir).as_posix()
-                    pack = rel.split("/")[0] if "/" in rel else "misc"
+                    rel_parts = rel.split("/")
+                    if rel_parts[0] == "kenney_fetched":
+                        pack = "kenney_" + (rel_parts[1] if len(rel_parts) > 1 else "other")
+                    elif rel_parts[0] == "arena_skies":
+                        pack = "arena_skies"
+                    else:
+                        pack = rel_parts[0] if rel_parts else "misc"
                     cat_counts[pack] = cat_counts.get(pack, 0) + 1
+                    row = registry_by_path.get((kit / "assets" / "images" / rel).relative_to(kit.parent).as_posix(), {})
                     imgs.append({
                         "name": f.stem,
                         "pack": pack,
+                        "category": row.get("category", pack),
+                        "sourceId": row.get("sourceId"),
+                        "license": row.get("license"),
+                        "provenance": row.get("provenance"),
+                        "thumbnailKind": row.get("thumbnailKind", "source-image"),
                         "relPath": rel,
                         "localUri": f"rbxasset://arena_assets/{rel}",
                         "bytes": f.stat().st_size,
@@ -2697,7 +3351,86 @@ def browse_kit_helper(category: str = "all", item: str = None) -> dict:
     if category in ("all", "cloud_icons"):
         ci = _load_cloud_icons()
         out["cloudIconsCount"] = len(ci)
+    collection_keys = ("skills", "modules", "systems", "templates", "prefabs", "models", "images", "audio", "proceduralPresets")
+    counts = {key: len(out.get(key, [])) for key in collection_keys}
+    counts["cloudIcons"] = out.get("cloudIconsCount", 0)
+    if section:
+        rows = out.get(section)
+        if rows is None:
+            raise ValueError(f"Unknown or unavailable kit section: {section}")
+        start = max(0, int(cursor))
+        page_limit = max(1, min(200, int(limit)))
+        page = rows[start:start + page_limit]
+        return {"kitRoot": str(kit), "section": section, "counts": counts, "cursor": start,
+                "nextCursor": start + len(page) if start + len(page) < len(rows) else None,
+                "hasMore": start + len(page) < len(rows), "items": page}
+    if output_format == "summary" and not item:
+        for key in collection_keys:
+            out.pop(key, None)
+        out["counts"] = counts
+        out["format"] = "summary"
+    elif output_format == "full":
+        out["format"] = "full"
+        out["counts"] = counts
     return out
+
+
+def search_assets_helper(query: str = "", asset_type: str = "any", category: str = None,
+                         source_id: str = None, license_id: str = None,
+                         provenance: str = "any", cursor: int = 0, limit: int = 25) -> dict:
+    """Search the repository's pinned, licensed asset inventory without Studio RPC."""
+    registry_path = Path(__file__).resolve().parent.parent / "roblox-kit" / "assets" / "registry.json"
+    if not registry_path.is_file():
+        raise FileNotFoundError("Licensed asset registry is missing; run tools/fetch_assets.py --build-registry")
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    if registry.get("schemaVersion") != 1 or not isinstance(registry.get("assets"), list):
+        raise ValueError("Unsupported local asset registry schema")
+    terms = [part.casefold() for part in str(query or "").split() if part]
+    filtered = []
+    for item in registry["assets"]:
+        if asset_type != "any" and item.get("assetType") != asset_type:
+            continue
+        if category and str(category).casefold() not in str(item.get("category", "")).casefold():
+            continue
+        if source_id and str(source_id).casefold() not in str(item.get("sourceId", "")).casefold():
+            continue
+        if license_id and item.get("license", "").casefold() != str(license_id).casefold():
+            continue
+        if provenance != "any" and item.get("provenance") != provenance:
+            continue
+        haystack = " ".join(str(item.get(key, "")) for key in ("name", "path", "category", "sourceId", "license", "provenance")).casefold()
+        if any(term not in haystack for term in terms):
+            continue
+        result = {key: item.get(key) for key in (
+            "name", "path", "assetType", "category", "sourceId", "sourceUrl",
+            "sourceCommit", "license", "provenance", "sha256", "bytes",
+            "thumbnail", "thumbnailKind", "upstreamPath", "derivation",
+        )}
+        path = Path(str(item.get("path", "")))
+        parts = path.parts
+        if len(parts) >= 4 and parts[:3] == ("roblox-kit", "assets", "images"):
+            result["localStudioUri"] = "rbxasset://arena_assets/" + "/".join(parts[3:])
+        elif len(parts) >= 4 and parts[:3] == ("roblox-kit", "assets", "audio"):
+            result["localStudioUri"] = "rbxasset://arena_assets/audio/" + "/".join(parts[3:])
+        else:
+            result["localStudioUri"] = None
+        filtered.append(result)
+    filtered.sort(key=lambda row: (str(row.get("category", "")).casefold(), str(row.get("name", "")).casefold(), str(row.get("path", ""))))
+    start = max(0, int(cursor))
+    page_size = max(1, min(100, int(limit)))
+    page = filtered[start:start + page_size]
+    next_cursor = start + len(page) if start + len(page) < len(filtered) else None
+    return {
+        "ok": True,
+        "query": str(query or ""),
+        "registryAssetCount": len(registry["assets"]),
+        "totalMatches": len(filtered),
+        "cursor": start,
+        "nextCursor": next_cursor,
+        "hasMore": next_cursor is not None,
+        "results": page,
+        "warnings": [],
+    }
 
 
 def _discover_dropin_systems(kit: Path) -> list:
@@ -3010,7 +3743,8 @@ def audit_ui_layout_helper(client: BridgeClient, args: dict, peer_id: str = None
             "path": target_path,
             "depth": 10,
             "includeProperties": True,
-        }, wait=45.0, dm="edit", peer_id=peer_id))
+            "includeStructuredDescendants": True,
+        }, wait=45.0, dm=args.get("dm", "edit"), peer_id=peer_id))
         if insp.get("className") == "StarterGui":
             tree = insp.get("children") or []
         else:
@@ -3024,36 +3758,19 @@ def audit_ui_layout_helper(client: BridgeClient, args: dict, peer_id: str = None
 
 def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
     import base64 as _b64
-    from viewport_renderer import render_scene_png, try_native_os_window_capture
+    from viewport_renderer import render_scene_png
 
     preset = args.get("preset") or "perspective"
-    w = int(args.get("width", 800))
-    h = int(args.get("height", 450))
-    include_hud = bool(args.get("includeHud", True))
-    show_labels = bool(args.get("showLabels", True))
+    size = args.get("size") or {}
+    w = int(size.get("w", args.get("width", 800)))
+    h = int(size.get("h", args.get("height", 450)))
+    include_hud = bool(args.get("includeHud", False))
+    overlays = args.get("overlays") or {}
+    show_labels = bool(overlays.get("labels", args.get("showLabels", True)))
     mode = args.get("mode") or "software"
 
     if mode == "native":
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
-            tmp_native = Path(tf.name)
-        try:
-            if try_native_os_window_capture(tmp_native):
-                png_bytes = tmp_native.read_bytes()
-                if args.get("saveFile"):
-                    sp = Path(args["saveFile"]).expanduser()
-                    sp.parent.mkdir(parents=True, exist_ok=True)
-                    sp.write_bytes(png_bytes)
-                return {
-                    "renderer": "native_os_window",
-                    "bytes": len(png_bytes),
-                    "savedFile": str(args.get("saveFile") or ""),
-                    "_mcp_image_png_b64": _b64.b64encode(png_bytes).decode("ascii"),
-                }
-        finally:
-            try:
-                tmp_native.unlink()
-            except Exception:
-                pass
+        return {"ok": False, "reason": "native_capture_unsafe", "warnings": ["Desktop capture is disabled because it cannot guarantee Studio-only pixels."]}
 
     ws_tree = _unwrap_job(client.submit_job("inspect", {
         "path": "Workspace",
@@ -3091,16 +3808,148 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
         width=w,
         height=h,
         camera_preset=preset,
+        explicit_cam_pos=tuple(args["camera"]["position"]) if args.get("camera", {}).get("position") else None,
+        explicit_look_at=tuple(args["camera"]["target"]) if args.get("camera", {}).get("target") else None,
+        explicit_ortho=bool(args.get("camera", {}).get("ortho", False)),
+        fov_deg=float(args.get("camera", {}).get("fov", 70.0)),
         include_hud=include_hud,
         show_labels=show_labels,
+        show_grid=bool(overlays.get("grid", True)),
     )
     if args.get("saveFile"):
         sp = Path(args["saveFile"]).expanduser()
         sp.parent.mkdir(parents=True, exist_ok=True)
         sp.write_bytes(png_bytes)
         meta["savedFile"] = str(sp)
-    meta["_mcp_image_png_b64"] = _b64.b64encode(png_bytes).decode("ascii")
+    meta["ok"] = True
+    meta["warnings"] = []
+    if args.get("returnInline", True):
+        meta["_mcp_image_png_b64"] = _b64.b64encode(png_bytes).decode("ascii")
     return meta
+
+
+def export_geometry_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from viewport_renderer import collect_parts_from_tree
+    root = _unwrap_job(client.submit_job("inspect", {"path": args.get("path", "Workspace"), "depth": args.get("depth", 10), "includeProperties": True}, wait=60.0, dm=args.get("dm", "edit"), peer_id=peer_id))
+    requested = {str(x).lower() for x in args.get("include", ["cframe", "size", "color", "material", "transparency", "shape", "tags"])}
+    parts = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        props = {**(node.get("properties") or {}), **(node.get("structuredProperties") or {})}
+        if node.get("className") in {"Part", "MeshPart", "WedgePart", "CornerWedgePart", "UnionOperation", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat"}:
+            for parsed in collect_parts_from_tree(node):
+                pos, axes = parsed["pos"], parsed["axes"]
+                record = {"n": parsed["name"], "path": parsed["path"]}
+                if "size" in requested: record["s"] = list(parsed["size"])
+                if "cframe" in requested:
+                    ax, ay, az = axes
+                    record["z"] = list(pos)
+                    record["r"] = [ax[0], ay[0], az[0], ax[1], ay[1], az[1], ax[2], ay[2], az[2]]
+                if "color" in requested: record["c"] = [round(v / 255.0, 6) for v in parsed["color"]]
+                if "transparency" in requested: record["t"] = parsed["transparency"]
+                if "material" in requested: record["m"] = str(props.get("Material", "SmoothPlastic"))
+                if "shape" in requested: record["sh"] = str(props.get("Shape", "Block"))
+                if "tags" in requested: record["tags"] = list(node.get("tags") or [])
+                parts.append(record)
+        stack.extend(reversed(node.get("children") or []))
+    return {"ok": True, "path": args.get("path", "Workspace"), "count": len(parts), "parts": parts, "warnings": []}
+
+
+def render_offline_helper(client: BridgeClient, args: dict, peer_id: str = None, gui_only: bool = False) -> dict:
+    import base64 as _b64
+    from viewport_renderer import render_scene_png
+    from ui_linter import _has_absolute_measurements
+
+    dm = args.get("dm", "edit") if gui_only else "edit"
+    width, height = int(args.get("width", 800)), int(args.get("height", 450))
+    camera = args.get("camera") or {}
+    if gui_only:
+        target = args.get("path") or ("PlayerGui" if dm == "client" else "StarterGui")
+        tree = _unwrap_job(client.submit_job("inspect", {
+            "path": target, "depth": 12, "includeProperties": True,
+            "includeStructuredDescendants": True,
+        }, wait=60.0, dm=dm, peer_id=peer_id))
+        gui_nodes = tree.get("children", []) if tree.get("className") in ("StarterGui", "PlayerGui") else [tree]
+        world = {"name": "Workspace", "className": "Workspace", "children": []}
+        png, meta = render_scene_png(world, gui_tree=gui_nodes, width=width, height=height,
+                                     include_hud=True, show_labels=False, show_grid=False)
+        has_live_bounds = _has_absolute_measurements(gui_nodes)
+        meta["measuredFrom"] = "client" if dm == "client" and has_live_bounds else "derived"
+        meta.setdefault("safeArea", [])
+        if meta["measuredFrom"] == "derived":
+            meta.setdefault("warnings", []).append("No live client AbsolutePosition/AbsoluteSize measurements were used; layout was derived from UDim2.")
+    else:
+        offline_tree = args.get("tree")
+        gui_nodes = args.get("gui") or []
+        if not isinstance(gui_nodes, list):
+            raise ValueError("gui must be an array of serialized GuiObject nodes")
+        if offline_tree is not None:
+            if not isinstance(offline_tree, dict):
+                raise ValueError("tree must be one serialized hierarchy root object")
+            tree = offline_tree
+            lighting = args.get("lighting") or {}
+            if not isinstance(lighting, dict):
+                raise ValueError("lighting must be an object")
+            source = "exported_tree"
+        else:
+            target = args.get("path", "Workspace")
+            tree = _unwrap_job(client.submit_job("inspect", {
+                "path": target, "depth": 12, "includeProperties": True,
+            }, wait=60.0, dm="edit", peer_id=peer_id))
+            lighting = {}
+            try:
+                lighting = _unwrap_job(client.submit_job("inspect", {
+                    "path": "Lighting", "depth": 1, "includeProperties": True,
+                }, wait=15.0, dm="edit", peer_id=peer_id)).get("properties", {})
+            except Exception:
+                pass
+            if args.get("includeHud", False) and not gui_nodes:
+                gui_nodes = _unwrap_job(client.submit_job("inspect", {
+                    "path": "StarterGui", "depth": 10, "includeProperties": True,
+                    "includeStructuredDescendants": True,
+                }, wait=25.0, dm="edit", peer_id=peer_id)).get("children", [])
+            source = "studio"
+        png, meta = render_scene_png(
+            tree, gui_tree=gui_nodes, lighting_props=lighting, width=width, height=height,
+            camera_preset="perspective",
+            explicit_cam_pos=tuple(camera["position"]) if camera.get("position") else None,
+            explicit_look_at=tuple(camera["target"]) if camera.get("target") else None,
+            explicit_ortho=bool(camera.get("ortho", False)), fov_deg=float(camera.get("fov", 70)),
+            include_hud=bool(args.get("includeHud", False)), show_labels=False,
+        )
+        meta["source"] = source
+        meta["measuredFrom"] = "client" if source == "exported_tree" and _has_absolute_measurements(gui_nodes) else "derived"
+        if source == "exported_tree" and meta["measuredFrom"] == "derived":
+            meta.setdefault("warnings", []).append("No client absolute UI measurements were present in the exported tree; layout was derived from UDim2.")
+    if args.get("saveFile"):
+        out = Path(args["saveFile"]).expanduser()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(png)
+        meta["savedFile"] = str(out)
+    meta["ok"] = True
+    meta.setdefault("warnings", [])
+    meta["_mcp_image_png_b64"] = _b64.b64encode(png).decode("ascii")
+    return meta
+
+
+def perf_audit_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    root = _unwrap_job(client.submit_job("inspect", {"path": args.get("path", "Workspace"), "depth": 20, "includeProperties": True, "descendantSummary": True}, wait=60.0, dm="edit", peer_id=peer_id))
+    counts, meshes, models, unanchored, bad_queries, total = {}, 0, 0, 0, 0, 0
+    stack = [root]
+    while stack:
+        node = stack.pop(); total += 1
+        cls = node.get("className", "Instance"); counts[cls] = counts.get(cls, 0) + 1
+        props = {**(node.get("properties") or {}), **(node.get("structuredProperties") or {})}
+        if cls == "MeshPart": meshes += 1
+        if cls == "Model": models += 1
+        if cls in ("Part", "MeshPart", "WedgePart", "CornerWedgePart", "UnionOperation", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat"):
+            if props.get("Anchored") is False: unanchored += 1
+            if props.get("CanQuery") is False and props.get("CanCollide") is True: bad_queries += 1
+        stack.extend(node.get("children") or [])
+    part_count = sum(counts.get(c, 0) for c in ("Part", "MeshPart", "WedgePart", "CornerWedgePart", "UnionOperation", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat"))
+    risk = "high" if part_count >= 8000 else "elevated" if part_count >= 3000 or meshes >= 1500 else "moderate" if part_count >= 1000 else "low"
+    return {"ok": True, "partCount": part_count, "triangleCount": None, "uniqueMeshCount": meshes, "textureMemoryEstimateMB": None, "modelCount": models, "unanchoredCount": unanchored, "canQueryCanCollideMisuse": bad_queries, "streamingEnabled": (root.get("structuredProperties") or {}).get("StreamingEnabled"), "mobileVerdict": risk, "warnings": ["Triangle counts and texture memory require mesh/texture metadata not exposed by the plugin."]}
 
 
 def audit_3d_scene_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
@@ -3354,7 +4203,7 @@ def import_image_helper(client: BridgeClient, args: dict, peer_id: str = None) -
                 ext = ".bmp"
         raw_bytes = _b64.b64decode(b64_in)
     elif args.get("imageUrl"):
-        req = urllib.request.Request(args["imageUrl"], headers={"User-Agent": "ArenaRobloxMCP/3.0"})
+        req = urllib.request.Request(args["imageUrl"], headers={"User-Agent": "ArenaRobloxMCP/4.0.0"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw_bytes = resp.read()
         url_path = args["imageUrl"].split("?", 1)[0]
@@ -3806,6 +4655,9 @@ class MCPDispatcher:
 
                 try:
                     data = execute_tool(self.client, tname, targs)
+                    if isinstance(data, dict):
+                        data.setdefault("ok", True)
+                        data.setdefault("warnings", [])
                     img_b64 = data.pop("_mcp_image_png_b64", None) if isinstance(data, dict) else None
                     content_items = [{"type": "text", "text": json.dumps(data, indent=2)}]
                     if img_b64:
@@ -3820,9 +4672,14 @@ class MCPDispatcher:
                         "structuredContent": data,
                     })
                 except Exception as tool_exc:
+                    if isinstance(tool_exc, NoPeerError):
+                        data = {"ok": False, "reason": tool_exc.reason, "dm": tool_exc.dm, "warnings": []}
+                        return self._ok(msg_id, {"isError": True, "content": [{"type": "text", "text": json.dumps(data)}], "structuredContent": data})
+                    data = {"ok": False, "reason": "tool_error", "error": str(tool_exc), "warnings": []}
                     return self._ok(msg_id, {
                         "isError": True,
-                        "content": [{"type": "text", "text": f"Error executing {tname}: {tool_exc}"}],
+                        "content": [{"type": "text", "text": json.dumps(data, indent=2)}],
+                        "structuredContent": data,
                     })
 
             if method == "resources/list":

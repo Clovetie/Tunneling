@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-mock_studio.py — Stateful Roblox Studio v3.0 simulator for testing the bridge,
-CLI, and all 37 MCP tools without Roblox Studio open.
+mock_studio.py — Stateful Roblox Studio v4.0.0 simulator for testing the bridge,
+CLI, and all 68 registered MCP tools without Roblox Studio open.
 
 Simulates:
   - Full DataModel hierarchy (Services, Parts, Models, Folders, Scripts, Remotes, GUI)
@@ -29,7 +29,7 @@ from mcp_core import fnv1a_32, fnv1a_hex, normalize_newlines
 
 BASE = os.environ.get("BRIDGE_URL", "http://127.0.0.1:8077").rstrip("/")
 TOKEN = os.environ.get("BRIDGE_TOKEN", "arena-demo-7f3a")
-PLACE = os.environ.get("MOCK_PLACE", "DemoPlace (simulated Studio v3.0)")
+PLACE = os.environ.get("MOCK_PLACE", "DemoPlace (simulated Studio v4.0.0)")
 PLACE_ID = int(os.environ.get("MOCK_PLACE_ID", "110457957229133"))
 
 SCRIPT_CLASSES = {"Script", "LocalScript", "ModuleScript"}
@@ -236,7 +236,7 @@ class MockWorld:
         effective_dm = "client" if p.get("_targetDm") == "client" else self.dm
 
         mutating = kind in {
-            "build", "write_script", "multi_edit", "set_properties",
+            "build", "write_script", "batch_write", "multi_edit", "set_properties",
             "mass_set_properties", "clone_instance", "reparent_instance", "delete",
             "terrain", "insert_asset", "import_image",
         } or (kind == "find_replace_scripts" and not p.get("dryRun")) \
@@ -252,7 +252,7 @@ class MockWorld:
                 "placeId": PLACE_ID,
                 "gameId": 987654,
                 "studio": "mock-3.0",
-                "pluginVersion": "3.0",
+                "pluginVersion": "4.0.0",
                 "dm": effective_dm,
                 "peerId": self.peer_id,
                 "hasClient": self.dm == "server",
@@ -265,7 +265,7 @@ class MockWorld:
             return {
                 "place": {"name": PLACE, "placeId": PLACE_ID, "gameId": 987654},
                 "studio": "mock-3.0",
-                "pluginVersion": "3.0",
+                "pluginVersion": "4.0.0",
                 "dm": effective_dm,
                 "peerId": self.peer_id,
                 "isEdit": effective_dm == "edit",
@@ -278,6 +278,23 @@ class MockWorld:
                 "memoryMb": 412.5,
                 "physicsFps": 60.0,
                 "camera": self.camera,
+            }
+
+        if kind == "mesh_capabilities":
+            return {
+                "ok": True,
+                "studioVersion": "mock-3.0",
+                "peerId": self.peer_id,
+                "meshPartClass": {"available": True},
+                "editableMesh": {
+                    "apiPresent": False,
+                    "creationAttempted": False,
+                    "creationSucceeded": None,
+                    "status": "not_probed_by_mock",
+                    "detail": "Mock peer does not verify Roblox Studio runtime APIs.",
+                },
+                "verifiedAtUnix": 0,
+                "warnings": ["Mock result only; no Studio capability is claimed."],
             }
 
         if kind == "survey":
@@ -307,7 +324,7 @@ class MockWorld:
             return {
                 "place": {"name": PLACE, "placeId": PLACE_ID, "gameId": 987654},
                 "dm": effective_dm,
-                "pluginVersion": "3.0",
+                "pluginVersion": "4.0.0",
                 "services": [{"name": c.name, "descendants": len(c.descendants()), "children": len(c.children)} for c in self.root.children],
                 "census": census,
                 "scripts": scripts_out,
@@ -508,6 +525,26 @@ class MockWorld:
                 "replacedInstance": bool(p.get("replaceInstance")),
             }
 
+        if kind == "batch_write":
+            backup = self.snapshot_tree()
+            written = []
+            try:
+                for spec in p.get("files") or []:
+                    parent = self.must_resolve(spec.get("parent", "ServerScriptService"))
+                    name = spec["name"]
+                    cls = spec.get("className", "ModuleScript")
+                    src = normalize_newlines(spec["source"])
+                    old = parent.find_child(name)
+                    if old and spec.get("expectedHash") and fnv1a_hex(old.source or "") != spec["expectedHash"]:
+                        raise RuntimeError(f"hash mismatch on {old.full_name()}")
+                    if old: parent.children.remove(old)
+                    target = parent.add(MockNode(name, cls, source=src))
+                    written.append({"path": target.full_name(), "hash": fnv1a_hex(src), "bytes": len(src.encode("utf-8"))})
+            except Exception:
+                self.root = backup
+                raise
+            return {"ok": True, "written": written, "count": len(written)}
+
         if kind == "multi_edit":
             target = self.resolve(p["path"])
             if not target:
@@ -699,6 +736,36 @@ class MockWorld:
                 created.append(cp.full_name())
             return {"created": created, "count": len(created)}
 
+        if kind == "scatter_props":
+            source = self.must_resolve(p["sourcePath"])
+            if source.class_name not in {"Part", "MeshPart", "WedgePart", "CornerWedgePart", "UnionOperation", "Model"}:
+                raise ValueError("scatter_props source must be a BasePart or Model")
+            parent = self.must_resolve(p.get("parent", "Workspace"))
+            made = []
+            paths = []
+            strip_scripts = p.get("stripScripts", True)
+            for idx, point in enumerate(p.get("points") or [], start=1):
+                cp = source.clone_detached()
+                cp.name = f"{p.get('namePrefix', 'Scatter')}_{idx:03d}"
+                if len(point) < 4:
+                    raise ValueError(f"invalid scatter point at index {idx}")
+                cp.props["Position"] = [float(x) for x in point[:3]]
+                cp.props["Orientation"] = [0, float(point[3]), 0]
+                if strip_scripts:
+                    def prune(node):
+                        kept = []
+                        for ch in node.children:
+                            if ch.class_name in SCRIPT_CLASSES:
+                                continue
+                            prune(ch)
+                            kept.append(ch)
+                        node.children = kept
+                    prune(cp)
+                parent.add(cp)
+                made.append(cp)
+                paths.append(cp.full_name())
+            return {"ok": True, "created": paths, "count": len(paths), "scriptsStripped": bool(strip_scripts), "warnings": []}
+
         if kind == "reparent_instance":
             moved = []
             new_parent = self.must_resolve(p["newParent"]) if p.get("newParent") else None
@@ -715,14 +782,16 @@ class MockWorld:
 
         if kind == "delete":
             targets = p.get("paths") or ([p["path"]] if p.get("path") else [])
-            deleted = []
+            deleted, missing = [], []
             for path in targets:
-                inst = self.must_resolve(path)
+                inst = self.resolve(path)
+                if not inst:
+                    missing.append(path)
+                    continue
                 full_p = inst.full_name()
-                if inst.parent:
-                    inst.parent.children.remove(inst)
+                if inst.parent: inst.parent.children.remove(inst)
                 deleted.append(full_p)
-            return {"deleted": deleted[0] if len(deleted) == 1 else deleted, "paths": deleted, "count": len(deleted)}
+            return {"ok": len(missing) == 0, "deleted": deleted, "paths": deleted, "missing": missing, "count": len(deleted)}
 
         if kind == "attributes":
             act = p.get("action", "get")
@@ -1014,7 +1083,7 @@ def run_mock_loop(base_url: str = BASE, token: str = TOKEN, stop_event: threadin
 
 
 def main():
-    print(f"mock Studio v3.0 -> {BASE} (place: {PLACE})", flush=True)
+    print(f"mock Studio v4.0.0 -> {BASE} (place: {PLACE})", flush=True)
     run_mock_loop(BASE, TOKEN)
 
 

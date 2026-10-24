@@ -1,0 +1,41 @@
+{
+  "captureMode": "deterministic-offline-software-renderer",
+  "hudItemsParsed": 16,
+  "hudModel": "roblox-kit/models/hud_modern_shell.rbxmx",
+  "image": "roblox-kit/assets/screenshots/self-test-viewport.png",
+  "liveStudioScreenshot": false,
+  "ok": true,
+  "peer": "none; intentionally peer-free regression artifact",
+  "renderer": {
+    "bytes": 28227,
+    "cameraLookAt": [
+      0.0,
+      5.0,
+      0.0
+    ],
+    "cameraPosition": [
+      52.0,
+      38.0,
+      68.0
+    ],
+    "cameraPreset": "perspective",
+    "facesRasterized": 12,
+    "height": 540,
+    "hudElementsComposited": 8,
+    "hudMeasuredFrom": "derived",
+    "partsRendered": 4,
+    "renderer": "software_3d_hud_rasterizer",
+    "safeArea": [
+      {
+        "insetsMeasured": false,
+        "insetsPx": null,
+        "path": "ModernHUD",
+        "safeAreaAware": false,
+        "screenInsets": null
+      }
+    ],
+    "width": 960
+  },
+  "worldItemsParsed": 6,
+  "worldModel": "roblox-kit/models/spawn_plaza.rbxmx"
+}

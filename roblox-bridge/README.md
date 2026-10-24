@@ -1,6 +1,6 @@
-# Arena ↔ Roblox Studio MCP Server & Bridge (v3.0)
+# Arena ↔ Roblox Studio MCP Server & Bridge (v4.0.0)
 
-Zero-dependency **Model Context Protocol (MCP)** server (`stdio` + `Streamable HTTP`), multi-DataModel Studio local plugin (`ArenaBridge.lua` v3.0), live web dashboard, and CLI (`arena_studio.py` / `ab.ps1`) for connecting AI coding agents to Roblox Studio.
+Zero-dependency **Model Context Protocol (MCP)** server (`stdio` + `Streamable HTTP`), multi-DataModel Studio local plugin (`ArenaBridge.lua` v4.0.0), live web dashboard, and CLI (`arena_studio.py` / `ab.ps1`) for connecting AI coding agents to Roblox Studio.
 
 Works simultaneously across **every connection mode**:
 
@@ -16,13 +16,13 @@ Works simultaneously across **every connection mode**:
 
 ## Ecosystem Research Summary (2026 Best Practices Applied)
 
-This v3.0 architecture incorporates verified patterns across the 2026 Roblox MCP ecosystem:
+This v4.0.0 architecture incorporates verified patterns across the 2026 Roblox MCP ecosystem:
 
 1. **Roblox Official Built-in Studio MCP (`create.roblox.com/docs/studio/mcp`)** *(which superseded `Roblox/studio-rust-mcp-server`, archived April 2026)*:
    - Focused, low-token tool taxonomy (`get_studio_state`, `list_studios`, `search_game_tree`, `inspect_instance`, `script_read` with line ranges, atomic `multi_edit`, `script_search`, `script_grep`, DataModel-targeted `execute_luau`, `start_stop_play`, `get_console_output`) rather than 150+ overlapping micro-tools that bloat prompt context.
 2. **Multi-DataModel Routing & Silent Client RPC (`Chrrxs/robloxstudio-mcp`, `Dvitash/robloxstudio-mcp`)**:
    - In Studio playtests, both the Edit DataModel and Play Server DataModel stay alive simultaneously, while the Play Client DataModel cannot call `HttpService:RequestAsync`.
-   - **v3.0 fix**: Every peer identifies its DataModel (`edit` vs `server`), eliminating Edit/Server poll races. In Play mode, the `server` peer creates a transient `Archivable = false` `RemoteFunction` (`ReplicatedStorage.__ArenaBridgeClientRPC`) and the `client` peer attaches silently without ever calling HTTP — enabling live `dm="client"` inspection/eval with zero Output window errors.
+   - **v4.0.0 fix**: Every peer identifies its DataModel (`edit` vs `server`), eliminating Edit/Server poll races. In Play mode, the `server` peer creates a transient `Archivable = false` `RemoteFunction` (`ReplicatedStorage.__ArenaBridgeClientRPC`) and the `client` peer attaches silently without ever calling HTTP — enabling live `dm="client"` inspection/eval with zero Output window errors.
 3. **Editor-Safe Script Editing & Cache Busting (`EL4CTEO/rbx-studio-mcp`, `boshyxd/robloxstudio-mcp`, `aaronaalmendarez/roblox-mcp`)**:
    - Reads active open editor buffers via `ScriptEditorService:GetEditorSource()` and writes via `ScriptEditorService:UpdateSourceAsync()` with CRLF→LF normalization (avoiding the 199,999-byte `Script.Source` limit, open-tab clobbering, and Live Scripting `\r\n` errors).
    - Solves Luau's `ModuleScript` instance `require()` caching via `replaceInstance: true` on writes/edits plus `require_fresh` sandbox evaluation.
@@ -44,9 +44,9 @@ cd roblox-bridge
 python setup.py --write-mcp
 ```
 
-- Installs `ArenaBridge.lua` v3.0 into `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or `~/Documents/Roblox/Plugins` (macOS) with your token pre-baked.
+- Installs `ArenaBridge.lua` v4.0.0 into `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or `~/Documents/Roblox/Plugins` (macOS) with your token pre-baked.
 - Writes `.mcp.json` ready for Claude Code / Cursor / VS Code.
-- Starts `server.py` v3.0 on `http://127.0.0.1:8077` (Web Dashboard + REST API + `POST /mcp` Streamable HTTP).
+- Starts `server.py` v4.0.0 on `http://127.0.0.1:8077` (Web Dashboard + REST API + `POST /mcp` Streamable HTTP).
 - Add `--tunnel` if exposing to a remote cloud agent via Cloudflare Quick Tunnel, or `--install-only` if letting `mcp_server.py` self-host the embedded bridge on demand.
 
 ### 2. Connect Your MCP Client
@@ -80,7 +80,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 
 ---
 
-## Full 55-Tool MCP Suite + Multimodal 3D Viewport Vision, 3D Physics QA, `.rbxlx` & Open-Source Vault
+## Full 68-Tool MCP Suite + Multimodal 3D Viewport Vision, 3D Physics QA, `.rbxlx` & Open-Source Vault
 
 | Domain | MCP Tools |
 |---|---|
@@ -90,15 +90,17 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 | **Luau & Playtesting (4)** | `execute_luau` (`edit`/`server`/`client`), `start_stop_play`, `run_playtest_scenario`, `get_console_output` (`sinceIndex` cursor + level filter) |
 | **Instances & Bulk Ops (6)** | `build_tree`, `set_properties`, `mass_set_properties`, `clone_instance` (grid/offset duplication), `reparent_or_rename`, `delete_instance` |
 | **Attributes & Tags (2)** | `manage_attributes` (`get`/`set`/`delete`), `manage_tags` (`list_all`/`find_tagged`/`get`/`add`/`remove`) |
-| **World, Camera, Undo & Assets (5)** | `manage_selection`, `manage_camera`, `undo_redo`, `edit_terrain`, `insert_asset` (auto script-strip safety) |
-| **Toolchain, Sync & Snapshots (3)** | `luau_check` (offline compiler + undefined globals), `drift_and_sync` (`check`/`push`/`pull`), `manage_snapshots` (`create`/`list`/`get`/`restore`) |
-| **3D Viewport Vision, 3D Physics QA, `.rbxlx`, Open Cloud & Open-Source UI/Audio/LiveOps Vault (18)** | `capture_viewport` (multimodal `image/png` 3D+HUD render), `audit_3d_scene` (unanchored/floating/spawn/Z-fight QA + auto-fix), `export_place_rbxlx`, `import_place_rbxlx`, `open_cloud_action` (`publish_place` / DataStore / Messaging), `audit_ui_layout` (`desktop`/`tablet`/`mobile`), `install_dropin_system` (14 systems), `import_audio` (45 CC0 WAVs), `import_rbxmx`, `export_rbxmx`, `install_template` (6 suites), `search_cloud_icons` (**4,811** `rbxassetid://` icons across `stud`, `lucide`, `lucide_fill`), `import_image` (**405** PNGs), `import_images_batch`, `generate_procedural_image`, `browse_kit`, `install_kit_module` (**19** Luau modules), `spawn_prefab` (**20** prefabs) |
+| **World, Camera, Undo & Assets (8)** | `manage_selection`, `manage_camera`, `undo_redo`, `edit_terrain`, `insert_asset`, `build_biome`, `build_skybox`, `scatter_props` |
+| **Toolchain, Build, Sync & Snapshots (7)** | `luau_check`, `drift_and_sync`, `manage_snapshots`, `batch_write`, `probe`, `wait_for`, `self_test` |
+| **3D Viewport Vision, Rendering, Physics QA, `.rbxlx`, Open Cloud & Asset Vault (24)** | `capture_viewport`, `export_geometry`, `render_offline` (also accepts exported trees without a peer), `screenshot_gui` (client-measured or derived), `perf_audit`, `mesh_capabilities` (runtime API probe; version string alone is not evidence), `search_assets` (offline licensed asset registry), `audit_3d_scene`, `export_place_rbxlx`, `import_place_rbxlx`, `open_cloud_action`, `audit_ui_layout`, `install_dropin_system`, `import_audio`, `import_rbxmx`, `export_rbxmx`, `install_template`, `search_cloud_icons`, `import_image`, `import_images_batch`, `generate_procedural_image`, `browse_kit`, `install_kit_module`, `spawn_prefab` |
 
 ### Repo-Committed Skills, Assets & Modules
 - **Agent Skills (`.claude/skills/*/SKILL.md` + `skill://{name}` MCP resources + root `AGENTS.md`)**:
   - `roblox-place-builder`, `roblox-luau-systems`, `roblox-ui-and-images`, `roblox-vfx-lighting-audio`, `roblox-playtest-qa`, `roblox-optimization-security`
-- **26 Pre-Built PNG Assets (`roblox-kit/assets/images/{ui,vfx,textures}/` + `Assets.lua`)**:
-  - UI icons (`icon_coin`, `icon_gem`, `icon_shield`, `icon_sword`, `icon_heart`, `icon_star`, `icon_bolt`, `icon_lock`, `icon_gear`, `icon_crown`, `icon_check`, `icon_close`, `panel_glass_9slice`, `vignette_soft`, `crosshair_dot`, `radial_ring`), VFX sprites (`particle_soft_glow`, `particle_spark_star`, `particle_smoke_puff`, `particle_shockwave_ring`, `beam_energy_streak`), and tileable world textures (`grid_dark_1m`, `grid_accent_orange`, `hazard_stripes`, `brushed_metal_noise`, `scifi_panel_tile`)
+- **3,705 licensed raster images plus 50 sky panoramas** are catalogued in `roblox-kit/assets/registry.json` and indexed in `roblox-kit/modules/Assets.lua`; each panorama has six generated 8-bit LDR cube faces (not HDRIs).
+- **500 pinned Kenney CC0 GLB models** plus 20 repository-authored `.rbxmx` models are catalogued with thumbnail metadata. GLB thumbnails are explicitly marked as neutral format placeholders until real mesh rendering is available.
+- **45 CC0 WAV audio files** have waveform thumbnails. Every entry carries SHA-256, source, pinned revision, licence, provenance status, and thumbnail path; 3,656 files additionally match exact upstream Git blob hashes.
+- Verify and browse with `python3 -B tools/verify_licences.py` and `roblox-kit/assets/contact-sheets/index.html`. Rebuild with `tools/fetch_assets.py` and `tools/build_skies.py`; see `roblox-kit/assets/README.md` for the limitations and reproduction commands.
 - **8 Ready-to-Spawn Prefabs (`roblox-kit/prefabs/*.json`)**:
   - `lighting_cinematic_sunset`, `lighting_cyber_night`, `lighting_stylized_day`, `hud_modern_shell`, `interact_pad`, `spawn_plaza`, `world_sign_board`, `vfx_collectible_orb`
 
@@ -113,7 +115,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 
 ```powershell
 .\ab.ps1 health                                             # Bridge + connected peers
-.\ab.ps1 ping                                               # Verify pluginVersion "3.0" & latency
+.\ab.ps1 ping                                               # Verify pluginVersion "4.0.0" & latency
 .\ab.ps1 state                                              # Full Studio state (memory, FPS, undo)
 .\ab.ps1 check .\src                                        # Offline compile + undefined-global audit
 .\ab.ps1 drift .\src ServerScriptService.App                # Exact 32-bit FNV-1a diff report
@@ -128,7 +130,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 
 ## Automated Verification Suite
 
-Run the full offline & stateful mock Studio test suite (verifies FNV-1a exact vectors, `luau_check`, token recovery, Streamable HTTP MCP, `stdio` NDJSON + LSP framing, Read-Only Inspector enforcement, UTF-8 round-trip, and all 37 tools including live `nightloop/src` sync):
+Run the full offline & stateful mock Studio test suite (verifies FNV-1a exact vectors, `luau_check`, token recovery, Streamable HTTP MCP, `stdio` NDJSON + LSP framing, Read-Only Inspector enforcement, UTF-8 round-trip, and all 68 registered tools including live package sync):
 
 ```bash
 python3 roblox-bridge/test_bridge_mcp.py
@@ -140,12 +142,12 @@ python3 roblox-bridge/test_bridge_mcp.py
 
 | File | Role |
 |---|---|
-| `setup.py` | Installs `ArenaBridge.lua` v3.0, recovers/manages `bridge.token`, writes `.mcp.json`, launches server/tunnel |
+| `setup.py` | Installs `ArenaBridge.lua` v4.0.0, recovers/manages `bridge.token`, writes `.mcp.json`, launches server/tunnel |
 | `mcp_server.py` | Standalone `stdio` MCP server (auto-attaches to `server.py` or starts an embedded bridge thread) |
-| `mcp_core.py` | Zero-dependency MCP protocol engine, 37 tool schemas/handlers, resources, prompts, `luau_check`, `drift_and_sync` |
+| `mcp_core.py` | Zero-dependency MCP protocol engine, 68 tool schemas/handlers, resources, prompts, `luau_check`, `drift_and_sync` |
 | `server.py` | Multi-peer long-poll HTTP bridge + `/mcp` Streamable HTTP endpoint + snapshot store + live web dashboard |
-| `ArenaBridge.lua` | Roblox Studio local plugin v3.0 (`edit` + `server` + silent `client` RPC bridge) |
+| `ArenaBridge.lua` | Roblox Studio local plugin v4.0.0 (`edit` + `server` + silent `client` RPC bridge) |
 | `arena_studio.py` | UTF-8-safe CLI covering all bridge & MCP operations |
 | `ab.ps1` | Windows PowerShell wrapper with automatic token lookup and UTF-8 console setup |
-| `mock_studio.py` | Stateful in-memory Studio v3.0 simulator (including simulated Play Server/Client peers & undo/redo) |
+| `mock_studio.py` | Stateful in-memory Studio v4.0.0 simulator (including simulated Play Server/Client peers & undo/redo) |
 | `test_bridge_mcp.py` | End-to-end automated test suite |

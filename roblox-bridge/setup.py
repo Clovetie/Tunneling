@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
 setup.py — One command to install, configure, and run the Arena <-> Roblox
-Studio Bridge & MCP Server (v3.0).
+Studio Bridge & MCP Server (v4.0.0).
 
 What it does:
   1. Creates or reuses a shared secret in bridge.token — and if bridge.token is
      missing (e.g. a freshly extracted branch ZIP!), automatically recovers the
      active token from an already-installed ArenaBridge.lua in your Studio
      Plugins directory so you NEVER hit HTTP 401 token mismatches!
-  2. Writes ArenaBridge.lua v3.0 into your OS Roblox Studio Plugins folder with
+  2. Writes ArenaBridge.lua v4.0.0 into your OS Roblox Studio Plugins folder with
      the port + token baked in (leaving the tracked repo source file clean).
-  3. Starts server.py v3.0 on :8077 (serving Studio polling, REST CLI, Web
+  3. Starts server.py v4.0.0 on :8077 (serving Studio polling, REST CLI, Web
      Dashboard, AND Streamable HTTP MCP at http://127.0.0.1:8077/mcp).
   4. Optionally writes .mcp.json (`--write-mcp`) for Claude Code / Cursor / VS Code
      and/or opens a public cloudflared tunnel (`--tunnel`).
@@ -172,7 +172,7 @@ def install_plugin(token: str, port: int, explicit_dir=None) -> bool:
             target_dir.mkdir(parents=True, exist_ok=True)
             target = target_dir / "ArenaBridge.lua"
             target.write_text(source, encoding="utf-8")
-            say(f"  plugin v3.0 installed -> {target}", GREEN)
+            say(f"  plugin v4.0.0 installed -> {target}", GREEN)
             return True
         except OSError as exc:
             say(f"  could not write to {target_dir} ({exc})", YELLOW)
@@ -180,7 +180,7 @@ def install_plugin(token: str, port: int, explicit_dir=None) -> bool:
     DIST.mkdir(exist_ok=True)
     target = DIST / "ArenaBridge.lua"
     target.write_text(source, encoding="utf-8")
-    say(f"  plugin v3.0 written -> {target}", YELLOW)
+    say(f"  plugin v4.0.0 written -> {target}", YELLOW)
     say("  copy it into Studio's plugins folder:", YELLOW)
     say("    Studio -> Plugins tab -> Plugins Folder", DIM)
     return False
@@ -336,7 +336,7 @@ def main():
 
     signal.signal(signal.SIGINT, shutdown)
 
-    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v3.0{OFF}")
+    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v4.0.0{OFF}")
     token = get_token(rotate=args.rotate, explicit_dir=args.plugins_dir, preferred_port=args.port)
     say(f"  token: {CYAN}{token}{OFF}  {DIM}(stored in bridge.token){OFF}")
 
@@ -346,7 +346,7 @@ def main():
         write_mcp_config(Path(args.write_mcp).resolve(), port=args.port, read_only=args.read_only)
 
     if args.install_only:
-        say("\nPlugin v3.0 installed. Restart Roblox Studio once if updating or rotating token.", GREEN)
+        say("\nPlugin v4.0.0 installed. Restart Roblox Studio once if updating or rotating token.", GREEN)
         say(f"MCP stdio command:  python \"{HERE / 'mcp_server.py'}\"\n", DIM)
         return
 

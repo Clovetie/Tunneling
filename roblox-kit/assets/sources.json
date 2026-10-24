@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "allowedLicenses": ["CC0-1.0", "MIT", "ISC", "Apache-2.0"],
+  "sources": [
+    {
+      "id": "kenney-art",
+      "author": "Kenney",
+      "license": "CC0-1.0",
+      "homepage": "https://kenney.nl/",
+      "repository": "https://github.com/shorepine/kenney",
+      "commit": "3694c6879e487c108f55677be7dd2ca75b07cc3b",
+      "archiveUrl": "https://codeload.github.com/shorepine/kenney/zip/3694c6879e487c108f55677be7dd2ca75b07cc3b",
+      "includePrefixes": ["/2d/", "/ui/", "/icons/", "/3d/"],
+      "repositoryLicenseMetadata": "NOASSERTION",
+      "licenseEvidence": "roblox-kit/assets/licenses/kenney-LICENSE.txt",
+      "licenseEvidenceSha256": "aac944f18106b3a3e29c6fdeec02523d4cab4c735abc01f5a8fa88a79ae173ef",
+      "sourceEvidence": "roblox-kit/assets/licenses/kenney-SOURCE-README.md",
+      "sourceEvidenceSha256": "6f64512246a1c6c485a7fe00300cae205dd8f69080ab9f440af656a8876fc084",
+      "evidenceNote": "The pinned upstream README says the full Kenney art library is CC0; the repository API reports NOASSERTION, so the explicit README/license text is preserved as the license evidence."
+    },
+    {
+      "id": "kenney-interface-sounds",
+      "author": "Kenney",
+      "license": "CC0-1.0",
+      "homepage": "https://kenney.nl/assets/interface-sounds",
+      "repository": "https://github.com/Calinou/kenney-interface-sounds",
+      "commit": "4596a49eaf5a533948d49a47467f606bcdea70ff",
+      "repositoryLicenseMetadata": "NOASSERTION",
+      "licenseEvidence": "roblox-kit/assets/licenses/kenney-interface-sounds-LICENSE.txt",
+      "licenseEvidenceSha256": "f7966c773bbed0eca6a9c75081c44a178b38eae112724dbb5fdfbd4192d118a9",
+      "sourceEvidence": "roblox-kit/assets/licenses/kenney-interface-sounds-README.md",
+      "sourceEvidenceSha256": "6feb1720e168650cec1c5dacd8c26da4b349090e01571b1f175ecfcfa57ca3f3",
+      "evidenceNote": "Pinned upstream README explicitly names the Kenney interface sound pack and CC0 1.0; the repository API reports NOASSERTION."
+    },
+    {
+      "id": "kenney-ui-audio",
+      "author": "Kenney",
+      "license": "CC0-1.0",
+      "homepage": "https://kenney.nl/assets/ui-audio",
+      "repository": "https://github.com/Calinou/kenney-ui-audio",
+      "commit": "8c3d81b9159d058c444f89d12d518276b0b09345",
+      "repositoryLicenseMetadata": "NOASSERTION",
+      "licenseEvidence": "roblox-kit/assets/licenses/kenney-ui-audio-LICENSE.txt",
+      "licenseEvidenceSha256": "4f88ab3c885c87874834441a0d009cea8942f57461d7b870be65cf4e31362073",
+      "sourceEvidence": "roblox-kit/assets/licenses/kenney-ui-audio-README.md",
+      "sourceEvidenceSha256": "33e45ae462a0a41564d1f51dcdc712beeb013657ca0e4cfe913f89f865ed69b5",
+      "evidenceNote": "Pinned upstream README explicitly names the Kenney UI audio pack and CC0 1.0; the repository API reports NOASSERTION."
+    },
+    {
+      "id": "arena-generated",
+      "author": "Tunneling contributors",
+      "license": "CC0-1.0",
+      "homepage": null,
+      "repository": "https://github.com/Clovetie/Tunneling",
+      "commit": "working-tree-generated",
+      "licenseEvidence": "roblox-kit/assets/licenses/GENERATED-ASSETS-CC0.txt",
+      "licenseEvidenceSha256": "b05e2b4bc045817e3757597cac952c7e7b439374890c8866a799f69b11ecf348",
+      "sourceEvidence": "roblox-bridge/image_pipeline.py and roblox-kit/models/",
+      "sourceEvidenceSha256": null,
+      "evidenceNote": "Original procedural images and repository-authored model XML are released under CC0 by this repository's contributors."
+    }
+  ]
+}
