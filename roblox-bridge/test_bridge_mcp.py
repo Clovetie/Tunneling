@@ -598,6 +598,10 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             self.assertIn("Next-Agent Handoff &amp; Prompts", dash_html)
             self.assertIn("Commands &amp; MCP Config", dash_html)
             self.assertIn("Helpful Tips &amp; Gotchas", dash_html)
+            self.assertIn("callMcp('browse_kit', { category: 'all', format: 'full' })", dash_html)
+            self.assertIn("sendAudioToStudio", dash_html)
+            self.assertIn("installDropinSystemUI", dash_html)
+            self.assertIn("Kit inventory failed to load:", dash_html)
 
         with urllib.request.urlopen(f"{self.base_url}/api/local-boot", timeout=5) as boot_resp:
             boot_data = json.loads(boot_resp.read().decode("utf-8"))

@@ -2025,7 +2025,8 @@ async function searchCloudIconsUI(catOverride){
 
 async function loadKitGallery(){
   try {
-    const res = await callMcp('browse_kit', { category: 'all' });
+    // The MCP default is the lightweight summary (counts only); request full rows for dashboard cards.
+    const res = await callMcp('browse_kit', { category: 'all', format: 'full' });
     const data = res.structuredContent || {};
 
     const templates = data.templates || [];
@@ -2074,7 +2075,15 @@ async function loadKitGallery(){
     runUiPreviewAndAudit();
     refresh3DViewport('perspective');
     run3DSceneAudit(false, false);
-  } catch(_){}
+  } catch(e){
+    const message = 'Kit inventory failed to load: ' + String(e);
+    ['template-list', 'dropin-system-list', 'audio-list', 'prefab-list', 'asset-gallery'].forEach(id => {
+      const el = document.getElementById(id);
+      if(el) el.innerHTML = `<div class="sub">${esc(message)}</div>`;
+    });
+    const out = document.getElementById('kit-action-out');
+    if(out) out.textContent = message;
+  }
 }
 
 async function initBoot(){
