@@ -1,0 +1,113 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="ScreenGui" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">InputLegendGui</string>
+			<bool name="IgnoreGuiInset">true</bool>
+			<bool name="ResetOnSpawn">false</bool>
+		</Properties>
+		<Item class="Frame" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">ControlsStack</string>
+				<Vector2 name="AnchorPoint"><X>1</X><Y>1</Y></Vector2>
+				<Color3 name="BackgroundColor3"><R>0.07</R><G>0.09</G><B>0.14</B></Color3>
+				<float name="BackgroundTransparency">0.28</float>
+				<UDim2 name="Position"><XS>1</XS><XO>-20</XO><YS>1</YS><YO>-20</YO></UDim2>
+				<UDim2 name="Size"><XS>0</XS><XO>175</XO><YS>0</YS><YO>148</YO></UDim2>
+			</Properties>
+			<Item class="UICorner" referent="RBXARENA00003">
+				<Properties>
+					<string name="Name">Corner</string>
+					<UDim name="CornerRadius"><S>0</S><O>12</O></UDim>
+				</Properties>
+			</Item>
+			<Item class="UIListLayout" referent="RBXARENA00004">
+				<Properties>
+					<string name="Name">Layout</string>
+					<UDim name="Padding"><S>0</S><O>4</O></UDim>
+				</Properties>
+			</Item>
+			<Item class="Frame" referent="RBXARENA00005">
+				<Properties>
+					<string name="Name">InteractRow</string>
+					<int name="BackgroundTransparency">1</int>
+					<UDim2 name="Size"><XS>1</XS><XO>0</XO><YS>0</YS><YO>34</YO></UDim2>
+				</Properties>
+				<Item class="ImageLabel" referent="RBXARENA00006">
+					<Properties>
+						<string name="Name">Key</string>
+						<int name="BackgroundTransparency">1</int>
+						<Content name="Image"><url>rbxasset://arena_assets/kenney_inputs/keyboard_e.png</url></Content>
+						<UDim2 name="Position"><XS>0</XS><XO>10</XO><YS>0</YS><YO>3</YO></UDim2>
+						<UDim2 name="Size"><XS>0</XS><XO>28</XO><YS>0</YS><YO>28</YO></UDim2>
+					</Properties>
+				</Item>
+				<Item class="TextLabel" referent="RBXARENA00007">
+					<Properties>
+						<string name="Name">Label</string>
+						<int name="BackgroundTransparency">1</int>
+						<UDim2 name="Position"><XS>0</XS><XO>46</XO><YS>0</YS><YO>0</YO></UDim2>
+						<UDim2 name="Size"><XS>1</XS><XO>-54</XO><YS>1</YS><YO>0</YO></UDim2>
+						<string name="Text">Interact</string>
+						<Color3 name="TextColor3"><R>0.92</R><G>0.95</G><B>1</B></Color3>
+						<int name="TextSize">15</int>
+					</Properties>
+				</Item>
+			</Item>
+			<Item class="Frame" referent="RBXARENA00008">
+				<Properties>
+					<string name="Name">DashRow</string>
+					<int name="BackgroundTransparency">1</int>
+					<UDim2 name="Size"><XS>1</XS><XO>0</XO><YS>0</YS><YO>34</YO></UDim2>
+				</Properties>
+				<Item class="ImageLabel" referent="RBXARENA00009">
+					<Properties>
+						<string name="Name">Key</string>
+						<int name="BackgroundTransparency">1</int>
+						<Content name="Image"><url>rbxasset://arena_assets/kenney_inputs/keyboard_shift.png</url></Content>
+						<UDim2 name="Position"><XS>0</XS><XO>10</XO><YS>0</YS><YO>3</YO></UDim2>
+						<UDim2 name="Size"><XS>0</XS><XO>28</XO><YS>0</YS><YO>28</YO></UDim2>
+					</Properties>
+				</Item>
+				<Item class="TextLabel" referent="RBXARENA00010">
+					<Properties>
+						<string name="Name">Label</string>
+						<int name="BackgroundTransparency">1</int>
+						<UDim2 name="Position"><XS>0</XS><XO>46</XO><YS>0</YS><YO>0</YO></UDim2>
+						<UDim2 name="Size"><XS>1</XS><XO>-54</XO><YS>1</YS><YO>0</YO></UDim2>
+						<string name="Text">Sprint / Dash</string>
+						<Color3 name="TextColor3"><R>0.92</R><G>0.95</G><B>1</B></Color3>
+						<int name="TextSize">15</int>
+					</Properties>
+				</Item>
+			</Item>
+			<Item class="Frame" referent="RBXARENA00011">
+				<Properties>
+					<string name="Name">AbilityRow</string>
+					<int name="BackgroundTransparency">1</int>
+					<UDim2 name="Size"><XS>1</XS><XO>0</XO><YS>0</YS><YO>34</YO></UDim2>
+				</Properties>
+				<Item class="ImageLabel" referent="RBXARENA00012">
+					<Properties>
+						<string name="Name">Key</string>
+						<int name="BackgroundTransparency">1</int>
+						<Content name="Image"><url>rbxasset://arena_assets/kenney_inputs/keyboard_q.png</url></Content>
+						<UDim2 name="Position"><XS>0</XS><XO>10</XO><YS>0</YS><YO>3</YO></UDim2>
+						<UDim2 name="Size"><XS>0</XS><XO>28</XO><YS>0</YS><YO>28</YO></UDim2>
+					</Properties>
+				</Item>
+				<Item class="TextLabel" referent="RBXARENA00013">
+					<Properties>
+						<string name="Name">Label</string>
+						<int name="BackgroundTransparency">1</int>
+						<UDim2 name="Position"><XS>0</XS><XO>46</XO><YS>0</YS><YO>0</YO></UDim2>
+						<UDim2 name="Size"><XS>1</XS><XO>-54</XO><YS>1</YS><YO>0</YO></UDim2>
+						<string name="Text">Special Skill</string>
+						<Color3 name="TextColor3"><R>0.92</R><G>0.95</G><B>1</B></Color3>
+						<int name="TextSize">15</int>
+					</Properties>
+				</Item>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

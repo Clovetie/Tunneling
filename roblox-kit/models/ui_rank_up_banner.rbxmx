@@ -1,0 +1,61 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="ScreenGui" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">RankUpBannerGui</string>
+			<bool name="IgnoreGuiInset">false</bool>
+			<bool name="ResetOnSpawn">false</bool>
+		</Properties>
+		<Item class="UIScale" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">AutoScale</string>
+				<int name="Scale">1</int>
+			</Properties>
+		</Item>
+		<Item class="Frame" referent="RBXARENA00003">
+			<Properties>
+				<string name="Name">BannerCard</string>
+				<Vector2 name="AnchorPoint"><X>0.5</X><Y>0</Y></Vector2>
+				<Color3 name="BackgroundColor3"><R>0.11</R><G>0.09</G><B>0.18</B></Color3>
+				<float name="BackgroundTransparency">0.08</float>
+				<UDim2 name="Position"><XS>0.5</XS><XO>0</XO><YS>0</YS><YO>20</YO></UDim2>
+				<UDim2 name="Size"><XS>0</XS><XO>340</XO><YS>0</YS><YO>76</YO></UDim2>
+			</Properties>
+			<Item class="UICorner" referent="RBXARENA00004">
+				<Properties>
+					<string name="Name">Corner</string>
+					<UDim name="CornerRadius"><S>0</S><O>14</O></UDim>
+				</Properties>
+			</Item>
+			<Item class="UIStroke" referent="RBXARENA00005">
+				<Properties>
+					<string name="Name">GoldStroke</string>
+					<Color3 name="Color"><R>1.0</R><G>0.8</G><B>0.22</B></Color3>
+					<int name="Thickness">2</int>
+				</Properties>
+			</Item>
+			<Item class="TextLabel" referent="RBXARENA00006">
+				<Properties>
+					<string name="Name">Title</string>
+					<int name="BackgroundTransparency">1</int>
+					<UDim2 name="Position"><XS>0</XS><XO>16</XO><YS>0</YS><YO>10</YO></UDim2>
+					<UDim2 name="Size"><XS>1</XS><XO>-32</XO><YS>0</YS><YO>28</YO></UDim2>
+					<string name="Text">RANK UP - GOLD TIER!</string>
+					<Color3 name="TextColor3"><R>1.0</R><G>0.85</G><B>0.28</B></Color3>
+					<bool name="TextScaled">true</bool>
+				</Properties>
+			</Item>
+			<Item class="TextLabel" referent="RBXARENA00007">
+				<Properties>
+					<string name="Name">Subtitle</string>
+					<int name="BackgroundTransparency">1</int>
+					<UDim2 name="Position"><XS>0</XS><XO>16</XO><YS>0</YS><YO>42</YO></UDim2>
+					<UDim2 name="Size"><XS>1</XS><XO>-32</XO><YS>0</YS><YO>22</YO></UDim2>
+					<string name="Text">+500 Gems Rewarded</string>
+					<Color3 name="TextColor3"><R>0.88</R><G>0.94</G><B>1.0</B></Color3>
+					<bool name="TextScaled">true</bool>
+				</Properties>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

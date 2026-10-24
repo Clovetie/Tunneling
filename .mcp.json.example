@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "roblox-studio": {
+      "command": "python",
+      "args": [
+        "roblox-bridge/mcp_server.py",
+        "--auto-install-plugin"
+      ],
+      "env": {
+        "BRIDGE_URL": "http://127.0.0.1:8077"
+      }
+    },
+    "roblox-studio-inspector": {
+      "command": "python",
+      "args": [
+        "roblox-bridge/mcp_server.py",
+        "--read-only"
+      ],
+      "env": {
+        "BRIDGE_URL": "http://127.0.0.1:8077"
+      }
+    }
+  }
+}

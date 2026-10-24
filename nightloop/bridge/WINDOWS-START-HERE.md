@@ -1,72 +1,61 @@
-# Windows quickstart
+# Windows Quickstart (v3.0 — MCP + Bridge + HANDS MODE)
 
-Four steps. Copy this whole `roblox-bridge` folder to your PC first.
+Works with **Claude Code, Claude Desktop, Cursor, Codex CLI, VS Code Copilot**, **Arena (via tunnel or HANDS MODE)**, and direct PowerShell CLI commands.
 
-## 1. Install cloudflared (one time)
+## 1. Install the Plugin & Start the Bridge (One Command)
 
-```powershell
-winget install --id Cloudflare.cloudflared
-```
-
-Close and reopen your terminal afterwards so it lands on your PATH.
-No winget? Skip it — step 2 will tell you to use `ngrok http 8077` instead.
-
-## 2. Start the bridge
+Open PowerShell in `roblox-bridge` (or `nightloop\bridge`) and run:
 
 ```powershell
-cd path\to\roblox-bridge
-python setup.py --tunnel
+python setup.py --write-mcp
+```
+*(Need a public URL for a remote agent? Run `python setup.py --tunnel --write-mcp` instead.)*
+
+What this does automatically:
+- Creates `bridge.token` — **or automatically recovers your existing token** from `%LOCALAPPDATA%\Roblox\Plugins\ArenaBridge.lua` if you unzipped a new branch folder, preventing `HTTP 401` mismatches.
+- Installs `ArenaBridge.lua` **v3.0** into `%LOCALAPPDATA%\Roblox\Plugins` with the token baked in.
+- Writes `.mcp.json` for MCP clients.
+- Starts `server.py` v3.0 on `http://127.0.0.1:8077` (Dashboard + REST API + `POST http://127.0.0.1:8077/mcp`).
+
+## 2. Restart Roblox Studio Once
+
+1. **Restart Roblox Studio** once after installing or updating `ArenaBridge.lua` to v3.0.
+2. Open your place — **ArenaBridge v3.0 auto-connects on load** (no toolbar click needed).
+3. Verify in PowerShell:
+   ```powershell
+   .\ab.ps1 ping
+   ```
+   You should see `[ok] ping` with `"pluginVersion": "3.0"` and `"dm": "edit"`.
+
+## 3. Optional: Add to Any MCP Client (`stdio`)
+
+`mcp_server.py` works even without keeping a separate terminal open — if `server.py` is already running it attaches automatically; if not, it starts an embedded background bridge thread inside itself!
+
+```powershell
+# Claude Code:
+claude mcp add roblox-studio -- python C:\Real\Path\To\roblox-bridge\mcp_server.py --auto-install-plugin
+
+# Codex CLI:
+codex mcp add roblox-studio -- python C:\Real\Path\To\roblox-bridge\mcp_server.py --auto-install-plugin
 ```
 
-This generates a token, drops `ArenaBridge.lua` into
-`%LOCALAPPDATA%\Roblox\Plugins` with the token already baked in, starts the
-server on port 8077, and opens a public tunnel.
+For **Read-Only Inspector Mode** (blocks every mutating tool/job): pass `--read-only`.
 
-If `python` isn't recognised, try `py setup.py --tunnel`.
+## 4. High-Speed Package Sync & Drift Checks (No Manual 50 KB Paste Files Needed!)
 
-## 3. Turn on the plugin in Studio
+From any project folder, you can validate, snapshot, and sync a local source directory directly into Roblox Studio in **one single `Ctrl+Z` undo step**:
 
-1. **Fully restart Roblox Studio** (it only loads plugins at startup)
-2. Open the place you want me to work on
-3. **Plugins** tab → click **Arena Bridge**
-4. Studio may ask permission to contact `127.0.0.1` — allow it
-5. <http://localhost:8077> should now read **Studio connected**
-
-## 4. Send me two lines
-
-Your terminal prints a green box:
-
-```
-  Paste these two lines to Arena:
-    URL:   https://some-random-words.trycloudflare.com
-    TOKEN: 82a46e452573e8776c5c6994
+```powershell
+.\ab.ps1 check .\src
+.\ab.ps1 drift .\src ServerScriptService.App
+.\ab.ps1 sync  .\src ServerScriptService.App
 ```
 
-Paste those to me and I'll immediately run a full `survey` of the place —
-every script, the instance census, remotes, tags, GUI, lighting — work out
-what the game is, and tell you what I think before I change anything.
-
----
-
-### If something's off
+### Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| No **Arena Bridge** button | Studio wasn't fully restarted. Check `%LOCALAPPDATA%\Roblox\Plugins\ArenaBridge.lua` exists. |
-| Dashboard stuck on *Waiting for Studio* | Click the toolbar button — it's a toggle. Check Studio's Output for `[Arena]` lines. |
-| `poll failed` in Output | Server isn't running, or the port differs. Re-run `python setup.py --tunnel`. |
-| `cloudflared not found` | Install per step 1, or run `ngrok http 8077` in a second terminal and send me that URL. |
-| Tunnel URL changed | Free tunnels get a new URL each restart. Send me the new one. |
-
-### When you're done
-
-`Ctrl+C` in the terminal kills the server and the tunnel. The URL dies with it.
-`python setup.py --rotate` issues a fresh token if you ever want to invalidate
-the old one.
-
-### What this lets me do
-
-Run Luau in your session, create/edit/delete instances and scripts, and read
-your place. That is remote code execution into Studio — keep the tunnel up only
-while we're working, and prefer a test place for the first run. Every change I
-make is wrapped in a single undo step, so `Ctrl+Z` reverses any job.
+| `"pluginVersion": "2.0"` in `.\ab.ps1 ping` | Run `python setup.py --install-only` and restart Roblox Studio once to load v3.0. |
+| Dashboard stuck on *Waiting for Studio* | Open a place in Studio (or click **Arena MCP** under the **Plugins** tab if auto-connect was toggled off). |
+| `poll HTTP 401` in Studio Output | Run `python setup.py --install-only` against the same `bridge.token` as the running server and restart Studio. |
+| Stopping when finished | Press `Ctrl+C` in the server terminal; run `python setup.py --rotate` to invalidate old tokens. |

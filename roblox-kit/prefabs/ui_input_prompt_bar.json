@@ -1,0 +1,64 @@
+{
+  "name": "ui_input_prompt_bar",
+  "category": "ui",
+  "description": "Clean bottom-right PC & Controller input legend bar using genuine CC0 Kenney Input Prompts (WASD, Shift, E, Q, Gamepad A).",
+  "defaultParent": "StarterGui",
+  "requiredImages": [
+    "kenney_inputs/keyboard_wasd.png",
+    "kenney_inputs/keyboard_shift.png",
+    "kenney_inputs/keyboard_e.png",
+    "kenney_inputs/keyboard_q.png"
+  ],
+  "tree": [
+    {
+      "name": "InputLegendGui",
+      "className": "ScreenGui",
+      "replaceExisting": true,
+      "properties": { "ResetOnSpawn": false, "IgnoreGuiInset": true },
+      "children": [
+        {
+          "name": "ControlsStack",
+          "className": "Frame",
+          "properties": {
+            "AnchorPoint": { "__t": "Vector2", "v": [1, 1] },
+            "Position": { "__t": "UDim2", "v": [1, -20, 1, -20] },
+            "Size": { "__t": "UDim2", "v": [0, 175, 0, 148] },
+            "BackgroundColor3": { "__t": "Color3", "v": [0.07, 0.09, 0.14] },
+            "BackgroundTransparency": 0.28
+          },
+          "children": [
+            { "name": "Corner", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 12] } } },
+            { "name": "Layout", "className": "UIListLayout", "properties": { "Padding": { "__t": "UDim", "v": [0, 4] } } },
+            {
+              "name": "InteractRow",
+              "className": "Frame",
+              "properties": { "Size": { "__t": "UDim2", "v": [1, 0, 0, 34] }, "BackgroundTransparency": 1 },
+              "children": [
+                { "name": "Key", "className": "ImageLabel", "properties": { "Position": { "__t": "UDim2", "v": [0, 10, 0, 3] }, "Size": { "__t": "UDim2", "v": [0, 28, 0, 28] }, "BackgroundTransparency": 1, "Image": "rbxasset://arena_assets/kenney_inputs/keyboard_e.png" } },
+                { "name": "Label", "className": "TextLabel", "properties": { "Position": { "__t": "UDim2", "v": [0, 46, 0, 0] }, "Size": { "__t": "UDim2", "v": [1, -54, 1, 0] }, "BackgroundTransparency": 1, "Text": "Interact", "TextColor3": { "__t": "Color3", "v": [0.92, 0.95, 1] }, "TextSize": 15, "Font": { "__t": "Enum", "v": "Font.GothamSemibold" }, "TextXAlignment": { "__t": "Enum", "v": "TextXAlignment.Left" } } }
+              ]
+            },
+            {
+              "name": "DashRow",
+              "className": "Frame",
+              "properties": { "Size": { "__t": "UDim2", "v": [1, 0, 0, 34] }, "BackgroundTransparency": 1 },
+              "children": [
+                { "name": "Key", "className": "ImageLabel", "properties": { "Position": { "__t": "UDim2", "v": [0, 10, 0, 3] }, "Size": { "__t": "UDim2", "v": [0, 28, 0, 28] }, "BackgroundTransparency": 1, "Image": "rbxasset://arena_assets/kenney_inputs/keyboard_shift.png" } },
+                { "name": "Label", "className": "TextLabel", "properties": { "Position": { "__t": "UDim2", "v": [0, 46, 0, 0] }, "Size": { "__t": "UDim2", "v": [1, -54, 1, 0] }, "BackgroundTransparency": 1, "Text": "Sprint / Dash", "TextColor3": { "__t": "Color3", "v": [0.92, 0.95, 1] }, "TextSize": 15, "Font": { "__t": "Enum", "v": "Font.GothamSemibold" }, "TextXAlignment": { "__t": "Enum", "v": "TextXAlignment.Left" } } }
+              ]
+            },
+            {
+              "name": "AbilityRow",
+              "className": "Frame",
+              "properties": { "Size": { "__t": "UDim2", "v": [1, 0, 0, 34] }, "BackgroundTransparency": 1 },
+              "children": [
+                { "name": "Key", "className": "ImageLabel", "properties": { "Position": { "__t": "UDim2", "v": [0, 10, 0, 3] }, "Size": { "__t": "UDim2", "v": [0, 28, 0, 28] }, "BackgroundTransparency": 1, "Image": "rbxasset://arena_assets/kenney_inputs/keyboard_q.png" } },
+                { "name": "Label", "className": "TextLabel", "properties": { "Position": { "__t": "UDim2", "v": [0, 46, 0, 0] }, "Size": { "__t": "UDim2", "v": [1, -54, 1, 0] }, "BackgroundTransparency": 1, "Text": "Special Skill", "TextColor3": { "__t": "Color3", "v": [0.92, 0.95, 1] }, "TextSize": 15, "Font": { "__t": "Enum", "v": "Font.GothamSemibold" }, "TextXAlignment": { "__t": "Enum", "v": "TextXAlignment.Left" } } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

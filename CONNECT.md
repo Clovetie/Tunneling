@@ -379,3 +379,45 @@ mkdir jobs -ErrorAction SilentlyContinue
 - `ChangeHistoryService` `TryBeginRecording`/`FinishRecording` is the
   documented plugin undo pattern:
   <https://create.roblox.com/docs/studio/plugins>
+- Official Roblox Studio Built-in MCP Server documentation:
+  <https://create.roblox.com/docs/studio/mcp>
+- `ScriptEditorService:UpdateSourceAsync` / `GetEditorSource` (>200 KB & open editor safe):
+  <https://create.roblox.com/docs/reference/engine/classes/ScriptEditorService>
+- `StudioTestService` programmatic Play Solo / Run Mode execution & `EndTest`:
+  <https://create.roblox.com/docs/reference/engine/classes/StudioTestService>
+
+---
+
+## 11. Historical v3.0 Upgrade Snapshot — Full MCP Server + Multi-DataModel Routing + Zero-Drift Sync (2026-10-23)
+
+> Historical v3.0 notes below describe that earlier state. The current v4.0.0 work is in `roblox-bridge/`; the `nightloop/bridge/` mirror was not synchronized as part of this upgrade.
+
+At that time, `roblox-bridge/` and `nightloop/bridge/` were upgraded identically to **v3.0** (`PLUGIN_VERSION = "3.0"`, `SERVER_VERSION = "3.0.0"`, zero external pip dependencies):
+
+### What was added & fixed in v3.0
+
+1. **Dual-Transport Model Context Protocol (MCP) Server (`mcp_core.py` + `mcp_server.py` + `server.py /mcp`)**:
+   - **`mcp_server.py` (`stdio` JSON-RPC 2.0)**: Supports both MCP newline-delimited JSON and LSP `Content-Length` framing; logs strictly to `stderr`. Auto-attaches over HTTP if `server.py` is already listening on `:8077`, or spawns an embedded HTTP bridge thread automatically if not — eliminating port conflicts when multiple clients connect simultaneously.
+   - **`POST /mcp` on `server.py` (`Streamable HTTP`)**: Exposes the full 37-tool MCP server, 5 live resources (`studio://state`, `studio://peers`, `studio://console`, `studio://selection`, `studio://survey`), 2 resource templates (`studio://scripts/{path}`, `studio://instance/{path}`), and 4 workflow prompts over HTTP (`Authorization: Bearer <token>`, `X-Arena-Token`, or `?token=`).
+   - **Read-Only Inspector Mode (`--read-only`)**: Server-enforced block against all mutating jobs and tool sub-actions.
+
+2. **Multi-DataModel Routing (`edit` / `server` / `client`) & Silent Client RPC**:
+   - Eliminates the v1.0 race where Edit and Play Server DataModels competed randomly on `/api/poll`. Every peer now registers its `peerId`, `dm` (`edit` vs `server`), `hasClient`, `playerCount`, and `placeId`.
+   - In Play Solo / Local Server runs, the `client` plugin instance no longer calls `HttpService:RequestAsync` (eliminating client HTTP errors in Output). Instead, `server` creates an unarchivable `ReplicatedStorage.__ArenaBridgeClientRPC` (`RemoteFunction`), allowing `dm="client"` tool calls to run directly inside the live Client VM.
+
+3. **Elimination of Historical Traps**:
+   - **Token mismatch trap cured**: When `bridge.token` is missing in a fresh branch folder, `setup.py` and `ab.ps1` inspect `%LOCALAPPDATA%\Roblox\Plugins\ArenaBridge.lua` and recover the active token automatically before minting a new one.
+   - **Windows `cp1252` UTF-8 trap cured**: Explicit `encoding="utf-8"` across every file read/write in Python plus UTF-8 console setup in `ab.ps1`.
+   - **200 KB & open-tab script trap cured**: `ArenaBridge.lua` v3.0 uses `ScriptEditorService:GetEditorSource` and `ScriptEditorService:UpdateSourceAsync` with CRLF→LF normalization.
+   - **Stale `ModuleScript` `require()` cache solved**: `replaceInstance = true` on `write_script` / `multi_edit`, `require_fresh` sandbox evaluation, and one-shot atomic `drift_and_sync(mode="push")`.
+   - **Sub-2ms job completion**: Replaced `time.sleep(0.25)` polling loop in `server.py` with per-job `threading.Event` signaling.
+
+### Fast HANDS MODE commands on Windows (`v3.0`)
+
+```powershell
+python setup.py --install-only                          # upgrade Studio plugin to v3.0 once, then restart Studio
+.\ab.ps1 ping                                           # expect pluginVersion "3.0"
+.\ab.ps1 check .\src                                    # local luau-compile + undefined-global check
+.\ab.ps1 drift .\src ServerScriptService.App            # exact 53-bit-safe 32-bit FNV-1a diff
+.\ab.ps1 sync  .\src ServerScriptService.App            # validate + snapshot + atomic 1-undo sync
+```

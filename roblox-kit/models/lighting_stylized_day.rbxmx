@@ -1,0 +1,21 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="Atmosphere" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">DayAtmosphere</string>
+			<Color3 name="Color"><R>0.78</R><G>0.88</G><B>1.0</B></Color3>
+			<Color3 name="Decay"><R>0.58</R><G>0.72</G><B>0.95</B></Color3>
+			<float name="Density">0.24</float>
+			<float name="Haze">0.9</float>
+			<float name="Offset">0.25</float>
+		</Properties>
+	</Item>
+	<Item class="BloomEffect" referent="RBXARENA00002">
+		<Properties>
+			<string name="Name">DayBloom</string>
+			<float name="Intensity">0.32</float>
+			<int name="Size">22</int>
+			<float name="Threshold">1.5</float>
+		</Properties>
+	</Item>
+</roblox>

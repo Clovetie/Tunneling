@@ -1,0 +1,84 @@
+{
+  "version": "3.2.0",
+  "systems": [
+    {
+      "name": "full_stud_ui_suite",
+      "category": "full-system",
+      "title": "Complete Stud UI Suite + Economy Server",
+      "description": "Installs StudUI, StudMotion, CheckUIIcons (1,022 icons), DataStoreSafe & FormatNumber, generates the full HUD + Shop + Daily Rewards + Rebirth + Rarity Index directly into StarterGui (visible immediately in Edit Mode), wires HUD buttons & modal controllers, and installs a live Coin/Rebirth server script.",
+      "modules": ["StudUI", "StudMotion", "CheckUIIcons", "FormatNumber", "DataStoreSafe"],
+      "builderModules": [
+        "01_ShopWindow",
+        "02_Hud",
+        "03_Rebirth",
+        "04_DailyRewards",
+        "05_IndexWithTabs"
+      ],
+      "attachMenuControllerTo": ["MenuNestShop", "MenuRebirth", "MenuDaily", "Index"],
+      "visibleInEditMode": "BarreHaut",
+      "scripts": [
+        {
+          "parent": "ServerScriptService",
+          "name": "StudEconomyServer",
+          "className": "Script",
+          "source": "local ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\nlocal DataStoreSafe = require(ReplicatedStorage:WaitForChild(\"DataStoreSafe\"))\n\nlocal store = DataStoreSafe.createProfileStore(\"ArenaStudEconomy_v1\", {\n\tCoins = 250,\n\tGems = 25,\n\tRebirths = 0,\n\tDailyDay = 1,\n}, {\n\t{ key = \"Coins\", name = \"Coins\" },\n\t{ key = \"Gems\", name = \"Gems\" },\n\t{ key = \"Rebirths\", name = \"Rebirths\" },\n})\n\nlocal remotes = ReplicatedStorage:FindFirstChild(\"StudRemotes\")\nif not remotes then\n\tremotes = Instance.new(\"Folder\")\n\tremotes.Name = \"StudRemotes\"\n\tremotes.Parent = ReplicatedStorage\nend\n\nlocal actionFn = remotes:FindFirstChild(\"EconomyAction\")\nif not actionFn then\n\tactionFn = Instance.new(\"RemoteFunction\")\n\tactionFn.Name = \"EconomyAction\"\n\tactionFn.Parent = remotes\nend\n\nactionFn.OnServerInvoke = function(player, action, payload)\n\tif type(action) ~= \"string\" then\n\t\treturn { ok = false, reason = \"Invalid action\" }\n\tend\n\tlocal profile = store:Get(player)\n\tif not profile then\n\t\treturn { ok = false, reason = \"Profile loading\" }\n\tend\n\tif action == \"BuyItem\" then\n\t\tlocal cost = math.max(0, tonumber(payload and payload.cost) or 100)\n\t\tif profile.Coins < cost then\n\t\t\treturn { ok = false, reason = \"Need \" .. tostring(cost) .. \" Coins\", coins = profile.Coins }\n\t\tend\n\t\tstore:Update(player, function(d)\n\t\t\td.Coins = d.Coins - cost\n\t\tend)\n\t\treturn { ok = true, coins = profile.Coins }\n\telseif action == \"Rebirth\" then\n\t\tlocal req = 500 * ((profile.Rebirths or 0) + 1)\n\t\tif profile.Coins < req then\n\t\t\treturn { ok = false, reason = \"Need \" .. tostring(req) .. \" Coins\" }\n\t\tend\n\t\tstore:Update(player, function(d)\n\t\t\td.Coins = 0\n\t\t\td.Rebirths = (d.Rebirths or 0) + 1\n\t\tend)\n\t\treturn { ok = true, rebirths = profile.Rebirths }\n\telseif action == \"ClaimDaily\" then\n\t\tstore:Update(player, function(d)\n\t\t\td.Coins = d.Coins + 150\n\t\tend)\n\t\treturn { ok = true, coins = profile.Coins }\n\tend\n\treturn { ok = true, coins = profile.Coins }\nend\n"
+        },
+        {
+          "parent": "StarterPlayer.StarterPlayerScripts",
+          "name": "StudHudWiring",
+          "className": "LocalScript",
+          "source": "local Players = game:GetService(\"Players\")\nlocal ReplicatedStorage = game:GetService(\"ReplicatedStorage\")\nlocal FormatNumber = require(ReplicatedStorage:WaitForChild(\"FormatNumber\"))\nlocal StudMotion = require(ReplicatedStorage:WaitForChild(\"StudMotion\"))\n\nlocal player = Players.LocalPlayer\nlocal pgui = player:WaitForChild(\"PlayerGui\")\n\nlocal function toggleGui(menuName)\n\tlocal target = pgui:FindFirstChild(menuName)\n\tif not target then\n\t\treturn\n\tend\n\tlocal ev = target:FindFirstChild(\"Basculer\")\n\tif ev and ev:IsA(\"BindableEvent\") then\n\t\tev:Fire()\n\telse\n\t\ttarget.Enabled = not target.Enabled\n\tend\nend\n\nlocal routes = {\n\tShops = \"MenuNestShop\",\n\tShop = \"MenuNestShop\",\n\tRebirth = \"MenuRebirth\",\n\tDaily = \"MenuDaily\",\n\tDailyRewards = \"MenuDaily\",\n\tIndex = \"Index\",\n}\n\nfor _, screen in ipairs(pgui:GetChildren()) do\n\tif screen:IsA(\"ScreenGui\") and not screen:GetAttribute(\"MenuModal\") then\n\t\tfor _, desc in ipairs(screen:GetDescendants()) do\n\t\t\tif desc:IsA(\"GuiButton\") then\n\t\t\t\tStudMotion.Button(desc)\n\t\t\t\tlocal dest = routes[desc.Name] or (desc.Parent and routes[desc.Parent.Name])\n\t\t\t\tif dest then\n\t\t\t\t\tdesc.Activated:Connect(function()\n\t\t\t\t\t\ttoggleGui(dest)\n\t\t\t\t\tend)\n\t\t\t\tend\n\t\t\tend\n\t\tend\n\tend\nend\n\nlocal ls = player:WaitForChild(\"leaderstats\", 10)\nif ls then\n\tlocal coins = ls:WaitForChild(\"Coins\", 5)\n\tif coins then\n\t\tlocal function refreshMoney()\n\t\t\tlocal hud = pgui:FindFirstChild(\"HUDArgent\")\n\t\t\tif hud then\n\t\t\t\tfor _, lbl in ipairs(hud:GetDescendants()) do\n\t\t\t\t\tif lbl:IsA(\"TextLabel\") then\n\t\t\t\t\t\tlbl.Text = \"$\" .. FormatNumber.commas(coins.Value)\n\t\t\t\t\t\tbreak\n\t\t\t\t\tend\n\t\t\t\tend\n\t\t\tend\n\t\tend\n\t\tcoins.Changed:Connect(refreshMoney)\n\t\trefreshMoney()\n\tend\nend\n"
+        }
+      ]
+    },
+    {
+      "name": "stud_shop_window",
+      "category": "ui-screen",
+      "title": "Stud Shop Window (Edit + Runtime Animated)",
+      "description": "Generates the measured 3D Stud Shop Window (MenuNestShop) directly into StarterGui with product cards, Restock header button, close button, and StudMotion open/blur/hover controller.",
+      "modules": ["StudUI", "StudMotion", "CheckUIIcons"],
+      "builderModules": ["01_ShopWindow"],
+      "attachMenuControllerTo": ["MenuNestShop"],
+      "enableForPreview": ["MenuNestShop"]
+    },
+    {
+      "name": "stud_hud_shell",
+      "category": "ui-screen",
+      "title": "Stud Complete HUD (Top Bar + Left Tiles + Money + Hotbar)",
+      "description": "Generates the full 4-part responsive HUD (top bar, left menu tile grid with notification badge, currency counter, and bottom item hotbar) directly into StarterGui.",
+      "modules": ["StudUI", "StudMotion", "CheckUIIcons"],
+      "builderModules": ["02_Hud"],
+      "enableForPreview": ["BarreHaut", "MenuGauche", "HUDArgent", "Hotbar"]
+    },
+    {
+      "name": "stud_daily_rewards",
+      "category": "ui-screen",
+      "title": "Stud 7-Day Daily Rewards Window",
+      "description": "Generates the 7-Day Daily Rewards window (MenuDaily) with 6 colored stud day tiles, Day 7 rainbow hero card, spinning sunbursts, CLAIM ALL badge, and StudMotion controller.",
+      "modules": ["StudUI", "StudMotion", "CheckUIIcons"],
+      "builderModules": ["04_DailyRewards"],
+      "attachMenuControllerTo": ["MenuDaily"],
+      "enableForPreview": ["MenuDaily"]
+    },
+    {
+      "name": "stud_rebirth_window",
+      "category": "ui-screen",
+      "title": "Stud Rebirth Multiplier Window",
+      "description": "Generates the Rebirth window (MenuRebirth) with current->next multiplier panels, inset requirement progress bar, green Rebirth button, and StudMotion controller.",
+      "modules": ["StudUI", "StudMotion", "CheckUIIcons"],
+      "builderModules": ["03_Rebirth"],
+      "attachMenuControllerTo": ["MenuRebirth"],
+      "enableForPreview": ["MenuRebirth"]
+    },
+    {
+      "name": "stud_rarity_index",
+      "category": "ui-screen",
+      "title": "Stud Rarity Collection Index (Common -> Cosmic)",
+      "description": "Generates the Collection Index window with discovered/silhouetted pet slots, spinning sunbursts, and an 8-rarity side tab column (Common through Cosmic).",
+      "modules": ["StudUI", "StudMotion", "CheckUIIcons"],
+      "builderModules": ["05_IndexWithTabs"],
+      "attachMenuControllerTo": ["Index"],
+      "enableForPreview": ["Index"]
+    }
+  ]
+}

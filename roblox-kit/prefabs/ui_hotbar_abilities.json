@@ -1,0 +1,125 @@
+{
+  "category": "ui-hud",
+  "description": "5-Slot RPG / Action Ability Hotbar with 48px+ mobile-safe touch targets, cooldown badges, and DualSense/Keyboard hotkey labels.",
+  "defaultParent": "StarterGui",
+  "tree": [
+    {
+      "name": "AbilityHotbarGui",
+      "className": "ScreenGui",
+      "replaceExisting": true,
+      "properties": {
+        "ResetOnSpawn": false,
+        "IgnoreGuiInset": false
+      },
+      "children": [
+        {
+          "name": "AutoScale",
+          "className": "UIScale",
+          "properties": { "Scale": 1 }
+        },
+        {
+          "name": "BarContainer",
+          "className": "Frame",
+          "properties": {
+            "AnchorPoint": { "__t": "Vector2", "v": [0.5, 1] },
+            "Position": { "__t": "UDim2", "v": [0.5, 0, 1, -14] },
+            "Size": { "__t": "UDim2", "v": [0, 326, 0, 68] },
+            "BackgroundColor3": { "__t": "Color3", "v": [0.08, 0.1, 0.15] },
+            "BackgroundTransparency": 0.14
+          },
+          "children": [
+            {
+              "name": "Corner",
+              "className": "UICorner",
+              "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 12] } }
+            },
+            {
+              "name": "Border",
+              "className": "UIStroke",
+              "properties": {
+                "Color": { "__t": "Color3", "v": [0.28, 0.56, 0.96] },
+                "Thickness": 2
+              }
+            },
+            {
+              "name": "Padding",
+              "className": "UIPadding",
+              "properties": {
+                "PaddingLeft": { "__t": "UDim", "v": [0, 10] },
+                "PaddingTop": { "__t": "UDim", "v": [0, 8] }
+              }
+            },
+            {
+              "name": "RowLayout",
+              "className": "UIListLayout",
+              "properties": {
+                "FillDirection": { "__t": "Enum", "v": "Enum.FillDirection.Horizontal" },
+                "Padding": { "__t": "UDim", "v": [0, 10] }
+              }
+            },
+            {
+              "name": "Slot1",
+              "className": "TextButton",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [0, 52, 0, 52] },
+                "BackgroundColor3": { "__t": "Color3", "v": [0.16, 0.24, 0.38] },
+                "Text": "Q",
+                "TextScaled": true,
+                "TextColor3": { "__t": "Color3", "v": [1, 1, 1] }
+              },
+              "children": [{ "name": "C", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 8] } } }]
+            },
+            {
+              "name": "Slot2",
+              "className": "TextButton",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [0, 52, 0, 52] },
+                "BackgroundColor3": { "__t": "Color3", "v": [0.16, 0.24, 0.38] },
+                "Text": "E",
+                "TextScaled": true,
+                "TextColor3": { "__t": "Color3", "v": [1, 1, 1] }
+              },
+              "children": [{ "name": "C", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 8] } } }]
+            },
+            {
+              "name": "Slot3",
+              "className": "TextButton",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [0, 52, 0, 52] },
+                "BackgroundColor3": { "__t": "Color3", "v": [0.22, 0.32, 0.52] },
+                "Text": "R",
+                "TextScaled": true,
+                "TextColor3": { "__t": "Color3", "v": [1, 0.86, 0.32] }
+              },
+              "children": [{ "name": "C", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 8] } } }]
+            },
+            {
+              "name": "Slot4",
+              "className": "TextButton",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [0, 52, 0, 52] },
+                "BackgroundColor3": { "__t": "Color3", "v": [0.16, 0.24, 0.38] },
+                "Text": "F",
+                "TextScaled": true,
+                "TextColor3": { "__t": "Color3", "v": [1, 1, 1] }
+              },
+              "children": [{ "name": "C", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 8] } } }]
+            },
+            {
+              "name": "Slot5",
+              "className": "TextButton",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [0, 52, 0, 52] },
+                "BackgroundColor3": { "__t": "Color3", "v": [0.35, 0.2, 0.45] },
+                "Text": "ULT",
+                "TextScaled": true,
+                "TextColor3": { "__t": "Color3", "v": [1, 0.9, 0.4] }
+              },
+              "children": [{ "name": "C", "className": "UICorner", "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 8] } } }]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

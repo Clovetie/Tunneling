@@ -1,0 +1,54 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="Model" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">SpawnPlaza</string>
+		</Properties>
+		<Item class="Part" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">Deck</string>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>0.14</R><G>0.17</G><B>0.22</B></Color3>
+				<Vector3 name="Position"><X>0</X><Y>0.75</Y><Z>0</Z></Vector3>
+				<Vector3 name="Size"><X>32</X><Y>1.5</Y><Z>32</Z></Vector3>
+			</Properties>
+			<Item class="Texture" referent="RBXARENA00003">
+				<Properties>
+					<string name="Name">TopGrid</string>
+					<int name="StudsPerTileU">4</int>
+					<int name="StudsPerTileV">4</int>
+					<Content name="Texture"><url>rbxasset://arena_assets/textures/grid_dark_1m.png</url></Content>
+					<float name="Transparency">0.25</float>
+				</Properties>
+			</Item>
+		</Item>
+		<Item class="SpawnLocation" referent="RBXARENA00004">
+			<Properties>
+				<string name="Name">SpawnPad</string>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>0.24</R><G>0.65</G><B>1.0</B></Color3>
+				<bool name="Neutral">true</bool>
+				<Vector3 name="Position"><X>0</X><Y>1.7</Y><Z>0</Z></Vector3>
+				<Vector3 name="Size"><X>8</X><Y>0.4</Y><Z>8</Z></Vector3>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBXARENA00005">
+			<Properties>
+				<string name="Name">PillarNW</string>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>0.22</R><G>0.26</G><B>0.34</B></Color3>
+				<Vector3 name="Position"><X>-14.5</X><Y>6.5</Y><Z>-14.5</Z></Vector3>
+				<Vector3 name="Size"><X>1.5</X><Y>10</Y><Z>1.5</Z></Vector3>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBXARENA00006">
+			<Properties>
+				<string name="Name">PillarNE</string>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>0.22</R><G>0.26</G><B>0.34</B></Color3>
+				<Vector3 name="Position"><X>14.5</X><Y>6.5</Y><Z>-14.5</Z></Vector3>
+				<Vector3 name="Size"><X>1.5</X><Y>10</Y><Z>1.5</Z></Vector3>
+			</Properties>
+		</Item>
+	</Item>
+</roblox>

@@ -1,0 +1,30 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="Atmosphere" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">CyberAtmosphere</string>
+			<Color3 name="Color"><R>0.15</R><G>0.25</G><B>0.45</B></Color3>
+			<Color3 name="Decay"><R>0.06</R><G>0.09</G><B>0.18</B></Color3>
+			<float name="Density">0.36</float>
+			<float name="Glare">0.15</float>
+			<float name="Haze">2.1</float>
+			<float name="Offset">0.1</float>
+		</Properties>
+	</Item>
+	<Item class="BloomEffect" referent="RBXARENA00002">
+		<Properties>
+			<string name="Name">CyberBloom</string>
+			<float name="Intensity">0.85</float>
+			<int name="Size">32</int>
+			<float name="Threshold">0.95</float>
+		</Properties>
+	</Item>
+	<Item class="ColorCorrectionEffect" referent="RBXARENA00003">
+		<Properties>
+			<string name="Name">CyberGrade</string>
+			<float name="Contrast">0.14</float>
+			<float name="Saturation">0.18</float>
+			<Color3 name="TintColor"><R>0.9</R><G>0.96</G><B>1.0</B></Color3>
+		</Properties>
+	</Item>
+</roblox>

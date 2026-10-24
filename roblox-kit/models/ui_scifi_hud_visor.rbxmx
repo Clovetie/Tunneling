@@ -1,0 +1,49 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="ScreenGui" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">SciFiVisorHUD</string>
+			<bool name="IgnoreGuiInset">true</bool>
+			<bool name="ResetOnSpawn">false</bool>
+		</Properties>
+		<Item class="ImageLabel" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">CenterReticle</string>
+				<Vector2 name="AnchorPoint"><X>0.5</X><Y>0.5</Y></Vector2>
+				<int name="BackgroundTransparency">1</int>
+				<Content name="Image"><url>rbxasset://arena_assets/kenney_cursors/target_a.png</url></Content>
+				<float name="ImageTransparency">0.15</float>
+				<UDim2 name="Position"><XS>0.5</XS><XO>0</XO><YS>0.5</YS><YO>0</YO></UDim2>
+				<UDim2 name="Size"><XS>0</XS><XO>44</XO><YS>0</YS><YO>44</YO></UDim2>
+			</Properties>
+		</Item>
+		<Item class="Frame" referent="RBXARENA00003">
+			<Properties>
+				<string name="Name">VitalsCluster</string>
+				<Vector2 name="AnchorPoint"><X>0</X><Y>1</Y></Vector2>
+				<int name="BackgroundTransparency">1</int>
+				<UDim2 name="Position"><XS>0</XS><XO>24</XO><YS>1</YS><YO>-24</YO></UDim2>
+				<UDim2 name="Size"><XS>0</XS><XO>280</XO><YS>0</YS><YO>72</YO></UDim2>
+			</Properties>
+			<Item class="ImageLabel" referent="RBXARENA00004">
+				<Properties>
+					<string name="Name">ShieldBar</string>
+					<int name="BackgroundTransparency">1</int>
+					<Content name="Image"><url>rbxasset://arena_assets/kenney_scifi/blue_bar_square_gloss_large.png</url></Content>
+					<UDim2 name="Size"><XS>1</XS><XO>0</XO><YS>0</YS><YO>30</YO></UDim2>
+					<Rect2D name="SliceCenter"><min><X>14</X><Y>8</Y></min><max><X>178</X><Y>24</Y></max></Rect2D>
+				</Properties>
+			</Item>
+			<Item class="ImageLabel" referent="RBXARENA00005">
+				<Properties>
+					<string name="Name">EnergyBar</string>
+					<int name="BackgroundTransparency">1</int>
+					<Content name="Image"><url>rbxasset://arena_assets/kenney_scifi/yellow_bar_square_gloss_large.png</url></Content>
+					<UDim2 name="Position"><XS>0</XS><XO>0</XO><YS>0</YS><YO>38</YO></UDim2>
+					<UDim2 name="Size"><XS>0.82</XS><XO>0</XO><YS>0</YS><YO>26</YO></UDim2>
+					<Rect2D name="SliceCenter"><min><X>14</X><Y>8</Y></min><max><X>178</X><Y>24</Y></max></Rect2D>
+				</Properties>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

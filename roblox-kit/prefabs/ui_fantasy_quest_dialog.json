@@ -1,0 +1,99 @@
+{
+  "name": "ui_fantasy_quest_dialog",
+  "category": "ui",
+  "description": "Ornamental RPG / Adventure NPC Dialog & Quest Box using genuine CC0 Kenney Fantasy 9-slice border frame, adventure ribbon, and [E] key prompt.",
+  "defaultParent": "StarterGui",
+  "requiredImages": [
+    "kenney_fantasy/border_000.png",
+    "kenney_adventure/banner_modern.png",
+    "kenney_inputs/keyboard_e.png"
+  ],
+  "tree": [
+    {
+      "name": "FantasyDialogGui",
+      "className": "ScreenGui",
+      "replaceExisting": true,
+      "properties": { "ResetOnSpawn": false, "IgnoreGuiInset": true },
+      "children": [
+        {
+          "name": "DialogBox",
+          "className": "Frame",
+          "properties": {
+            "AnchorPoint": { "__t": "Vector2", "v": [0.5, 1] },
+            "Position": { "__t": "UDim2", "v": [0.5, 0, 1, -36] },
+            "Size": { "__t": "UDim2", "v": [0, 640, 0, 168] },
+            "BackgroundColor3": { "__t": "Color3", "v": [0.1, 0.09, 0.13] },
+            "BackgroundTransparency": 0.08
+          },
+          "children": [
+            {
+              "name": "OrnamentalBorder",
+              "className": "ImageLabel",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [1, 0, 1, 0] },
+                "BackgroundTransparency": 1,
+                "Image": "rbxasset://arena_assets/kenney_fantasy/border_000.png",
+                "ImageColor3": { "__t": "Color3", "v": [0.95, 0.8, 0.45] },
+                "ScaleType": { "__t": "Enum", "v": "ScaleType.Slice" },
+                "SliceCenter": { "__t": "Rect", "v": [24, 24, 72, 72] }
+              }
+            },
+            {
+              "name": "SpeakerBanner",
+              "className": "ImageLabel",
+              "properties": {
+                "Position": { "__t": "UDim2", "v": [0, 24, 0, -22] },
+                "Size": { "__t": "UDim2", "v": [0, 220, 0, 44] },
+                "BackgroundTransparency": 1,
+                "Image": "rbxasset://arena_assets/kenney_adventure/banner_modern.png",
+                "ScaleType": { "__t": "Enum", "v": "ScaleType.Slice" },
+                "SliceCenter": { "__t": "Rect", "v": [24, 12, 100, 32] }
+              },
+              "children": [
+                {
+                  "name": "SpeakerName",
+                  "className": "TextLabel",
+                  "properties": {
+                    "Size": { "__t": "UDim2", "v": [1, 0, 1, 0] },
+                    "BackgroundTransparency": 1,
+                    "Text": "Elder Warden",
+                    "TextColor3": { "__t": "Color3", "v": [1, 0.96, 0.85] },
+                    "TextSize": 18,
+                    "Font": { "__t": "Enum", "v": "Font.GothamBold" }
+                  }
+                }
+              ]
+            },
+            {
+              "name": "DialogText",
+              "className": "TextLabel",
+              "properties": {
+                "Position": { "__t": "UDim2", "v": [0, 32, 0, 34] },
+                "Size": { "__t": "UDim2", "v": [1, -64, 1, -68] },
+                "BackgroundTransparency": 1,
+                "Text": "Traveler! The ancient portal in the northern courtyard has awakened. Gather three star shards to unseal the gate.",
+                "TextColor3": { "__t": "Color3", "v": [0.94, 0.94, 0.96] },
+                "TextWrapped": true,
+                "TextSize": 18,
+                "Font": { "__t": "Enum", "v": "Font.GothamMedium" },
+                "TextXAlignment": { "__t": "Enum", "v": "TextXAlignment.Left" },
+                "TextYAlignment": { "__t": "Enum", "v": "TextYAlignment.Top" }
+              }
+            },
+            {
+              "name": "ContinueKey",
+              "className": "ImageLabel",
+              "properties": {
+                "AnchorPoint": { "__t": "Vector2", "v": [1, 1] },
+                "Position": { "__t": "UDim2", "v": [1, -20, 1, -14] },
+                "Size": { "__t": "UDim2", "v": [0, 36, 0, 36] },
+                "BackgroundTransparency": 1,
+                "Image": "rbxasset://arena_assets/kenney_inputs/keyboard_e.png"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

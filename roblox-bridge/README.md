@@ -1,203 +1,153 @@
-# Connecting AI to Roblox Studio
+# Arena ↔ Roblox Studio MCP Server & Bridge (v4.0.0)
 
-**Short answer: yes — but not through an Arena connector.** Arena has no Roblox
-integration (I checked: `roblox` returns `unsupported`), and an Arena agent runs
-in a cloud sandbox, not on your PC, so it can't reach into Studio by itself.
+Zero-dependency **Model Context Protocol (MCP)** server (`stdio` + `Streamable HTTP`), multi-DataModel Studio local plugin (`ArenaBridge.lua` v4.0.0), live web dashboard, and CLI (`arena_studio.py` / `ab.ps1`) for connecting AI coding agents to Roblox Studio.
 
-What *does* work is a bridge: something on your machine that Studio can talk to,
-which an AI then drives. There are four routes, ordered by how little work they take.
+Works simultaneously across **every connection mode**:
 
-| Route | Who drives Studio | Setup | Best for |
+| Mode | Transport | Clients Supported | Best For |
 |---|---|---|---|
-| **A. Studio's built-in MCP server** | Claude Code / Cursor / Codex / Copilot | ~2 min, official | Day-to-day agentic building. **Start here.** |
-| **B. Studio Assistant + your own API key** | Assistant, backed by Anthropic / OpenAI / Gemini | ~1 min | Staying inside Studio's UI |
-| **C. This bridge (`server.py` + `ArenaBridge.lua`)** | **Arena**, over a tunnel | ~10 min | Having *Arena* build things directly |
-| **D. File handoff + Rojo** | You (paste/sync) | ~0 min | Scripts & systems, no live link |
+| **1. Local MCP (`stdio`)** | `python mcp_server.py` | Claude Code, Claude Desktop, Cursor, Codex CLI, VS Code Copilot, Windsurf, Cline, Zed | Direct local agent control — auto-attaches to a running bridge or starts an embedded one automatically |
+| **2. Remote / Local MCP (`Streamable HTTP`)** | `POST http://127.0.0.1:8077/mcp` or `https://<the-tunnel>.trycloudflare.com/mcp` | Any MCP 2025-06-18 / 2024-11-05 Streamable HTTP client | Shared multi-agent sessions or remote MCP clients over a tunnel |
+| **3. Read-Only Inspector MCP** | `--read-only` flag on `mcp_server.py` or `server.py` | Any MCP client or REST caller | Zero-risk place auditing, architecture exploration, and live log debugging |
+| **4. Arena REST + HANDS MODE CLI** | `POST /api/jobs` · `.\ab.ps1 <cmd>` | Arena cloud agents & PowerShell / Bash | Cloud sandboxes with restricted egress or direct terminal scripting |
+| **5. Coexistence with Studio's Built-in MCP** | Parallel sidecar | Studio Built-in MCP (`StudioMCP`) + `arena-roblox-studio-mcp` | Combines Roblox's cloud AI mesh/material tools with repo FNV-1a sync, `luau_check`, snapshots, terrain, and `require_fresh` |
 
 ---
 
-## A. The official path — Studio's built-in MCP server
+## Ecosystem Research Summary (2026 Best Practices Applied)
 
-Since early 2026 the MCP server ships **inside Studio**; the old open-source
-`Roblox/studio-rust-mcp-server` is now just a reference implementation.
+This v4.0.0 architecture incorporates verified patterns across the 2026 Roblox MCP ecosystem:
 
-1. Studio → open **Assistant** → `…` → **Manage MCP Servers**
-2. Turn on **Enable Studio as MCP server**
-3. Under **Quick connect**, toggle your client — Claude Code, Claude Desktop,
-   Cursor, Codex CLI, Gemini CLI, VS Code, and Antigravity are supported
-4. Restart the client
+1. **Roblox Official Built-in Studio MCP (`create.roblox.com/docs/studio/mcp`)** *(which superseded `Roblox/studio-rust-mcp-server`, archived April 2026)*:
+   - Focused, low-token tool taxonomy (`get_studio_state`, `list_studios`, `search_game_tree`, `inspect_instance`, `script_read` with line ranges, atomic `multi_edit`, `script_search`, `script_grep`, DataModel-targeted `execute_luau`, `start_stop_play`, `get_console_output`) rather than 150+ overlapping micro-tools that bloat prompt context.
+2. **Multi-DataModel Routing & Silent Client RPC (`Chrrxs/robloxstudio-mcp`, `Dvitash/robloxstudio-mcp`)**:
+   - In Studio playtests, both the Edit DataModel and Play Server DataModel stay alive simultaneously, while the Play Client DataModel cannot call `HttpService:RequestAsync`.
+   - **v4.0.0 fix**: Every peer identifies its DataModel (`edit` vs `server`), eliminating Edit/Server poll races. In Play mode, the `server` peer creates a transient `Archivable = false` `RemoteFunction` (`ReplicatedStorage.__ArenaBridgeClientRPC`) and the `client` peer attaches silently without ever calling HTTP — enabling live `dm="client"` inspection/eval with zero Output window errors.
+3. **Editor-Safe Script Editing & Cache Busting (`EL4CTEO/rbx-studio-mcp`, `boshyxd/robloxstudio-mcp`, `aaronaalmendarez/roblox-mcp`)**:
+   - Reads active open editor buffers via `ScriptEditorService:GetEditorSource()` and writes via `ScriptEditorService:UpdateSourceAsync()` with CRLF→LF normalization (avoiding the 199,999-byte `Script.Source` limit, open-tab clobbering, and Live Scripting `\r\n` errors).
+   - Solves Luau's `ModuleScript` instance `require()` caching via `replaceInstance: true` on writes/edits plus `require_fresh` sandbox evaluation.
+   - Adds optimistic concurrency (`expectedHash` exact 53-bit-safe 32-bit FNV-1a) + server-side multi-script snapshots (`manage_snapshots`) + single `Ctrl+Z` `ChangeHistoryService` undo recordings.
+4. **Sidecar Safeguards (`gjlmotea/studio-sidecar-mcp` + NightLoop `AGENTS.md`)**:
+   - Offline pre-push `luau_check` catching syntax errors **and** non-strict undefined globals before code touches Studio.
+   - One-command `drift_and_sync` (`check` / `push` / `pull`) between local Git folders and Studio containers.
+   - Automatic embedded-script scanning & stripping (`stripScripts: true`) in `insert_asset` to prevent free-model backdoors.
+   - Automatic token recovery in `setup.py` and `ab.ps1` from installed `%LOCALAPPDATA%\Roblox\Plugins\ArenaBridge.lua`, eliminating `HTTP 401` token mismatches across fresh branch ZIP folders.
 
-The agent then gets real tools against your open place: `execute_luau`,
-`multi_edit` / `script_read` / `script_grep`, `search_game_tree`,
-`inspect_instance`, `generate_mesh`, `generate_material`,
-`generate_procedural_model`, `insert_asset`, `start_stop_play`,
-`get_console_output`, `screen_capture`, `user_keyboard_input`,
-`user_mouse_input`, and `character_navigation`.
+---
 
-That last group matters: the agent can **playtest its own work**, read the
-console, and iterate — which is the thing that actually makes AI building useful
-rather than a code-paste machine.
+## Quick Start
 
-> Arena's agent is not an MCP client, so it cannot attach to this. Route A means
-> running a local AI client alongside Studio.
+### 1. One-Command Install & Launch
 
-## B. Studio Assistant with your own model
-
-Assistant can be pointed at third-party models (Anthropic, OpenAI, Google
-Gemini) with your own API key. Same Assistant UI, your choice of brain, no
-external client. Doesn't involve Arena either.
-
-## C. This bridge — putting Arena in the loop
-
-The folder you're reading is a working implementation of exactly what you asked
-about: Arena generating things directly in Studio.
-
-```
-Arena agent ──POST /api/jobs──▶ server.py (your PC) ◀──poll──  ArenaBridge.lua (Studio)
-                                      ▲                              │
-                                      └──────── result ◀─────────────┘
+```powershell
+cd roblox-bridge
+python setup.py --write-mcp
 ```
 
-### Why the server runs on *your* machine
+- Installs `ArenaBridge.lua` v4.0.0 into `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or `~/Documents/Roblox/Plugins` (macOS) with your token pre-baked.
+- Writes `.mcp.json` ready for Claude Code / Cursor / VS Code.
+- Starts `server.py` v4.0.0 on `http://127.0.0.1:8077` (Web Dashboard + REST API + `POST /mcp` Streamable HTTP).
+- Add `--tunnel` if exposing to a remote cloud agent via Cloudflare Quick Tunnel, or `--install-only` if letting `mcp_server.py` self-host the embedded bridge on demand.
 
-I tested hosting it in the Arena sandbox. Sandbox preview URLs are gated behind
-an `e2b-traffic-access-token` header that only your browser session has, so
-Roblox Studio gets a `403`. The queue therefore lives on your PC — which is also
-where Roblox explicitly permits plugins to connect (`localhost` / `127.0.0.1`,
-the same mechanism Rojo uses).
+### 2. Connect Your MCP Client
 
-### Setup — one command
-
-Download this folder to your machine, then:
-
+#### Claude Code
 ```bash
-python3 setup.py --tunnel
+claude mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py --auto-install-plugin
 ```
 
-That single command:
-
-1. generates a secret into `bridge.token`
-2. writes `ArenaBridge.lua` into your Studio plugins folder **with the token
-   already baked in** — nothing to edit (Windows `%LOCALAPPDATA%\Roblox\Plugins`,
-   macOS `~/Documents/Roblox/Plugins`)
-3. starts the bridge on `:8077`
-4. starts `cloudflared` and prints the public URL
-
-Then: **restart Studio** → click the **Arena Bridge** toolbar button → the
-dashboard at <http://localhost:8077> flips to *Studio connected*.
-
-Finally paste the two lines it prints to Arena:
-
-```
-URL:   https://something-random.trycloudflare.com
-TOKEN: 82a46e452573e8776c5c6994
-```
-
-From that point I can POST jobs straight into your open place.
-
-Need `cloudflared`? `winget install --id Cloudflare.cloudflared` on Windows,
-`brew install cloudflared` on macOS — or run `ngrok http 8077` yourself and
-paste that URL instead.
-
-Other modes:
-
+#### Codex CLI
 ```bash
-python3 setup.py --install-only   # just place the plugin
-python3 setup.py                  # local only, no tunnel
-python3 setup.py --rotate         # new token, re-installs the plugin
+codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py --auto-install-plugin
 ```
 
-Recon — the first thing I'll run once you're connected:
-
-```bash
-python3 arena_studio.py survey          # whole place -> survey.json
-python3 arena_studio.py console         # recent output
-```
-
-Self-test without Arena:
-
-```bash
-export BRIDGE_TOKEN=$(cat bridge.token)
-python3 arena_studio.py ping
-python3 arena_studio.py build examples/coin.json
-python3 arena_studio.py script ServerScriptService CoinHandler examples/coin_handler.lua
-```
-
-### Job types the plugin understands
-
-| Type | Payload | Does |
-|---|---|---|
-| `ping` | — | place name, id, Studio version |
-| `survey` | `maxScriptBytes`, `includeSource` | **reads the entire place in one job** — instance census, every script, remotes, tags, GUI, settings |
-| `read_scripts` | `paths[]` | batch-pull full sources |
-| `console` | `limit` | recent Studio output/warnings/errors |
-| `build` | `parent`, `tree[]` | creates an instance tree from JSON |
-| `write_script` | `parent`, `name`, `className`, `source` | creates/overwrites a script |
-| `read_script` | `path` | returns source |
-| `inspect` | `path`, `depth` | JSON dump of the data model |
-| `set_properties` | `path`, `properties` | edits an instance |
-| `delete` | `path` | destroys an instance |
-| `run_luau` | `code` | runs arbitrary Luau in Studio |
-
-Typed values use a small tag format so JSON can express Roblox datatypes:
-
+#### Cursor / Claude Desktop / Windsurf (`.cursor/mcp.json` or `claude_desktop_config.json`)
 ```json
-{"Size":     {"__t": "Vector3", "v": [4, 1, 4]},
- "Color":    {"__t": "Color3",  "v": [1, 0.82, 0.25]},
- "Material": {"__t": "Enum",    "v": "Material.Metal"}}
+{
+  "mcpServers": {
+    "roblox-studio": {
+      "command": "python",
+      "args": ["C:/path/to/Tunneling/roblox-bridge/mcp_server.py", "--auto-install-plugin"]
+    }
+  }
+}
 ```
+*(Add `"--read-only"` to `args` for safe Read-Only Inspector mode.)*
 
-Also supported: `Vector2`, `CFrame`, `UDim`, `UDim2`, `BrickColor`, `Instance`.
-
-### Design notes
-
-- Every mutating job runs inside a `ChangeHistoryService` recording — **one
-  Ctrl+Z undoes a whole job**, and a failed job is rolled back rather than
-  half-applied.
-- `run_luau` prefers `loadstring`; if it's unavailable it falls back to a
-  temporary `ModuleScript` + `require`, then cleans up.
-- The poll is held open ~8s server-side, so jobs land in well under a second
-  without hammering Roblox's HTTP rate limits.
-- `mock_studio.py` speaks the same protocol, so you can test the whole loop
-  with Studio closed.
-
-### Security
-
-This is a remote-code-execution channel into your Studio session — treat it that way.
-
-- Always set `--token`; never run with the token disabled on a public tunnel.
-- Only tunnel while you're actively using it, then kill it.
-- `ArenaBridge.lua` is a **local plugin** — don't publish it to the Creator
-  Store; plugins that execute fetched code get moderated.
-- Work in a test place first. `run_luau` and `delete` do exactly what they say.
-
-## D. No live link at all
-
-Often the fastest option. I write `.lua` / `.rbxmx` / a full Rojo project into
-this workspace, you `rojo serve` and sync, or just drag files in. No tunnels, no
-tokens, works across sessions. For "write me a round-based combat system" this
-beats a live connection, because the bottleneck is the code, not the clicking.
+#### Streamable HTTP MCP Client (Local or Tunnel)
+- Endpoint: `http://127.0.0.1:8077/mcp` (or `https://some-random-words.trycloudflare.com/mcp`)
+- Header: `Authorization: Bearer <contents of bridge.token>`
 
 ---
 
-## Honest limitations
+## Full 68-Tool MCP Suite + Multimodal 3D Viewport Vision, 3D Physics QA, `.rbxlx` & Open-Source Vault
 
-- **Arena can't attach to Studio's MCP server.** Route A needs a local MCP client.
-- **The bridge is manual to start.** Server + plugin + tunnel, every session.
-- **The sandbox isn't permanent.** These files persist; running processes don't —
-  the bridge is meant to run on your PC anyway.
-- **3D asset generation is Roblox's, not mine.** `generate_mesh` /
-  `generate_material` / Cube are Studio-side features. I can generate concept
-  images and all the Luau you want, but I can't hand Studio a finished mesh.
+| Domain | MCP Tools |
+|---|---|
+| **Session & Peers (3)** | `get_studio_state`, `list_studios`, `ping_studio` |
+| **Explore & Diff (5)** | `survey_place`, `inspect_instance`, `search_game_tree`, `get_properties`, `compare_instances` |
+| **Scripts & Fresh Require (9)** | `script_read`, `read_scripts_batch`, `write_script`, `multi_edit`, `script_search`, `script_grep`, `find_and_replace_scripts`, `open_script_in_editor`, `require_fresh` |
+| **Luau & Playtesting (4)** | `execute_luau` (`edit`/`server`/`client`), `start_stop_play`, `run_playtest_scenario`, `get_console_output` (`sinceIndex` cursor + level filter) |
+| **Instances & Bulk Ops (6)** | `build_tree`, `set_properties`, `mass_set_properties`, `clone_instance` (grid/offset duplication), `reparent_or_rename`, `delete_instance` |
+| **Attributes & Tags (2)** | `manage_attributes` (`get`/`set`/`delete`), `manage_tags` (`list_all`/`find_tagged`/`get`/`add`/`remove`) |
+| **World, Camera, Undo & Assets (8)** | `manage_selection`, `manage_camera`, `undo_redo`, `edit_terrain`, `insert_asset`, `build_biome`, `build_skybox`, `scatter_props` |
+| **Toolchain, Build, Sync & Snapshots (7)** | `luau_check`, `drift_and_sync`, `manage_snapshots`, `batch_write`, `probe`, `wait_for`, `self_test` |
+| **3D Viewport Vision, Rendering, Physics QA, `.rbxlx`, Open Cloud & Asset Vault (24)** | `capture_viewport`, `export_geometry`, `render_offline` (also accepts exported trees without a peer), `screenshot_gui` (client-measured or derived), `perf_audit`, `mesh_capabilities` (runtime API probe; version string alone is not evidence), `search_assets` (offline licensed asset registry), `audit_3d_scene`, `export_place_rbxlx`, `import_place_rbxlx`, `open_cloud_action`, `audit_ui_layout`, `install_dropin_system`, `import_audio`, `import_rbxmx`, `export_rbxmx`, `install_template`, `search_cloud_icons`, `import_image`, `import_images_batch`, `generate_procedural_image`, `browse_kit`, `install_kit_module`, `spawn_prefab` |
+
+### Repo-Committed Skills, Assets & Modules
+- **Agent Skills (`.claude/skills/*/SKILL.md` + `skill://{name}` MCP resources + root `AGENTS.md`)**:
+  - `roblox-place-builder`, `roblox-luau-systems`, `roblox-ui-and-images`, `roblox-vfx-lighting-audio`, `roblox-playtest-qa`, `roblox-optimization-security`
+- **3,705 licensed raster images plus 50 sky panoramas** are catalogued in `roblox-kit/assets/registry.json` and indexed in `roblox-kit/modules/Assets.lua`; each panorama has six generated 8-bit LDR cube faces (not HDRIs).
+- **500 pinned Kenney CC0 GLB models** plus 20 repository-authored `.rbxmx` models are catalogued with thumbnail metadata. GLB thumbnails are explicitly marked as neutral format placeholders until real mesh rendering is available.
+- **45 CC0 WAV audio files** have waveform thumbnails. Every entry carries SHA-256, source, pinned revision, licence, provenance status, and thumbnail path; 3,656 files additionally match exact upstream Git blob hashes.
+- Verify and browse with `python3 -B tools/verify_licences.py` and `roblox-kit/assets/contact-sheets/index.html`. Rebuild with `tools/fetch_assets.py` and `tools/build_skies.py`; see `roblox-kit/assets/README.md` for the limitations and reproduction commands.
+- **8 Ready-to-Spawn Prefabs (`roblox-kit/prefabs/*.json`)**:
+  - `lighting_cinematic_sunset`, `lighting_cyber_night`, `lighting_stylized_day`, `hud_modern_shell`, `interact_pad`, `spawn_plaza`, `world_sign_board`, `vfx_collectible_orb`
+
+### MCP Resources & Prompts Also Exposed
+- **Resources**: `studio://state`, `studio://peers`, `studio://console`, `studio://selection`, `studio://survey`
+- **Resource Templates**: `studio://scripts/{path}`, `studio://instance/{path}`
+- **Prompts**: `survey_and_architecture`, `safe_module_edit`, `automated_playtest_debug`, `sync_repo_package`
+
+---
+
+## CLI & HANDS MODE Quick Reference (`arena_studio.py` / `ab.ps1`)
+
+```powershell
+.\ab.ps1 health                                             # Bridge + connected peers
+.\ab.ps1 ping                                               # Verify pluginVersion "4.0.0" & latency
+.\ab.ps1 state                                              # Full Studio state (memory, FPS, undo)
+.\ab.ps1 check .\src                                        # Offline compile + undefined-global audit
+.\ab.ps1 drift .\src ServerScriptService.App                # Exact 32-bit FNV-1a diff report
+.\ab.ps1 sync  .\src ServerScriptService.App                # Pre-check + snapshot + atomic 1-undo push
+.\ab.ps1 grep "RemoteEvent" --root ReplicatedStorage        # Search code across live Studio scripts
+.\ab.ps1 edit ServerScriptService.Main --old "DEBUG = false" --new "DEBUG = true" --replace
+.\ab.ps1 require-fresh ReplicatedStorage.Shared.Config --code "return MODULE"
+.\ab.ps1 scenario --mode play --server-code "return {players = #game.Players:GetPlayers()}"
+```
+
+---
+
+## Automated Verification Suite
+
+Run the full offline & stateful mock Studio test suite (verifies FNV-1a exact vectors, `luau_check`, token recovery, Streamable HTTP MCP, `stdio` NDJSON + LSP framing, Read-Only Inspector enforcement, UTF-8 round-trip, and all 68 registered tools including live package sync):
+
+```bash
+python3 roblox-bridge/test_bridge_mcp.py
+```
+
+---
 
 ## Files
 
-| File | What |
+| File | Role |
 |---|---|
-| `setup.py` | **Start here.** Installs the plugin, runs the server, opens the tunnel. |
-| `server.py` | Job-queue bridge + live dashboard. No dependencies. |
-| `ArenaBridge.lua` | Roblox Studio local plugin. |
-| `arena_studio.py` | CLI: `ping`, `run`, `build`, `script`, `inspect`, `watch`. |
-| `mock_studio.py` | Fake Studio client for testing without Studio. |
-| `examples/coin.json` | Example `build` spec — a glowing coin model. |
-| `examples/coin_handler.lua` | Example script pushed via `write_script`. |
+| `setup.py` | Installs `ArenaBridge.lua` v4.0.0, recovers/manages `bridge.token`, writes `.mcp.json`, launches server/tunnel |
+| `mcp_server.py` | Standalone `stdio` MCP server (auto-attaches to `server.py` or starts an embedded bridge thread) |
+| `mcp_core.py` | Zero-dependency MCP protocol engine, 68 tool schemas/handlers, resources, prompts, `luau_check`, `drift_and_sync` |
+| `server.py` | Multi-peer long-poll HTTP bridge + `/mcp` Streamable HTTP endpoint + snapshot store + live web dashboard |
+| `ArenaBridge.lua` | Roblox Studio local plugin v4.0.0 (`edit` + `server` + silent `client` RPC bridge) |
+| `arena_studio.py` | UTF-8-safe CLI covering all bridge & MCP operations |
+| `ab.ps1` | Windows PowerShell wrapper with automatic token lookup and UTF-8 console setup |
+| `mock_studio.py` | Stateful in-memory Studio v4.0.0 simulator (including simulated Play Server/Client peers & undo/redo) |
+| `test_bridge_mcp.py` | End-to-end automated test suite |

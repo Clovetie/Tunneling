@@ -1,0 +1,47 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="Model" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">ObbyStageCourse</string>
+		</Properties>
+		<Item class="Part" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">StartDeck</string>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>0.2</R><G>0.72</G><B>0.48</B></Color3>
+				<Vector3 name="Position"><X>-14</X><Y>0.5</Y><Z>-18</Z></Vector3>
+				<Vector3 name="Size"><X>10</X><Y>1</Y><Z>10</Z></Vector3>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBXARENA00003">
+			<Properties>
+				<string name="Name">JumpPad1</string>
+				<BinaryString name="Tags">RmxvYXRpbmc=</BinaryString>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>0.24</R><G>0.62</G><B>0.98</B></Color3>
+				<Vector3 name="Position"><X>-14</X><Y>2.0</Y><Z>-30</Z></Vector3>
+				<Vector3 name="Size"><X>5</X><Y>1</Y><Z>5</Z></Vector3>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBXARENA00004">
+			<Properties>
+				<string name="Name">HazardLavaBar</string>
+				<BinaryString name="Tags">SGF6YXJkAEZsb2F0aW5n</BinaryString>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>1.0</R><G>0.24</G><B>0.16</B></Color3>
+				<Vector3 name="Position"><X>-14</X><Y>3.0</Y><Z>-37</Z></Vector3>
+				<Vector3 name="Size"><X>8</X><Y>0.8</Y><Z>1.5</Z></Vector3>
+			</Properties>
+		</Item>
+		<Item class="Part" referent="RBXARENA00005">
+			<Properties>
+				<string name="Name">FinishDeck</string>
+				<BinaryString name="Tags">RmxvYXRpbmc=</BinaryString>
+				<bool name="Anchored">true</bool>
+				<Color3 name="Color"><R>0.98</R><G>0.78</G><B>0.2</B></Color3>
+				<Vector3 name="Position"><X>-14</X><Y>3.5</Y><Z>-46</Z></Vector3>
+				<Vector3 name="Size"><X>10</X><Y>1</Y><Z>10</Z></Vector3>
+			</Properties>
+		</Item>
+	</Item>
+</roblox>

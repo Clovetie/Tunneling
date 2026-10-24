@@ -1,0 +1,79 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Meta name="ExplicitAutoJoints">true</Meta>
+	<Item class="ScreenGui" referent="RBXARENA00001">
+		<Properties>
+			<string name="Name">MobileTouchPadGui</string>
+			<bool name="IgnoreGuiInset">false</bool>
+			<bool name="ResetOnSpawn">false</bool>
+		</Properties>
+		<Item class="UIScale" referent="RBXARENA00002">
+			<Properties>
+				<string name="Name">AutoScale</string>
+				<int name="Scale">1</int>
+			</Properties>
+		</Item>
+		<Item class="Frame" referent="RBXARENA00003">
+			<Properties>
+				<string name="Name">ActionCluster</string>
+				<Vector2 name="AnchorPoint"><X>1</X><Y>1</Y></Vector2>
+				<int name="BackgroundTransparency">1</int>
+				<UDim2 name="Position"><XS>1</XS><XO>-24</XO><YS>1</YS><YO>-24</YO></UDim2>
+				<UDim2 name="Size"><XS>0</XS><XO>150</XO><YS>0</YS><YO>150</YO></UDim2>
+			</Properties>
+			<Item class="TextButton" referent="RBXARENA00004">
+				<Properties>
+					<string name="Name">DashButton</string>
+					<Color3 name="BackgroundColor3"><R>0.16</R><G>0.52</G><B>0.96</B></Color3>
+					<float name="BackgroundTransparency">0.18</float>
+					<UDim2 name="Position"><XS>0</XS><XO>0</XO><YS>0</YS><YO>68</YO></UDim2>
+					<UDim2 name="Size"><XS>0</XS><XO>56</XO><YS>0</YS><YO>56</YO></UDim2>
+					<string name="Text">DASH</string>
+					<Color3 name="TextColor3"><R>1</R><G>1</G><B>1</B></Color3>
+					<bool name="TextScaled">true</bool>
+				</Properties>
+				<Item class="UICorner" referent="RBXARENA00005">
+					<Properties>
+						<string name="Name">C</string>
+						<UDim name="CornerRadius"><S>1</S><O>0</O></UDim>
+					</Properties>
+				</Item>
+			</Item>
+			<Item class="TextButton" referent="RBXARENA00006">
+				<Properties>
+					<string name="Name">SprintButton</string>
+					<Color3 name="BackgroundColor3"><R>0.2</R><G>0.78</G><B>0.52</B></Color3>
+					<float name="BackgroundTransparency">0.18</float>
+					<UDim2 name="Position"><XS>0</XS><XO>68</XO><YS>0</YS><YO>0</YO></UDim2>
+					<UDim2 name="Size"><XS>0</XS><XO>56</XO><YS>0</YS><YO>56</YO></UDim2>
+					<string name="Text">RUN</string>
+					<Color3 name="TextColor3"><R>1</R><G>1</G><B>1</B></Color3>
+					<bool name="TextScaled">true</bool>
+				</Properties>
+				<Item class="UICorner" referent="RBXARENA00007">
+					<Properties>
+						<string name="Name">C</string>
+						<UDim name="CornerRadius"><S>1</S><O>0</O></UDim>
+					</Properties>
+				</Item>
+			</Item>
+			<Item class="TextButton" referent="RBXARENA00008">
+				<Properties>
+					<string name="Name">AttackButton</string>
+					<Color3 name="BackgroundColor3"><R>0.95</R><G>0.35</G><B>0.3</B></Color3>
+					<float name="BackgroundTransparency">0.12</float>
+					<UDim2 name="Position"><XS>0</XS><XO>74</XO><YS>0</YS><YO>74</YO></UDim2>
+					<UDim2 name="Size"><XS>0</XS><XO>68</XO><YS>0</YS><YO>68</YO></UDim2>
+					<string name="Text">ATK</string>
+					<Color3 name="TextColor3"><R>1</R><G>1</G><B>1</B></Color3>
+					<bool name="TextScaled">true</bool>
+				</Properties>
+				<Item class="UICorner" referent="RBXARENA00009">
+					<Properties>
+						<string name="Name">C</string>
+						<UDim name="CornerRadius"><S>1</S><O>0</O></UDim>
+					</Properties>
+				</Item>
+			</Item>
+		</Item>
+	</Item>
+</roblox>
