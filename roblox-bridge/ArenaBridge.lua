@@ -496,7 +496,10 @@ local function applyProps(inst: Instance, props: { [string]: any }?): ({ string 
 				end)
 				local numbers = {}
 				for token in string.gmatch(coerced, "[^,]+") do
-					local n = tonumber(string.gsub(token, "^%s*(.-)%s*$", "%1"))
+					-- string.gsub returns (string, replacementCount); keep its second return
+					-- value from becoming tonumber's optional base argument.
+					local trimmed = string.gsub(token, "^%s*(.-)%s*$", "%1")
+					local n = tonumber(trimmed)
 					if n == nil then numbers = {}; break end
 					table.insert(numbers, n)
 				end
