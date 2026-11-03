@@ -298,7 +298,7 @@ class TestV5OpsPlatform(unittest.TestCase):
     def test_ops_report_and_public_health_shape(self):
         status, health = self._req("/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "5.3.0")
+        self.assertEqual(health["version"], "5.3.1")
         self.assertIn("tunnel", health)
         self.assertIn("agents", health)
         status, ops = self._req("/api/ops", token=self.admin_token)
@@ -420,7 +420,7 @@ class TestV5OpsPlatform(unittest.TestCase):
 
     def test_dashboard_ops_tab_is_responsive_and_eventsource_reconnects(self):
         from server import dashboard_html
-        html = dashboard_html()
+        html = bridge_server.dashboard_html()
         self.assertIn("copyMcpConfig", html)
         self.assertIn("Copy MCP config (tunnel)", html)
         self.assertIn("@media(max-width:720px)", html)
@@ -883,7 +883,7 @@ class TestV5OpsPlatform(unittest.TestCase):
         html = self.state.dashboard_html() if hasattr(self.state, "dashboard_html") else None
         if html is None:
             from server import dashboard_html
-            html = dashboard_html()
+            html = bridge_server.dashboard_html()
         for needle in ("fleet-bar", "fleet-chips", "studio-card", "broadcastPing",
                        "prefers-reduced-motion", "animateValue", "paneIn", "brand"):
             self.assertIn(needle, html)
@@ -892,6 +892,65 @@ class TestV5OpsPlatform(unittest.TestCase):
         self.assertIn("studios", health)
         self.assertEqual(health["studios"]["count"], 0)
         self.assertIn("protocolVersions", self._req("/api/ops", token=self.admin_token)[1]["mcp"])
+
+    # -- v5.3.1: the "tunnel page looks frozen" trap --------------------------
+
+    def test_dashboard_needs_token_off_loopback_and_says_so(self):
+        """A dashboard opened through a tunnel/LAN address gets no token from
+        /api/local-boot, so every /api call 401s. The page must surface that
+        instead of silently keeping stale numbers."""
+        html = bridge_server.dashboard_html()
+        self.assertIn("auth-banner", html)
+        self.assertIn("saveToken", html)
+        self.assertIn("apiFetch", html)
+        self.assertIn("PAGE_VERSION", html)
+        self.assertNotIn("__BRIDGE_VERSION__", html)
+        self.assertIn(f'PAGE_VERSION = "{bridge_server.VERSION}"', html)
+
+        # Loopback: the token is handed out so the page authenticates itself.
+        req = urllib.request.Request(self.base + "/api/local-boot")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            boot = json.loads(resp.read().decode())
+        self.assertTrue(boot["local"])
+        self.assertEqual(boot["token"], self.admin_token)
+
+        # Tunnel / LAN: a forwarded client address is never loopback.
+        proxied = urllib.request.Request(self.base + "/api/local-boot",
+                                         headers={"CF-Connecting-IP": "203.0.113.9"})
+        with urllib.request.urlopen(proxied, timeout=15) as resp:
+            boot_remote = json.loads(resp.read().decode())
+        self.assertFalse(boot_remote["local"])
+        self.assertEqual(boot_remote["token"], "")
+        self.assertTrue(boot_remote["tokenRequired"])
+
+        # And the API really does refuse that page until a token is supplied.
+        state_proxied = urllib.request.Request(self.base + "/api/state",
+                                               headers={"CF-Connecting-IP": "203.0.113.9"})
+        with self.assertRaises(urllib.error.HTTPError) as denied:
+            urllib.request.urlopen(state_proxied, timeout=15)
+        self.assertEqual(denied.exception.code, 401)
+        authed = urllib.request.Request(self.base + "/api/state",
+                                        headers={"CF-Connecting-IP": "203.0.113.9",
+                                                 "Authorization": f"Bearer {self.admin_token}"})
+        with urllib.request.urlopen(authed, timeout=15) as resp:
+            self.assertEqual(resp.status, 200)
+
+    def test_setup_dry_run_explains_the_tunnel_plan(self):
+        import setup as bridge_setup
+        cmd = ["python", "server.py", "--port", "8077"]
+        supervised = "\n".join(line for line, _ in
+                              bridge_setup.describe_launch(cmd, True, "auto", None, 8077))
+        self.assertIn("Dry run", supervised)
+        self.assertIn("supervised auto", supervised)
+        self.assertIn("http://127.0.0.1:8077", supervised)
+
+        local_only = "\n".join(line for line, _ in
+                               bridge_setup.describe_launch(cmd, False, "auto", None, 8077))
+        self.assertIn("not requested", local_only)
+
+        external = "\n".join(line for line, _ in
+                              bridge_setup.describe_launch(cmd, False, "auto", "https://x.example", 8077))
+        self.assertIn("external https://x.example", external)
 
     # -- tunnel supervisor --------------------------------------------------
 
@@ -1258,7 +1317,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         done = self.call_tool("agent_bus", {"action": "task_complete", "taskId": task["id"], "agentId": reg["id"], "result": "ok"})
         self.assertEqual(done["status"], "done")
         ops = self.call_tool("bridge_ops", {"action": "status"})
-        self.assertEqual(ops["version"], "5.3.0")
+        self.assertEqual(ops["version"], "5.3.1")
         self.assertIn("tunnel", ops)
         metrics = self.call_tool("bridge_ops", {"action": "metrics"})
         self.assertIn("counters", metrics)

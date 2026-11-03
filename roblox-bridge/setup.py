@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 setup.py — One command to install, configure, and run the Arena <-> Roblox
-Studio Bridge & MCP Server (v5.3.0).
+Studio Bridge & MCP Server (v5.3.1).
 
 What it does:
   1. Creates or reuses a shared secret in bridge.token — and if bridge.token is
@@ -10,7 +10,7 @@ What it does:
      Plugins directory so you NEVER hit HTTP 401 token mismatches!
   2. Writes ArenaBridge.lua v4.0.0 into your OS Roblox Studio Plugins folder with
      the port + token baked in (leaving the tracked repo source file clean).
-  3. Starts server.py v5.3.0 on :8077 (serving Studio polling, REST CLI, Web
+  3. Starts server.py v5.3.1 on :8077 (serving Studio polling, REST CLI, Web
      Dashboard, AND Streamable HTTP MCP at http://127.0.0.1:8077/mcp).
   4. Optionally writes .mcp.json (`--write-mcp`) for Claude Code / Cursor / VS Code
      and/or opens a supervised cloudflared/ngrok tunnel (`--tunnel`).
@@ -316,6 +316,23 @@ def shutdown(*_):
 
 # ---------------------------------------------------------------------------
 
+def describe_launch(server_cmd, supervised_tunnel: bool, tunnel_flavor: str,
+                    public_url: str, port: int):
+    """The `--dry-run` plan, as (line, colour) pairs — also unit-tested directly."""
+    tunnel_state = (
+        f"supervised {tunnel_flavor}" if supervised_tunnel
+        else (f"external {public_url}" if public_url
+              else "not requested (add --tunnel or --public-url)")
+    )
+    return [
+        ("  Dry run — nothing was started.", BOLD),
+        (f"    server   : {' '.join(server_cmd)}", DIM),
+        (f"    tunnel   : {tunnel_state}", DIM),
+        (f"    dashboard: http://127.0.0.1:{port}", DIM),
+        ("    A local dashboard authenticates itself; a tunnel/LAN page needs the token above.", DIM),
+    ]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8077)
@@ -331,6 +348,8 @@ def main():
     ap.add_argument("--install-only", action="store_true", help="Install plugin (and optional --write-mcp) then exit")
     ap.add_argument("--rotate", action="store_true", help="Mint a fresh shared secret token")
     ap.add_argument("--read-only", action="store_true", help="Run server & MCP in Read-Only Inspector mode")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Print the resolved launch plan (token, server command, tunnel intent) and exit without starting")
     ap.add_argument("--place-id", type=int, default=None, help="Optional PlaceId write guard")
     ap.add_argument("--plugins-dir", default=None, help="Explicit Studio Plugins folder override")
     ap.add_argument(
@@ -344,7 +363,7 @@ def main():
 
     signal.signal(signal.SIGINT, shutdown)
 
-    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v5.3.0{OFF}")
+    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v5.3.1{OFF}")
     token = get_token(rotate=args.rotate, explicit_dir=args.plugins_dir, preferred_port=args.port)
     say(f"  token: {CYAN}{token}{OFF}  {DIM}(stored in bridge.token){OFF}")
 
@@ -372,6 +391,21 @@ def main():
         server_cmd.extend(["--place-id", str(args.place_id)])
 
     supervised_tunnel = bool(args.tunnel) and not args.public_url
+    if supervised_tunnel:
+        import shutil as _shutil
+        have_cloudflared = _shutil.which("cloudflared") is not None
+        have_account_ngrok = _shutil.which("ngrok") is not None
+        flavor = args.tunnel_flavor
+        wanted = ["cloudflared", "ngrok"] if flavor == "auto" else [flavor]
+        found = {"cloudflared": have_cloudflared, "ngrok": have_account_ngrok}
+        if not any(found.get(w) for w in wanted):
+            say("\n  Tunnel requested, but no tunnel binary is on PATH.", YELLOW)
+            say(f"    looked for: {', '.join(wanted)}", DIM)
+            say("    cloudflared: winget install --id Cloudflare.cloudflared", DIM)
+            say("    ngrok:       winget install --id Ngrok.Ngrok", DIM)
+            say("    The bridge still starts and serves 127.0.0.1 — no public URL will appear.", DIM)
+        else:
+            say(f"\n  Tunnel: starting supervised {', '.join(w for w in wanted if found.get(w))} tunnel…", GREEN)
     if args.tunnel:
         server_cmd.append("--tunnel")
         server_cmd.extend(["--tunnel-flavor", args.tunnel_flavor])
@@ -381,6 +415,13 @@ def main():
             server_cmd.extend(["--tunnel-name", args.tunnel_name])
     if args.public_url:
         server_cmd.extend(["--public-url", args.public_url])
+
+    if args.dry_run:
+        print()
+        for line, color in describe_launch(server_cmd, supervised_tunnel, args.tunnel_flavor,
+                                           args.public_url, args.port):
+            say(line, color)
+        return 0
 
     spawn(server_cmd, "bridge")
     time.sleep(0.8)
@@ -419,6 +460,13 @@ def main():
                     say("  The supervisor auto-restarts the tunnel and re-prints a new URL if it changes.", DIM)
                     say("=" * 70, GREEN)
                     print()
+                if state in ("error", "blocked") and not unavailable_reported:
+                    unavailable_reported = True
+                    say(f"\n  Tunnel could not start (state={state}):", YELLOW)
+                    say(f"    {info.get('lastError') or 'no error reported'}", DIM)
+                    for line in (info.get("logTail") or [])[-4:]:
+                        say(f"    {line}", DIM)
+                    say("  The bridge keeps running locally on 127.0.0.1.", DIM)
                 if state == "unavailable" and not unavailable_reported:
                     unavailable_reported = True
                     say("\n  No tunnel binary found. Install one of:", YELLOW)
@@ -429,8 +477,16 @@ def main():
 
         threading.Thread(target=watch_tunnel, daemon=True).start()
 
+    if not args.tunnel and not args.public_url:
+        print()
+        say("  Tunnel: not requested — this run is local only (no public URL).", YELLOW)
+        say("    Add --tunnel to publish it (needs cloudflared or ngrok),", DIM)
+        say("    or --public-url https://your-host to report a tunnel you run yourself.", DIM)
+
     print()
     say(f"  Web Dashboard:       http://127.0.0.1:{args.port}", GREEN)
+    if args.tunnel or args.public_url:
+        say(f"    (opened from a tunnel/LAN address? paste this token when the console asks: {token})", DIM)
     say(f"  MCP Streamable HTTP: http://127.0.0.1:{args.port}/mcp  (Bearer {token})", GREEN)
     say(f"  MCP stdio server:    python \"{HERE / 'mcp_server.py'}\"", GREEN)
     say(f"  CLI quick check:     .\\ab.ps1 ping", DIM)

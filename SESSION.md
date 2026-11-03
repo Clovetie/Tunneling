@@ -261,7 +261,7 @@ typical, worst 10). They need a real playtest to confirm end to end.
 
 ## v5 ops platform (2026-11-03, branch `arena/706ae6d5-tunneling`)
 
-The bridge is now `5.3.0`. New runtime state lives in **gitignored**
+The bridge is now `5.3.1`. New runtime state lives in **gitignored**
 `roblox-bridge/bridge_state/` (`audit.jsonl`, `tokens.json`, `bus.json`,
 `tunnel.json`). Nothing there is needed to connect Studio.
 
@@ -285,13 +285,20 @@ The bridge is now `5.3.0`. New runtime state lives in **gitignored**
   Rebuild the PDFs with `python3 roblox-bridge/tools/build_handoff_pdfs.py`
   (build-time only, needs `reportlab` + `pygments`); seed the board with
   `python roblox-bridge/tools/seed_agent_bus.py`.
-- **Self-test** now covers the v5 suite (41 tests total).
+- **Self-test** now covers the v5 suite (43 tests total).
 - **v5.1 partner tasks landed:** named-token validation + `docs/OPS.md` §1.1
   runbook; `agent_bus sweep` (stale-agent reaper with counters); incremental
   `export since/summaryOnly`; 7 MCP prompts; responsive Ops tab with reconnecting
   EventSource and "copy MCP config (tunnel)"; operator scripts
   `jobs/measure_tunnel_latency.py`, `jobs/live_acceptance.py`,
   `jobs/drill_studio_kill.py`. Live Studio evidence (G7/G8) still needs a peer.
+- **v5.3.1 (console diagnostics):** the dashboard now *says* when it is not
+  authenticated (`401` → token banner, token saved in `localStorage`, `?token=`
+  supported) or out of date (version mismatch banner), and `setup.py --dry-run`
+  prints the resolved launch plan (`server`, `tunnel: supervised|external|not
+  requested`, dashboard) without starting anything. `--tunnel` warns up front
+  when no tunnel binary is on PATH; the watcher reports `error`/`blocked` with
+  `lastError` + `logTail`. See `docs/OPS.md` §12.
 - **v5.3 (multi-studio + modern MCP):** `GET|POST /api/studios` and the
   `studio_fleet` tool manage several Studio windows — `list`, `set_active` (pin),
   `clear_active`, `label`, and a read-only `broadcast` fan-out with per-peer
@@ -309,6 +316,6 @@ The bridge is now `5.3.0`. New runtime state lives in **gitignored**
 
 ```
 roblox-bridge/docs/OPS.md        full ops reference
-roblox-bridge/CHANGELOG.md       5.0.0, 5.1.0 and 5.3.0 entries
+roblox-bridge/CHANGELOG.md       5.0.0, 5.1.0 and 5.3.1 entries
 handoff/*.pdf                    shareable code + task pack
 ```

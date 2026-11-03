@@ -46,7 +46,7 @@ from bus_core import AgentBus
 from telemetry import Telemetry
 from tunnel_manager import TunnelManager
 
-VERSION = "5.3.0"
+VERSION = "5.3.1"
 PEER_ONLINE_WINDOW = 5.0  # play DataModel peers are transient; do not route work to stale peers
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_DIR = HERE / "snapshots"
@@ -2000,7 +2000,7 @@ def make_http_handler(state: BridgeState):
 # ----------------------------------------------------------------------------
 
 def dashboard_html() -> str:
-    return r"""<!doctype html>
+    html = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>Roblox Studio MCP, 3D Viewport Vision &amp; Open-Source Kit (v4.0)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -2138,6 +2138,17 @@ def dashboard_html() -> str:
         transform:translateY(14px) scale(.97);transition:opacity .24s,transform .24s;z-index:99;
         box-shadow:0 18px 40px -18px rgba(31,111,235,.9)}
  .toast.show{opacity:1;transform:none}
+ /* ---- connection / auth banners ---- */
+ .banner{display:none;gap:11px;align-items:center;flex-wrap:wrap;padding:11px 24px;
+        border-bottom:1px solid rgba(255,200,87,.35);
+        background:linear-gradient(90deg,rgba(255,200,87,.16),rgba(255,107,107,.07));
+        animation:slideDown .28s ease both}
+ .banner.show{display:flex}
+ .banner.bad{border-bottom-color:rgba(255,107,107,.45);
+        background:linear-gradient(90deg,rgba(255,107,107,.16),rgba(167,139,250,.08))}
+ .banner .grow{flex:1;min-width:220px}
+ .banner input{max-width:330px}
+ @keyframes slideDown{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
  /* ---- multi-studio fleet ---- */
  .fleet-bar{display:flex;align-items:center;gap:10px;padding:9px 24px;background:rgba(10,16,24,.82);
         border-bottom:1px solid var(--border);overflow-x:auto;position:relative;z-index:22;
@@ -2213,6 +2224,24 @@ def dashboard_html() -> str:
   <span class="fleet-label"><span class="dot-live" id="fleet-dot"></span> Studios</span>
   <div class="fleet-chips" id="fleet-chips"><span class="sub">Looking for connected Studio windows&hellip;</span></div>
   <button class="sm" onclick="broadcastPing()" title="Ping every online Studio and show per-peer latency">Broadcast ping</button>
+</div>
+
+<div id="auth-banner" class="banner">
+  <div class="grow">
+    <strong id="auth-title">This dashboard needs the bridge token</strong>
+    <div class="sub" id="auth-msg">Every <code>/api</code> call is authenticated. Opening the console from a
+      tunnel or LAN address cannot auto-load it — paste <code>bridge.token</code> (printed by setup.py).</div>
+  </div>
+  <input id="auth-token" type="password" placeholder="paste the token" autocomplete="off">
+  <button class="primary sm" onclick="saveToken()">Use token</button>
+  <button class="sm" onclick="hideAuthBanner()">Dismiss</button>
+</div>
+
+<div id="stale-banner" class="banner bad">
+  <div class="grow"><strong>This tab is from an older bridge version</strong>
+    <div class="sub" id="stale-msg">The bridge restarted with new code; reload to get the current UI.</div>
+  </div>
+  <button class="primary sm" onclick="location.reload()">Reload</button>
 </div>
 
 <nav>
@@ -2704,12 +2733,67 @@ function toggleToken(){
   inp.type = inp.type === 'password' ? 'text' : 'password';
 }
 
-function getToken(){ return document.getElementById('tok-input').value.trim(); }
+const PAGE_VERSION = "__BRIDGE_VERSION__";
+let TOKEN = '';
+function readStoredToken(){ try { return localStorage.getItem('arena_bridge_token') || ''; } catch(_) { return ''; } }
+function getToken(){ return TOKEN || (document.getElementById('tok-input').value || '').trim(); }
+function setToken(t){
+  TOKEN = (t || '').trim();
+  const box = document.getElementById('tok-input');
+  if(box) box.value = TOKEN;
+}
+function storeToken(t){ try { localStorage.setItem('arena_bridge_token', t); } catch(_) {} }
 function authHeaders(){
   const h = {'Content-Type':'application/json'};
   const t = getToken();
   if(t) h['Authorization'] = 'Bearer ' + t;
   return h;
+}
+function showAuthBanner(title, message){
+  const b = document.getElementById('auth-banner');
+  if(!b) return;
+  if(title) document.getElementById('auth-title').textContent = title;
+  if(message) document.getElementById('auth-msg').textContent = message;
+  b.classList.add('show');
+  const st = document.getElementById('status');
+  st.textContent = 'token required';
+  st.className = 'pill ro';
+}
+function hideAuthBanner(){
+  const b = document.getElementById('auth-banner');
+  if(b) b.classList.remove('show');
+}
+function saveToken(){
+  const box = document.getElementById('auth-token');
+  const value = (box && box.value || '').trim();
+  if(!value) return toast('Paste the bridge token first.');
+  storeToken(value); setToken(value); box.value = '';
+  hideAuthBanner();
+  toast('Token saved for this browser — reloading data…');
+  tick(); refreshOps(); refreshFleet(); refreshBus();
+}
+function showStaleBanner(runningVersion){
+  const b = document.getElementById('stale-banner');
+  if(!b) return;
+  document.getElementById('stale-msg').textContent =
+    `This tab is v${PAGE_VERSION}; the bridge is running v${runningVersion}. Reload for the current console.`;
+  b.classList.add('show');
+}
+async function apiFetch(path, opts){
+  let res;
+  try {
+    res = await fetch(path, Object.assign({cache:'no-store', headers:authHeaders()}, opts || {}));
+  } catch(err){
+    const st = document.getElementById('status');
+    st.textContent = 'bridge unreachable'; st.className = 'pill off';
+    throw err;
+  }
+  if(res.status === 401 || res.status === 403){
+    showAuthBanner('This dashboard needs the bridge token',
+      `The bridge rejected the request (HTTP ${res.status}). Paste bridge.token — opening the console from a tunnel or LAN address cannot auto-load it.`);
+    throw new Error('unauthorized');
+  }
+  return res;
 }
 
 async function runSelfTest(){
@@ -3435,11 +3519,28 @@ async function loadKitGallery(){
 }
 
 async function initBoot(){
+  // Token precedence: ?token= / #token= in the URL, then this browser's saved
+  // token, then the loopback-only /api/local-boot value.
+  try {
+    const url = new URL(location.href);
+    const fromQuery = url.searchParams.get('token') || (url.hash.indexOf('#token=') === 0 ? url.hash.slice(7) : '');
+    if(fromQuery){
+      setToken(fromQuery); storeToken(getToken());
+      url.searchParams.delete('token');
+      history.replaceState({}, '', url.pathname + (url.search || ''));
+    }
+  } catch(_){}
+  if(!getToken()) setToken(readStoredToken());
   try {
     const r = await fetch('/api/local-boot', { cache:'no-store' });
     BOOT = await r.json();
-    if(BOOT.token){
-      document.getElementById('tok-input').value = BOOT.token;
+    if(BOOT.token && !getToken()){
+      setToken(BOOT.token);
+      storeToken(BOOT.token);
+    }
+    if(BOOT.tokenRequired && !getToken() && !BOOT.local){
+      showAuthBanner('Opened from a tunnel or LAN address',
+        'The bridge will not hand out its token over the network. Paste bridge.token (printed by setup.py) — it is remembered in this browser afterwards.');
     }
     const sel = document.getElementById('tool-select');
     sel.innerHTML = BOOT.tools.map(t =>
@@ -3454,8 +3555,12 @@ async function initBoot(){
 
 async function tick(){
   try {
-    const r = await fetch('/api/state', { cache:'no-store', headers: authHeaders() });
+    const r = await apiFetch('/api/state');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
     const s = await r.json();
+    if(s && s.version && PAGE_VERSION && s.version !== PAGE_VERSION){
+      showStaleBanner(s.version);
+    }
     const prevPlace = LAST_STATE.studio && LAST_STATE.studio.place;
     LAST_STATE = s;
 
@@ -3522,7 +3627,7 @@ async function tick(){
 let EV_SOURCE = null, EV_RETRY = null, EV_DELAY = 1000, EV_WANT = false;
 let QUEUE_PAUSED = false;
 async function opsJson(path, opts){
-  const r = await fetch(path, Object.assign({cache:'no-store', headers:authHeaders()}, opts || {}));
+  const r = await apiFetch(path, opts);
   const data = await r.json().catch(() => ({}));
   if(!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
   return data;
@@ -3896,6 +4001,7 @@ initBoot().then(() => { tick(); refreshOps(); refreshBus(); refreshFleet();
   }, 4000);
 });
 </script></body></html>"""
+    return html.replace("__BRIDGE_VERSION__", VERSION)
 
 
 # ----------------------------------------------------------------------------

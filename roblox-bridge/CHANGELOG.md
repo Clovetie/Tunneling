@@ -2,6 +2,47 @@
 
 All notable changes for the Roblox Studio bridge are documented here.
 
+## 5.3.1 — make the "frozen console" and "no tunnel" cases explain themselves
+
+> Two support reports drove this patch: a bridge started without `--tunnel`
+> printed only the local block (nothing was published), and a console opened
+> through the tunnel sat on stale numbers because every `/api` call was `401`.
+
+### Added
+- **Console auth banner**: when any API call returns `401`/`403` the page now
+  says so and offers a token box (saved in `localStorage`) instead of silently
+  keeping old numbers. The header pill switches to `token required` or
+  `bridge unreachable` instead of a misleading "Waiting for Studio".
+- **Token sources**: `?token=…` / `#token=…` on the dashboard URL, then
+  `localStorage`, then the loopback-only `/api/local-boot` value. A token pasted
+  once survives reloads and bridge restarts.
+- **Stale-tab banner**: the page embeds its own version and compares it with the
+  live bridge; a tab opened before an upgrade gets a **Reload** prompt instead of
+  half-working UI.
+- **`setup.py --dry-run`**: prints the resolved plan without starting anything —
+  server command, tunnel intent (`supervised auto` / `external <url>` /
+  `not requested`), dashboard URL. `python setup.py --dry-run --tunnel` is the
+  fastest way to answer "why did I get no public URL?".
+- **Tunnel pre-flight + failure reporting**: `--tunnel` with no `cloudflared` /
+  `ngrok` on PATH now warns *before* launch with install commands, a plain run
+  says **"Tunnel: not requested"**, and the watcher prints `lastError` + `logTail`
+  for `state=error`/`blocked` (it previously only spoke for `unavailable`).
+
+### Changed
+- `docs/OPS.md` gained a §1 troubleshooting row pair and a new **§12 Console
+  troubleshooting** table ("dashboard doesn't update", "which URL do I give
+  Arena") explaining why `/api/local-boot` refuses to hand a token to a forwarded
+  request.
+- Version `5.3.1` across server, MCP surface, CLI, telemetry, bus, auth, tunnel
+  manager and docs; dashboard badge `v5.3`.
+
+### Verification
+- `python3 -B roblox-bridge/test_bridge_mcp.py` — **43 tests pass** (2 new: the
+  off-loopback dashboard contract — `/api/local-boot` withholds the token for a
+  `CF-Connecting-IP` request, `/api/state` answers `401` without one and `200`
+  with one, and the page ships the banner; plus `describe_launch()` covering
+  supervised / external / not-requested tunnel plans).
+
 ## 5.3.0 — multi-studio fleet, dual-era MCP (2026-07-28 + tasks), animated console
 
 > Unit-tested against the stateful mock Studio with two simulated peers. The

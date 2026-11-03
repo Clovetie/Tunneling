@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 mcp_core.py — Zero-dependency Model Context Protocol (MCP) engine & Roblox Studio
-tool suite for Arena <-> Roblox Studio (v5.3.0).
+tool suite for Arena <-> Roblox Studio (v5.3.1).
 
 Supports:
   - Dual-era MCP: 2026-07-28 (stateless, server/discover, resultType) and the
@@ -32,7 +32,7 @@ import urllib.request
 from pathlib import Path
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "5.3.0"
+MCP_SERVER_VERSION = "5.3.1"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2026-07-28",   # stateless era: server/discover, per-request _meta, resultType
     "2025-11-25",   # final legacy era: tasks, elicitation, structured output

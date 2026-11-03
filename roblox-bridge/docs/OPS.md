@@ -1,6 +1,6 @@
 # v5 Ops Platform — tunnels, multi-agent coordination, telemetry, scoped auth
 
-_Applies to bridge `5.3.0`._
+_Applies to bridge `5.3.1`._
 
 Everything in this document ships in `roblox-bridge/` and is **stdlib-only**
 (no pip installs). It layers on top of the v4 MCP + plugin bridge; nothing in the
@@ -555,3 +555,46 @@ table.
 Record alongside the numbers: sample size (`--runs`), date, provider and flavour
 (`cloudflared` quick vs named, `ngrok`), region, and whether the MCP client or this
 script produced them.
+
+---
+
+## 12. Console troubleshooting
+
+### "The dashboard doesn't update"
+
+The console is a static page plus `fetch()` calls against the authenticated
+`/api/*` endpoints. It updates itself only while those calls succeed.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Everything sits at 0 / "checking…" after the bridge restarted | the page holds a stale token (or none) and every call is `401 bad token` | the console now shows a **token banner**; paste `bridge.token` (or reload from `http://127.0.0.1:<port>` where it auto-loads) |
+| Same, but you opened the page from the **tunnel or LAN URL** | `/api/local-boot` deliberately returns **no** token for non-loopback clients, so the page cannot authenticate itself | paste the token once — it is kept in `localStorage` for that browser; or use `http://127.0.0.1:<port>` locally |
+| Banner says "This tab is from an older bridge version" | the tab was opened before a bridge update | click **Reload** |
+| Status pill shows **bridge unreachable** | the server process died or the port changed | restart `setup.py`; check the console window |
+
+Why the token is not handed out over the network: the bridge is often exposed
+through a public tunnel. A page that could read its own credential would hand
+that credential to anyone who loads the URL. Loopback (`127.0.0.1`, `::1`) is the
+only origin trusted to bootstrap — a forwarded address (`CF-Connecting-IP`,
+`X-Forwarded-For`) is never treated as local.
+
+```bash
+# what does my command actually do?
+python setup.py --dry-run --tunnel
+#   server   : …\server.py --port 8077 --token … --tunnel --tunnel-flavor auto
+#   tunnel   : supervised auto
+#   dashboard: http://127.0.0.1:8077
+```
+
+### "Which URL do I give Arena?"
+
+| You want | Use | Notes |
+|---|---|---|
+| Local only | `http://127.0.0.1:8077/mcp` | fastest; no token prompt in the console |
+| Same LAN | `http://<lan-ip>:8077/mcp` | paste the token in the console |
+| Across the internet | the `Tunnel is live` URL printed by `setup.py --tunnel` | `https://<host>/mcp`, same token |
+
+`/api/health` is public on purpose (counts and versions only, no place data), so
+a tunnel or uptime monitor can probe it without credentials.
+
+---
