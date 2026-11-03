@@ -19,6 +19,7 @@ All notable changes for the Roblox Studio bridge are documented here.
 - **MCP surface**: 2 new tools (`agent_bus`, `bridge_ops`) → 70 total, and 3 new resources (`studio://bus`, `studio://ops`, `studio://audit`).
 - **Setup/CLI**: `setup.py --tunnel-flavor/--tunnel-token/--public-url` with a URL watcher that prints the tunnel URL once the supervisor reports it; `arena_studio.py` gained `ops`, `metrics`, `audit`, `tunnel`, `tokens` and `bus` commands plus a raw-text request helper.
 - **Partner handoff**: `handoff/GEMINI-4-ARGON.md`, `handoff/bus_seed.json` and `tools/seed_agent_bus.py` (idempotent bus seeding, online or offline).
+- **Handoff PDFs (`tools/build_handoff_pdfs.py`)**: `handoff/Tunneling-v5-Code.pdf` (complete v5 sources + unified diffs of every touched file, 88 pages) and `handoff/Gemini-4-Argon-Tasks.pdf` (G1–G8 as prompt-ready briefs for a text model, 12 pages). Build-time only: `reportlab` + `pygments`; the bridge runtime stays stdlib-only.
 
 ### Changed
 - `GET /api/health` stays public and now reports version, uptime, auth mode, tunnel state and agent counts.

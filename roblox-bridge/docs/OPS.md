@@ -64,9 +64,15 @@ supervised.
 
 ## 2. Agent Bus — many agents, one Studio
 
-The bus is how two agents (say Claude and Gemini 4 Argon) share one place without
-overwriting each other's work. It stores only bridge coordination state, never
-Studio data.
+The bus is how two workers (say Claude, and Gemini 4 Argon through an operator
+wrapper) share one place without overwriting each other's work. It stores only
+bridge coordination state, never Studio data.
+
+A plain model has no bus identity: it cannot register, claim, or complete. When
+the partner is a text model, the operator registers it, claims on its behalf,
+pastes the prompt, applies the returned patch, and completes the task with the
+artifacts. The prompt-ready briefs live in `handoff/Gemini-4-Argon-Tasks.pdf`
+and `handoff/GEMINI-4-ARGON.md`.
 
 ```bash
 python arena_studio.py bus register --name "Gemini 4 Argon" --role partner

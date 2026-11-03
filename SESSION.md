@@ -277,11 +277,18 @@ The bridge is now `5.0.0`. New runtime state lives in **gitignored**
   read/write/admin tokens with `arena_studio.py tokens create`; read tokens
   cannot mutate Studio.
 - **Multi-agent bus:** `arena_studio.py bus …` or MCP `agent_bus`. Partner work
-  order for Gemini 4 Argon: `handoff/GEMINI-4-ARGON.md` + `handoff/bus_seed.json`;
-  seed with `python roblox-bridge/tools/seed_agent_bus.py`.
+  order for Gemini 4 Argon — remember it is a **model**, not an agent: it returns
+  patches/docs, the operator applies and verifies. Files:
+  `handoff/GEMINI-4-ARGON.md`, `handoff/bus_seed.json`,
+  `handoff/Tunneling-v5-Code.pdf` (88 pp, sources + diffs) and
+  `handoff/Gemini-4-Argon-Tasks.pdf` (12 pp, G1–G8 prompt briefs).
+  Rebuild the PDFs with `python3 roblox-bridge/tools/build_handoff_pdfs.py`
+  (build-time only, needs `reportlab` + `pygments`); seed the board with
+  `python roblox-bridge/tools/seed_agent_bus.py`.
 - **Self-test** now covers the v5 suite (25 tests total).
 
 ```
 roblox-bridge/docs/OPS.md        full ops reference
 roblox-bridge/CHANGELOG.md       5.0.0 entry
+handoff/*.pdf                    shareable code + task pack
 ```
