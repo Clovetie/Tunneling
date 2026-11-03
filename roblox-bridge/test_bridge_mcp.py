@@ -611,6 +611,30 @@ class TestV5OpsPlatform(unittest.TestCase):
         for key in ("queue", "sweeper", "health", "jobLatency", "recentJobs"):
             self.assertIn(key, payload)
 
+    def test_cli_queue_pause_status_resume(self):
+        env = dict(os.environ, BRIDGE_URL=self.base, BRIDGE_TOKEN=self.admin_token)
+        cli = [sys.executable, str(HERE / "arena_studio.py"), "queue"]
+
+        paused = subprocess.run(cli + ["pause", "--reason", "cli smoke"], env=env,
+                                capture_output=True, text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(paused.returncode, 0, msg=paused.stdout + paused.stderr)
+        self.assertTrue(json.loads(paused.stdout)["paused"])
+        self.assertTrue(self.state.queue_paused)
+
+        status = subprocess.run(cli + ["status"], env=env, capture_output=True,
+                                text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(status.returncode, 0, msg=status.stdout + status.stderr)
+        report = json.loads(status.stdout)
+        self.assertTrue(report["queue"]["paused"])
+        self.assertEqual(report["queue"]["reason"], "cli smoke")
+        self.assertIn("sweeper", report)
+
+        resumed = subprocess.run(cli + ["resume"], env=env, capture_output=True,
+                                 text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(resumed.returncode, 0, msg=resumed.stdout + resumed.stderr)
+        self.assertFalse(json.loads(resumed.stdout)["paused"])
+        self.assertFalse(self.state.queue_paused)
+
     # -- tunnel supervisor --------------------------------------------------
 
     def test_tunnel_supervisor_scrapes_url_and_restarts(self):

@@ -55,7 +55,7 @@ Status key: **landed** = implemented and unit-tested on this branch in 5.1.0/5.2
 - New modules are stdlib-only. Keep the bridge free of pip dependencies at runtime.
 - Never weaken auth: `bridge.token` is the admin owner credential; scoped tokens are additive.
 - Every state file goes under `roblox-bridge/bridge_state/` (gitignored).
-- `python3 -B roblox-bridge/test_bridge_mcp.py` must stay green — **34 tests** on this branch.
+- `python3 -B roblox-bridge/test_bridge_mcp.py` must stay green — **35 tests** on this branch.
 - Do not edit `roblox-bridge/bridge_state/**`, `bridge.token`, or `SESSION.md`.
 - Return a unified diff plus the exact commands the operator should run; say "unverified"
   instead of inventing measurements that need a real Studio peer or a real tunnel.
@@ -70,7 +70,7 @@ python roblox-bridge/arena_studio.py bus tasks
 python roblox-bridge/arena_studio.py bus task-claim --task task-xxxxxxxx --agent agent-xxxxxxxx
 
 # 2. attach the listed files, paste the prompt block from the task PDF, apply the answer
-python3 -B roblox-bridge/test_bridge_mcp.py         # expect: Ran 34 tests ... OK
+python3 -B roblox-bridge/test_bridge_mcp.py         # expect: Ran 35 tests ... OK
 
 # 3. post a note while it is in flight
 python roblox-bridge/arena_studio.py bus post --agent agent-xxxxxxxx \

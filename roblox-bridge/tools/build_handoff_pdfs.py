@@ -476,7 +476,7 @@ def build_code_pdf(base: str, out_path: Path):
                              ("Branch", BRANCH),
                              ("Diff base", f"{base} -> HEAD"),
                              ("Generated", TODAY),
-                             ("Tests", "34 passing (python3 -B roblox-bridge/test_bridge_mcp.py)"),
+                             ("Tests", "35 passing (python3 -B roblox-bridge/test_bridge_mcp.py)"),
                              ("Runtime", "Python 3 stdlib only (no pip packages)"),
                          ],
                          "1 What this release contains · 2 File inventory · 3 How to apply and verify · "
@@ -540,7 +540,7 @@ def _code_story(styles, base):
             "Copy the new files into <font name='Courier'>roblox-bridge/</font> and apply the diffs to the "
             "modified files (both sides are shown in this document). Then:", styles["body"]),
         Paragraph(
-            "python3 -B roblox-bridge/test_bridge_mcp.py        # expect: Ran 34 tests ... OK<br/>"
+            "python3 -B roblox-bridge/test_bridge_mcp.py        # expect: Ran 35 tests ... OK<br/>"
             "python3 roblox-bridge/arena_studio.py ops           # peers, queue, tunnel, agents, tasks<br/>"
             "python3 roblox-bridge/arena_studio.py audit --verify # hash chain intact<br/>"
             "python3 setup.py --tunnel                           # supervised public tunnel",
@@ -1094,7 +1094,7 @@ def _tasks_story(styles):
             "paste the prompt, take the returned patch/docs, run the verification commands, and record the result "
             "on the Agent Bus.", styles["body"]),
         Paragraph(
-            "G1 to G6 have since been implemented on this branch (bridge 5.2.0, 34 tests); their prompts are kept "
+            "G1 to G6 have since been implemented on this branch (bridge 5.2.0, 35 tests); their prompts are kept "
             "verbatim so a second model can re-derive or audit the same work. G7 and G8 need a live Studio peer: "
             "the scripts ship in <font name='Courier'>jobs/</font>, the evidence does not.", styles["body"]),
     ]
@@ -1102,7 +1102,7 @@ def _tasks_story(styles):
         "<b>One task per session.</b> Attach only the files listed under 'Attach' to keep context focused.",
         "<b>Paste the prompt block verbatim.</b> It already names files, constraints and the exact deliverables.",
         "<b>Reject invented measurements.</b> G2 and G7/G8 require real numbers from a machine that can reach Studio; placeholders must stay visible.",
-        "<b>Apply and verify.</b> Run the verification commands and `python3 -B roblox-bridge/test_bridge_mcp.py`; the suite must stay green (34 tests).",
+        "<b>Apply and verify.</b> Run the verification commands and `python3 -B roblox-bridge/test_bridge_mcp.py`; the suite must stay green (35 tests).",
         "<b>Record it.</b> Ask the operator to claim the task on the bus, then complete it with artifacts (files touched, test output).",
     ]:
         story.append(Paragraph(md(tip), styles["bullet"], bulletText="-"))
@@ -1149,7 +1149,7 @@ def _tasks_story(styles):
         "Runtime state belongs in gitignored `roblox-bridge/bridge_state/`; never commit tokens, audit logs or bus data.",
         "Keep the JSON shapes stable: `/api/health`, `/api/tunnel`, `/api/ops`, `/api/metrics`, `/api/bus`, `/api/audit`.",
         "Do not rename existing MCP tools or bus actions; additive changes only.",
-        "Every change keeps `python3 -B roblox-bridge/test_bridge_mcp.py` green (34 tests).",
+        "Every change keeps `python3 -B roblox-bridge/test_bridge_mcp.py` green (35 tests).",
         "Report honestly: if a step needs a live Roblox Studio peer, say it is unverified rather than claiming success.",
     ]:
         story.append(Paragraph(md(rule), styles["bullet"], bulletText="-"))
@@ -1246,7 +1246,7 @@ def _tasks_story(styles):
                   XPreformatted(escape_xml(safe_text(
                       "Result      : pass / pass-with-caveats / blocked\n"
                       "Files       : <paths touched by the applied patch>\n"
-                      "Tests       : python3 -B roblox-bridge/test_bridge_mcp.py -> Ran 34 tests ... OK\n"
+                      "Tests       : python3 -B roblox-bridge/test_bridge_mcp.py -> Ran 35 tests ... OK\n"
                       "Evidence    : <diff / JSON / doc section>\n"
                       "Unverified  : <anything that needs live Studio or a real tunnel>\n"
                       "Open risks  :"

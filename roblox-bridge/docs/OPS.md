@@ -217,7 +217,7 @@ curl -X POST -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/jso
 | Timeouts | `"timeout": 60` seconds. The reaper fails stuck jobs and emits `job.timeout` into the audit chain. |
 | Orphan recovery | A job claimed by a peer that stopped polling for >20 s is requeued automatically (`bridge_jobs_reaped_total`, `job.requeued_orphan` event). |
 | Cancellation | `POST /api/jobs/<id>/cancel`, queue-wide `POST /api/queue/clear` (admin). |
-| Maintenance pause | `POST /api/queue/pause {"reason":"asset import"}` (admin) stops *handing* jobs to Studio while new work keeps queueing; peers stay registered (`/api/poll` returns `{"job":null,"paused":true}` every 8 s). `POST /api/queue/resume` releases the held work and wakes waiting peers. MCP: `bridge_ops {"action":"queue_pause"\|"queue_resume"}`; dashboard: **Pause queue** button in the Ops Console. Nothing is cancelled by a pause. |
+| Maintenance pause | `POST /api/queue/pause {"reason":"asset import"}` (admin) stops *handing* jobs to Studio while new work keeps queueing; peers stay registered (`/api/poll` returns `{"job":null,"paused":true}` every 8 s). `POST /api/queue/resume` releases the held work and wakes waiting peers. MCP: `bridge_ops {"action":"queue_pause"\|"queue_resume"}`; dashboard: **Pause queue** button in the Ops Console; CLI `python arena_studio.py queue pause --reason "asset import"` / `queue resume` / `queue status`. Nothing is cancelled by a pause. |
 | Dead-peer handoff | `POST /api/bus {"action":"sweep"}` releases tasks leased by agents silent for `offlineSeconds` (default 900) so a live peer can claim them immediately; `POST /api/ops {"action":"sweep"}` and `bridge_ops {"action":"sweep"}` do the same. |
 
 ---
@@ -353,7 +353,7 @@ Override with `--state-dir` or `BRIDGE_STATE_DIR`.
 ## 9. Tests
 
 ```bash
-python3 -B roblox-bridge/test_bridge_mcp.py          # 34 tests
+python3 -B roblox-bridge/test_bridge_mcp.py          # 35 tests
 ```
 
 v5 / v5.1 / v5.2 coverage: scoped roles over HTTP and MCP, rate-limit 429s, bus presence/
@@ -366,7 +366,8 @@ dashboard script, the latency script (percentiles, 401 path), the two operator
 scripts' failure modes, tunnel URL scraping and the missing-binary path, and
 v5.2's maintenance pause (jobs held, admin-only, resume reclaims the same job),
 the automatic sweeper (release + metric + audit entry, silent no-op, idempotent),
-per-tool latency percentiles, and the two new `studio://` resources.
+per-tool latency percentiles, the two new `studio://` resources, and the
+`arena_studio.py queue` CLI round trip.
 
 ## 10. Live acceptance and drills
 

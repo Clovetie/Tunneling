@@ -31,6 +31,9 @@ All notable changes for the Roblox Studio bridge are documented here.
   Prometheus scrape. The dashboard prints a one-line summary under the metrics box.
 - **Ops Console controls**: **Sweep** on the task board (releases dead peers'
   tasks) plus the pause/resume switch and a sweeper status line.
+- **`arena_studio.py queue` CLI**: `status` (pause state, sweeper counters,
+  per-tool latency, five most recent jobs), `pause --reason …`, `resume` and
+  `clear`, so maintenance mode needs no curl.
 
 ### Changed
 - `metrics_snapshot()` exports `bridge_queue_paused` and `bridge_sweeps_total`.
@@ -40,10 +43,10 @@ All notable changes for the Roblox Studio bridge are documented here.
   tunnel manager and docs; dashboard badge `v5.2`.
 
 ### Verification
-- `python3 -B roblox-bridge/test_bridge_mcp.py` — **34 tests pass** (3 new:
+- `python3 -B roblox-bridge/test_bridge_mcp.py` — **35 tests pass** (4 new:
   pause holds the exact job and resume reclaims it + admin-only enforcement,
   automatic sweep releases/counts/audits and stays silent when idle, `bridge_ops`
-  control actions plus the two new resources).
+  control actions plus the two new resources, and the `queue` CLI round trip).
 
 ## 5.1.0 — partner tasks landed: validated named tunnels, sweeper, incremental briefs, MCP prompt recipes, operator scripts
 

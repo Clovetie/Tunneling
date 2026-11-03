@@ -448,6 +448,10 @@ def main() -> int:
     p.add_argument("--verify", action="store_true")
     p.add_argument("--limit", type=int, default=20)
 
+    p = sub.add_parser("queue", help="inspect, hold or clear the job queue")
+    p.add_argument("action", nargs="?", default="status", choices=["status", "pause", "resume", "clear"])
+    p.add_argument("--reason", default=None, help="Why the queue is paused (recorded in the audit log)")
+
     p = sub.add_parser("tunnel", help="supervised public tunnel (cloudflared/ngrok)")
     p.add_argument("action", nargs="?", default="status", choices=["status", "start", "stop", "restart"])
 
@@ -540,6 +544,32 @@ def main() -> int:
     if args.cmd == "clear-queue":
         print(json.dumps(call("POST", "/api/queue/clear"), indent=2, ensure_ascii=False))
         return 0
+
+    if args.cmd == "queue":
+        if args.action == "pause":
+            out = call("POST", "/api/queue/pause", {"reason": args.reason or "paused from the CLI"})
+        elif args.action == "resume":
+            out = call("POST", "/api/queue/resume", {})
+        elif args.action == "clear":
+            out = call("POST", "/api/queue/clear")
+        else:
+            ops = call("GET", "/api/ops")
+            if "error" in ops:
+                out = ops
+            else:
+                queue = ops.get("queue") or {}
+                sweeper = ops.get("sweeper") or {}
+                latency = ops.get("jobLatency") or {}
+                out = {
+                    "queue": queue,
+                    "sweeper": sweeper,
+                    "jobLatency": latency,
+                    "recentJobs": (ops.get("recentJobs") or [])[:5],
+                }
+                if not latency:
+                    out["note"] = "no completed jobs yet — latency fills in as work runs"
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0 if "error" not in out else 1
 
     if args.cmd == "watch":
         print(f"watching {BASE} — ctrl-c to stop")

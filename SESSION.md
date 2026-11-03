@@ -285,7 +285,7 @@ The bridge is now `5.2.0`. New runtime state lives in **gitignored**
   Rebuild the PDFs with `python3 roblox-bridge/tools/build_handoff_pdfs.py`
   (build-time only, needs `reportlab` + `pygments`); seed the board with
   `python roblox-bridge/tools/seed_agent_bus.py`.
-- **Self-test** now covers the v5 suite (34 tests total).
+- **Self-test** now covers the v5 suite (35 tests total).
 - **v5.1 partner tasks landed:** named-token validation + `docs/OPS.md` §1.1
   runbook; `agent_bus sweep` (stale-agent reaper with counters); incremental
   `export since/summaryOnly`; 7 MCP prompts; responsive Ops tab with reconnecting
@@ -295,7 +295,8 @@ The bridge is now `5.2.0`. New runtime state lives in **gitignored**
 - **v5.2 (unattended handoff):** background stale-agent sweep every 300 s
   (`--sweep-interval`, `--sweep-offline`), maintenance pause
   (`POST /api/queue/pause|resume`, Ops Console button), `studio://jobs` +
-  `studio://handoff` MCP resources, and `jobLatency` p50/p95 in `/api/ops`.
+  `studio://handoff` MCP resources, `jobLatency` p50/p95 in `/api/ops`, and
+  `arena_studio.py queue status|pause|resume|clear`.
 
 ```
 roblox-bridge/docs/OPS.md        full ops reference
