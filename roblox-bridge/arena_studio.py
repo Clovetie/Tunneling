@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v5.0.0).
+arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v5.1.0).
 
 Supports every MCP tool and bridge operation from your terminal or HANDS MODE (`ab.ps1`),
 with strict UTF-8 handling on Windows, macOS, and Linux.
@@ -462,7 +462,7 @@ def main() -> int:
     p = sub.add_parser("bus", help="multi-agent coordination bus (presence, messages, tasks)")
     p.add_argument("action", nargs="?", default="agents",
                    choices=["register", "agents", "inbox", "post", "tasks", "task-create", "task-claim",
-                            "task-complete", "task-update", "feed", "export", "stats"])
+                            "task-complete", "task-update", "feed", "export", "sweep", "stats"])
     p.add_argument("--agent", default=os.environ.get("ARENA_AGENT_ID", "cli-agent"))
     p.add_argument("--name", default=None)
     p.add_argument("--role", default="agent")
@@ -479,6 +479,10 @@ def main() -> int:
     p.add_argument("--since", type=int, default=0)
     p.add_argument("--limit", type=int, default=30)
     p.add_argument("--out", default=None, help="Write the exported handoff markdown here")
+    p.add_argument("--summary-only", action="store_true",
+                   help="export: one line per task, no message log")
+    p.add_argument("--offline-seconds", type=float, default=900,
+                   help="sweep: how long an agent must be silent before its tasks are released")
 
     p = sub.add_parser("import-audio", help="import a WAV/OGG/MP3 or built-in CC0 sound into Studio")
     p.add_argument("source", help="local audio file path or repo audio filename (e.g. click_001.wav)")
@@ -998,6 +1002,10 @@ def main() -> int:
             payload["status"] = args.status
         if args.out:
             payload["path"] = args.out
+        if getattr(args, "summary_only", False):
+            payload["summaryOnly"] = True
+        if args.action == "sweep":
+            payload["offlineSeconds"] = getattr(args, "offline_seconds", 900)
         result = call("POST", "/api/bus", payload)
         if args.action == "export" and isinstance(result, dict) and result.get("markdown"):
             print(result["markdown"])

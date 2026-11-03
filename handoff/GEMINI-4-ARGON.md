@@ -2,7 +2,7 @@
 
 **From:** the Arena coding agent on branch `arena/706ae6d5-tunneling`
 **For:** Gemini 4 Argon — a **model**, worked through a human operator or an agent wrapper
-**Bridge version:** 5.0.0 · **Date:** 2026-11-03
+**Bridge version:** 5.1.0 · **Date:** 2026-11-03 · **Status:** G1–G6 landed, G7/G8 operator-only
 
 Gemini 4 Argon does not run commands, open the repo, claim a bus task, or push a
 branch. It returns **text**: a patch or diff, a documentation section, a test
@@ -15,7 +15,7 @@ Two PDFs carry the same material in a form that is easy to paste from:
 | File | What it is |
 |---|---|
 | `handoff/Tunneling-v5-Code.pdf` | 88 pages — complete v5 sources (tunnel_manager, bus_core, auth_core, telemetry, seed_agent_bus) plus unified diffs for every modified file |
-| `handoff/Gemini-4-Argon-Tasks.pdf` | 12 pages — G1–G8 as self-contained prompt briefs with owner files, context, definition of done, verification commands, a paste-ready prompt and a report-back template |
+| `handoff/Gemini-4-Argon-Tasks.pdf` | 12 pages — G1–G8 as self-contained prompt briefs with owner files, context, definition of done, verification commands, a paste-ready prompt, a status line and a report-back template |
 
 Rebuild them with `python3 roblox-bridge/tools/build_handoff_pdfs.py`
 (build-time only; needs `reportlab` and `pygments`, the runtime bridge stays pip-free).
@@ -23,6 +23,9 @@ Rebuild them with `python3 roblox-bridge/tools/build_handoff_pdfs.py`
 ---
 
 ## Priority 1 — make the tunnel survive real life
+
+Status key: **landed** = implemented and unit-tested on this branch in 5.1.0;
+**operator** = the script ships, the evidence needs a live Studio peer.
 
 | # | Task | Files owned | Definition of done |
 |---|---|---|---|
@@ -52,7 +55,7 @@ Rebuild them with `python3 roblox-bridge/tools/build_handoff_pdfs.py`
 - New modules are stdlib-only. Keep the bridge free of pip dependencies at runtime.
 - Never weaken auth: `bridge.token` is the admin owner credential; scoped tokens are additive.
 - Every state file goes under `roblox-bridge/bridge_state/` (gitignored).
-- `python3 -B roblox-bridge/test_bridge_mcp.py` must stay green — **25 tests** on this branch.
+- `python3 -B roblox-bridge/test_bridge_mcp.py` must stay green — **31 tests** on this branch.
 - Do not edit `roblox-bridge/bridge_state/**`, `bridge.token`, or `SESSION.md`.
 - Return a unified diff plus the exact commands the operator should run; say "unverified"
   instead of inventing measurements that need a real Studio peer or a real tunnel.
@@ -67,7 +70,7 @@ python roblox-bridge/arena_studio.py bus tasks
 python roblox-bridge/arena_studio.py bus task-claim --task task-xxxxxxxx --agent agent-xxxxxxxx
 
 # 2. attach the listed files, paste the prompt block from the task PDF, apply the answer
-python -B roblox-bridge/test_bridge_mcp.py          # expect: Ran 25 tests ... OK
+python3 -B roblox-bridge/test_bridge_mcp.py         # expect: Ran 31 tests ... OK
 
 # 3. post a note while it is in flight
 python roblox-bridge/arena_studio.py bus post --agent agent-xxxxxxxx \
@@ -80,3 +83,16 @@ python roblox-bridge/arena_studio.py bus task-complete --task task-xxxxxxxx \
 
 The seeded board is created by `python roblox-bridge/tools/seed_agent_bus.py`
 (read `handoff/bus_seed.json` for the exact task list and acceptance criteria).
+
+## Where each task landed
+
+| # | Status | Where |
+|---|---|---|
+| G1 | landed | `tunnel_manager.validate_named_token`, `setup.py --tunnel-name`, `docs/OPS.md` §1.1 |
+| G2 | script landed, numbers pending | `jobs/measure_tunnel_latency.py`, `docs/OPS.md` §11 |
+| G3 | landed | `server.py` dashboard (responsive CSS, reconnecting EventSource, copy MCP config) |
+| G4 | landed | `mcp_core.py` `PROMPTS` + `get_mcp_prompt(client=…)` (7 prompts) |
+| G5 | landed | `bus_core.sweep_stale`, `agent_bus {action:'sweep'}`, CLI `bus sweep` |
+| G6 | landed | `bus_core.export_handoff(since=…, summary_only=…)` |
+| G7 | operator | `jobs/live_acceptance.py` → paste JSON into `docs/OPS.md` §10.1 |
+| G8 | operator | `jobs/drill_studio_kill.py` → paste JSON into `docs/OPS.md` §10.2 |

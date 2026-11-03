@@ -26,7 +26,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-BUS_VERSION = "5.0.0"
+BUS_VERSION = "5.1.0"
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "bridge_state"
 
 AGENT_STATUSES = ("online", "busy", "idle", "offline")
@@ -70,6 +70,9 @@ class AgentBus:
         self.presence_ttl = float(presence_ttl)
         self.seq = 0
         self.created = _now()
+        self.agents_reaped = 0
+        self.tasks_reaped = 0
+        self.last_sweep_at = None
         self._load()
 
     # -- persistence ---------------------------------------------------------
@@ -89,6 +92,10 @@ class AgentBus:
             self.events = deque(raw.get("events", [])[-self.events.maxlen:], maxlen=self.events.maxlen)
             self.tasks = {t["id"]: t for t in raw.get("tasks", []) if t.get("id")}
             self.seq = int(raw.get("seq") or 0)
+            counters = raw.get("counters") or {}
+            self.agents_reaped = int(counters.get("agentsReaped") or 0)
+            self.tasks_reaped = int(counters.get("tasksReaped") or 0)
+            self.last_sweep_at = counters.get("lastSweepAt")
 
     def _save(self):
         if not self.persist:
@@ -103,6 +110,11 @@ class AgentBus:
                 "messages": list(self.messages),
                 "events": list(self.events),
                 "tasks": list(self.tasks.values()),
+                "counters": {
+                    "agentsReaped": self.agents_reaped,
+                    "tasksReaped": self.tasks_reaped,
+                    "lastSweepAt": self.last_sweep_at,
+                },
             }
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -565,18 +577,97 @@ class AgentBus:
             seq = self.seq
         return {"events": rows, "count": len(rows), "cursor": seq}
 
-    def export_handoff(self, path: str = None, include_done: bool = True) -> dict:
+    def sweep_stale(self, offline_seconds: float = 900, now: float = None) -> dict:
+        """Release tasks held by agents that stopped reporting.
+
+        A crashed agent keeps its lease until it expires (15 minutes by default), which
+        makes the board look busy while nothing moves. This sweep is the escape hatch:
+        it only touches tasks whose owner has been silent for `offline_seconds`, never
+        tasks held by an agent that is still heart-beating.
+        """
+        offline_seconds = float(offline_seconds or 900)
+        now = float(now if now is not None else _now())
+        released = []
+        stale_agents = []
+        with self.lock:
+            self._expire_leases_unlocked()
+            for agent in self.agents.values():
+                last_seen = float(agent.get("lastSeen") or 0)
+                if (now - last_seen) >= offline_seconds:
+                    stale_agents.append(agent)
+            stale_ids = {a["id"] for a in stale_agents}
+            if not stale_agents:
+                self.last_sweep_at = now
+                self._save()
+                return {"released": [], "agents": [], "agentsReaped": 0, "tasksReaped": 0,
+                        "alerted": False, "sweptAt": now}
+
+            for task in self.tasks.values():
+                if task.get("status") != "in_progress":
+                    continue
+                owner = (task.get("lease") or {}).get("owner") or task.get("assignee")
+                if owner not in stale_ids:
+                    continue
+                task.update({"status": "todo", "assignee": None, "lease": None, "updated": now})
+                task["leaseExpiries"] = int(task.get("leaseExpiries", 0)) + 1
+                task.setdefault("history", []).append(
+                    {"ts": now, "actor": "sweeper", "action": "reaped", "previousAssignee": owner}
+                )
+                released.append({"taskId": task["id"], "title": task.get("title"), "previousAssignee": owner})
+
+            self.agents_reaped += len({r["previousAssignee"] for r in released})
+            self.tasks_reaped += len(released)
+            self.last_sweep_at = now
+            if released:
+                names = sorted({a["name"] for a in stale_agents})
+                listing = ", ".join(f"{r['taskId']} ({r.get('title') or 'untitled'})" for r in released)
+                self.post_message(
+                    sender="sweeper",
+                    subject="Stale agent tasks released",
+                    body=f"{len(released)} task(s) released from offline agents "
+                         f"({', '.join(names)}): {listing}",
+                    to=None,
+                    kind="alert",
+                    priority="high",
+                )
+            self._emit_unlocked("bus.sweep", {
+                "released": len(released), "agents": len(stale_ids), "offlineSeconds": offline_seconds,
+            })
+            self._save()
+
+        return {"released": released, "agents": sorted(a["name"] for a in stale_agents),
+                "agentsReaped": len(stale_ids), "tasksReaped": len(released),
+                "alerted": bool(released), "sweptAt": now}
+
+    def export_handoff(self, path: str = None, include_done: bool = True,
+                       since: int = 0, summary_only: bool = False) -> dict:
         """Render a markdown brief that any next agent (or human) can pick up."""
         with self.lock:
             agents = [self._agent_view_unlocked(a) for a in self.agents.values()]
             board = self.list_tasks(include_done=include_done)
-            messages = list(self.messages)[-25:]
+            since = int(since or 0)
+            messages = [m for m in self.messages if int(m.get("seq") or 0) > since][-25:]
+            if since > 0:
+                # Cursor -> wall clock: the newest timestamp we handed out at that seq point.
+                cutoff = 0.0
+                for message in self.messages:
+                    if int(message.get("seq") or 0) <= since:
+                        cutoff = max(cutoff, float(message.get("ts") or 0))
+                for event in self.events:
+                    if int(event.get("seq") or 0) <= since:
+                        cutoff = max(cutoff, float(event.get("ts") or 0))
+                open_tasks = [t for t in board["tasks"] if t.get("status") in ("todo", "in_progress", "blocked")]
+                recent = [t for t in board["tasks"] if float(t.get("updated") or 0) > cutoff]
+                merged = {t["id"]: t for t in open_tasks}
+                merged.update({t["id"]: t for t in recent})
+                board = {"tasks": list(merged.values()), "count": len(merged)}
             stats = self.stats()
 
         lines = [
             "# Agent handoff brief",
             "",
-            f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}  ·  bus v{BUS_VERSION}",
+            f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}  ·  bus v{BUS_VERSION}"
+            + (f"  ·  incremental since seq {since}" if since else ""),
             "",
             "## Roster",
             "",
@@ -597,13 +688,19 @@ class AgentBus:
                 mark = {"done": "x"}.get(t["status"], " ")
                 owner = f" — @{t['assignee']}" if t.get("assignee") else ""
                 lines.append(f"- [{mark}] **{t['title']}** ({t['status']}, {t['priority']}){owner}  ")
+                if summary_only:
+                    continue
                 if t.get("detail"):
                     lines.append(f"  {t['detail']}")
                 if t.get("result"):
                     lines.append(f"  _Result:_ {t['result']}")
+                for artifact in (t.get("artifacts") or [])[:5]:
+                    lines.append(f"  _Artifact:_ {artifact}")
         else:
             lines.append("_Task board is empty._")
 
+        if summary_only:
+            messages = []
         lines += ["", "## Recent messages", ""]
         if messages:
             for m in messages:
@@ -649,6 +746,9 @@ class AgentBus:
                 "events": len(self.events),
                 "cursor": self.seq,
                 "unreadTotal": sum(a["inboxUnread"] for a in agents),
+                "agentsReaped": self.agents_reaped,
+                "tasksReaped": self.tasks_reaped,
+                "lastSweepAt": self.last_sweep_at,
                 "serverTime": _now(),
             }
 
@@ -742,11 +842,18 @@ class AgentBus:
         if action in ("feed", "events"):
             return self.feed(int(p.get("since") or 0), int(p.get("limit") or 100))
         if action in ("export", "handoff"):
-            return self.export_handoff(p.get("path"), bool(p.get("includeDone", True)))
+            return self.export_handoff(
+                p.get("path"),
+                bool(p.get("includeDone", True)),
+                since=int(p.get("since") or 0),
+                summary_only=bool(p.get("summaryOnly")),
+            )
+        if action in ("sweep", "sweep_stale"):
+            return self.sweep_stale(p.get("offlineSeconds") or 900)
         if action == "stats":
             return self.stats()
         raise ValueError(
             "Unknown agent_bus action. Use one of: register, heartbeat, status, agents, post, inbox, "
             "thread, mark_read, tasks, task_create, task_claim, task_renew, task_release, task_update, "
-            "task_complete, task_delete, feed, export, stats."
+            "task_complete, task_delete, feed, export, sweep, stats."
         )

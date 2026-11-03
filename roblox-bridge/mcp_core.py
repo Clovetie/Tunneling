@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 mcp_core.py — Zero-dependency Model Context Protocol (MCP) engine & Roblox Studio
-tool suite for Arena <-> Roblox Studio (v5.0.0).
+tool suite for Arena <-> Roblox Studio (v5.1.0).
 
 Supports:
   - MCP specification versions 2025-06-18, 2025-03-26, and 2024-11-05
@@ -28,7 +28,7 @@ import urllib.request
 from pathlib import Path
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "5.0.0"
+MCP_SERVER_VERSION = "5.1.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2025-06-18",
     "2025-03-26",
@@ -2955,6 +2955,26 @@ PROMPTS = [
             {"name": "studioRoot", "description": "Studio container path (e.g. ServerScriptService.NightLoop)", "required": True},
         ],
     },
+    {
+        "name": "multi_agent_handoff",
+        "description": "Hand work to another agent: read the live board, release what you cannot finish, and post a handoff with the next concrete step.",
+        "arguments": [
+            {"name": "agentName", "description": "Who is handing off (defaults to the bus roster)", "required": False},
+            {"name": "focus", "description": "What the next agent should pick up first", "required": False},
+        ],
+    },
+    {
+        "name": "bus_standup",
+        "description": "Render a five-line standup from the live Agent Bus: what changed, who owns what, what is blocked.",
+        "arguments": [
+            {"name": "since", "description": "Bus cursor to report from (defaults to the current cursor)", "required": False},
+        ],
+    },
+    {
+        "name": "task_triage",
+        "description": "Rank open Agent Bus tasks by priority and dependencies, propose a claim order, and flag tasks without acceptance criteria.",
+        "arguments": [],
+    },
 ]
 
 
@@ -4685,7 +4705,56 @@ def spawn_prefab_helper(client: BridgeClient, args: dict, peer_id: str = None) -
     }
 
 
-def get_mcp_prompt(name: str, arguments: dict = None) -> dict:
+BUS_FALLBACK = (
+    "Live bus state is unavailable (bridge offline, read-only client, or the bus is empty). "
+    "Work from the handoff brief you were given and state any assumption you had to make."
+)
+
+
+def _bus_lines(client, include_tasks: bool = True, tasks_include_done: bool = False) -> str:
+    """Compact bus snapshot for prompt rendering; never raises."""
+    if client is None:
+        return BUS_FALLBACK
+    try:
+        stats = client.bus_action({"action": "stats"})
+        roster = client.bus_action({"action": "agents", "includeOffline": True}).get("agents", [])
+    except Exception:
+        return BUS_FALLBACK
+    lines = [
+        f"Bus stats: {stats.get('agents')} agents ({stats.get('agentsOnline')} online), "
+        f"{stats.get('tasks')} tasks, cursor {stats.get('cursor')}."
+    ]
+    if roster:
+        lines.append("Roster:")
+        for a in roster:
+            state = "online" if a.get("online") else "offline"
+            lines.append(
+                f"  - {a.get('name')} ({a.get('role')}, {state}, open tasks {a.get('openTasks')}, "
+                f"last seen {a.get('ageSeconds')}s ago)"
+            )
+    else:
+        lines.append("Roster: _no agents registered_.")
+    if include_tasks:
+        try:
+            tasks = client.bus_action({"action": "tasks", "includeDone": tasks_include_done}).get("tasks", [])
+        except Exception:
+            tasks = []
+        if tasks:
+            lines.append("Task board:")
+            for t in tasks[:20]:
+                owner = t.get("assignee") or "unclaimed"
+                deps = t.get("dependsOn") or []
+                dep_note = f", blocked by {', '.join(deps)}" if deps else ""
+                lines.append(
+                    f"  - {t.get('id')} [{t.get('status')}/{t.get('priority')}] {t.get('title')} "
+                    f"(owner: {owner}{dep_note})"
+                )
+        else:
+            lines.append("Task board: _empty_.")
+    return "\n".join(lines)
+
+
+def get_mcp_prompt(name: str, arguments: dict = None, client=None) -> dict:
     arguments = arguments or {}
     if name == "survey_and_architecture":
         text = (
@@ -4719,6 +4788,51 @@ def get_mcp_prompt(name: str, arguments: dict = None) -> dict:
             f"2. Run `luau_check(path='{ld}')` to ensure zero syntax errors and zero undefined globals.\n"
             f"3. Run `drift_and_sync(mode='push', localDir='{ld}', studioRoot='{sr}')` (automatically snapshots live scripts and replaces instances in one undoable step).\n"
             f"4. Re-run `drift_and_sync(mode='check', ...)` to confirm `inSync: true`."
+        )
+    elif name == "multi_agent_handoff":
+        who = arguments.get("agentName") or "<your agent name>"
+        focus = arguments.get("focus") or "<what you are handing over>"
+        snapshot = _bus_lines(client)
+        text = (
+            f"You are {who} and you are handing work to another agent on the same Roblox Studio bridge.\n\n"
+            f"{snapshot}\n\n"
+            "Do this now:\n"
+            "1. Call `agent_bus {action:'export', summaryOnly:true}` and keep the brief short enough to paste into a message.\n"
+            f"2. Release (or complete, with artifacts) every task you own that you will not finish. State why. Focus: {focus}\n"
+            "3. Post exactly one handoff message: `agent_bus {action:'post', kind:'handoff', to:'<agent name>', "
+            "subject:'handoff: <task id>', body:'<state, next concrete step, files touched>'} .\n"
+            "4. Do not claim a new task until the handoff is posted; the next agent needs the lease and the note.\n"
+            "5. Reply with the message id and the task ids you released."
+        )
+    elif name == "bus_standup":
+        since = arguments.get("since")
+        snapshot = _bus_lines(client)
+        cursor_line = (
+            f"Report only activity after cursor {since}."
+            if since not in (None, "", 0)
+            else "Use the current cursor as the starting point."
+        )
+        text = (
+            "Produce a five-line standup for the humans watching this bridge.\n\n"
+            f"{snapshot}\n\n"
+            f"{cursor_line}\n"
+            "Do this:\n"
+            "1. Call `agent_bus {action:'export', since:<cursor>}` to get only recent activity.\n"
+            "2. Summarise as exactly five lines: done / in progress / blocked / who is idle / next claim.\n"
+            "3. Name task ids, not vibes. If nothing changed, say so in one line instead of padding.\n"
+            "4. Post the standup with `agent_bus {action:'post', kind:'status', subject:'standup'}`."
+        )
+    elif name == "task_triage":
+        snapshot = _bus_lines(client)
+        text = (
+            "Triage the open Agent Bus tasks so the team claims work in the right order.\n\n"
+            f"{snapshot}\n\n"
+            "Do this:\n"
+            "1. Read the board with `agent_bus {action:'tasks', includeDone:false}`.\n"
+            "2. Rank by: dependency depth (unblock others first), then priority (critical > high > normal > low), then age.\n"
+            "3. Flag every task with no acceptance criteria, no owner and no detail; propose the one-line criterion to add.\n"
+            "4. Output a numbered claim order with the task id, the owner you suggest, and the reason.\n"
+            "5. Do not claim anything yourself unless the user asks you to; this prompt only plans."
         )
     else:
         raise KeyError(f"Unknown prompt: {name}")
@@ -4895,7 +5009,7 @@ class MCPDispatcher:
                 pname = params.get("name", "")
                 if not pname:
                     return self._err(msg_id, -32602, "Missing 'name' parameter.")
-                return self._ok(msg_id, get_mcp_prompt(pname, params.get("arguments")))
+                return self._ok(msg_id, get_mcp_prompt(pname, params.get("arguments"), self.client))
 
             if method == "logging/setLevel":
                 return self._ok(msg_id, {})

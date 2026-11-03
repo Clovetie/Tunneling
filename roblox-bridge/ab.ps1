@@ -1,4 +1,4 @@
-# HANDS MODE & CLI helper for Windows PowerShell (v5.0.0).
+# HANDS MODE & CLI helper for Windows PowerShell (v5.1.0).
 # Reads BRIDGE_TOKEN from bridge.token next to this script (or auto-recovers
 # from installed ArenaBridge.lua in %LOCALAPPDATA%\Roblox\Plugins!) so tokens
 # never appear in shell history. Enforces UTF-8 so em-dashes & symbols are never

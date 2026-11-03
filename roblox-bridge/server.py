@@ -44,7 +44,7 @@ from bus_core import AgentBus
 from telemetry import Telemetry
 from tunnel_manager import TunnelManager
 
-VERSION = "5.0.0"
+VERSION = "5.1.0"
 PEER_ONLINE_WINDOW = 5.0  # play DataModel peers are transient; do not route work to stale peers
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_DIR = HERE / "snapshots"
@@ -1608,11 +1608,29 @@ def dashboard_html() -> str:
  .toast{position:fixed;bottom:20px;right:20px;background:#1f6feb;color:#fff;padding:9px 16px;
         border-radius:8px;font-weight:600;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s;z-index:99}
  .toast.show{opacity:1}
- @media(max-width:720px){.two-col{grid-template-columns:1fr}.cmd-desc{display:none}}
+ @media(max-width:720px){
+   .two-col{grid-template-columns:1fr}
+   .cmd-desc{display:none}
+   .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+   .card .v{font-size:17px;word-break:break-all;overflow-wrap:anywhere}
+   .prompt-card{padding:11px}
+   header{flex-wrap:wrap;gap:6px}
+   #tok-input{width:130px!important}
+   pre{max-height:190px}
+   .wrap{padding:0 10px}
+ }
+ @media(max-width:420px){
+   .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+   .card{padding:9px}
+   .card .k{font-size:10px}
+   h1{font-size:16px}
+ }
+ html,body{max-width:100%;overflow-x:hidden}
+ img,pre,input,textarea,select{max-width:100%}
 </style></head><body>
 
 <header>
-  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v5.0</span></h1>
+  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v5.1</span></h1>
   <span id="status" class="pill off">checking&hellip;</span>
   <span id="ro-badge" class="pill ro" style="display:none">Read-Only Inspector</span>
   <span id="place" class="pill info-pill" style="display:none"></span>
@@ -1979,6 +1997,7 @@ def dashboard_html() -> str:
           <button class="sm" onclick="tunnelAction('restart')">Restart</button>
           <button class="sm danger" onclick="tunnelAction('stop')">Stop</button>
           <button class="sm" onclick="copyText(document.getElementById('ops-tunnel-url').textContent)">Copy URL</button>
+          <button class="sm" onclick="copyMcpConfig()">Copy MCP config (tunnel)</button>
         </div>
         <div class="sub" id="ops-tunnel-meta" style="margin-top:6px">Checking tunnel status&hellip;</div>
         <div class="sub" id="ops-tunnel-lan" style="margin-top:4px"></div>
@@ -2901,7 +2920,7 @@ async function tick(){
 }
 
 // ---------------------------- v5 Ops Console ----------------------------
-let EV_SOURCE = null;
+let EV_SOURCE = null, EV_RETRY = null, EV_DELAY = 1000, EV_WANT = false;
 async function opsJson(path, opts){
   const r = await fetch(path, Object.assign({cache:'no-store', headers:authHeaders()}, opts || {}));
   const data = await r.json().catch(() => ({}));
@@ -3058,22 +3077,68 @@ async function verifyAudit(){
     document.getElementById('ops-audit').textContent = (a.entries || []).map(e => `${e.seq} ${e.action} · ${e.actor} · ${e.outcome}`).join('\n');
   } catch(err){ document.getElementById('ops-audit-note').textContent = err.message; }
 }
-function toggleEventStream(){
+function evFeedLine(text){
   const feed = document.getElementById('ev-feed');
+  feed.textContent += text + '\n';
+  feed.scrollTop = feed.scrollHeight;
+}
+function connectEvents(){
   const btn = document.getElementById('ev-btn');
-  if(EV_SOURCE){ EV_SOURCE.close(); EV_SOURCE = null; btn.textContent = 'Connect'; feed.textContent += '\n[disconnected]'; return; }
+  clearTimeout(EV_RETRY);
+  if(EV_SOURCE){ try { EV_SOURCE.close(); } catch(_){} EV_SOURCE = null; }
+  if(!EV_WANT){ btn.textContent = 'Connect'; return; }
   const token = getToken();
-  EV_SOURCE = new EventSource('/api/events' + (token ? '?token=' + encodeURIComponent(token) : ''));
+  const src = new EventSource('/api/events' + (token ? '?token=' + encodeURIComponent(token) : ''));
+  EV_SOURCE = src;
   btn.textContent = 'Disconnect';
-  feed.textContent = '';
-  EV_SOURCE.onmessage = ev => {
+  src.onopen = () => {
+    EV_DELAY = 1000;
+    btn.textContent = 'Disconnect';
+    evFeedLine('[stream live]');
+  };
+  src.onmessage = ev => {
     try {
       const e = JSON.parse(ev.data);
-      feed.textContent += `${new Date((e.ts||0)*1000).toLocaleTimeString()}  ${e.kind}  ${JSON.stringify(e.data)}\n`;
-      feed.scrollTop = feed.scrollHeight;
+      evFeedLine(`${new Date((e.ts||0)*1000).toLocaleTimeString()}  ${e.kind}  ${JSON.stringify(e.data)}`);
     } catch(_){}
   };
-  EV_SOURCE.onerror = () => { feed.textContent += '\n[stream error — reconnect from the button above]\n'; };
+  src.onerror = () => {
+    try { src.close(); } catch(_){}
+    if(EV_SOURCE === src) EV_SOURCE = null;
+    if(!EV_WANT){ btn.textContent = 'Connect'; return; }
+    const wait = Math.max(1, Math.min(EV_DELAY, 30000));
+    btn.textContent = `Reconnecting (${Math.round(wait/1000)}s)`;
+    evFeedLine(`[stream error — retrying in ${Math.round(wait/1000)}s]`);
+    EV_DELAY = Math.min(EV_DELAY * 2, 30000);
+    EV_RETRY = setTimeout(connectEvents, wait);
+  };
+}
+function toggleEventStream(){
+  const btn = document.getElementById('ev-btn');
+  if(EV_WANT){
+    EV_WANT = false;
+    clearTimeout(EV_RETRY);
+    if(EV_SOURCE){ try { EV_SOURCE.close(); } catch(_){} EV_SOURCE = null; }
+    btn.textContent = 'Connect';
+    evFeedLine('[disconnected]');
+    return;
+  }
+  EV_WANT = true;
+  EV_DELAY = 1000;
+  connectEvents();
+}
+async function copyMcpConfig(){
+  try {
+    const ops = await opsJson('/api/ops');
+    const url = (ops.tunnel || {}).publicUrl;
+    if(!url) throw new Error('Tunnel is not online yet — start it, then copy the config.');
+    const token = getToken() || '<bridge-token>';
+    const cfg = { mcpServers: { 'roblox-studio': {
+      url: String(url).replace(/\/$/, '') + '/mcp',
+      headers: { Authorization: 'Bearer ' + token }
+    } } };
+    await copyText(JSON.stringify(cfg, null, 2));
+  } catch(err){ toast(err.message || 'Cannot build MCP config'); }
 }
 
 initBoot().then(() => { tick(); refreshOps(); refreshBus(); setInterval(tick, 1500); setInterval(() => {

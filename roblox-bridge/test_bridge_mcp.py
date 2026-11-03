@@ -29,7 +29,9 @@ Tests:
 
 import json
 import os
+import re
 import socket
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,6 +42,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from unittest import mock
+
+from bus_core import AgentBus
 
 HERE = Path(__file__).resolve().parent
 TOOL_TEST_METRICS = {}
@@ -294,13 +298,205 @@ class TestV5OpsPlatform(unittest.TestCase):
     def test_ops_report_and_public_health_shape(self):
         status, health = self._req("/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "5.0.0")
+        self.assertEqual(health["version"], "5.1.0")
         self.assertIn("tunnel", health)
         self.assertIn("agents", health)
         status, ops = self._req("/api/ops", token=self.admin_token)
         self.assertEqual(status, 200)
         for key in ("health", "tunnel", "bus", "audit", "recentJobs", "openTasks"):
             self.assertIn(key, ops)
+
+    # -- v5.1 partner tasks: sweeper, incremental handoff, prompts, tunnel token --
+
+    def test_stale_agent_sweeper_and_incremental_handoff(self):
+        bus = self.state.bus
+        builder = bus.handle({"action": "register", "name": "Builder", "role": "builder"})
+        partner = bus.handle({"action": "register", "name": "Partner", "role": "qa"})
+        live_task = bus.handle({"action": "task_create", "title": "Held by a live agent",
+                                "createdBy": builder["id"], "priority": "high"})
+        dead_task = bus.handle({"action": "task_create", "title": "Held by a dead agent",
+                                "createdBy": builder["id"], "detail": "should be released"})
+        bus.handle({"action": "task_claim", "taskId": live_task["id"], "agentId": builder["id"]})
+        bus.handle({"action": "task_claim", "taskId": dead_task["id"], "agentId": partner["id"]})
+
+        # Partner stops heart-beating a long time ago; builder is still alive.
+        bus.agents[partner["id"]]["lastSeen"] = time.time() - 5000
+        swept = bus.handle({"action": "sweep", "offlineSeconds": 900})
+        self.assertEqual(swept["tasksReaped"], 1)
+        self.assertEqual(swept["released"][0]["taskId"], dead_task["id"])
+        self.assertEqual(bus.tasks[dead_task["id"]]["status"], "todo")
+        self.assertIsNone(bus.tasks[dead_task["id"]]["assignee"])
+        self.assertIsNone(bus.tasks[dead_task["id"]]["lease"])
+        self.assertEqual(bus.tasks[live_task["id"]]["status"], "in_progress")
+
+        # Idempotent: a second sweep releases nothing and posts no second alert.
+        again = bus.handle({"action": "sweep", "offlineSeconds": 900})
+        self.assertEqual(again["tasksReaped"], 0)
+        self.assertFalse(again["alerted"])
+        alerts = [m for m in bus.messages if m["kind"] == "alert"]
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("Stale agent tasks released", alerts[0]["subject"])
+
+        stats = bus.stats()
+        self.assertEqual(stats["tasksReaped"], 1)
+        self.assertEqual(stats["agentsReaped"], 1)
+        self.assertIsNotNone(stats["lastSweepAt"])
+        # Counters survive a reload (persisted with the board).
+        reloaded = AgentBus(bus.path)
+        self.assertEqual(reloaded.stats()["tasksReaped"], 1)
+
+        # Export: cursor filtering keeps old activity out, open tasks stay in.
+        bus.handle({"action": "post", "agentId": builder["id"], "body": "BEFORE-MARKER", "subject": "old"})
+        cursor = bus.stats()["cursor"]
+        bus.handle({"action": "post", "agentId": builder["id"], "body": "AFTER-MARKER", "subject": "new"})
+        fresh = bus.handle({"action": "export", "since": cursor})
+        self.assertIn("AFTER-MARKER", fresh["markdown"])
+        self.assertNotIn("BEFORE-MARKER", fresh["markdown"])
+        self.assertIn("Held by a live agent", fresh["markdown"])
+
+        summary = bus.handle({"action": "export", "summaryOnly": True})
+        self.assertIn("Held by a live agent", summary["markdown"])
+        self.assertNotIn("should be released", summary["markdown"])  # detail omitted
+        self.assertIn("_No messages._", summary["markdown"])
+        self.assertLess(len(summary["markdown"]), len(bus.handle({"action": "export"})["markdown"]))
+
+    def test_mcp_prompts_render_live_bus_state(self):
+        from mcp_core import PROMPTS, get_mcp_prompt
+        names = [p["name"] for p in PROMPTS]
+        self.assertEqual(len(PROMPTS), 7)
+        for name in ("multi_agent_handoff", "bus_standup", "task_triage"):
+            self.assertIn(name, names)
+
+        self.state.bus.handle({"action": "register", "name": "Roster Probe", "role": "qa"})
+        self.state.bus.handle({"action": "task_create", "title": "Probe task", "priority": "critical"})
+        for name in ("multi_agent_handoff", "bus_standup", "task_triage"):
+            prompt = get_mcp_prompt(name, {}, self.state.mcp_client)
+            text = prompt["messages"][0]["content"]["text"]
+            self.assertIn("Roster Probe", text, name)
+            self.assertIn("Probe task", text, name)
+            self.assertTrue(prompt["description"])
+
+        # No client (or a dead bridge) must degrade to the safe fallback, never raise.
+        offline = get_mcp_prompt("bus_standup", {}, None)
+        self.assertIn("unavailable", offline["messages"][0]["content"]["text"])
+
+        # The dispatcher wires the client through prompts/get.
+        resp = self.state.mcp_dispatcher.handle_payload(
+            {"jsonrpc": "2.0", "id": 9, "method": "prompts/get",
+             "params": {"name": "task_triage", "arguments": {}}})
+        self.assertIn("Roster Probe", resp["result"]["messages"][0]["content"]["text"])
+
+    def test_named_tunnel_token_is_validated_before_spawn(self):
+        from tunnel_manager import TunnelManager, validate_named_token
+        good = "eyJhIjoiY2Y4ZjQxY2EiLCJ0IjoiYWJjZGVmIn0="
+        self.assertTrue(validate_named_token(good)[0])
+        for bad, needle in (("", "empty"), ("   ", "empty"), ("short", "too short"),
+                            ("has space", "whitespace"), ("https://x.trycloudflare.com", "URL"),
+                            ("bad$chars$here$and$long$enough", "unexpected")):
+            ok, reason = validate_named_token(bad)
+            self.assertFalse(ok, bad)
+            self.assertIn(needle.lower(), reason.lower(), bad)
+
+        bad_mgr = TunnelManager(port=self.port, flavor="cloudflared", named_token="bad token here",
+                                state_dir=self.tmp)
+        started = bad_mgr.start()
+        self.assertEqual(started["state"], "error")
+        self.assertIn("token", started["lastError"].lower())
+        self.assertFalse(started["namedTokenValid"])
+        bad_mgr.binary = "/bin/true"  # even with a binary present, the token never reaches a subprocess
+        bad_mgr.flavor = "cloudflared"
+        with self.assertRaises(RuntimeError):
+            bad_mgr._command()
+
+        named = TunnelManager(port=self.port, flavor="cloudflared", named_token=good, state_dir=self.tmp,
+                              name="studio.example.com")
+        named.binary, named.flavor = "/bin/true", "cloudflared"
+        cmd = named._command()
+        self.assertEqual(cmd, ["/bin/true", "tunnel", "--no-autoupdate", "run", "--token", good])
+        self.assertNotIn("--url", cmd)
+        shown = named.status()
+        self.assertTrue(shown["namedTokenValid"])
+        self.assertEqual(shown["name"], "studio.example.com")
+
+    def test_dashboard_ops_tab_is_responsive_and_eventsource_reconnects(self):
+        from server import dashboard_html
+        html = dashboard_html()
+        self.assertIn("copyMcpConfig", html)
+        self.assertIn("Copy MCP config (tunnel)", html)
+        self.assertIn("@media(max-width:720px)", html)
+        self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", html)
+        self.assertIn("Reconnecting (${Math.round(wait/1000)}s)", html)
+        self.assertIn("EV_DELAY * 2", html)
+        self.assertIn("overflow-x:hidden", html)
+
+        script = re.search(r"<script>(.*?)</script>", html, re.S)
+        self.assertIsNotNone(script)
+        node = shutil.which("node")
+        if node:
+            path = os.path.join(self.tmp, "dashboard.js")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(script.group(1))
+            checked = subprocess.run([node, "--check", path], capture_output=True, text=True)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+
+    def test_latency_script_measures_percentiles_and_reports_auth_errors(self):
+        import http.server
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script = os.path.join(repo, "jobs", "measure_tunnel_latency.py")
+
+        class FakeBridge(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(length)
+                if self.headers.get("Authorization") != "Bearer good-token":
+                    body = b'{"error":"unauthorized"}'
+                    self.send_response(401)
+                else:
+                    body = json.dumps({"id": "job-1", "status": "done", "result": {"ok": True}}).encode()
+                    time.sleep(0.005)
+                    self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        fake = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
+        threading.Thread(target=fake.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{fake.server_address[1]}"
+        try:
+            ok = subprocess.run([sys.executable, script, "--url", f"local={base}", "--token", "good-token",
+                                 "--runs", "3", "--markdown"], capture_output=True, text=True, timeout=120)
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            self.assertIn("| Tool |", ok.stdout)
+            self.assertIn("ping_studio", ok.stdout)
+
+            denied = subprocess.run([sys.executable, script, "--url", f"local={base}", "--token", "nope",
+                                     "--runs", "2"], capture_output=True, text=True, timeout=120)
+            self.assertEqual(denied.returncode, 2)
+            self.assertIn("token rejected", denied.stderr)
+        finally:
+            fake.shutdown()
+            fake.server_close()
+
+    def test_operator_scripts_fail_loudly_without_a_studio_peer(self):
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        acceptance = subprocess.run(
+            [sys.executable, os.path.join(repo, "jobs", "live_acceptance.py"),
+             "--url", self.base, "--token", self.admin_token],
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(acceptance.returncode, 1)
+        self.assertIn("no Studio peer", acceptance.stdout)
+        self.assertIn("bridge-reachable", acceptance.stdout)
+
+        drill = subprocess.run(
+            [sys.executable, os.path.join(repo, "jobs", "drill_studio_kill.py"),
+             "--url", self.base, "--token", self.admin_token, "--wait", "5"],
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(drill.returncode, 3)
+        self.assertIn("no Studio peer", drill.stderr)
 
     # -- tunnel supervisor --------------------------------------------------
 
@@ -337,7 +533,7 @@ class TestV5OpsPlatform(unittest.TestCase):
 
         # Named Cloudflare tunnels use `run --token`, never a quick-tunnel `--url`.
         named = TunnelManager(port=self.port, binary=fake, flavor="cloudflared",
-                              named_token="cf-named-token", state_dir=self.tmp)
+                              named_token="eyJhIjoiY2Y4ZjQxY2EiLCJ0IjoiYWJjZGVmIn0=", state_dir=self.tmp)
         named._detect()
         cmd = named._command()
         self.assertIn("run", cmd)
@@ -652,7 +848,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         self.assertEqual(st_b, 200)
         self.assertEqual(len(batch_resp), 3)
         self.assertEqual(len(batch_resp[1]["result"]["resources"]), 8)
-        self.assertEqual(len(batch_resp[2]["result"]["prompts"]), 4)
+        self.assertEqual(len(batch_resp[2]["result"]["prompts"]), 7)
 
     def test_02_all_core_studio_tools_end_to_end(self):
         # 0. v5 bridge-level tools (no Studio peer required)
@@ -667,7 +863,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         done = self.call_tool("agent_bus", {"action": "task_complete", "taskId": task["id"], "agentId": reg["id"], "result": "ok"})
         self.assertEqual(done["status"], "done")
         ops = self.call_tool("bridge_ops", {"action": "status"})
-        self.assertEqual(ops["version"], "5.0.0")
+        self.assertEqual(ops["version"], "5.1.0")
         self.assertIn("tunnel", ops)
         metrics = self.call_tool("bridge_ops", {"action": "metrics"})
         self.assertIn("counters", metrics)

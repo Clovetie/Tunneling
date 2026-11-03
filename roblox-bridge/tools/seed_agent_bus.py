@@ -106,6 +106,19 @@ def main() -> int:
         })
         created += 1
         print(f"[task ] {row['id']}  {row['priority']:<8} {row['title']}")
+        if task.get("result") or task.get("status") in ("done", "cancelled"):
+            try:
+                call({
+                    "action": "task_complete",
+                    "taskId": row["id"],
+                    "agentId": "seed",
+                    "result": task.get("result") or "completed",
+                    "artifacts": task.get("artifacts") or [],
+                    "status": task.get("status") or "done",
+                })
+                print(f"[done ] {row['title']}  {task.get('result', '')[:80]}")
+            except RuntimeError as exc:
+                print(f"[warn ] could not complete {row['id']}: {exc}")
 
     posted = 0
     for message in (seed.get("messages", []) if (created or not existing_tasks) else []):

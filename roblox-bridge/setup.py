@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 setup.py — One command to install, configure, and run the Arena <-> Roblox
-Studio Bridge & MCP Server (v5.0.0).
+Studio Bridge & MCP Server (v5.1.0).
 
 What it does:
   1. Creates or reuses a shared secret in bridge.token — and if bridge.token is
@@ -10,7 +10,7 @@ What it does:
      Plugins directory so you NEVER hit HTTP 401 token mismatches!
   2. Writes ArenaBridge.lua v4.0.0 into your OS Roblox Studio Plugins folder with
      the port + token baked in (leaving the tracked repo source file clean).
-  3. Starts server.py v5.0.0 on :8077 (serving Studio polling, REST CLI, Web
+  3. Starts server.py v5.1.0 on :8077 (serving Studio polling, REST CLI, Web
      Dashboard, AND Streamable HTTP MCP at http://127.0.0.1:8077/mcp).
   4. Optionally writes .mcp.json (`--write-mcp`) for Claude Code / Cursor / VS Code
      and/or opens a supervised cloudflared/ngrok tunnel (`--tunnel`).
@@ -324,6 +324,8 @@ def main():
                     help="Tunnel provider (default: auto-detect)")
     ap.add_argument("--tunnel-token", default=None,
                     help="Cloudflare named-tunnel token (stable hostname instead of a random quick-tunnel URL)")
+    ap.add_argument("--tunnel-name", default=None,
+                    help="Display-only label for a named tunnel; routing still comes from Cloudflare ingress")
     ap.add_argument("--public-url", default=None,
                     help="Report a tunnel URL you already run yourself (bridge will not manage it)")
     ap.add_argument("--install-only", action="store_true", help="Install plugin (and optional --write-mcp) then exit")
@@ -342,7 +344,7 @@ def main():
 
     signal.signal(signal.SIGINT, shutdown)
 
-    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v5.0.0{OFF}")
+    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v5.1.0{OFF}")
     token = get_token(rotate=args.rotate, explicit_dir=args.plugins_dir, preferred_port=args.port)
     say(f"  token: {CYAN}{token}{OFF}  {DIM}(stored in bridge.token){OFF}")
 
@@ -375,6 +377,8 @@ def main():
         server_cmd.extend(["--tunnel-flavor", args.tunnel_flavor])
         if args.tunnel_token:
             server_cmd.extend(["--tunnel-token", args.tunnel_token])
+        if args.tunnel_name:
+            server_cmd.extend(["--tunnel-name", args.tunnel_name])
     if args.public_url:
         server_cmd.extend(["--public-url", args.public_url])
 

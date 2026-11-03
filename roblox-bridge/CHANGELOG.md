@@ -2,6 +2,30 @@
 
 All notable changes for the Roblox Studio bridge are documented here.
 
+## 5.1.0 — partner tasks landed: validated named tunnels, sweeper, incremental briefs, MCP prompt recipes, operator scripts
+
+> Unit-tested against the stateful mock Studio plus a fake tunnel binary.
+> **Live Studio acceptance (G7) and the kill-switch drill (G8) still need a real
+> peer** — the scripts for both ship here, the evidence does not.
+
+### Added
+- **Named-tunnel hardening (`tunnel_manager.py`)**: `validate_named_token()` rejects empty/whitespace/URL/short/junk tokens *before* a process spawns, the supervisor reports `state=error` with an actionable `lastError` (never a silent restart loop), and `/api/tunnel` exposes `namedTokenValid` plus display-only `name`. `setup.py --tunnel-name` passes the label through; it never reaches the cloudflared command line.
+- **Stale-agent sweeper (`bus_core.py`)**: `agent_bus {action:'sweep', offlineSeconds:900}` (CLI `bus sweep`) releases `in_progress` tasks owned by agents silent past the threshold, posts one `alert`, bumps `agentsReaped`/`tasksReaped`/`lastSweepAt` in `stats()`, persists the counters, and is a no-op when called twice. Tasks held by live agents are untouched.
+- **Incremental handoff briefs**: `export` accepts `since` (cursor) and `summaryOnly`; open tasks are always included, messages and task detail are filtered/omitted, and the cursor is resolved to a wall-clock cutoff from the event log.
+- **MCP prompt recipes (`mcp_core.py`)**: `prompts/list` now returns **7** prompts. `multi_agent_handoff`, `bus_standup` and `task_triage` render live roster/task/cursor state through the client and fall back to an explicit "live bus state is unavailable" line when the bridge is offline.
+- **Dashboard Ops tab (`server.py`)**: responsive layout at 720 px and below (two-up stat cards, stacked panels, URL wrapping, no horizontal scroll) plus a "Copy MCP config (tunnel)" button that emits a ready `mcpServers` JSON block.
+- **Reconnecting event stream**: `EventSource` now retries with 1 → 2 → 4 … 30 s backoff, shows `Reconnecting (Ns)`, resets on success, and never leaks duplicate sources.
+- **Operator scripts**: `jobs/measure_tunnel_latency.py` (p50/p95/max per tool, local vs tunnel, JSON out, distinct exit codes for bad token / no peer / total failure), `jobs/live_acceptance.py` (G7 checklist as a script, PASS/FAIL per step plus paste-ready evidence JSON) and `jobs/drill_studio_kill.py` (G8: enqueue, wait for the peer to claim, kill Studio, watch the requeue and `bridge_jobs_reaped_total`).
+- **Docs**: `docs/OPS.md` gained §1.1 (named-tunnel runbook with a troubleshooting table), §10 (acceptance + drill procedures and how to read the results) and §11 (latency budget with an explicitly unfilled measurement table).
+
+### Changed
+- Version `5.1.0` across the server, MCP surface, CLI, telemetry, bus, auth, tunnel manager and docs.
+- `arena_studio.py bus` accepts `sweep`, `--summary-only` and `--offline-seconds`.
+
+### Verification
+- `python3 -B roblox-bridge/test_bridge_mcp.py` — **31 tests pass** (6 new: sweeper + incremental export, prompt rendering/fallback, named-token validation, responsive dashboard + `node --check`, latency-script percentiles/401, operator-script failure modes).
+- Live acceptance and the kill-switch drill remain **unverified without a Studio peer**; run them with the scripts above and paste the JSON into `docs/OPS.md` §10.
+
 ## 5.0.0 — ops platform: supervised tunnel, agent bus, telemetry, scoped auth
 
 > Implemented and unit-tested against the stateful mock Studio plus a fake tunnel

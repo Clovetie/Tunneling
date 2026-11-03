@@ -30,7 +30,7 @@ import urllib.request
 from collections import deque
 from pathlib import Path
 
-TUNNEL_VERSION = "5.0.0"
+TUNNEL_VERSION = "5.1.0"
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "bridge_state"
 
 CLOUDFLARE_URL_RE = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com", re.I)
@@ -89,6 +89,33 @@ def find_tunnel_binary(preferred: str = None) -> tuple:
         if found:
             return ("cloudflared" if "cloudflared" in Path(found).name.lower() else "ngrok"), found
     return None, None
+
+
+TOKEN_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=_-.")
+
+
+def validate_named_token(token: str):
+    """Check a Cloudflare named-tunnel token before it reaches a subprocess.
+
+    Returns (ok, reason). The token is a base64 blob; the checks are deliberately
+    about shape (empty / whitespace / junk characters / pasted URL) rather than
+    about decoding Cloudflare's payload, so a valid token is never rejected.
+    """
+    raw = token if isinstance(token, str) else ""
+    if not raw.strip():
+        return False, "the token is empty"
+    if raw != raw.strip():
+        return False, "the token has leading or trailing whitespace (check for a stray quote or newline)"
+    if any(ch.isspace() for ch in raw):
+        return False, "the token contains whitespace; copy only the tunnel token value"
+    if "://" in raw or raw.lower().startswith(("http", "https")):
+        return False, "this looks like a URL, not a tunnel token; copy the token from the Cloudflare dashboard"
+    if len(raw) < 20:
+        return False, f"the token is only {len(raw)} characters, which is too short for a Cloudflare tunnel token"
+    bad = sorted({ch for ch in raw if ch not in TOKEN_CHARS})
+    if bad:
+        return False, "the token contains unexpected characters: " + " ".join(repr(ch) for ch in bad[:5])
+    return True, "ok"
 
 
 class TunnelManager:
@@ -174,6 +201,9 @@ class TunnelManager:
             if self.named_token:
                 # Named tunnel: the ingress/hostname config lives in Cloudflare;
                 # `--url` is only valid for quick tunnels.
+                ok, reason = validate_named_token(self.named_token)
+                if not ok:
+                    raise RuntimeError(f"Invalid Cloudflare tunnel token: {reason}")
                 return [self.binary, "tunnel", "--no-autoupdate", "run", "--token", self.named_token]
             return [self.binary, "tunnel", "--url", self.local_url, "--no-autoupdate"]
         if self.flavor == "ngrok":
@@ -207,6 +237,17 @@ class TunnelManager:
                 return self.status()
             if self._thread and self._thread.is_alive():
                 return self.status()
+            if self.named_token and (self.requested_flavor in ("auto", "cloudflared")):
+                ok, reason = validate_named_token(self.named_token)
+                if not ok:
+                    self.state = "error"
+                    self.last_error = (
+                        f"Invalid Cloudflare tunnel token: {reason}. "
+                        "Run `cloudflared tunnel token <name>` (or copy it from Zero Trust > Networks > Tunnels) "
+                        "and pass the value with --tunnel-token; the bridge will not start a named tunnel without it."
+                    )
+                    self._append_log_unlocked("[supervisor] " + self.last_error)
+                    return self.status()
             if not self._detect():
                 self.state = "unavailable"
                 self.last_error = (
@@ -443,6 +484,8 @@ class TunnelManager:
                 "binaryAvailable": bool(self.binary),
                 "managed": not bool(self.user_public_url),
                 "named": bool(self.named_token),
+                "namedTokenValid": (validate_named_token(self.named_token)[0] if self.named_token else None),
+                "name": self.name,
                 "localUrl": self.local_url,
                 "lanUrls": lan,
                 "publicUrl": self.public_url,
