@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 setup.py — One command to install, configure, and run the Arena <-> Roblox
-Studio Bridge & MCP Server (v4.0.0).
+Studio Bridge & MCP Server (v5.0.0).
 
 What it does:
   1. Creates or reuses a shared secret in bridge.token — and if bridge.token is
@@ -10,10 +10,10 @@ What it does:
      Plugins directory so you NEVER hit HTTP 401 token mismatches!
   2. Writes ArenaBridge.lua v4.0.0 into your OS Roblox Studio Plugins folder with
      the port + token baked in (leaving the tracked repo source file clean).
-  3. Starts server.py v4.0.0 on :8077 (serving Studio polling, REST CLI, Web
+  3. Starts server.py v5.0.0 on :8077 (serving Studio polling, REST CLI, Web
      Dashboard, AND Streamable HTTP MCP at http://127.0.0.1:8077/mcp).
   4. Optionally writes .mcp.json (`--write-mcp`) for Claude Code / Cursor / VS Code
-     and/or opens a public cloudflared tunnel (`--tunnel`).
+     and/or opens a supervised cloudflared/ngrok tunnel (`--tunnel`).
 
 Usage:
     python3 setup.py                        # install plugin + run server & HTTP MCP
@@ -319,7 +319,13 @@ def shutdown(*_):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8077)
-    ap.add_argument("--tunnel", action="store_true", help="Expose bridge + /mcp via cloudflared quick tunnel")
+    ap.add_argument("--tunnel", action="store_true", help="Expose bridge + /mcp via a supervised cloudflared/ngrok tunnel")
+    ap.add_argument("--tunnel-flavor", default="auto", choices=["auto", "cloudflared", "ngrok"],
+                    help="Tunnel provider (default: auto-detect)")
+    ap.add_argument("--tunnel-token", default=None,
+                    help="Cloudflare named-tunnel token (stable hostname instead of a random quick-tunnel URL)")
+    ap.add_argument("--public-url", default=None,
+                    help="Report a tunnel URL you already run yourself (bridge will not manage it)")
     ap.add_argument("--install-only", action="store_true", help="Install plugin (and optional --write-mcp) then exit")
     ap.add_argument("--rotate", action="store_true", help="Mint a fresh shared secret token")
     ap.add_argument("--read-only", action="store_true", help="Run server & MCP in Read-Only Inspector mode")
@@ -336,7 +342,7 @@ def main():
 
     signal.signal(signal.SIGINT, shutdown)
 
-    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v4.0.0{OFF}")
+    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v5.0.0{OFF}")
     token = get_token(rotate=args.rotate, explicit_dir=args.plugins_dir, preferred_port=args.port)
     say(f"  token: {CYAN}{token}{OFF}  {DIM}(stored in bridge.token){OFF}")
 
@@ -363,33 +369,61 @@ def main():
     if args.place_id is not None:
         server_cmd.extend(["--place-id", str(args.place_id)])
 
+    supervised_tunnel = bool(args.tunnel) and not args.public_url
+    if args.tunnel:
+        server_cmd.append("--tunnel")
+        server_cmd.extend(["--tunnel-flavor", args.tunnel_flavor])
+        if args.tunnel_token:
+            server_cmd.extend(["--tunnel-token", args.tunnel_token])
+    if args.public_url:
+        server_cmd.extend(["--public-url", args.public_url])
+
     spawn(server_cmd, "bridge")
     time.sleep(0.8)
 
-    public_url = {"value": None}
+    if args.public_url:
+        say("\n" + "=" * 70, GREEN)
+        say("  Public URL (externally managed tunnel):", BOLD)
+        say(f"    URL:      {args.public_url}", CYAN)
+        say(f"    MCP URL:  {args.public_url}/mcp", CYAN)
+        say(f"    TOKEN:    {token}", CYAN)
+        say("=" * 70, GREEN)
+    elif supervised_tunnel:
+        def watch_tunnel():
+            import urllib.request
+            announced = None
+            unavailable_reported = False
+            url = f"http://127.0.0.1:{args.port}/api/tunnel"
+            while True:
+                time.sleep(2.0)
+                try:
+                    req = urllib.request.Request(url, headers={"X-Arena-Token": token})
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        info = json.loads(resp.read().decode("utf-8"))
+                except Exception:
+                    continue
+                state = info.get("state")
+                public = info.get("publicUrl")
+                if public and public != announced:
+                    announced = public
+                    print()
+                    say("=" * 70, GREEN)
+                    say("  Tunnel is live — paste these lines to Arena (or any MCP client):", BOLD)
+                    say(f"    URL:      {public}", CYAN)
+                    say(f"    MCP URL:  {public}/mcp", CYAN)
+                    say(f"    TOKEN:    {token}", CYAN)
+                    say("  The supervisor auto-restarts the tunnel and re-prints a new URL if it changes.", DIM)
+                    say("=" * 70, GREEN)
+                    print()
+                if state == "unavailable" and not unavailable_reported:
+                    unavailable_reported = True
+                    say("\n  No tunnel binary found. Install one of:", YELLOW)
+                    for hint in (info.get("installHints") or []):
+                        say(f"    {hint}", DIM)
+                    say(f"  Or expose manually with:  ngrok http {args.port}", DIM)
+                    say("  The bridge keeps running locally on 127.0.0.1.", DIM)
 
-    if args.tunnel:
-        exe = find_binary("cloudflared")
-        if exe:
-            def got_url(url):
-                if public_url["value"]:
-                    return
-                public_url["value"] = url
-                print()
-                say("=" * 70, GREEN)
-                say("  Paste these lines to Arena (or Streamable HTTP MCP client):", BOLD)
-                say(f"    URL:      {url}", CYAN)
-                say(f"    MCP URL:  {url}/mcp", CYAN)
-                say(f"    TOKEN:    {token}", CYAN)
-                say("=" * 70, GREEN)
-                print()
-
-            spawn([exe, "tunnel", "--url", f"http://localhost:{args.port}"], "tunnel", TUNNEL_RE, got_url)
-        else:
-            say("\n  cloudflared not found. Install via:", YELLOW)
-            say("    Windows:  winget install --id Cloudflare.cloudflared", DIM)
-            say("    macOS:    brew install cloudflared", DIM)
-            say(f"  Or expose manually with:  ngrok http {args.port}", DIM)
+        threading.Thread(target=watch_tunnel, daemon=True).start()
 
     print()
     say(f"  Web Dashboard:       http://127.0.0.1:{args.port}", GREEN)

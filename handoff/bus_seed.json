@@ -1,0 +1,73 @@
+{
+  "agents": [
+    {
+      "name": "Claude",
+      "role": "builder",
+      "capabilities": ["server-bridge", "mcp", "python", "luau"]
+    },
+    {
+      "name": "Gemini 4 Argon",
+      "role": "partner",
+      "capabilities": ["roblox", "qa", "docs"]
+    }
+  ],
+  "tasks": [
+    {
+      "title": "G1 — Named-tunnel + custom-domain runbook",
+      "priority": "high",
+      "tags": ["tunnel", "docs", "G1"],
+      "detail": "Test `cloudflared tunnel run --token` with a Zero Trust named tunnel, document DNS/CNAME setup, and make a malformed token fail loudly. Add a unit test for the composed command line. Owner files: roblox-bridge/tunnel_manager.py, docs/OPS.md."
+    },
+    {
+      "title": "G2 — Tunnel latency budget (p50/p95)",
+      "priority": "high",
+      "tags": ["tunnel", "metrics", "G2"],
+      "detail": "Measure /mcp + /api/jobs overhead through the quick tunnel vs localhost for ping_studio, get_studio_state and script_read (20 calls each). Add the table to docs/OPS.md using metrics --prometheus."
+    },
+    {
+      "title": "G3 — Ops tab responsive + SSE reconnect",
+      "priority": "normal",
+      "tags": ["dashboard", "ui", "G3"],
+      "detail": "Make the Ops tab work at 390x844: stack cards, add a 'copy MCP config with tunnel URL' button, and reconnect the EventSource with backoff. Touch only the dashboard JS/HTML inside roblox-bridge/server.py."
+    },
+    {
+      "title": "G4 — Multi-agent MCP prompt recipes",
+      "priority": "normal",
+      "tags": ["mcp", "prompts", "G4"],
+      "detail": "Add prompts multi_agent_handoff, bus_standup and task_triage that teach agents to use the bus, rendering live bus state. Edit only PROMPTS and get_mcp_prompt in mcp_core.py."
+    },
+    {
+      "title": "G5 — Stale-agent sweeper",
+      "priority": "normal",
+      "tags": ["bus", "reliability", "G5"],
+      "detail": "Release tasks held by agents offline > 15 min, broadcast an alert, and increment bridge_agents_reaped_total. Unit-test with fake clocks; keep handle() action names stable."
+    },
+    {
+      "title": "G6 — Handoff brief `since` + summaryOnly",
+      "priority": "low",
+      "tags": ["bus", "G6"],
+      "detail": "Let action='export' accept since (cursor) and summaryOnly so the brief contains only recent activity. Keep existing export tests green and add coverage."
+    },
+    {
+      "title": "G7 — Live Studio acceptance run",
+      "priority": "high",
+      "tags": ["studio", "acceptance", "G7"],
+      "detail": "With Studio open: setup.py --tunnel, start tunnel from the Ops tab, verify state=online and health.ok=true, call bridge_ops status from an MCP client, confirm self_test studioSmoke=pass. Paste JSON into docs/OPS.md 'Live acceptance'."
+    },
+    {
+      "title": "G8 — Kill-switch drill",
+      "priority": "normal",
+      "tags": ["studio", "reliability", "G8"],
+      "detail": "Stop Studio mid-job. Confirm bridge_jobs_reaped_total increments, the job returns to queued and completes when Studio reconnects. Record the event feed excerpt."
+    }
+  ],
+  "messages": [
+    {
+      "from": "Claude",
+      "subject": "v5 ops platform is live on this branch",
+      "body": "Tunnel supervisor, scoped tokens, agent bus, metrics/audit and the Ops tab are in. Agent bus actions are stable: register/heartbeat/post/inbox/tasks/task_claim/task_complete/export. Please claim tasks G1..G8 before editing so we do not collide.",
+      "kind": "handoff",
+      "priority": "high"
+    }
+  ]
+}

@@ -7,7 +7,7 @@ Simultaneously serves:
   1. Roblox Studio local plugin peers (Edit + Play Server + Play Client bridge)
      via fast long-polling (`GET /api/poll`, `POST /api/result`).
   2. Native MCP Streamable HTTP endpoint (`POST /mcp`, `GET /mcp`, `DELETE /mcp`)
-     implementing MCP 2025-06-18 / 2024-11-05 JSON-RPC 2.0 (68 tools, 5 live
+     implementing MCP 2025-06-18 / 2024-11-05 JSON-RPC 2.0 (70 tools, 8 live
      resources, 2 resource templates, 4 workflow prompts).
   3. REST API for CLI (`arena_studio.py` / `ab.ps1`) & remote cloud agents
      (`GET /api/health`, `GET /api/state`, `GET /api/agent-guide`,
@@ -31,9 +31,20 @@ import time
 from urllib.parse import parse_qs, urlparse
 import uuid
 
-from mcp_core import BridgeClient, MCPDispatcher, TOOL_SPECS, run_bridge_self_test
+from mcp_core import (
+    BridgeClient,
+    MCPDispatcher,
+    TOOL_MAP,
+    TOOL_SPECS,
+    is_tool_call_read_only,
+    run_bridge_self_test,
+)
+from auth_core import ROLE_RANK, TokenStore
+from bus_core import AgentBus
+from telemetry import Telemetry
+from tunnel_manager import TunnelManager
 
-VERSION = "4.0.0"
+VERSION = "5.0.0"
 PEER_ONLINE_WINDOW = 5.0  # play DataModel peers are transient; do not route work to stale peers
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_DIR = HERE / "snapshots"
@@ -120,10 +131,25 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
 # ----------------------------------------------------------------------------
 
 class BridgeState:
-    def __init__(self, token: str = "", read_only: bool = False, guard_place_id: int = None):
+    def __init__(
+        self,
+        token: str = "",
+        read_only: bool = False,
+        guard_place_id: int = None,
+        state_dir: str = None,
+        auto_tunnel: bool = False,
+        tunnel_flavor: str = "auto",
+        tunnel_token: str = None,
+        tunnel_name: str = None,
+        public_url: str = None,
+        tunnel_binary: str = None,
+    ):
         self.token = token or ""
         self.read_only = bool(read_only)
         self.guard_place_id = int(guard_place_id) if guard_place_id else None
+        self.started = _now()
+        self.state_dir = Path(state_dir) if state_dir else (HERE / "bridge_state")
+        self.state_dir.mkdir(parents=True, exist_ok=True)
 
         self.lock = threading.RLock()
         self.poll_cv = threading.Condition(self.lock)
@@ -150,6 +176,126 @@ class BridgeState:
             default_place_id=self.guard_place_id,
         )
         self.mcp_dispatcher = MCPDispatcher(self.mcp_client)
+
+        # --- v5 ops platform -------------------------------------------------
+        self.telemetry = Telemetry(self.state_dir)
+        self.bus = AgentBus(self.state_dir / "bus.json")
+        self.tokens = TokenStore(self.state_dir / "tokens.json", primary_token=self.token)
+        self.tunnel = TunnelManager(
+            port=int(os.environ.get("BRIDGE_PORT", 8077)),
+            binary=tunnel_binary,
+            flavor=tunnel_flavor,
+            named_token=tunnel_token,
+            name=tunnel_name,
+            public_url=public_url,
+            state_dir=self.state_dir,
+            auto_start=bool(auto_tunnel),
+        )
+        # Job dedupe + retry bookkeeping
+        self.idempotency = {}
+        self._reaper_stop = threading.Event()
+        self._reaper = threading.Thread(target=self._reap_loop, name="job-reaper", daemon=True)
+        self._reaper.start()
+
+        self.telemetry.events.emit("bridge.start", {
+            "version": VERSION,
+            "readOnly": self.read_only,
+            "tools": len(TOOL_SPECS),
+            "authMode": "scoped" if self.token else "open",
+        })
+        self.telemetry.audit.append(
+            "bridge.start",
+            actor="system",
+            detail={"version": VERSION, "readOnly": self.read_only, "authMode": "scoped" if self.token else "open"},
+        )
+
+    # -- auth ----------------------------------------------------------------
+
+    def authenticate(self, supplied: str = None, is_loopback: bool = False, required: str = "read"):
+        """Resolve a raw token into an auth context.
+
+        Returns (context, error). `error` is a dict with `code`/`error` when the
+        request must be rejected. Auth is disabled entirely when no token is set,
+        which preserves the historical zero-config localhost experience.
+        """
+        if not self.token and not self.tokens.records:
+            return {"role": "admin", "id": "open", "label": "auth-disabled"}, None
+        record, rate = self.tokens.authenticate(supplied)
+        if record is None:
+            # No anonymous bypass: a configured token is required for every path
+            # that is not explicitly public (dashboard HTML and /api/health).
+            return None, {"code": 401, "error": "bad token"}
+        if rate and not rate.get("allowed"):
+            return None, {
+                "code": 429,
+                "error": "rate limit exceeded for this token",
+                "retryAfter": rate.get("retryAfter", 1),
+            }
+        if not TokenStore.role_allows(record.role, required):
+            return None, {
+                "code": 403,
+                "error": f"token role '{record.role}' cannot perform '{required}' actions",
+            }
+        ctx = {
+            "role": record.role,
+            "id": record.id,
+            "label": record.label,
+            "remaining": (rate or {}).get("remaining"),
+        }
+        if record.id != "primary":
+            self.telemetry.metrics.inc("bridge_token_requests_total", 1, {"token": record.id, "role": record.role})
+        return ctx, None
+
+    # -- background reaper ---------------------------------------------------
+
+    def _reap_loop(self):
+        while not self._reaper_stop.wait(2.0):
+            try:
+                self.reap_jobs()
+            except Exception:  # noqa: BLE001 - the reaper must never die
+                continue
+
+    def reap_jobs(self) -> dict:
+        """Fail timed-out jobs and re-queue work orphaned by a dead/absent peer."""
+        now = _now()
+        recovered = 0
+        timed_out = 0
+        with self.lock:
+            online = {p["peerId"] for p in self._active_peers_unlocked() if p["online"]}
+            for job in list(self.jobs.values()):
+                if job.get("status") != "running":
+                    continue
+                claimed = job.get("claimed") or now
+                timeout = float(job.get("timeout") or 120.0)
+                owner = job.get("claimedBy")
+                orphaned = bool(owner) and owner not in online and (now - claimed) > 20.0
+                if orphaned:
+                    job["status"] = "queued"
+                    job["claimedBy"] = None
+                    job["claimed"] = None
+                    job["attempts"] = int(job.get("attempts") or 0) + 1
+                    job["note"] = (job.get("note") or "") + f" [requeued: peer {owner} went away]"
+                    if job["id"] not in self.pending:
+                        self.pending.append(job["id"])
+                    recovered += 1
+                    self.poll_cv.notify_all()
+                    self.telemetry.events.emit("job.requeued_orphan", {"id": job["id"], "type": job["type"], "peer": owner}, level="warn")
+                    continue
+                if (now - claimed) > timeout:
+                    job["status"] = "error"
+                    job["ok"] = False
+                    job["error"] = f"timeout after {timeout:.0f}s in {'peer ' + owner if owner else 'queue'}"
+                    job["finished"] = now
+                    job["duration_ms"] = round((now - claimed) * 1000, 1)
+                    timed_out += 1
+                    evt = self.job_events.get(job["id"])
+                    if evt:
+                        evt.set()
+                    self.telemetry.record_job(job)
+                    self.telemetry.audit.append("job.timeout", actor="reaper", target=job["id"],
+                                                detail={"type": job["type"], "peer": owner}, outcome="error")
+        self.telemetry.metrics.inc("bridge_jobs_reaped_total", recovered + timed_out)
+        return {"recovered": recovered, "timedOut": timed_out}
 
     # -- peer tracking -------------------------------------------------------
 
@@ -285,22 +431,37 @@ class BridgeState:
         with self.poll_cv:
             while True:
                 self.peers[peer_info["peerId"]]["lastPoll"] = _now()
+                best = None
                 for job_id in list(self.pending):
                     job = self.jobs.get(job_id)
                     if not job or job["status"] != "queued":
                         self.pending.remove(job_id)
                         continue
-                    if self._peer_matches_job_unlocked(peer_info, job):
-                        self.pending.remove(job_id)
-                        job["status"] = "running"
-                        job["claimed"] = _now()
-                        job["claimedBy"] = peer_info["peerId"]
-                        job["dm"] = peer_info["dm"]
-                        return {
-                            "id": job["id"],
-                            "type": job["type"],
-                            "payload": job["payload"],
-                        }
+                    if not self._peer_matches_job_unlocked(peer_info, job):
+                        continue
+                    # Priority first, then FIFO, so a critical agent probe is not
+                    # stuck behind a long bulk-build job from another agent.
+                    rank = (int(job.get("priority", 5)), job.get("created", 0))
+                    if best is None or rank < best[0]:
+                        best = (rank, job_id)
+                if best is not None:
+                    job_id = best[1]
+                    job = self.jobs[job_id]
+                    self.pending.remove(job_id)
+                    job["status"] = "running"
+                    job["claimed"] = _now()
+                    job["claimedBy"] = peer_info["peerId"]
+                    job["dm"] = peer_info["dm"]
+                    job["attempts"] = int(job.get("attempts") or 0) + 1
+                    self.telemetry.events.emit("job.claim", {
+                        "id": job["id"], "type": job["type"], "peer": peer_info["peerId"],
+                        "priority": job.get("priority", 5),
+                    })
+                    return {
+                        "id": job["id"],
+                        "type": job["type"],
+                        "payload": job["payload"],
+                    }
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -325,6 +486,10 @@ class BridgeState:
         dm: str = None,
         peer_id: str = None,
         place_id: int = None,
+        idempotency_key: str = None,
+        priority: int = 5,
+        max_retries: int = 0,
+        timeout: float = None,
     ):
         payload_dict = dict(payload or {}) if isinstance(payload, dict) else {}
 
@@ -351,7 +516,28 @@ class BridgeState:
 
         effective_place = place_id if place_id is not None else self.guard_place_id
 
+        priority = max(0, min(int(priority if priority is not None else 5), 9))
+        max_retries = max(0, min(int(max_retries or 0), 5))
+        idempotency_key = (idempotency_key or "").strip()[:200] or None
+
         with self.poll_cv:
+            now = _now()
+            # Purge idempotency keys older than an hour so the map stays bounded.
+            if len(self.idempotency) > 512:
+                for key in [k for k, v in self.idempotency.items() if now - v.get("ts", 0) > 3600]:
+                    self.idempotency.pop(key, None)
+
+            if idempotency_key:
+                prior = self.idempotency.get(idempotency_key)
+                prior_job = self.jobs.get(prior["id"]) if prior else None
+                if prior_job and prior_job.get("status") not in ("error", "cancelled"):
+                    prior_job["deduplicated"] = int(prior_job.get("deduplicated") or 0) + 1
+                    self.telemetry.metrics.inc("bridge_job_dedupe_total", 1, {"type": kind})
+                    self.telemetry.events.emit("job.dedupe", {
+                        "id": prior_job["id"], "type": kind, "key": idempotency_key,
+                    })
+                    return prior_job, self.job_events.setdefault(prior_job["id"], threading.Event())
+
             jid = uuid.uuid4().hex[:12]
             done_evt = threading.Event()
             job = {
@@ -365,7 +551,7 @@ class BridgeState:
                 "dm": None,
                 "claimedBy": None,
                 "status": "queued",
-                "created": _now(),
+                "created": now,
                 "claimed": None,
                 "finished": None,
                 "duration_ms": None,
@@ -373,29 +559,82 @@ class BridgeState:
                 "result": None,
                 "error": None,
                 "logs": [],
+                "priority": priority,
+                "maxRetries": max_retries,
+                "retries": 0,
+                "attempts": 0,
+                "timeout": float(timeout) if timeout else None,
+                "idempotencyKey": idempotency_key,
+                "deduplicated": 0,
             }
             self.jobs[jid] = job
             self.job_events[jid] = done_evt
             self.pending.append(jid)
             self.history.append(jid)
+            if idempotency_key:
+                self.idempotency[idempotency_key] = {"id": jid, "ts": now}
             while len(self.jobs) > 600:
                 oldest = next(iter(self.jobs))
                 if oldest == jid:
                     break
                 self.jobs.pop(oldest, None)
                 self.job_events.pop(oldest, None)
+            self.telemetry.metrics.inc("bridge_jobs_enqueued_total", 1, {"type": kind})
+            self.telemetry.events.emit("job.enqueue", {
+                "id": jid, "type": kind, "dm": effective_dm, "priority": priority,
+                "note": note, "idempotencyKey": idempotency_key,
+            })
+            if kind in self.MUTATING_JOB_TYPES:
+                self.telemetry.audit.append(
+                    "job.enqueue", actor=note or "agent", target=jid,
+                    detail={"type": kind, "dm": effective_dm, "priority": priority},
+                )
             self.poll_cv.notify_all()
             return job, done_evt
 
+    TRANSIENT_ERROR_HINTS = (
+        "timeout", "timed out", "time-out", "peer", "disconnect", "connection",
+        "econn", "temporarily", "busy", "try again", "socket", "network",
+        "unknown job type", "not ready",
+    )
+
+    def _is_transient_error(self, body: dict, job: dict) -> bool:
+        if body.get("retryable") is True:
+            return True
+        message = str(body.get("error") or "").lower()
+        if not message:
+            return False
+        return any(hint in message for hint in self.TRANSIENT_ERROR_HINTS)
+
     def complete_job(self, body: dict) -> bool:
         jid = body.get("id")
-        with self.lock:
+        with self.poll_cv:
             job = self.jobs.get(jid)
             if not job:
                 return False
             now = _now()
-            job["status"] = "done" if body.get("ok") else "error"
-            job["ok"] = bool(body.get("ok"))
+            ok = bool(body.get("ok"))
+            if not ok and int(job.get("retries") or 0) < int(job.get("maxRetries") or 0) \
+                    and self._is_transient_error(body, job):
+                job["retries"] = int(job.get("retries") or 0) + 1
+                job["attempts"] = int(job.get("attempts") or 0)
+                job["status"] = "queued"
+                job["claimedBy"] = None
+                job["claimed"] = None
+                job["error"] = None
+                job["note"] = (job.get("note") or "") + f" [retry {job['retries']}: {str(body.get('error'))[:120]}]"
+                if jid not in self.pending:
+                    self.pending.append(jid)
+                self.telemetry.metrics.inc("bridge_job_retries_total", 1, {"type": job["type"]})
+                self.telemetry.events.emit("job.retry", {
+                    "id": jid, "type": job["type"], "retry": job["retries"],
+                    "error": str(body.get("error"))[:200],
+                }, level="warn")
+                self.poll_cv.notify_all()
+                return True
+
+            job["status"] = "done" if ok else "error"
+            job["ok"] = ok
             job["result"] = body.get("result")
             job["error"] = body.get("error")
             job["logs"] = body.get("logs") or []
@@ -409,6 +648,12 @@ class BridgeState:
             evt = self.job_events.get(jid)
             if evt:
                 evt.set()
+            self.telemetry.record_job(job)
+            if not ok:
+                self.telemetry.audit.append(
+                    "job.error", actor=job.get("claimedBy") or "studio", target=jid,
+                    detail={"type": job["type"], "error": str(job.get("error"))[:300]}, outcome="error",
+                )
             return True
 
     def cancel_job(self, jid: str) -> dict:
@@ -515,6 +760,7 @@ class BridgeState:
             with self.lock:
                 online, st = self.legacy_studio_summary_unlocked()
                 peers = self._active_peers_unlocked()
+                tunnel_state = self.tunnel.state
                 return {
                     "ok": True,
                     "version": VERSION,
@@ -525,6 +771,15 @@ class BridgeState:
                     "peers": peers,
                     "queued": len(self.pending),
                     "jobs": len(self.jobs),
+                    "uptimeSeconds": round(_now() - self.started, 1),
+                    "authMode": "scoped" if self.token else "open",
+                    "tunnel": {
+                        "state": tunnel_state,
+                        "publicUrl": self.tunnel.public_url,
+                        "localUrl": self.tunnel.local_url,
+                    },
+                    "agents": self.bus.stats()["agents"],
+                    "agentsOnline": self.bus.stats()["agentsOnline"],
                 }
         if op == "state":
             with self.lock:
@@ -542,6 +797,12 @@ class BridgeState:
                     "snapshots": len(self.snapshots),
                     "recent": recent,
                     "server_time": _now(),
+                    "uptimeSeconds": round(_now() - self.started, 1),
+                    "bus": self.bus.stats(),
+                    "tunnel": {
+                        "state": self.tunnel.state,
+                        "publicUrl": self.tunnel.public_url,
+                    },
                 }
         if op == "peers":
             with self.lock:
@@ -565,13 +826,112 @@ class BridgeState:
                 dm=body.get("dm"),
                 peer_id=body.get("peer_id"),
                 place_id=body.get("place_id"),
+                idempotency_key=body.get("idempotencyKey") or body.get("idempotency_key"),
+                priority=body.get("priority", 5),
+                max_retries=body.get("maxRetries", body.get("max_retries", 0)),
+                timeout=body.get("timeout"),
             )
             wait = float(body.get("wait") or 0)
             if wait > 0:
                 evt.wait(timeout=min(wait, 120.0))
             with self.lock:
                 return dict(self.jobs[job["id"]])
+        if op == "bus":
+            return self.bus.handle(body)
+        if op == "tunnel":
+            return self.tunnel_action(body)
+        if op == "tokens":
+            return self.tokens.handle(body)
+        if op == "metrics":
+            return self.metrics_snapshot()
+        if op == "audit":
+            if body.get("verify"):
+                return self.telemetry.audit.verify()
+            return self.telemetry.audit.tail(int(body.get("limit") or 100), body.get("action"))
+        if op == "events":
+            if body.get("wait") is not None:
+                return self.telemetry.events.tail(int(body.get("cursor") or 0), float(body.get("wait") or 0), int(body.get("limit") or 100))
+            return self.telemetry.events.since(int(body.get("cursor") or 0), int(body.get("limit") or 200), body.get("kinds"))
+        if op in ("ops", "ops_report"):
+            return self.ops_report()
+        if op == "queue_clear":
+            cancelled = self.clear_queue()
+            self.telemetry.audit.append("queue.clear", actor="internal", detail={"cancelled": cancelled})
+            return {"cancelled": cancelled}
+        if op == "reap":
+            return self.reap_jobs()
         raise ValueError(f"Unknown internal op: {op}")
+
+    # -- tunnel control ------------------------------------------------------
+
+    def tunnel_action(self, payload: dict) -> dict:
+        """Refuse to publish an unauthenticated bridge, then delegate."""
+        action = ((payload or {}).get("action") or "status").lower()
+        if action in ("start", "restart") and not self.token:
+            status = self.tunnel.status()
+            status.update({
+                "state": "blocked",
+                "running": False,
+                "lastError": (
+                    "Refusing to expose the bridge publicly without a token. "
+                    "Run `python setup.py` (it writes bridge.token) or start server.py with --token."
+                ),
+                "security": "blocked_no_token",
+            })
+            self.telemetry.events.emit("tunnel.blocked", {"reason": "no_token"}, level="warn")
+            self.telemetry.audit.append("tunnel.blocked", actor="system", detail={"reason": "no_token"}, outcome="denied")
+            return status
+        return self.tunnel.handle(payload)
+
+    # -- ops reporting -------------------------------------------------------
+
+    def metrics_snapshot(self) -> dict:
+        with self.lock:
+            online, _ = self.legacy_studio_summary_unlocked()
+            peers_online = sum(1 for p in self._active_peers_unlocked() if p["online"])
+            queued = len(self.pending)
+            running = sum(1 for j in self.jobs.values() if j.get("status") == "running")
+            jobs_total = len(self.jobs)
+            online_flag = online
+        bus_stats = self.bus.stats()
+        t = self.telemetry.metrics
+        t.gauge("bridge_peers_online", peers_online)
+        t.gauge("bridge_studio_connected", 1 if online_flag else 0)
+        t.gauge("bridge_queue_depth", queued)
+        t.gauge("bridge_jobs_running", running)
+        t.gauge("bridge_jobs_tracked", jobs_total)
+        t.gauge("bridge_agents_online", bus_stats["agentsOnline"])
+        t.gauge("bridge_tasks_open", sum(
+            v for k, v in bus_stats["taskCounts"].items() if k in ("todo", "in_progress", "blocked")
+        ))
+        t.gauge("bridge_uptime_seconds", round(_now() - self.started, 1))
+        t.gauge("bridge_tunnel_online", 1 if self.tunnel.state == "online" else 0)
+        return t.snapshot(uptime=_now() - self.started)
+
+    def ops_report(self) -> dict:
+        health = self.direct_dispatch("health", {})
+        metrics = self.metrics_snapshot()
+        bus_stats = self.bus.stats()
+        tasks = self.bus.list_tasks(include_done=False)
+        audit = self.telemetry.audit.tail(10)
+        with self.lock:
+            recent = [summary(self.jobs[i]) for i in list(self.history)[-12:]][::-1]
+        return {
+            "ok": True,
+            "version": VERSION,
+            "uptimeSeconds": round(_now() - self.started, 1),
+            "health": health,
+            "tunnel": self.tunnel.status(),
+            "metrics": {
+                "counters": {f"{c['name']}{json.dumps(c['labels'], sort_keys=True) if c['labels'] else ''}": c["value"] for c in metrics["counters"][:80]},
+                "histograms": metrics["histograms"][:20],
+            },
+            "bus": bus_stats,
+            "openTasks": tasks["tasks"][:20],
+            "audit": audit["entries"],
+            "recentJobs": recent,
+            "servedAt": _now(),
+        }
 
 
 def summary(job: dict) -> dict:
@@ -650,17 +1010,98 @@ def make_http_handler(state: BridgeState):
             except Exception:
                 return {"_raw": raw.decode("utf-8", "replace")}
 
-        def _authorized(self, qs: dict) -> bool:
-            if not state.token:
-                return True
+        @staticmethod
+        def _int_qs(qs: dict, key: str, default: int = 0, minimum: int = 0, maximum: int = 10000) -> int:
+            try:
+                value = int((qs.get(key) or [default])[0])
+            except (TypeError, ValueError):
+                return default
+            return max(minimum, min(value, maximum))
+
+        def _supplied_token(self, qs: dict):
             bearer = self.headers.get("Authorization", "")
             bearer_tok = bearer[7:].strip() if bearer.lower().startswith("bearer ") else None
-            supplied = (
+            return (
                 qs.get("token", [None])[0]
                 or self.headers.get("X-Arena-Token")
                 or bearer_tok
             )
-            return supplied == state.token
+
+        def _auth_ctx(self, qs: dict, required: str = "read", allow_loopback: bool = False):
+            """Return (context, error). Auth is a no-op when no token is configured."""
+            supplied = self._supplied_token(qs)
+            ctx, err = state.authenticate(
+                supplied,
+                is_loopback=self._is_loopback(),
+                required=required,
+            )
+            if err and allow_loopback and required == "read" and not supplied and self._is_loopback():
+                # Backwards-compatible convenience for local dashboards/CLIs on
+                # read-only discovery endpoints. Never applied to /mcp or writes.
+                return {"role": "read", "id": "loopback", "label": "loopback"}, None
+            return ctx, err
+
+        def _authorized(self, qs: dict) -> bool:
+            ctx, err = self._auth_ctx(qs, "read")
+            return err is None
+
+        def _require(self, qs: dict, required: str = "read", allow_loopback: bool = False):
+            """Scope check that writes the error response itself. Returns ctx or None."""
+            ctx, err = self._auth_ctx(qs, required, allow_loopback=allow_loopback)
+            if err:
+                headers = None
+                if err.get("code") == 429:
+                    headers = {"Retry-After": str(err.get("retryAfter", 1))}
+                payload = {"error": err.get("error")}
+                if err.get("retryAfter"):
+                    payload["retryAfter"] = err["retryAfter"]
+                self._send(err.get("code", 401), payload, extra_headers=headers)
+                state.telemetry.metrics.inc(
+                    "bridge_auth_rejections_total", 1,
+                    {"code": str(err.get("code")), "path": urlparse(self.path).path},
+                )
+                return None
+            return ctx
+
+        # -- Server-Sent Events -------------------------------------------------
+
+        def _stream_events(self, qs: dict):
+            cursor = self._int_qs(qs, "since", 0) or self._int_qs(qs, "cursor", 0)
+            kinds = (qs.get("kinds") or [None])[0]
+            try:
+                max_seconds = min(float((qs.get("maxSeconds") or ["300"])[0] or 300), 900)
+            except (TypeError, ValueError):
+                max_seconds = 300.0
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            def _write(chunk: str):
+                self.wfile.write(chunk.encode("utf-8"))
+                self.wfile.flush()
+
+            started = time.monotonic()
+            _write(": arena bridge event stream\n\n")
+            try:
+                if cursor == 0:
+                    seed = state.telemetry.events.since(0, 50, kinds)
+                    for event in seed["events"]:
+                        _write(f"id: {event['seq']}\ndata: {json.dumps(event)}\n\n")
+                    cursor = seed["cursor"]
+                while time.monotonic() - started < max_seconds:
+                    batch = state.telemetry.events.tail(cursor, timeout=10.0)
+                    for event in batch["events"]:
+                        _write(f"id: {event['seq']}\ndata: {json.dumps(event)}\n\n")
+                        cursor = event["seq"]
+                    if batch.get("timeout"):
+                        _write(": keepalive\n\n")
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
 
         def do_OPTIONS(self):
             self._send(204, b"")
@@ -722,13 +1163,17 @@ def make_http_handler(state: BridgeState):
                         "bridgeDir": str(HERE) if is_local else "",
                         "mcpServerPath": str(HERE / "mcp_server.py") if is_local else "roblox-bridge/mcp_server.py",
                         "cliPath": str(HERE / "arena_studio.py") if is_local else "roblox-bridge/arena_studio.py",
+                        "version": VERSION,
+                        "toolCount": len(TOOL_SPECS),
+                        "authRoles": ["read", "write", "admin"],
                         "tools": tools_lite,
                     },
                 )
 
             if path == "/mcp":
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "unauthorized"})
+                ctx = self._require(qs, "read")
+                if not ctx:
+                    return
                 return self._send(
                     200,
                     {
@@ -737,24 +1182,29 @@ def make_http_handler(state: BridgeState):
                         "transport": "streamable-http",
                         "tools": len(TOOL_SPECS),
                         "readOnly": state.read_only,
+                        "role": ctx["role"],
                     },
                     extra_headers={"Mcp-Session-Id": state.session_id},
                 )
 
+            # Public, unauthenticated liveness probe used by the tunnel supervisor
+            # and uptime monitors. Contains no place data or secrets.
             if path == "/api/health":
                 return self._send(200, state.direct_dispatch("health", {}))
 
-            if path == "/api/self-test":
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "bad token"})
-                return self._send(200, run_bridge_self_test(state.mcp_client, include_studio_smoke=True, timeout=180))
-
             if path == "/api/state":
+                if not self._require(qs, "read"):
+                    return
                 return self._send(200, state.direct_dispatch("state", {}))
 
+            if path == "/api/self-test":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, run_bridge_self_test(state.mcp_client, include_studio_smoke=True, timeout=180))
+
             if path == "/api/agent-guide":
-                if not self._authorized(qs) and not self._is_loopback():
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read", allow_loopback=True):
+                    return
                 host_hdr = self.headers.get("Host") or "127.0.0.1:8077"
                 proto = "https" if self.headers.get("CF-Connecting-IP") else "http"
                 return self._send(
@@ -763,18 +1213,72 @@ def make_http_handler(state: BridgeState):
                 )
 
             if path == "/api/peers":
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read"):
+                    return
                 return self._send(200, state.direct_dispatch("peers", {}))
 
+            # --- v5 observability & collaboration --------------------------------
+            if path == "/api/ops":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, state.ops_report())
+
+            if path == "/api/metrics":
+                if not self._require(qs, "read"):
+                    return
+                fmt = (qs.get("format") or ["json"])[0].lower()
+                if fmt in ("prometheus", "prom", "text"):
+                    body = state.telemetry.metrics.prometheus()
+                    return self._send(200, body, "text/plain; version=0.0.4; charset=utf-8")
+                return self._send(200, state.metrics_snapshot())
+
+            if path == "/api/events":
+                if not self._require(qs, "read"):
+                    return
+                if (qs.get("once") or qs.get("snapshot") or ["0"])[0] in ("1", "true", "yes"):
+                    cursor = self._int_qs(qs, "since", 0) or self._int_qs(qs, "cursor", 0)
+                    limit = self._int_qs(qs, "limit", 100, 1, 1000)
+                    return self._send(200, state.telemetry.events.since(cursor, limit, (qs.get("kinds") or [None])[0]))
+                return self._stream_events(qs)
+
+            if path == "/api/audit":
+                if not self._require(qs, "read"):
+                    return
+                if (qs.get("verify") or ["0"])[0] in ("1", "true", "yes"):
+                    return self._send(200, state.telemetry.audit.verify())
+                limit = self._int_qs(qs, "limit", 100, 1, 2000)
+                return self._send(200, state.telemetry.audit.tail(limit, (qs.get("action") or [None])[0]))
+
+            if path == "/api/bus":
+                if not self._require(qs, "read"):
+                    return
+                payload = {k: v[0] for k, v in qs.items() if k != "token"}
+                payload.setdefault("action", "stats")
+                try:
+                    return self._send(200, state.bus.handle(payload))
+                except KeyError as exc:
+                    return self._send(404, {"error": str(exc)})
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+
+            if path == "/api/tunnel":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, state.tunnel.status())
+
+            if path == "/api/tokens":
+                if not self._require(qs, "admin"):
+                    return
+                return self._send(200, state.tokens.list())
+
             if path == "/api/snapshots":
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read"):
+                    return
                 return self._send(200, state.handle_snapshots({"action": "list"}))
 
             if path.startswith("/api/snapshots/"):
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read"):
+                    return
                 sid = path.rsplit("/", 1)[-1]
                 try:
                     return self._send(200, state.handle_snapshots({"action": "get", "id": sid}))
@@ -783,15 +1287,15 @@ def make_http_handler(state: BridgeState):
 
             # Studio plugin long-polls here
             if path == "/api/poll":
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read"):
+                    return
                 peer_info = state.record_poll(qs)
                 job = state.poll_for_job(peer_info, wait_seconds=8.0)
                 return self._send(200, {"job": job})
 
             if path.startswith("/api/jobs/"):
-                if not self._authorized(qs) and not self._is_loopback():
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read", allow_loopback=True):
+                    return
                 job_id = path.rsplit("/", 1)[-1]
                 with state.lock:
                     job = state.jobs.get(job_id)
@@ -800,8 +1304,8 @@ def make_http_handler(state: BridgeState):
                 return self._send(200, job)
 
             if path == "/api/jobs":
-                if not self._authorized(qs) and not self._is_loopback():
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read", allow_loopback=True):
+                    return
                 with state.lock:
                     return self._send(200, {"jobs": [summary(state.jobs[i]) for i in state.history]})
 
@@ -812,11 +1316,12 @@ def make_http_handler(state: BridgeState):
             qs = parse_qs(url.query)
             path = url.path.rstrip("/") or "/"
 
-            if not self._authorized(qs):
-                return self._send(401, {"error": "bad token"})
-
-            # Native MCP Streamable HTTP endpoint (JSON-RPC 2.0)
+            # Native MCP Streamable HTTP endpoint (JSON-RPC 2.0). The token role
+            # determines whether mutating tools are advertised/callable.
             if path == "/mcp":
+                ctx = self._require(qs, "read")
+                if not ctx:
+                    return
                 raw = self._read_body_raw()
                 try:
                     rpc_in = json.loads(raw.decode("utf-8"))
@@ -826,6 +1331,9 @@ def make_http_handler(state: BridgeState):
                         {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {exc}"}},
                         extra_headers={"Mcp-Session-Id": state.session_id},
                     )
+                rpc_in, scope_error = self._enforce_mcp_scope(rpc_in, ctx)
+                if scope_error is not None:
+                    return self._send(200, scope_error, extra_headers={"Mcp-Session-Id": state.session_id})
                 rpc_out = state.mcp_dispatcher.handle_payload(rpc_in)
                 if rpc_out is None:
                     return self._send(202, b"", "text/plain; charset=utf-8", {"Mcp-Session-Id": state.session_id})
@@ -833,8 +1341,12 @@ def make_http_handler(state: BridgeState):
 
             body = self._body()
 
-            # Enqueue job for Studio
+            # Enqueue job for Studio (requires write scope; admin when read-only
+            # inspector mode is active, since that setting is a safety control).
             if path == "/api/jobs":
+                ctx = self._require(qs, "write")
+                if not ctx:
+                    return
                 kind = body.get("type")
                 if not kind:
                     return self._send(400, {"error": "type is required"})
@@ -842,10 +1354,14 @@ def make_http_handler(state: BridgeState):
                     job, evt = state.enqueue_job(
                         kind=kind,
                         payload=body.get("payload"),
-                        note=body.get("note"),
+                        note=body.get("note") or f"api:{ctx['label']}",
                         dm=body.get("dm"),
                         peer_id=body.get("peer_id"),
                         place_id=body.get("place_id"),
+                        idempotency_key=body.get("idempotencyKey") or self.headers.get("Idempotency-Key"),
+                        priority=body.get("priority", 5),
+                        max_retries=body.get("maxRetries", 0),
+                        timeout=body.get("timeout"),
                     )
                 except PermissionError as exc:
                     return self._send(403, {"error": str(exc)})
@@ -855,9 +1371,16 @@ def make_http_handler(state: BridgeState):
                     evt.wait(timeout=min(wait, 120.0))
                     with state.lock:
                         return self._send(200, state.jobs[job["id"]])
-                return self._send(201, {"id": job["id"], "status": job["status"]})
+                return self._send(201, {
+                    "id": job["id"],
+                    "status": job["status"],
+                    "priority": job.get("priority"),
+                    "deduplicated": job.get("deduplicated", 0),
+                })
 
             if path.startswith("/api/jobs/") and path.endswith("/cancel"):
+                if not self._require(qs, "write"):
+                    return
                 parts = path.split("/")
                 job_id = parts[3] if len(parts) >= 5 else ""
                 try:
@@ -866,9 +1389,16 @@ def make_http_handler(state: BridgeState):
                     return self._send(404, {"error": str(exc)})
 
             if path == "/api/queue/clear":
-                return self._send(200, {"cancelled": state.clear_queue()})
+                ctx = self._require(qs, "admin")
+                if not ctx:
+                    return
+                cancelled = state.clear_queue()
+                state.telemetry.audit.append("queue.clear", actor=ctx["label"], detail={"cancelled": cancelled})
+                return self._send(200, {"cancelled": cancelled})
 
             if path == "/api/snapshots":
+                if not self._require(qs, "write"):
+                    return
                 try:
                     return self._send(200, state.handle_snapshots(body))
                 except KeyError as exc:
@@ -876,13 +1406,127 @@ def make_http_handler(state: BridgeState):
                 except ValueError as exc:
                     return self._send(400, {"error": str(exc)})
 
+            # --- v5 collaboration & ops control ---------------------------------
+            if path == "/api/bus":
+                action = (body.get("action") or "stats")
+                required = "write" if action not in (
+                    "stats", "agents", "list_agents", "inbox", "thread", "tasks",
+                    "list_tasks", "feed", "events", "status",
+                ) else "read"
+                ctx = self._require(qs, required)
+                if not ctx:
+                    return
+                try:
+                    result = state.bus.handle(body)
+                except KeyError as exc:
+                    return self._send(404, {"error": str(exc)})
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                state.telemetry.metrics.inc("bridge_bus_actions_total", 1, {"action": action})
+                return self._send(200, result)
+
+            if path == "/api/ops":
+                action = (body.get("action") or "status").lower()
+                required = "read" if action in ("status", "report") else "admin"
+                ctx = self._require(qs, required)
+                if not ctx:
+                    return
+                if action in ("status", "report"):
+                    return self._send(200, state.ops_report())
+                try:
+                    result = state.direct_dispatch(action, body)
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                state.telemetry.audit.append(f"ops.{action}", actor=ctx["label"], outcome="ok")
+                return self._send(200, result)
+
+            if path == "/api/tunnel":
+                action = (body.get("action") or "status").lower()
+                required = "admin" if action in ("start", "stop", "restart") else "read"
+                ctx = self._require(qs, required)
+                if not ctx:
+                    return
+                try:
+                    result = state.tunnel_action(body)
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                if action in ("start", "stop", "restart"):
+                    state.telemetry.audit.append(f"tunnel.{action}", actor=ctx["label"], outcome="ok")
+                    state.telemetry.events.emit("tunnel.action", {"action": action, "actor": ctx["label"]})
+                return self._send(200, result)
+
+            if path == "/api/tokens":
+                ctx = self._require(qs, "admin")
+                if not ctx:
+                    return
+                action = (body.get("action") or "list")
+                try:
+                    result = state.tokens.handle(body)
+                except KeyError as exc:
+                    return self._send(404, {"error": str(exc)})
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                if action in ("create", "revoke"):
+                    state.telemetry.audit.append(
+                        f"token.{action}", actor=ctx["label"],
+                        target=result.get("id") or body.get("id") or "",
+                        detail={"role": result.get("role")} if action == "create" else None,
+                    )
+                return self._send(200, result)
+
             # Studio plugin posts completed job result
             if path == "/api/result":
+                if not self._require(qs, "write"):
+                    return
                 if not state.complete_job(body):
                     return self._send(404, {"error": "no such job"})
                 return self._send(200, {"ack": True})
 
             return self._send(404, {"error": "not found"})
+
+        def _enforce_mcp_scope(self, rpc_in, ctx):
+            """Block mutating MCP tool calls for read-scoped tokens (batch aware)."""
+            if ctx.get("role") == "admin" or ctx.get("id") in ("open", "loopback"):
+                return rpc_in, None
+
+            def blocked(item):
+                if not isinstance(item, dict) or item.get("method") != "tools/call":
+                    return None
+                params = item.get("params") or {}
+                name = params.get("name")
+                args = params.get("arguments") or {}
+                spec = TOOL_MAP.get(name)
+                if not spec:
+                    return None
+                if spec.get("annotations", {}).get("readOnlyHint"):
+                    return None
+                if is_tool_call_read_only(name, args):
+                    return None
+                message = (
+                    f"Blocked by token scope: token '{ctx.get('label')}' has role "
+                    f"'{ctx.get('role')}', which cannot call mutating tool '{name}'. "
+                    "Mint a write-scoped token via POST /api/tokens or use bridge.token."
+                )
+                return {
+                    "jsonrpc": "2.0",
+                    "id": item.get("id"),
+                    "result": {
+                        "isError": True,
+                        "content": [{"type": "text", "text": message}],
+                        "structuredContent": {"ok": False, "reason": "insufficient_scope", "tool": name},
+                    },
+                }
+
+            if isinstance(rpc_in, list):
+                for item in rpc_in:
+                    err = blocked(item)
+                    if err is not None:
+                        return rpc_in, err
+                return rpc_in, None
+            err = blocked(rpc_in)
+            if err is not None:
+                return rpc_in, err
+            return rpc_in, None
 
     return Handler
 
@@ -968,7 +1612,7 @@ def dashboard_html() -> str:
 </style></head><body>
 
 <header>
-  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v4.0</span></h1>
+  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v5.0</span></h1>
   <span id="status" class="pill off">checking&hellip;</span>
   <span id="ro-badge" class="pill ro" style="display:none">Read-Only Inspector</span>
   <span id="place" class="pill info-pill" style="display:none"></span>
@@ -986,6 +1630,7 @@ def dashboard_html() -> str:
   <button class="tab-btn" onclick="showTab('commands', this)">4. Commands &amp; MCP Config</button>
   <button class="tab-btn" onclick="showTab('playground', this)">5. Live Tool &amp; Luau Runner</button>
   <button class="tab-btn" onclick="showTab('tips', this)">6. Helpful Tips &amp; Gotchas</button>
+  <button class="tab-btn" onclick="showTab('ops', this)">7. Ops Console &amp; Agent Bus</button>
 </nav>
 
 <main>
@@ -993,7 +1638,7 @@ def dashboard_html() -> str:
   <section id="tab-monitor" class="tab-pane active">
     <div class="grid">
       <div class="card"><div class="k">Studio Peers</div><div class="v" id="c-peers">0 online</div></div>
-      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">68</div></div>
+      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">70</div></div>
       <div class="card"><div class="k">Queued</div><div class="v" id="c-queued">0</div></div>
       <div class="card"><div class="k">Completed</div><div class="v" id="c-done">0</div></div>
       <div class="card"><div class="k">Failed</div><div class="v" id="c-fail">0</div></div>
@@ -1251,7 +1896,7 @@ def dashboard_html() -> str:
 
       <div class="prompt-card">
         <div class="prompt-head">
-          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 68 tools enabled (3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
+          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 70 tools enabled (multi-agent bus + tunnel ops + 3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
           <button class="primary sm" onclick="copyById('cfg-json')">Copy</button>
         </div>
         <pre id="cfg-json"></pre>
@@ -1297,7 +1942,7 @@ def dashboard_html() -> str:
       </div>
 
       <div class="prompt-card">
-        <h3>Invoke Any of the 68 MCP Tools Directly</h3>
+        <h3>Invoke Any of the 70 MCP Tools Directly</h3>
         <div class="sub" id="tool-desc">Select any MCP tool to inspect its fields and call it over <code>POST /mcp</code>.</div>
         <div style="display:flex;gap:8px;align-items:center">
           <select id="tool-select" onchange="onSelectTool()"></select>
@@ -1310,6 +1955,100 @@ def dashboard_html() -> str:
   </section>
 
   <!-- ==================== TAB 5: HELPFUL TIPS & GOTCHAS ==================== -->
+  <!-- ==================== TAB 7: OPS CONSOLE & AGENT BUS ==================== -->
+  <section id="tab-ops" class="tab-pane">
+    <div class="grid">
+      <div class="card"><div class="k">Tunnel</div><div class="v" id="ops-tunnel-state">stopped</div></div>
+      <div class="card"><div class="k">Public URL</div><div class="v" id="ops-tunnel-url" style="font-size:12.5px;word-break:break-all">&mdash;</div></div>
+      <div class="card"><div class="k">Agents Online</div><div class="v" id="ops-agents">0</div></div>
+      <div class="card"><div class="k">Open Tasks</div><div class="v" id="ops-tasks">0</div></div>
+      <div class="card"><div class="k">Queue Depth</div><div class="v" id="ops-queue">0</div></div>
+      <div class="card"><div class="k">Audit Entries</div><div class="v" id="ops-audit-count">0</div></div>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div><h3>Public Tunnel (Supervised)</h3>
+            <div class="sub">Auto-restarts, scrapes the public URL, health-probes <code>/api/health</code>, and reconnects after failures. Works with <code>cloudflared</code> or <code>ngrok</code>.</div>
+          </div>
+          <span class="pill off" id="ops-tunnel-pill">stopped</span>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="primary sm" onclick="tunnelAction('start')">Start Tunnel</button>
+          <button class="sm" onclick="tunnelAction('restart')">Restart</button>
+          <button class="sm danger" onclick="tunnelAction('stop')">Stop</button>
+          <button class="sm" onclick="copyText(document.getElementById('ops-tunnel-url').textContent)">Copy URL</button>
+        </div>
+        <div class="sub" id="ops-tunnel-meta" style="margin-top:6px">Checking tunnel status&hellip;</div>
+        <div class="sub" id="ops-tunnel-lan" style="margin-top:4px"></div>
+        <pre id="ops-tunnel-log" style="max-height:150px">Tunnel log will appear here.</pre>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head"><div><h3>Join the Agent Bus</h3>
+          <div class="sub">Register this session so other agents (and humans) can see you, message you, and hand work over without collisions.</div></div></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <input id="bus-name" placeholder="Agent name (e.g. Gemini 4 Argon)" style="flex:1;min-width:190px">
+          <input id="bus-role" placeholder="role (builder / qa / reviewer)" style="width:190px">
+          <button class="primary sm" onclick="busRegister()">Register</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+          <input id="bus-to" placeholder="to (blank = broadcast)" style="width:180px">
+          <input id="bus-subject" placeholder="subject" style="width:180px">
+        </div>
+        <textarea id="bus-body" placeholder="Message body&hellip; use this to coordinate edits, hand off work, or report a blocker." style="min-height:64px"></textarea>
+        <div style="display:flex;gap:6px">
+          <button class="sm primary" onclick="busPost()">Post Message</button>
+          <button class="sm" onclick="refreshBus()">Refresh Bus</button>
+          <button class="sm" onclick="busExport()">Export Handoff</button>
+        </div>
+        <pre id="bus-out" style="max-height:110px">Bus output appears here.</pre>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <h3>Roster</h3>
+        <div id="bus-agents" class="sub">No agents registered yet.</div>
+      </div>
+      <div class="prompt-card">
+        <h3>Task Board</h3>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <input id="task-title" placeholder="New task title…" style="flex:1">
+          <select id="task-priority" style="width:110px">
+            <option value="normal">normal</option>
+            <option value="high">high</option>
+            <option value="critical">critical</option>
+            <option value="low">low</option>
+          </select>
+          <button class="primary sm" onclick="createTask()">Add</button>
+        </div>
+        <div id="bus-tasks" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto"></div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <div class="prompt-head"><h3>Live Event Stream</h3>
+          <button class="sm" onclick="toggleEventStream()" id="ev-btn">Connect</button></div>
+        <div class="sub">Server-Sent Events from every agent, job, tunnel action and audit write.</div>
+        <pre id="ev-feed" style="max-height:240px;overflow:auto">Not connected.</pre>
+      </div>
+      <div class="prompt-card">
+        <div class="prompt-head"><h3>Metrics &amp; Audit</h3>
+          <div style="display:flex;gap:6px">
+            <button class="sm" onclick="refreshMetrics()">Metrics</button>
+            <button class="sm" onclick="verifyAudit()">Verify Chain</button>
+          </div>
+        </div>
+        <pre id="ops-metrics" style="max-height:180px;overflow:auto">Metrics not loaded.</pre>
+        <div class="sub" id="ops-audit-note"></div>
+        <pre id="ops-audit" style="max-height:150px;overflow:auto">Audit log not loaded.</pre>
+      </div>
+    </div>
+  </section>
+
   <section id="tab-tips" class="tab-pane">
     <div class="two-col" id="tips-grid"></div>
   </section>
@@ -1586,7 +2325,7 @@ Start by running a quick recon (\`.\\ab.ps1 state\` and \`.\\ab.ps1 survey\`) so
 `Connect directly to my live Roblox Studio Bridge & MCP Server:
 - Base URL: ${pubUrl}
 - Auth Header: \`Authorization: Bearer ${tok}\` (or \`X-Arena-Token: ${tok}\`)
-- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (68 tools, 16 skills, multimodal 3D viewport vision, 3D physics auditor, runtime mesh capability probe, .rbxlx place export, 14 LiveOps/Monetization systems, 520 3D models, 3,705 raster images + 50 LDR skies (300 cube faces), 45 CC0 WAVs, 4,811 cloud icons)
+- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (70 tools, 16 skills, multimodal 3D viewport vision, 3D physics auditor, runtime mesh capability probe, .rbxlx place export, 14 LiveOps/Monetization systems, 520 3D models, 3,705 raster images + 50 LDR skies (300 cube faces), 45 CC0 WAVs, 4,811 cloud icons)
 - Agent Onboarding & Live State Endpoint: \`GET ${pubUrl}/api/agent-guide\`
 - Built-in Repo Kit: call \`browse_kit\` for 16 skills, 19 modules, 6 templates, 20 prefabs, 3,755 image/sky-face files, 50 LDR sky panoramas, 520 models, and 45 CC0 audio files. Use \`search_assets\` for paginated type/category/source/license/provenance filters; exact Git blob matches and pack-level attestations are distinguished. Send supported images/audio/models into Studio with \`import_image\`, \`import_audio\`, and \`import_rbxmx\`.
 
@@ -2097,7 +2836,7 @@ async function initBoot(){
 
 async function tick(){
   try {
-    const r = await fetch('/api/state', { cache:'no-store' });
+    const r = await fetch('/api/state', { cache:'no-store', headers: authHeaders() });
     const s = await r.json();
     const prevPlace = LAST_STATE.studio && LAST_STATE.studio.place;
     LAST_STATE = s;
@@ -2161,7 +2900,186 @@ async function tick(){
   } catch(_){}
 }
 
-initBoot().then(() => { tick(); setInterval(tick, 1500); });
+// ---------------------------- v5 Ops Console ----------------------------
+let EV_SOURCE = null;
+async function opsJson(path, opts){
+  const r = await fetch(path, Object.assign({cache:'no-store', headers:authHeaders()}, opts || {}));
+  const data = await r.json().catch(() => ({}));
+  if(!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+  return data;
+}
+async function refreshOps(){
+  try {
+    const ops = await opsJson('/api/ops');
+    const t = ops.tunnel || {};
+    document.getElementById('ops-tunnel-state').textContent = t.state || 'unknown';
+    document.getElementById('ops-tunnel-url').textContent = t.publicUrl || '—';
+    const pill = document.getElementById('ops-tunnel-pill');
+    pill.textContent = t.state || 'unknown';
+    pill.className = 'pill ' + (t.state === 'online' ? 'on' : (t.state === 'degraded' ? 'ro' : 'off'));
+    document.getElementById('ops-agents').textContent = (ops.bus && ops.bus.agentsOnline) || 0;
+    document.getElementById('ops-tasks').textContent = (ops.openTasks || []).length;
+    document.getElementById('ops-queue').textContent = (ops.health && ops.health.queued) || 0;
+    document.getElementById('ops-audit-count').textContent = (ops.audit || []).length;
+    const health = t.health || {};
+    document.getElementById('ops-tunnel-meta').textContent =
+      `flavor=${t.flavor || '—'} · restarts=${t.restarts || 0} · health=${health.ok === null || health.ok === undefined ? 'n/a' : (health.ok ? 'ok' : 'failing')}` +
+      (health.latencyMs != null ? ` · ${health.latencyMs}ms` : '') + (t.lastError ? ' · ' + t.lastError : '');
+    document.getElementById('ops-tunnel-lan').textContent = (t.lanUrls || []).length ? 'LAN: ' + t.lanUrls.join('  ·  ') : '';
+    document.getElementById('ops-tunnel-log').textContent = (t.logTail || []).join('\n') || 'No tunnel output yet.';
+    if((ops.audit || []).length){
+      document.getElementById('ops-audit').textContent = ops.audit.slice(0,8).map(e => `${e.seq} ${e.action} · ${e.actor} · ${e.outcome}`).join('\n');
+    }
+    renderBus(ops.openTasks || [], null);
+  } catch(_){}
+}
+async function tunnelAction(action){
+  try {
+    const r = await fetch('/api/tunnel', {method:'POST', headers:authHeaders(), body:JSON.stringify({action})});
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    toast('Tunnel ' + action + ' → ' + (data.state || 'ok'));
+    refreshOps();
+  } catch(err){ toast('Tunnel ' + action + ' failed: ' + err.message); }
+}
+async function busRegister(){
+  const name = document.getElementById('bus-name').value.trim();
+  const role = document.getElementById('bus-role').value.trim() || 'agent';
+  if(!name) return toast('Enter an agent name.');
+  try {
+    const reg = await opsJson('/api/bus', {method:'POST', body:JSON.stringify({action:'register', name, role})});
+    localStorage.setItem('arena_agent_id', reg.id);
+    localStorage.setItem('arena_agent_name', reg.name);
+    document.getElementById('bus-out').textContent = `Registered ${reg.name} as ${reg.id} (${reg.role})`;
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+function currentAgent(){ return localStorage.getItem('arena_agent_id') || 'web-operator'; }
+async function busPost(){
+  const to = document.getElementById('bus-to').value.trim() || null;
+  const subject = document.getElementById('bus-subject').value.trim();
+  const body = document.getElementById('bus-body').value.trim();
+  if(!subject && !body) return toast('Write a subject or body first.');
+  try {
+    const msg = await opsJson('/api/bus', {method:'POST', body:JSON.stringify({
+      action:'post', agentId: currentAgent(), to, subject, body: body || subject, kind:'note', priority:'normal'
+    })});
+    document.getElementById('bus-out').textContent = 'Posted ' + msg.id;
+    document.getElementById('bus-body').value = '';
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+async function busExport(){
+  try {
+    const r = await opsJson('/api/bus', {method:'POST', body:JSON.stringify({action:'export', agentId:currentAgent()})});
+    const note = document.getElementById('bus-out');
+    note.textContent = r.markdown;
+    copyText(r.markdown);
+    toast('Handoff brief copied to clipboard.');
+  } catch(err){ toast(err.message); }
+}
+function renderBus(tasks, agents){
+  const taskBox = document.getElementById('bus-tasks');
+  if(!tasks.length){
+    taskBox.innerHTML = '<div class="sub">No open tasks. Create one from any agent with <code>agent_bus {action:"task_create"}</code>.</div>';
+  } else {
+    taskBox.innerHTML = tasks.map(t => {
+      const lease = t.leaseRemainingSeconds != null ? Math.max(0, Math.round(t.leaseRemainingSeconds)) + 's lease' : 'unclaimed';
+      return `<div class="cmd-row" style="align-items:flex-start">
+        <div style="flex:1">
+          <div><strong>${esc(t.title)}</strong> <span class="sub">· ${esc(t.priority)} · ${esc(t.status)} · ${lease}</span></div>
+          <div class="sub">${esc(t.assignee || 'unassigned')} ${t.blockedBy && t.blockedBy.length ? '· blocked by ' + esc(t.blockedBy.join(', ')) : ''}</div>
+        </div>
+        <button class="sm" onclick="claimTask('${esc(t.id)}')">Claim</button>
+        <button class="sm" onclick="completeTask('${esc(t.id)}')">Done</button>
+      </div>`;
+    }).join('');
+  }
+  if(agents){
+    const box = document.getElementById('bus-agents');
+    box.innerHTML = agents.length ? agents.map(a =>
+      `<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0">
+         <span><strong>${esc(a.name)}</strong> <span class="sub">${esc(a.role)}</span></span>
+         <span class="sub">${esc(a.status)} · ${a.openTasks} tasks · ${a.inboxUnread} unread</span>
+       </div>`).join('') : 'No agents registered yet.';
+  }
+}
+async function refreshBus(){
+  try {
+    const agents = await opsJson('/api/bus?action=agents');
+    const tasks = await opsJson('/api/bus?action=tasks&includeDone=0');
+    renderBus(tasks.tasks || [], agents.agents || []);
+    document.getElementById('ops-agents').textContent = agents.onlineCount || 0;
+    document.getElementById('ops-tasks').textContent = (tasks.tasks || []).length;
+  } catch(_){}
+}
+async function createTask(){
+  const title = document.getElementById('task-title').value.trim();
+  if(!title) return toast('Enter a task title first.');
+  try {
+    await opsJson('/api/bus', {method:'POST', body:JSON.stringify({
+      action:'task_create', title, priority:document.getElementById('task-priority').value,
+      agentId: currentAgent()
+    })});
+    document.getElementById('task-title').value = '';
+    toast('Task added to the board.');
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+async function claimTask(id){
+  try {
+    await opsJson('/api/bus', {method:'POST', body:JSON.stringify({action:'task_claim', taskId:id, agentId:currentAgent()})});
+    toast('Task claimed.');
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+async function completeTask(id){
+  try {
+    await opsJson('/api/bus', {method:'POST', body:JSON.stringify({action:'task_complete', taskId:id, agentId:currentAgent(), result:'Completed from the Ops Console'})});
+    toast('Task completed.');
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+async function refreshMetrics(){
+  try {
+    const m = await opsJson('/api/metrics');
+    const counters = (m.counters || []).map(c => `${c.name} = ${c.value}${Object.keys(c.labels||{}).length ? ' ' + JSON.stringify(c.labels) : ''}`);
+    const hists = (m.histograms || []).map(h => `${h.name} p50=${h.p50} p95=${h.p95} n=${h.count}`);
+    document.getElementById('ops-metrics').textContent = 'uptime ' + m.uptimeSeconds + 's\n' + counters.concat(hists).join('\n');
+  } catch(err){ document.getElementById('ops-metrics').textContent = err.message; }
+}
+async function verifyAudit(){
+  try {
+    const v = await opsJson('/api/audit?verify=1');
+    document.getElementById('ops-audit-note').textContent = v.ok
+      ? `Chain intact: ${v.checked} entries, head ${String(v.head).slice(0,12)}…`
+      : `CHAIN BROKEN at #${v.brokenAt}: ${v.reason}`;
+    const a = await opsJson('/api/audit?limit=8');
+    document.getElementById('ops-audit').textContent = (a.entries || []).map(e => `${e.seq} ${e.action} · ${e.actor} · ${e.outcome}`).join('\n');
+  } catch(err){ document.getElementById('ops-audit-note').textContent = err.message; }
+}
+function toggleEventStream(){
+  const feed = document.getElementById('ev-feed');
+  const btn = document.getElementById('ev-btn');
+  if(EV_SOURCE){ EV_SOURCE.close(); EV_SOURCE = null; btn.textContent = 'Connect'; feed.textContent += '\n[disconnected]'; return; }
+  const token = getToken();
+  EV_SOURCE = new EventSource('/api/events' + (token ? '?token=' + encodeURIComponent(token) : ''));
+  btn.textContent = 'Disconnect';
+  feed.textContent = '';
+  EV_SOURCE.onmessage = ev => {
+    try {
+      const e = JSON.parse(ev.data);
+      feed.textContent += `${new Date((e.ts||0)*1000).toLocaleTimeString()}  ${e.kind}  ${JSON.stringify(e.data)}\n`;
+      feed.scrollTop = feed.scrollHeight;
+    } catch(_){}
+  };
+  EV_SOURCE.onerror = () => { feed.textContent += '\n[stream error — reconnect from the button above]\n'; };
+}
+
+initBoot().then(() => { tick(); refreshOps(); refreshBus(); setInterval(tick, 1500); setInterval(() => {
+  const active = document.getElementById('tab-ops').classList.contains('active');
+  if(active){ refreshOps(); refreshBus(); }
+}, 4000); });
 </script></body></html>"""
 
 
@@ -2189,16 +3107,35 @@ def create_http_server(
     token: str = None,
     read_only: bool = False,
     guard_place_id: int = None,
+    state_dir: str = None,
+    auto_tunnel: bool = False,
+    tunnel_flavor: str = "auto",
+    tunnel_token: str = None,
+    tunnel_name: str = None,
+    public_url: str = None,
+    tunnel_binary: str = None,
 ):
     resolved_token = load_token_default(token)
     state = BridgeState(
         token=resolved_token,
         read_only=read_only,
         guard_place_id=guard_place_id,
+        state_dir=state_dir,
+        auto_tunnel=False,  # started after the socket is bound, so the port is known
+        tunnel_flavor=tunnel_flavor,
+        tunnel_token=tunnel_token,
+        tunnel_name=tunnel_name,
+        public_url=public_url,
+        tunnel_binary=tunnel_binary,
     )
     httpd = ThreadingHTTPServer((host, port), make_http_handler(state))
     httpd.daemon_threads = True
     httpd.bridge_state = state
+    bound_port = httpd.server_address[1]
+    state.tunnel.port = int(bound_port)
+    state.tunnel.local_url = f"http://127.0.0.1:{bound_port}"
+    if auto_tunnel:
+        state.tunnel_action({"action": "start"})
     return httpd, state
 
 
@@ -2219,6 +3156,18 @@ def main():
         default=int(os.environ["BRIDGE_PLACE_ID"]) if os.environ.get("BRIDGE_PLACE_ID") else None,
         help="Optional PlaceId write guard",
     )
+    ap.add_argument("--tunnel", action="store_true",
+                    help="Supervise a public cloudflared/ngrok tunnel for this bridge (auto-restart, health probes)")
+    ap.add_argument("--tunnel-flavor", default=os.environ.get("BRIDGE_TUNNEL_FLAVOR", "auto"),
+                    choices=["auto", "cloudflared", "ngrok"], help="Tunnel provider")
+    ap.add_argument("--tunnel-token", default=os.environ.get("TUNNEL_TOKEN"),
+                    help="Cloudflare named-tunnel token (https://one.dash.cloudflare.com)")
+    ap.add_argument("--tunnel-name", default=os.environ.get("BRIDGE_TUNNEL_NAME"),
+                    help="Optional hostname label for a named tunnel")
+    ap.add_argument("--public-url", default=os.environ.get("BRIDGE_PUBLIC_URL"),
+                    help="Report a tunnel URL you run yourself (disables supervision)")
+    ap.add_argument("--state-dir", default=os.environ.get("BRIDGE_STATE_DIR"),
+                    help="Directory for bus/token/audit/tunnel state (default: roblox-bridge/bridge_state)")
     args = ap.parse_args()
 
     srv, state = create_http_server(
@@ -2227,17 +3176,33 @@ def main():
         token=args.token,
         read_only=args.read_only,
         guard_place_id=args.place_id,
+        state_dir=args.state_dir,
+        auto_tunnel=args.tunnel,
+        tunnel_flavor=args.tunnel_flavor,
+        tunnel_token=args.tunnel_token,
+        tunnel_name=args.tunnel_name,
+        public_url=args.public_url,
     )
     ro_str = " [READ-ONLY INSPECTOR]" if state.read_only else ""
+    bound_port = srv.server_address[1]
     print(
-        f"[bridge] v{VERSION}{ro_str} listening on {args.host}:{args.port} "
-        f"(token {'set' if state.token else 'disabled'}, Control Center http://127.0.0.1:{args.port}/, MCP http://127.0.0.1:{args.port}/mcp)",
+        f"[bridge] v{VERSION}{ro_str} listening on {args.host}:{bound_port} "
+        f"(token {'set' if state.token else 'disabled'}, Control Center http://127.0.0.1:{bound_port}/, "
+        f"MCP http://127.0.0.1:{bound_port}/mcp, ops http://127.0.0.1:{bound_port}/#ops)",
         flush=True,
     )
+    if args.tunnel:
+        print("[bridge] tunnel supervisor starting (cloudflared/ngrok)…", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        srv.shutdown()
+        pass
+    finally:
+        try:
+            state._reaper_stop.set()
+            state.tunnel.stop()
+        finally:
+            srv.shutdown()
 
 
 if __name__ == "__main__":

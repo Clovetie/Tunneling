@@ -255,3 +255,33 @@ typical, worst 10). They need a real playtest to confirm end to end.
 | `baseline_survey.lua` | the package inventory. |
 | `drift_audit.lua` | FNV-1a hashes of every live script. Only re-run if drift is suspected for a NEW reason (the 22/22 result was a bug in an older version of this job). |
 
+
+
+---
+
+## v5 ops platform (2026-11-03, branch `arena/706ae6d5-tunneling`)
+
+The bridge is now `5.0.0`. New runtime state lives in **gitignored**
+`roblox-bridge/bridge_state/` (`audit.jsonl`, `tokens.json`, `bus.json`,
+`tunnel.json`). Nothing there is needed to connect Studio.
+
+- **Supervised tunnel:** `python setup.py --tunnel` (or `server.py --tunnel`).
+  Named tunnel: `--tunnel-token`. External tunnel: `--public-url`. The bridge now
+  **refuses to publish itself with no token** (state `blocked`), so do not pass
+  `--tunnel` to a token-less server and expect a URL.
+- **New endpoints:** `GET /api/ops`, `/api/metrics[?format=prometheus]`,
+  `/api/events` (SSE; `?once=1` for JSON), `/api/audit[?verify=1]`,
+  `GET|POST /api/bus`, `GET|POST /api/tunnel`, `GET|POST /api/tokens` (admin).
+  `/api/health` stays public.
+- **Scoped tokens:** `bridge.token` stays the admin owner credential. Mint
+  read/write/admin tokens with `arena_studio.py tokens create`; read tokens
+  cannot mutate Studio.
+- **Multi-agent bus:** `arena_studio.py bus …` or MCP `agent_bus`. Partner work
+  order for Gemini 4 Argon: `handoff/GEMINI-4-ARGON.md` + `handoff/bus_seed.json`;
+  seed with `python roblox-bridge/tools/seed_agent_bus.py`.
+- **Self-test** now covers the v5 suite (25 tests total).
+
+```
+roblox-bridge/docs/OPS.md        full ops reference
+roblox-bridge/CHANGELOG.md       5.0.0 entry
+```

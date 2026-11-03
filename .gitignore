@@ -10,3 +10,5 @@ nightloop/bridge/snapshots/*.json.gz
 nightloop/bridge/snapshots/*.tmp
 roblox-bridge/tools/luau-compile.exe
 roblox-bridge/tools/luau-analyze.exe
+roblox-bridge/bridge_state/
+nightloop/bridge/bridge_state/

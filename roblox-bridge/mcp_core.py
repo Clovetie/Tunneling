@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 mcp_core.py — Zero-dependency Model Context Protocol (MCP) engine & Roblox Studio
-tool suite for Arena <-> Roblox Studio (v4.0.0).
+tool suite for Arena <-> Roblox Studio (v5.0.0).
 
 Supports:
   - MCP specification versions 2025-06-18, 2025-03-26, and 2024-11-05
@@ -28,7 +28,7 @@ import urllib.request
 from pathlib import Path
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "4.0.0"
+MCP_SERVER_VERSION = "5.0.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2025-06-18",
     "2025-03-26",
@@ -458,6 +458,72 @@ class BridgeClient:
         if self.direct_dispatch:
             return self.direct_dispatch("peers", {})
         return self._http_request("GET", "/api/peers", timeout=10.0)
+
+    # -- v5 coordination & ops helpers ---------------------------------------
+
+    def bus_action(self, payload: dict = None) -> dict:
+        payload = dict(payload or {})
+        if self.direct_dispatch:
+            return self.direct_dispatch("bus", payload)
+        return self._http_request("POST", "/api/bus", payload, timeout=30.0)
+
+    def ops_action(self, payload: dict = None) -> dict:
+        p = dict(payload or {})
+        action = (p.get("action") or "status").lower()
+        if self.direct_dispatch:
+            mapping = {
+                "status": ("ops", {}),
+                "metrics": ("metrics", {}),
+                "audit": ("audit", {"limit": p.get("limit", 50)}),
+                "audit_verify": ("audit", {"verify": True}),
+                "events": ("events", {"cursor": p.get("cursor", 0), "limit": p.get("limit", 50)}),
+                "tunnel": ("tunnel", {"action": "status"}),
+                "tunnel_start": ("tunnel", {"action": "start"}),
+                "tunnel_stop": ("tunnel", {"action": "stop"}),
+                "tunnel_restart": ("tunnel", {"action": "restart"}),
+                "queue_clear": ("queue_clear", {}),
+                "reap": ("reap", {}),
+            }
+            if action not in mapping:
+                raise ValueError(f"Unknown bridge_ops action: {action}")
+            op, body = mapping[action]
+            return self.direct_dispatch(op, body)
+
+        if action == "status":
+            return self._http_request("GET", "/api/ops", timeout=20.0)
+        if action == "metrics":
+            fmt = p.get("format") or "json"
+            if fmt == "prometheus":
+                return {"format": "prometheus", "text": self._http_request_text("/api/metrics?format=prometheus")}
+            return self._http_request("GET", "/api/metrics", timeout=20.0)
+        if action == "audit":
+            return self._http_request("GET", f"/api/audit?limit={int(p.get('limit') or 50)}", timeout=20.0)
+        if action == "audit_verify":
+            return self._http_request("GET", "/api/audit?verify=1", timeout=20.0)
+        if action == "events":
+            return self._http_request(
+                "GET", f"/api/events?once=1&since={int(p.get('cursor') or 0)}&limit={int(p.get('limit') or 50)}", timeout=20.0
+            )
+        if action in ("tunnel", "tunnel_start", "tunnel_stop", "tunnel_restart"):
+            sub = {"tunnel": "status", "tunnel_start": "start", "tunnel_stop": "stop", "tunnel_restart": "restart"}[action]
+            if sub == "status":
+                return self._http_request("GET", "/api/tunnel", timeout=15.0)
+            return self._http_request("POST", "/api/tunnel", {"action": sub}, timeout=90.0)
+        if action in ("queue_clear", "reap"):
+            return self._http_request("POST", "/api/ops", {"action": action}, timeout=30.0)
+        raise ValueError(f"Unknown bridge_ops action: {action}")
+
+    def _http_request_text(self, path: str, timeout: float = 20.0) -> str:
+        url = f"{self.base_url}{path}"
+        headers = {"X-Arena-Token": self.token} if self.token else {}
+        req = urllib.request.Request(url, method="GET", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            return exc.read().decode("utf-8", "replace")[:2000]
+        except urllib.error.URLError as exc:
+            raise BridgeTransportError(f"Cannot reach bridge at {self.base_url} ({exc.reason})") from exc
 
     def get_job(self, job_id: str) -> dict:
         if self.direct_dispatch:
@@ -1678,6 +1744,88 @@ TOOL_SPECS = [
         },
         "annotations": _ann("Roblox Open Cloud Publish / DataStore / Messaging", read_only=False, destructive=False, idempotent=False),
     },
+
+    # --- Group Z: v5 multi-agent collaboration & bridge operations ----------
+    {
+        "name": "agent_bus",
+        "description": (
+            "Shared multi-agent coordination bus for this bridge (does not touch the Roblox place). "
+            "Register presence, exchange messages, run a claim-based task board with leases, read the activity feed, "
+            "and export a markdown handoff brief. Use it when two or more AI agents (or a human and an agent) share "
+            "one Studio session: `action='register'` first, then `task_claim` before working, `task_complete` with a "
+            "result, and `post` to report progress. Read actions: stats, agents, inbox, tasks, thread, feed. "
+            "Writes: register, heartbeat, post, mark_read, task_create, task_claim, task_renew, task_release, "
+            "task_update, task_complete, task_delete, status."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "register", "heartbeat", "status", "agents", "post", "inbox", "thread", "mark_read",
+                        "tasks", "task_create", "task_claim", "task_renew", "task_release", "task_update",
+                        "task_complete", "task_delete", "feed", "export", "stats",
+                    ],
+                    "description": "Bus operation to perform.",
+                },
+                "agentId": {"type": "string", "description": "Your agent id (returned by register) or your registered name."},
+                "createdBy": {"type": "string", "description": "Alias for agentId on `task_create`."},
+                "actor": {"type": "string", "description": "Alias for agentId on `task_update`."},
+                "name": {"type": "string", "description": "Agent display name for `register`."},
+                "role": {"type": "string", "description": "Free-form role label, e.g. 'builder', 'qa', 'reviewer', 'human'."},
+                "capabilities": {"type": "array", "items": {"type": "string"}, "description": "Capability tags for `register`."},
+                "status": {"type": "string", "enum": ["online", "busy", "idle", "offline"], "description": "Presence status for `heartbeat`/`status`."},
+                "to": {"type": "string", "description": "Recipient agent id/name, or omit for a broadcast."},
+                "subject": {"type": "string", "description": "Short message subject."},
+                "body": {"type": "string", "description": "Message body for `post`."},
+                "kind": {"type": "string", "enum": ["note", "question", "answer", "handoff", "alert", "result"], "default": "note"},
+                "priority": {"type": "string", "enum": ["low", "normal", "high", "critical"], "default": "normal"},
+                "threadId": {"type": "string", "description": "Optional thread id to group a conversation."},
+                "since": {"type": "integer", "description": "Cursor for `inbox`/`feed` (use the `cursor` returned last time)."},
+                "limit": {"type": "integer", "description": "Max rows to return (default 50)."},
+                "unreadOnly": {"type": "boolean", "description": "Only unread messages for `inbox`."},
+                "messageIds": {"type": "array", "items": {"type": "string"}, "description": "Messages to mark read."},
+                "all": {"type": "boolean", "description": "Mark every message read."},
+                "taskId": {"type": "string", "description": "Task id for claim/renew/release/update/complete/delete."},
+                "title": {"type": "string", "description": "Task title for `task_create`."},
+                "detail": {"type": "string", "description": "Task detail / acceptance criteria."},
+                "assignee": {"type": "string", "description": "Optional pre-assigned agent id for `task_create`/`task_update`."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Task tags."},
+                "dependsOn": {"type": "array", "items": {"type": "string"}, "description": "Task ids that must complete before this task can be claimed."},
+                "leaseSeconds": {"type": "integer", "description": "Lease duration for `task_claim`/`task_renew` (default 900)."},
+                "result": {"type": "string", "description": "Outcome summary for `task_complete`."},
+                "artifacts": {"type": "array", "items": {"type": "string"}, "description": "Files/URLs produced by the task."},
+                "path": {"type": "string", "description": "Optional file path for `export` (markdown handoff brief)."},
+                "includeDone": {"type": "boolean", "description": "Include finished tasks in `tasks` / `export`."},
+            },
+        },
+        "annotations": _ann("Multi-Agent Coordination Bus", read_only=True, destructive=False, idempotent=False),
+    },
+    {
+        "name": "bridge_ops",
+        "description": (
+            "Operate and observe the bridge itself: consolidated ops report (peers, queue, tunnel, bus, audit), "
+            "Prometheus-style metrics, tamper-evident audit log verification, live event feed, and supervised "
+            "public-tunnel control (start/stop/restart). Read actions: status, metrics, audit, audit_verify, events, "
+            "tunnel. Control: tunnel_start, tunnel_stop, tunnel_restart, queue_clear, reap."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["status", "metrics", "audit", "audit_verify", "events", "tunnel", "tunnel_start",
+                             "tunnel_stop", "tunnel_restart", "queue_clear", "reap"],
+                    "default": "status",
+                },
+                "limit": {"type": "integer", "description": "Rows for audit/events (default 50)."},
+                "cursor": {"type": "integer", "description": "Event cursor for incremental reads."},
+                "format": {"type": "string", "enum": ["json", "prometheus"], "default": "json"},
+            },
+        },
+        "annotations": _ann("Bridge Ops, Metrics & Tunnel Control", read_only=False, destructive=False, idempotent=False),
+    },
 ]
 
 TOOL_MAP = {t["name"]: t for t in TOOL_SPECS}
@@ -1716,6 +1864,14 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
     if name == "audit_3d_scene" and not args.get("autoFixUnanchored") and not args.get("snapFloating"):
         return True
     if name == "open_cloud_action" and args.get("action") in ("datastore_list", "datastore_get"):
+        return True
+    if name == "agent_bus" and args.get("action", "stats") in (
+        "stats", "agents", "inbox", "tasks", "thread", "feed", "status",
+    ):
+        return True
+    if name == "bridge_ops" and args.get("action", "status") in (
+        "status", "metrics", "audit", "audit_verify", "events", "tunnel",
+    ):
         return True
     return False
 
@@ -1893,6 +2049,12 @@ def run_bridge_self_test(client: BridgeClient, include_studio_smoke: bool = True
 def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
     dm = args.get("dm", "auto")
     peer_id = args.get("peerId")
+
+    # Bridge-level tools never depend on a Studio peer.
+    if name == "agent_bus":
+        return client.bus_action(args)
+    if name == "bridge_ops":
+        return client.ops_action(args)
 
     if name == "self_test":
         return run_bridge_self_test(client, include_studio_smoke=args.get("includeStudioSmoke", True), timeout=args.get("timeout", 180))
@@ -2723,6 +2885,24 @@ RESOURCES = [
         "description": "Service breakdown, instance census, script inventory + hashes, remotes, tags, and settings.",
         "mimeType": "application/json",
     },
+    {
+        "uri": "studio://bus",
+        "name": "Multi-Agent Bus (Presence, Tasks, Messages)",
+        "description": "Registered agents, open task board with leases, and the current activity cursor — shared by every agent on this bridge.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "studio://ops",
+        "name": "Bridge Operations Report",
+        "description": "Queue depth, peer health, tunnel state, metrics, recent audit entries, and open tasks in one document.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "studio://audit",
+        "name": "Tamper-Evident Audit Log (head)",
+        "description": "Latest hash-chained audit entries plus chain verification status.",
+        "mimeType": "application/json",
+    },
 ]
 
 RESOURCE_TEMPLATES = [
@@ -2794,6 +2974,20 @@ def read_mcp_resource(client: BridgeClient, uri: str) -> dict:
     if uri == "studio://survey":
         data = execute_tool(client, "survey_place", {"includeSource": False})
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
+    if uri == "studio://bus":
+        data = client.bus_action({"action": "stats"})
+        board = client.bus_action({"action": "tasks", "includeDone": False})
+        roster = client.bus_action({"action": "agents"})
+        payload = {"stats": data, "agents": roster, "openTasks": board}
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(payload, indent=2)}]}
+    if uri == "studio://ops":
+        data = client.ops_action({"action": "status"})
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
+    if uri == "studio://audit":
+        data = client.ops_action({"action": "audit", "limit": 25})
+        verify = client.ops_action({"action": "audit_verify"})
+        payload = {"entries": data, "verification": verify}
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(payload, indent=2)}]}
     if uri.startswith("studio://scripts/"):
         path = uri[len("studio://scripts/") :]
         data = execute_tool(client, "script_read", {"path": path})

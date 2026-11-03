@@ -1,4 +1,4 @@
-# Arena ↔ Roblox Studio MCP Server & Bridge (v4.0.0)
+# Arena ↔ Roblox Studio MCP Server & Bridge (v5.0.0)
 
 Zero-dependency **Model Context Protocol (MCP)** server (`stdio` + `Streamable HTTP`), multi-DataModel Studio local plugin (`ArenaBridge.lua` v4.0.0), live web dashboard, and CLI (`arena_studio.py` / `ab.ps1`) for connecting AI coding agents to Roblox Studio.
 
@@ -10,13 +10,35 @@ Works simultaneously across **every connection mode**:
 | **2. Remote / Local MCP (`Streamable HTTP`)** | `POST http://127.0.0.1:8077/mcp` or `https://<the-tunnel>.trycloudflare.com/mcp` | Any MCP 2025-06-18 / 2024-11-05 Streamable HTTP client | Shared multi-agent sessions or remote MCP clients over a tunnel |
 | **3. Read-Only Inspector MCP** | `--read-only` flag on `mcp_server.py` or `server.py` | Any MCP client or REST caller | Zero-risk place auditing, architecture exploration, and live log debugging |
 | **4. Arena REST + HANDS MODE CLI** | `POST /api/jobs` · `.\ab.ps1 <cmd>` | Arena cloud agents & PowerShell / Bash | Cloud sandboxes with restricted egress or direct terminal scripting |
-| **5. Coexistence with Studio's Built-in MCP** | Parallel sidecar | Studio Built-in MCP (`StudioMCP`) + `arena-roblox-studio-mcp` | Combines Roblox's cloud AI mesh/material tools with repo FNV-1a sync, `luau_check`, snapshots, terrain, and `require_fresh` |
+| **5. Supervised Public Tunnel** | `python setup.py --tunnel` · `POST /api/tunnel` | Cloud agents, phone/tablet testing | Auto-detects cloudflared/ngrok, scrapes and re-learns the URL, health-probes the public endpoint, restarts with backoff, supports named tunnels |
+| **6. Coexistence with Studio's Built-in MCP** | Parallel sidecar | Studio Built-in MCP (`StudioMCP`) + `arena-roblox-studio-mcp` | Combines Roblox's cloud AI mesh/material tools with repo FNV-1a sync, `luau_check`, snapshots, terrain, and `require_fresh` |
+
+---
+
+## v5 Ops Platform (tunnels, multi-agent bus, telemetry, scoped auth)
+
+`docs/OPS.md` is the full reference. Highlights:
+
+- **Supervised tunnel** — `setup.py --tunnel` (or `server.py --tunnel`) keeps a
+  cloudflared/ngrok tunnel alive: URL scraping, health probes, backoff restarts,
+  named-tunnel tokens, LAN URLs, and a live state machine in `GET /api/tunnel`.
+- **Agent Bus** — presence, direct/broadcast mailbox, cursor inbox and a
+  lease-based task board so several agents (Claude, Gemini, humans) can share one
+  Studio session. `agent_bus` MCP tool + `arena_studio.py bus …` + Ops tab UI.
+- **Scoped tokens** — `read` / `write` / `admin` roles, expiry, revocation and
+  per-token rate limits on top of the existing `bridge.token` owner credential.
+- **Resilient jobs** — idempotency keys, priorities, bounded retries, per-job
+  timeouts and orphan requeue when a peer disappears.
+- **Observability** — Prometheus metrics (`/api/metrics`), SSE event stream
+  (`/api/events`), and a SHA-256 hash-chained audit log (`/api/audit?verify=1`).
+- **Ops Console** — dashboard tab 7 renders tunnel, roster, task board, live
+  events, metrics and audit verification.
 
 ---
 
 ## Ecosystem Research Summary (2026 Best Practices Applied)
 
-This v4.0.0 architecture incorporates verified patterns across the 2026 Roblox MCP ecosystem:
+This v5.0.0 architecture incorporates verified patterns across the 2026 Roblox MCP ecosystem:
 
 1. **Roblox Official Built-in Studio MCP (`create.roblox.com/docs/studio/mcp`)** *(which superseded `Roblox/studio-rust-mcp-server`, archived April 2026)*:
    - Focused, low-token tool taxonomy (`get_studio_state`, `list_studios`, `search_game_tree`, `inspect_instance`, `script_read` with line ranges, atomic `multi_edit`, `script_search`, `script_grep`, DataModel-targeted `execute_luau`, `start_stop_play`, `get_console_output`) rather than 150+ overlapping micro-tools that bloat prompt context.
@@ -46,7 +68,7 @@ python setup.py --write-mcp
 
 - Installs `ArenaBridge.lua` v4.0.0 into `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or `~/Documents/Roblox/Plugins` (macOS) with your token pre-baked.
 - Writes `.mcp.json` ready for Claude Code / Cursor / VS Code.
-- Starts `server.py` v4.0.0 on `http://127.0.0.1:8077` (Web Dashboard + REST API + `POST /mcp` Streamable HTTP).
+- Starts `server.py` v5.0.0 on `http://127.0.0.1:8077` (Web Dashboard + REST API + `POST /mcp` Streamable HTTP).
 - Add `--tunnel` if exposing to a remote cloud agent via Cloudflare Quick Tunnel, or `--install-only` if letting `mcp_server.py` self-host the embedded bridge on demand.
 
 ### 2. Connect Your MCP Client
@@ -80,7 +102,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 
 ---
 
-## Full 68-Tool MCP Suite + Multimodal 3D Viewport Vision, 3D Physics QA, `.rbxlx` & Open-Source Vault
+## Full 70-Tool MCP Suite + Multimodal 3D Viewport Vision, 3D Physics QA, `.rbxlx` & Open-Source Vault
 
 | Domain | MCP Tools |
 |---|---|
@@ -92,6 +114,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
 | **Attributes & Tags (2)** | `manage_attributes` (`get`/`set`/`delete`), `manage_tags` (`list_all`/`find_tagged`/`get`/`add`/`remove`) |
 | **World, Camera, Undo & Assets (8)** | `manage_selection`, `manage_camera`, `undo_redo`, `edit_terrain`, `insert_asset`, `build_biome`, `build_skybox`, `scatter_props` |
 | **Toolchain, Build, Sync & Snapshots (7)** | `luau_check`, `drift_and_sync`, `manage_snapshots`, `batch_write`, `probe`, `wait_for`, `self_test` |
+| **Ops, Telemetry & Multi-Agent (2)** | `agent_bus` (presence, mailbox, lease-based task board, handoff export), `bridge_ops` (ops report, metrics, audit verification, live events, tunnel control) |
 | **3D Viewport Vision, Rendering, Physics QA, `.rbxlx`, Open Cloud & Asset Vault (24)** | `capture_viewport`, `export_geometry`, `render_offline` (also accepts exported trees without a peer), `screenshot_gui` (client-measured or derived), `perf_audit`, `mesh_capabilities` (runtime API probe; version string alone is not evidence), `search_assets` (offline licensed asset registry), `audit_3d_scene`, `export_place_rbxlx`, `import_place_rbxlx`, `open_cloud_action`, `audit_ui_layout`, `install_dropin_system`, `import_audio`, `import_rbxmx`, `export_rbxmx`, `install_template`, `search_cloud_icons`, `import_image`, `import_images_batch`, `generate_procedural_image`, `browse_kit`, `install_kit_module`, `spawn_prefab` |
 
 ### Repo-Committed Skills, Assets & Modules
@@ -105,7 +128,7 @@ codex mcp add roblox-studio -- python /full/path/to/roblox-bridge/mcp_server.py 
   - `lighting_cinematic_sunset`, `lighting_cyber_night`, `lighting_stylized_day`, `hud_modern_shell`, `interact_pad`, `spawn_plaza`, `world_sign_board`, `vfx_collectible_orb`
 
 ### MCP Resources & Prompts Also Exposed
-- **Resources**: `studio://state`, `studio://peers`, `studio://console`, `studio://selection`, `studio://survey`
+- **Resources**: `studio://state`, `studio://peers`, `studio://console`, `studio://selection`, `studio://survey`, `studio://bus`, `studio://ops`, `studio://audit`
 - **Resource Templates**: `studio://scripts/{path}`, `studio://instance/{path}`
 - **Prompts**: `survey_and_architecture`, `safe_module_edit`, `automated_playtest_debug`, `sync_repo_package`
 

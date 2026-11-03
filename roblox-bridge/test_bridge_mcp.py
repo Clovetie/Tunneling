@@ -39,6 +39,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 TOOL_TEST_METRICS = {}
@@ -60,6 +61,298 @@ from viewport_renderer import _blit_scaled_rgba, render_scene_png  # noqa: E402
 from server import BridgeState, create_http_server  # noqa: E402
 import server as bridge_server  # noqa: E402
 import setup as bridge_setup  # noqa: E402
+
+
+class TestV5OpsPlatform(unittest.TestCase):
+    """v5: scoped tokens, rate limits, multi-agent bus, resilient jobs, audit chain, tunnel."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="arena-v5-")
+        self.port = _free_port()
+        self.base = f"http://127.0.0.1:{self.port}"
+        self.admin_token = "admin-secret-v5"
+        self.httpd, self.state = create_http_server(
+            host="127.0.0.1", port=self.port, token=self.admin_token, state_dir=self.tmp,
+        )
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.state._reaper_stop.set()
+        self.state.tunnel.stop()
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def _req(self, path, method="GET", body=None, token=None):
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                raw = resp.read().decode("utf-8")
+                return resp.status, (json.loads(raw) if raw and raw.strip().startswith(("{", "[")) else raw)
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8")
+            return exc.code, (json.loads(raw) if raw.strip().startswith(("{", "[")) else raw)
+
+    # -- tokens / scopes / rate limiting ------------------------------------
+
+    def test_scoped_tokens_enforce_roles_and_rate_limits(self):
+        created = self.state.tokens.create("reader", role="read", rate_limit=100, burst=100)
+        reader = created["token"]
+        self.assertTrue(created["note"])
+        self.assertEqual(self._req("/api/state", token=reader)[0], 200)
+        self.assertEqual(self._req("/api/jobs", method="POST", body={"type": "ping"}, token=reader)[0], 403)
+        self.assertEqual(self._req("/api/tokens", token=reader)[0], 403)
+
+        # Read scope cannot invoke a mutating MCP tool, even over /mcp.
+        rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+               "params": {"name": "write_script", "arguments": {"path": "ServerScriptService.X", "source": "print(1)"}}}
+        status, body = self._req("/mcp", method="POST", body=rpc, token=reader)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["result"]["isError"])
+        self.assertIn("insufficient_scope", json.dumps(body))
+
+        # Admin can list, mint a write token, and revoke it.
+        status, listing = self._req("/api/tokens", token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(listing["count"], 2)
+        writer = self.state.tokens.create("writer", role="write", rate_limit=50)
+        status, jobs = self._req("/api/jobs", method="POST",
+                                 body={"type": "ping", "wait": 0}, token=writer["token"])
+        self.assertEqual(status, 201)
+        status, revoked = self._req("/api/tokens", method="POST",
+                                    body={"action": "revoke", "id": writer["id"]}, token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertTrue(revoked["revoked"])
+        self.assertEqual(self._req("/api/jobs", method="POST", body={"type": "ping"}, token=writer["token"])[0], 401)
+
+        # Unknown tokens are rejected everywhere except the public health probe.
+        self.assertEqual(self._req("/api/state", token="nope")[0], 401)
+        self.assertEqual(self._req("/api/health")[0], 200)
+
+        # Rate limiting: one-request burst then 429 with Retry-After.
+        slow = self.state.tokens.create("firehose", role="read", rate_limit=0.01, burst=1)
+        self.assertEqual(self._req("/api/state", token=slow["token"])[0], 200)
+        status, body = self._req("/api/state", token=slow["token"])
+        self.assertEqual(status, 429)
+        self.assertIn("rate limit", body["error"])
+        self.assertGreaterEqual(body["retryAfter"], 1)
+
+    # -- multi-agent bus ----------------------------------------------------
+
+    def test_agent_bus_presence_mailbox_leases_and_handoff(self):
+        res = self._req("/api/bus", method="POST", token=self.admin_token, body={
+            "action": "register", "name": "Gemini 4 Argon", "role": "partner",
+            "capabilities": ["roblox", "qa"],
+        })
+        self.assertEqual(res[0], 200)
+        gem = res[1]
+        claude = self.state.bus.handle({"action": "register", "name": "Claude", "role": "builder"})
+        self.assertEqual(self.state.bus.stats()["agents"], 2)
+
+        self.state.bus.handle({"action": "post", "agentId": gem["id"], "to": claude["id"],
+                               "subject": "handoff", "body": "take the UI pass", "kind": "handoff"})
+        self.state.bus.handle({"action": "post", "agentId": gem["id"], "subject": "broadcast",
+                               "body": "standup in 5"})
+        inbox = self.state.bus.handle({"action": "inbox", "agentId": claude["id"]})
+        self.assertEqual(inbox["count"], 2)
+        self.assertEqual(inbox["unread"], 2)
+        self.state.bus.handle({"action": "mark_read", "agentId": claude["id"], "all": True})
+        self.assertEqual(self.state.bus.handle({"action": "inbox", "agentId": claude["id"]})["unread"], 0)
+
+        task = self.state.bus.handle({"action": "task_create", "title": "Polish shop UI",
+                                      "createdBy": gem["id"], "priority": "critical", "tags": ["ui"]})
+        # Claim with a one-second lease; a second agent must be refused while it holds.
+        self.state.bus.handle({"action": "task_claim", "taskId": task["id"], "agentId": gem["id"], "leaseSeconds": 1})
+        with self.assertRaises(ValueError):
+            self.state.bus.handle({"action": "task_claim", "taskId": task["id"], "agentId": claude["id"]})
+        # ...and allowed once the lease expires, without any manual cleanup.
+        time.sleep(1.2)
+        taken = self.state.bus.handle({"action": "task_claim", "taskId": task["id"], "agentId": claude["id"]})
+        self.assertEqual(taken["assignee"], claude["id"])
+        self.assertEqual(taken["leaseExpiries"], 1)
+
+        done = self.state.bus.handle({"action": "task_complete", "taskId": task["id"], "agentId": claude["id"],
+                                      "result": "UI shipped", "artifacts": ["StarterGui/Shop"]})
+        self.assertEqual(done["status"], "done")
+        handoff = self.state.bus.handle({"action": "export", "path": os.path.join(self.tmp, "HANDOFF.md")})
+        self.assertIn("# Agent handoff brief", handoff["markdown"])
+        self.assertIn("Polish shop UI", handoff["markdown"])
+        self.assertTrue(os.path.isfile(handoff["path"]))
+
+    # -- resilient job queue ------------------------------------------------
+
+    def test_job_idempotency_priority_retry_and_reaping(self):
+        state = self.state
+        job1, _ = state.enqueue_job("ping", note="first", idempotency_key="abc123")
+        job2, _ = state.enqueue_job("ping", note="dedupe", idempotency_key="abc123")
+        self.assertEqual(job1["id"], job2["id"])
+        self.assertEqual(state.jobs[job1["id"]]["deduplicated"], 1)
+        self.assertEqual(len([j for j in state.jobs.values() if j["status"] == "queued"]), 1)
+
+        low, _ = state.enqueue_job("ping", note="low", priority=7)
+        high, _ = state.enqueue_job("ping", note="high", priority=0)
+        peer = state.record_poll({"peer": ["peer-priority"], "dm": ["edit"], "place": ["p"], "placeId": ["1"]})
+        first = state.poll_for_job(peer, wait_seconds=0.1)
+        self.assertEqual(first["id"], high["id"])
+        second = state.poll_for_job(peer, wait_seconds=0.1)
+        self.assertEqual(second["id"], job1["id"])  # priority 5 beats priority 7
+        third = state.poll_for_job(peer, wait_seconds=0.1)
+        self.assertEqual(third["id"], low["id"])
+
+        # Transient failure is retried once, then fails permanently.
+        retry_job, evt = state.enqueue_job("ping", note="retry", max_retries=1)
+        state.poll_for_job(peer, wait_seconds=0.1)
+        state.complete_job({"id": retry_job["id"], "ok": False, "error": "peer disconnected mid-job",
+                            "peerId": "peer-priority"})
+        self.assertEqual(state.jobs[retry_job["id"]]["status"], "queued")
+        self.assertFalse(evt.is_set())
+        state.poll_for_job(peer, wait_seconds=0.1)
+        state.complete_job({"id": retry_job["id"], "ok": False, "error": "peer disconnected again",
+                            "peerId": "peer-priority"})
+        self.assertEqual(state.jobs[retry_job["id"]]["status"], "error")
+        self.assertTrue(evt.is_set())
+        self.assertEqual(state.jobs[retry_job["id"]]["retries"], 1)
+
+        # A job claimed by a peer that vanishes is requeued by the reaper.
+        orphan, _ = state.enqueue_job("ping", note="orphan")
+        state.poll_for_job(peer, wait_seconds=0.1)
+        with state.lock:
+            state.jobs[orphan["id"]]["claimed"] = time.time() - 60
+            for pid in list(state.peers):
+                state.peers[pid]["lastPoll"] = 0
+        result = state.reap_jobs()
+        self.assertGreaterEqual(result["recovered"], 1)
+        self.assertEqual(state.jobs[orphan["id"]]["status"], "queued")
+
+        # Timeout reaping finalises a stuck running job.
+        state.clear_queue()
+        stuck, stuck_evt = state.enqueue_job("ping", note="stuck", timeout=1)
+        peer2 = state.record_poll({"peer": ["peer-stuck"], "dm": ["edit"], "place": ["p"], "placeId": ["1"]})
+        state.poll_for_job(peer2, wait_seconds=0.1)
+        with state.lock:
+            state.jobs[stuck["id"]]["claimed"] = time.time() - 30
+        state.reap_jobs()
+        self.assertEqual(state.jobs[stuck["id"]]["status"], "error")
+        self.assertIn("timeout", state.jobs[stuck["id"]]["error"])
+        self.assertTrue(stuck_evt.is_set())
+
+    # -- observability ------------------------------------------------------
+
+    def test_metrics_events_and_tamper_evident_audit(self):
+        self.state.enqueue_job("ping", note="metrics")
+        self.state.telemetry.metrics.observe("unit_latency_ms", 12.5, {"route": "/api/jobs"})
+        self.state.telemetry.metrics.observe("unit_latency_ms", 30.0, {"route": "/api/jobs"})
+        self.state.telemetry.events.emit("unit.event", {"hello": "world"})
+
+        self.state.tokens.create("audited", role="read")
+        status, metrics = self._req("/api/metrics", token=self.admin_token)
+        self.assertEqual(status, 200)
+        names = {c["name"] for c in metrics["counters"]}
+        self.assertIn("bridge_jobs_enqueued_total", names)
+        hist = next(h for h in metrics["histograms"] if h["name"] == "unit_latency_ms")
+        self.assertEqual(hist["count"], 2)
+        self.assertGreaterEqual(hist["p95"], hist["p50"])
+
+        status, text = self._req("/api/metrics?format=prometheus", token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertIn("# TYPE bridge_jobs_enqueued_total counter", text)
+        self.assertIn('unit_latency_ms_count{route="/api/jobs"} 2', text)
+
+        status, events = self._req("/api/events?once=1&since=0&limit=20", token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertTrue(any(e["kind"] == "unit.event" for e in events["events"]))
+
+        status, verify = self._req("/api/audit?verify=1", token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertTrue(verify["ok"])
+        self.assertGreater(verify["entries"], 0)
+
+        # Tamper with an entry in memory: the chain verification must notice.
+        with self.state.telemetry.audit.lock:
+            victim = self.state.telemetry.audit.entries[-1]
+            victim["actor"] = "someone-else"
+        broken = self.state.telemetry.audit.verify()
+        self.assertFalse(broken["ok"])
+        self.assertIn("hash", broken["reason"])
+
+    def test_tunnel_refuses_to_publish_an_unauthenticated_bridge(self):
+        open_state = BridgeState(token="", read_only=False, state_dir=tempfile.mkdtemp(prefix="arena-open-"))
+        blocked = open_state.tunnel_action({"action": "start"})
+        self.assertEqual(blocked["state"], "blocked")
+        self.assertIn("without a token", blocked["lastError"])
+        # Status checks are always allowed.
+        self.assertIn(open_state.tunnel_action({"action": "status"})["state"], ("stopped", "unavailable"))
+        # With a token configured the guard steps aside (the sandbox has no binary,
+        # so the supervisor reports unavailable rather than blocked).
+        allowed = self.state.tunnel_action({"action": "start"})
+        self.assertNotEqual(allowed["state"], "blocked")
+
+    def test_ops_report_and_public_health_shape(self):
+        status, health = self._req("/api/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(health["version"], "5.0.0")
+        self.assertIn("tunnel", health)
+        self.assertIn("agents", health)
+        status, ops = self._req("/api/ops", token=self.admin_token)
+        self.assertEqual(status, 200)
+        for key in ("health", "tunnel", "bus", "audit", "recentJobs", "openTasks"):
+            self.assertIn(key, ops)
+
+    # -- tunnel supervisor --------------------------------------------------
+
+    def test_tunnel_supervisor_scrapes_url_and_restarts(self):
+        from tunnel_manager import TunnelManager
+        fake = os.path.join(self.tmp, "fake-cloudflared")
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write(
+                "#!/usr/bin/env python3\n"
+                "import sys, time\n"
+                "print('INF Requesting new quick Tunnel...', flush=True)\n"
+                "print('INF |  https://unit-test-tunnel.trycloudflare.com  |', flush=True)\n"
+                "time.sleep(30)\n"
+            )
+        os.chmod(fake, 0o755)
+        tunnel = TunnelManager(port=self.port, binary=fake, flavor="cloudflared",
+                               state_dir=self.tmp, health_interval=3600)
+        try:
+            started = tunnel.start()
+            self.assertIn(started["state"], ("starting", "online"))
+            for _ in range(60):
+                if tunnel.status()["state"] == "online":
+                    break
+                time.sleep(0.1)
+            status = tunnel.status()
+            self.assertEqual(status["state"], "online")
+            self.assertEqual(status["publicUrl"], "https://unit-test-tunnel.trycloudflare.com")
+            self.assertEqual(status["mcpEndpoint"], "https://unit-test-tunnel.trycloudflare.com/mcp")
+            self.assertTrue(status["running"])
+            stopped = tunnel.stop()
+            self.assertEqual(stopped["state"], "stopped")
+        finally:
+            tunnel.stop()
+
+        # Named Cloudflare tunnels use `run --token`, never a quick-tunnel `--url`.
+        named = TunnelManager(port=self.port, binary=fake, flavor="cloudflared",
+                              named_token="cf-named-token", state_dir=self.tmp)
+        named._detect()
+        cmd = named._command()
+        self.assertIn("run", cmd)
+        self.assertIn("--token", cmd)
+        self.assertNotIn("--url", cmd)
+        self.assertNotIn("http://127.0.0.1", " ".join(cmd))
+        self.assertTrue(named.status()["named"])
+
+        # No binary -> explicit unavailable state with install hints, never a crash.
+        with mock.patch("tunnel_manager.find_tunnel_binary", return_value=(None, None)):
+            missing = TunnelManager(port=self.port, state_dir=self.tmp)
+            result = missing.start()
+        self.assertEqual(result["state"], "unavailable")
+        self.assertIn("cloudflared", result["lastError"])
+        self.assertTrue(result["installHints"])
 
 
 def _free_port() -> int:
@@ -141,14 +434,14 @@ class TestV4RegressionFixtures(unittest.TestCase):
         self.assertFalse(any(x["code"] == "reset_on_spawn_enabled" for x in report["issues"]))
 
     def test_missing_live_peer_fast_fails(self):
-        state = BridgeState()
+        state = BridgeState(state_dir=tempfile.mkdtemp(prefix="arena-state-"))
         client = BridgeClient(direct_dispatch=state.direct_dispatch)
         job = client.submit_job("inspect", {"path": "Workspace"}, wait=60, dm="edit")
         self.assertEqual(job["status"], "error")
         self.assertEqual(job["reason"], "no_peer")
 
     def test_offline_renderer_accepts_exported_tree_without_peer(self):
-        state = BridgeState()
+        state = BridgeState(state_dir=tempfile.mkdtemp(prefix="arena-state-"))
         client = BridgeClient(direct_dispatch=state.direct_dispatch)
         tree = {"name": "Workspace", "className": "Workspace", "children": [{
             "name": "OfflinePart", "className": "Part", "structuredProperties": {
@@ -189,9 +482,9 @@ class TestV4RegressionFixtures(unittest.TestCase):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as folder:
             with patch.object(bridge_server, "SNAPSHOT_DIR", Path(folder)):
-                first = BridgeState()
+                first = BridgeState(state_dir=folder)
                 saved = first.handle_snapshots({"action": "save", "label": "named-baseline", "root": "ServerStorage", "scripts": [{"path": "ServerStorage.A", "source": "return 1"}]})
-                second = BridgeState()
+                second = BridgeState(state_dir=folder)
                 got = second.handle_snapshots({"action": "get", "id": saved["id"]})
                 self.assertEqual(got["label"], "named-baseline")
                 self.assertEqual(got["scripts"][0]["path"], "ServerStorage.A")
@@ -238,11 +531,13 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         cls.port = _free_port()
         cls.token = "test-secret-token-v3"
         cls.base_url = f"http://127.0.0.1:{cls.port}"
+        cls.state_dir = tempfile.mkdtemp(prefix="arena-e2e-state-")
         cls.httpd, cls.state = create_http_server(
             host="127.0.0.1",
             port=cls.port,
             token=cls.token,
             read_only=False,
+            state_dir=cls.state_dir,
         )
         cls.server_thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.server_thread.start()
@@ -356,10 +651,29 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         ], auth_mode="query")
         self.assertEqual(st_b, 200)
         self.assertEqual(len(batch_resp), 3)
-        self.assertEqual(len(batch_resp[1]["result"]["resources"]), 5)
+        self.assertEqual(len(batch_resp[1]["result"]["resources"]), 8)
         self.assertEqual(len(batch_resp[2]["result"]["prompts"]), 4)
 
     def test_02_all_core_studio_tools_end_to_end(self):
+        # 0. v5 bridge-level tools (no Studio peer required)
+        reg = self.call_tool("agent_bus", {"action": "register", "name": "pytest-agent", "role": "qa"})
+        self.assertTrue(reg["online"])
+        posted = self.call_tool("agent_bus", {"action": "post", "agentId": reg["id"], "subject": "test", "body": "hello bus"})
+        self.assertTrue(posted["id"].startswith("msg-"))
+        task = self.call_tool("agent_bus", {"action": "task_create", "title": "v5 smoke", "agentId": reg["id"], "priority": "high"})
+        self.assertEqual(task["status"], "todo")
+        claimed = self.call_tool("agent_bus", {"action": "task_claim", "taskId": task["id"], "agentId": reg["id"]})
+        self.assertEqual(claimed["status"], "in_progress")
+        done = self.call_tool("agent_bus", {"action": "task_complete", "taskId": task["id"], "agentId": reg["id"], "result": "ok"})
+        self.assertEqual(done["status"], "done")
+        ops = self.call_tool("bridge_ops", {"action": "status"})
+        self.assertEqual(ops["version"], "5.0.0")
+        self.assertIn("tunnel", ops)
+        metrics = self.call_tool("bridge_ops", {"action": "metrics"})
+        self.assertIn("counters", metrics)
+        verify = self.call_tool("bridge_ops", {"action": "audit_verify"})
+        self.assertTrue(verify["ok"])
+
         # 1. Session & Peers
         st = self.call_tool("get_studio_state")
         self.assertTrue(st["studioConnected"])

@@ -1,5 +1,24 @@
 # CONNECT — Arena ↔ Roblox Studio bridge, operator's manual
 
+> **v5 note (2026-11-03):** the bridge is now `5.0.0` with a supervised tunnel, a
+> multi-agent bus, scoped tokens, Prometheus metrics and a hash-chained audit log.
+> Full reference: [`roblox-bridge/docs/OPS.md`](roblox-bridge/docs/OPS.md).
+> Operational quickies:
+>
+> ```powershell
+> .\ab.ps1 health                                  # still the fastest liveness check
+> python roblox-bridge/arena_studio.py ops         # peers + queue + tunnel + agents + tasks
+> python roblox-bridge/arena_studio.py tunnel status
+> python roblox-bridge/arena_studio.py bus tasks
+> python roblox-bridge/arena_studio.py metrics --prometheus
+> python roblox-bridge/arena_studio.py audit --verify
+> ```
+>
+> `setup.py --tunnel` now keeps the tunnel alive (URL scraping, health probes,
+> backoff restarts). A **named** tunnel uses `--tunnel-token <CF_TOKEN>` for a
+> stable hostname; `--public-url https://…` reports a tunnel you run yourself.
+> Read-scoped tokens are blocked from mutating Studio via `/mcp` and `/api/jobs`.
+
 **For the next agent.** This file is the entire connection story, written
 2026-10-07 after a full session of debugging exactly this. Read it once, top
 to bottom, before touching anything connection-related. **Do not re-derive any
