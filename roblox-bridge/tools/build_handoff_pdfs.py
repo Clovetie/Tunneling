@@ -442,6 +442,19 @@ DIFF_FILES = [
 ]
 
 
+def resolve_base() -> str:
+    """Diff base: explicit flag, else the commit this branch forked from main.
+
+    Using HEAD~1 breaks as soon as the PDF pack itself is committed, which is why
+    the fork point is the default.
+    """
+    for ref in ("origin/main", "origin/master", "main", "master"):
+        merge_base = git(["merge-base", "HEAD", ref]).strip()
+        if merge_base:
+            return merge_base
+    return git(["rev-parse", "HEAD~1"]).strip() or "HEAD~1"
+
+
 def build_code_pdf(base: str, out_path: Path):
     styles = make_styles()
     doc = BaseDocTemplate(
@@ -576,8 +589,46 @@ def _code_story(styles, base):
     story += [PageBreak(), SetFile(""), Paragraph("5. Diffs against the previous release", styles["h1"]),
               Paragraph(
                   f"Unified diffs produced with <font name='Courier'>git diff {base} -- &lt;file&gt;</font>. "
-                  "Lines prefixed <font name='Courier'>+</font> are added, <font name='Courier'>-</font> removed.",
-                  styles["body"])]
+                  "Lines prefixed <font name='Courier'>+</font> are added, <font name='Courier'>-</font> removed; "
+                  "each file starts on its own page.", styles["body"])]
+
+    diff_rows = [[Paragraph("<b>File</b>", styles["small"]), Paragraph("<b>Added</b>", styles["small"]),
+                  Paragraph("<b>Removed</b>", styles["small"]), Paragraph("<b>Purpose</b>", styles["small"])]]
+    total_added = total_removed = 0
+    for path, purpose in DIFF_FILES:
+        numstat = git(["diff", "--numstat", base, "--", path]).split()
+        added = numstat[0] if len(numstat) >= 3 else "0"
+        removed = numstat[1] if len(numstat) >= 3 else "0"
+        if added.isdigit():
+            total_added += int(added)
+        if removed.isdigit():
+            total_removed += int(removed)
+        diff_rows.append([
+            Paragraph(f"<font name='Courier'>{path}</font>", styles["small"]),
+            Paragraph(f"<font color='#116329'>+{added}</font>", styles["small"]),
+            Paragraph(f"<font color='#82071e'>-{removed}</font>", styles["small"]),
+            Paragraph(escape_xml(purpose), styles["small"]),
+        ])
+    diff_rows.append([
+        Paragraph("<b>Total</b>", styles["small"]),
+        Paragraph(f"<b>+{total_added}</b>", styles["small"]),
+        Paragraph(f"<b>-{total_removed}</b>", styles["small"]),
+        Paragraph("", styles["small"]),
+    ])
+    diff_table = Table(diff_rows, colWidths=[250, 52, 62, doc_width_landscape() - 364])
+    diff_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), PANEL_ALT),
+        ("BACKGROUND", (0, -1), (-1, -1), PANEL_ALT),
+        ("BOX", (0, 0), (-1, -1), 0.5, RULE),
+        ("INNERGRID", (0, 1), (-1, -2), 0.35, RULE),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story += [Spacer(1, 6), diff_table, Spacer(1, 8), Paragraph(
+        "The diff sections carry the context lines needed to place each change; nothing outside these "
+        "files is touched by the release.", styles["small"])]
 
     for path, purpose in DIFF_FILES:
         diff = git(["diff", "--no-color", "--unified=3", base, "--", path])
@@ -1250,7 +1301,8 @@ def _tasks_story(styles):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--base", default=None, help="Diff base commit (default: HEAD~1)")
+    ap.add_argument("--base", default=None,
+                    help="Diff base commit (default: merge-base with origin/main, else HEAD~1)")
     ap.add_argument("--out-dir", default=str(OUT_DIR))
     ap.add_argument("--code-only", action="store_true")
     ap.add_argument("--tasks-only", action="store_true")
@@ -1258,7 +1310,7 @@ def main() -> int:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    base = args.base or git(["rev-parse", "HEAD~1"]).strip() or "HEAD~1"
+    base = args.base or resolve_base()
     base = base[:40]
 
     built = []
