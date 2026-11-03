@@ -298,7 +298,7 @@ class TestV5OpsPlatform(unittest.TestCase):
     def test_ops_report_and_public_health_shape(self):
         status, health = self._req("/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "5.1.0")
+        self.assertEqual(health["version"], "5.2.0")
         self.assertIn("tunnel", health)
         self.assertIn("agents", health)
         status, ops = self._req("/api/ops", token=self.admin_token)
@@ -497,6 +497,119 @@ class TestV5OpsPlatform(unittest.TestCase):
             capture_output=True, text=True, timeout=120)
         self.assertEqual(drill.returncode, 3)
         self.assertIn("no Studio peer", drill.stderr)
+
+    # -- v5.2: maintenance pause, automatic sweeper, ops resources -----------
+
+    def test_queue_pause_holds_jobs_until_resumed(self):
+        status, paused = self._req("/api/queue/pause", method="POST",
+                                   body={"reason": "maintenance window"}, token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertTrue(paused["paused"])
+        self.assertEqual(paused["reason"], "maintenance window")
+
+        job, _ = self.state.enqueue_job("ping", note="during pause")
+        peer = self.state.record_poll({"peer": ["peer-pause"], "dm": ["edit"], "place": ["p"], "placeId": ["1"]})
+        self.assertIsNone(self.state.poll_for_job(peer, wait_seconds=0.2))
+        with self.state.lock:
+            self.assertEqual(self.state.jobs[job["id"]]["status"], "queued")
+
+        status, health = self._req("/api/health")
+        self.assertEqual(status, 200)
+        self.assertTrue(health["queuePaused"])
+
+        status, resumed = self._req("/api/queue/resume", method="POST", body={}, token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertFalse(resumed["paused"])
+        claimed = self.state.poll_for_job(peer, wait_seconds=1.0)
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["id"], job["id"])
+
+        _, ops = self._req("/api/ops", token=self.admin_token)
+        self.assertIn("queue", ops)
+        self.assertFalse(ops["queue"]["paused"])
+        self.assertIn("sweeper", ops)
+        self.assertIn("jobLatency", ops)
+        # Pausing requires admin, not a read token.
+        reader = self.state.tokens.create("pause-reader", role="read", rate_limit=50)
+        denied = self._req("/api/queue/pause", method="POST", body={}, token=reader["token"])
+        self.assertEqual(denied[0], 403)
+
+    def test_automatic_sweeper_releases_stale_tasks_and_counts_them(self):
+        bus = self.state.bus
+        ghost = bus.handle({"action": "register", "name": "Ghost", "role": "qa"})
+        task = bus.handle({"action": "task_create", "title": "Ghost task", "createdBy": ghost["id"]})
+        bus.handle({"action": "task_claim", "taskId": task["id"], "agentId": ghost["id"]})
+        bus.agents[ghost["id"]]["lastSeen"] = time.time() - 5000
+
+        before = self.state.metrics_snapshot()["counters"]
+        swept = self.state.auto_sweep()
+        self.assertEqual(swept["tasksReaped"], 1)
+        self.assertEqual(bus.tasks[task["id"]]["status"], "todo")
+        self.assertEqual(self.state._sweeps, 1)
+        self.assertTrue(self.state._last_sweep)
+
+        metrics = self.state.metrics_snapshot()
+        names = {c["name"]: c["value"] for c in metrics["counters"]}
+        self.assertGreaterEqual(names.get("bridge_agents_reaped_total", 0), 1)
+        audit = self.state.telemetry.audit.tail(5)["entries"]
+        self.assertTrue(any(e["action"] == "bus.sweep" for e in audit))
+
+        # A quiet sweep is silent (no new alert message) and still counts a cycle.
+        bus.agents[ghost["id"]]["lastSeen"] = time.time()
+        quiet = self.state.auto_sweep()
+        self.assertEqual(quiet["tasksReaped"], 0)
+        self.assertEqual(self.state._sweeps, 2)
+        self.assertEqual(len([m for m in bus.messages if m["kind"] == "alert"]), 1)
+
+        # Latency summary surfaces per-tool percentiles once jobs have durations.
+        with self.state.lock:
+            self.state.jobs["job-lat"] = {
+                "id": "job-lat", "type": "ping_studio", "status": "done", "note": "lat",
+                "ok": True, "error": None, "result": None, "duration_ms": 42.0,
+                "created": time.time(), "finished": time.time(),
+            }
+            self.state.history.append("job-lat")
+        summary = self.state._job_latency_summary()
+        self.assertIn("ping_studio", summary)
+        self.assertEqual(summary["ping_studio"]["p50"], 42.0)
+
+    def test_bridge_ops_control_actions_and_ops_resources(self):
+        from mcp_core import MCPDispatcher, RESOURCES
+        uris = [r["uri"] for r in RESOURCES]
+        self.assertEqual(len(uris), 10)
+        self.assertIn("studio://jobs", uris)
+        self.assertIn("studio://handoff", uris)
+
+        dispatcher = MCPDispatcher(self.state.mcp_client)
+        paused = dispatcher.handle_payload({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "bridge_ops", "arguments": {"action": "queue_pause", "reason": "unit test"}},
+        })
+        self.assertFalse(paused["result"].get("isError"), paused)
+        self.assertTrue(self.state.queue_paused)
+        resumed = dispatcher.handle_payload({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "bridge_ops", "arguments": {"action": "queue_resume"}},
+        })
+        self.assertFalse(resumed["result"].get("isError"), resumed)
+        self.assertFalse(self.state.queue_paused)
+
+        self.state.bus.handle({"action": "register", "name": "Resource Probe", "role": "qa"})
+        handoff = dispatcher.handle_payload({
+            "jsonrpc": "2.0", "id": 3, "method": "resources/read",
+            "params": {"uri": "studio://handoff"},
+        })
+        text = handoff["result"]["contents"][0]["text"]
+        self.assertIn("# Agent handoff brief", text)
+        self.assertIn("Resource Probe", text)
+
+        jobs = dispatcher.handle_payload({
+            "jsonrpc": "2.0", "id": 4, "method": "resources/read",
+            "params": {"uri": "studio://jobs"},
+        })
+        payload = json.loads(jobs["result"]["contents"][0]["text"])
+        for key in ("queue", "sweeper", "health", "jobLatency", "recentJobs"):
+            self.assertIn(key, payload)
 
     # -- tunnel supervisor --------------------------------------------------
 
@@ -847,7 +960,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         ], auth_mode="query")
         self.assertEqual(st_b, 200)
         self.assertEqual(len(batch_resp), 3)
-        self.assertEqual(len(batch_resp[1]["result"]["resources"]), 8)
+        self.assertEqual(len(batch_resp[1]["result"]["resources"]), 10)
         self.assertEqual(len(batch_resp[2]["result"]["prompts"]), 7)
 
     def test_02_all_core_studio_tools_end_to_end(self):
@@ -863,7 +976,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         done = self.call_tool("agent_bus", {"action": "task_complete", "taskId": task["id"], "agentId": reg["id"], "result": "ok"})
         self.assertEqual(done["status"], "done")
         ops = self.call_tool("bridge_ops", {"action": "status"})
-        self.assertEqual(ops["version"], "5.1.0")
+        self.assertEqual(ops["version"], "5.2.0")
         self.assertIn("tunnel", ops)
         metrics = self.call_tool("bridge_ops", {"action": "metrics"})
         self.assertIn("counters", metrics)

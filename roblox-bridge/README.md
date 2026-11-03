@@ -1,4 +1,4 @@
-# Arena ↔ Roblox Studio MCP Server & Bridge (v5.1.0)
+# Arena ↔ Roblox Studio MCP Server & Bridge (v5.2.0)
 
 Zero-dependency **Model Context Protocol (MCP)** server (`stdio` + `Streamable HTTP`), multi-DataModel Studio local plugin (`ArenaBridge.lua` v4.0.0), live web dashboard, and CLI (`arena_studio.py` / `ab.ps1`) for connecting AI coding agents to Roblox Studio.
 
@@ -38,7 +38,7 @@ Works simultaneously across **every connection mode**:
 
 ## Ecosystem Research Summary (2026 Best Practices Applied)
 
-This v5.1.0 architecture incorporates verified patterns across the 2026 Roblox MCP ecosystem:
+This v5.2.0 architecture incorporates verified patterns across the 2026 Roblox MCP ecosystem:
 
 1. **Roblox Official Built-in Studio MCP (`create.roblox.com/docs/studio/mcp`)** *(which superseded `Roblox/studio-rust-mcp-server`, archived April 2026)*:
    - Focused, low-token tool taxonomy (`get_studio_state`, `list_studios`, `search_game_tree`, `inspect_instance`, `script_read` with line ranges, atomic `multi_edit`, `script_search`, `script_grep`, DataModel-targeted `execute_luau`, `start_stop_play`, `get_console_output`) rather than 150+ overlapping micro-tools that bloat prompt context.
@@ -68,7 +68,7 @@ python setup.py --write-mcp
 
 - Installs `ArenaBridge.lua` v4.0.0 into `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or `~/Documents/Roblox/Plugins` (macOS) with your token pre-baked.
 - Writes `.mcp.json` ready for Claude Code / Cursor / VS Code.
-- Starts `server.py` v5.1.0 on `http://127.0.0.1:8077` (Web Dashboard + REST API + `POST /mcp` Streamable HTTP).
+- Starts `server.py` v5.2.0 on `http://127.0.0.1:8077` (Web Dashboard + REST API + `POST /mcp` Streamable HTTP).
 - Add `--tunnel` if exposing to a remote cloud agent via Cloudflare Quick Tunnel, or `--install-only` if letting `mcp_server.py` self-host the embedded bridge on demand.
 
 ### 2. Connect Your MCP Client

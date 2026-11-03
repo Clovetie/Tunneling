@@ -2,6 +2,49 @@
 
 All notable changes for the Roblox Studio bridge are documented here.
 
+## 5.2.0 — unattended handoff: automatic sweeper, maintenance pause, job/ops resources
+
+> Unit-tested against the stateful mock Studio. Nothing here needs a live peer to
+> exercise; the G7/G8 operator evidence is still outstanding (see 5.1.0).
+
+### Added
+- **Automatic stale-agent sweeper (`server.py`)**: the reaper thread now also runs
+  `sweep_stale()` every `--sweep-interval` seconds (default 300,
+  `BRIDGE_SWEEP_INTERVAL`, `0` disables) against agents silent longer than
+  `--sweep-offline` (default 900, `BRIDGE_SWEEP_OFFLINE`). A sweep that releases
+  work emits `bus.sweep`, appends `bus.sweep` to the audit chain and bumps
+  `bridge_agents_reaped_total` / `bridge_tasks_released_total`; a quiet sweep is silent and still counted in
+  `bridge_sweeps_total`. Dead peers' tasks now move to a live peer without an
+  operator remembering to run `bus sweep`.
+- **Maintenance pause (`/api/queue/pause` / `/api/queue/resume`, admin)**: holds
+  jobs for Studio while still accepting them — peers stay registered (poll
+  answers `{"job":null,"paused":true}`), nothing is cancelled, resume wakes every
+  waiting peer and releases the held work. Exposed as
+  `bridge_ops {action:'queue_pause'|'queue_resume'}` (`reason` recorded in audit)
+  and as **Pause queue / Resume queue** in the Ops Console.
+- **`studio://jobs` resource**: queue depth, pause state, sweeper counters, live
+  health subset, recent job summaries and per-tool latency in one document.
+- **`studio://handoff` resource** (`text/markdown`): the full bus export as a
+  paste-ready brief, so an agent can file its handoff with one resource read.
+- **`jobLatency` in `/api/ops`**: per-tool `count/p50/p95/max/mean` over the last
+  300 completed jobs, computed in-process — percentile visibility without a
+  Prometheus scrape. The dashboard prints a one-line summary under the metrics box.
+- **Ops Console controls**: **Sweep** on the task board (releases dead peers'
+  tasks) plus the pause/resume switch and a sweeper status line.
+
+### Changed
+- `metrics_snapshot()` exports `bridge_queue_paused` and `bridge_sweeps_total`.
+- `/api/poll` responses carry `paused` so the plugin can surface maintenance mode.
+- `POST /api/ops` accepts `queue_pause`, `queue_resume` and `sweep`.
+- Version `5.2.0` across the server, MCP surface, CLI, telemetry, bus, auth,
+  tunnel manager and docs; dashboard badge `v5.2`.
+
+### Verification
+- `python3 -B roblox-bridge/test_bridge_mcp.py` — **34 tests pass** (3 new:
+  pause holds the exact job and resume reclaims it + admin-only enforcement,
+  automatic sweep releases/counts/audits and stays silent when idle, `bridge_ops`
+  control actions plus the two new resources).
+
 ## 5.1.0 — partner tasks landed: validated named tunnels, sweeper, incremental briefs, MCP prompt recipes, operator scripts
 
 > Unit-tested against the stateful mock Studio plus a fake tunnel binary.

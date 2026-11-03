@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 mcp_core.py — Zero-dependency Model Context Protocol (MCP) engine & Roblox Studio
-tool suite for Arena <-> Roblox Studio (v5.1.0).
+tool suite for Arena <-> Roblox Studio (v5.2.0).
 
 Supports:
   - MCP specification versions 2025-06-18, 2025-03-26, and 2024-11-05
@@ -28,7 +28,7 @@ import urllib.request
 from pathlib import Path
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "5.1.0"
+MCP_SERVER_VERSION = "5.2.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2025-06-18",
     "2025-03-26",
@@ -482,6 +482,9 @@ class BridgeClient:
                 "tunnel_stop": ("tunnel", {"action": "stop"}),
                 "tunnel_restart": ("tunnel", {"action": "restart"}),
                 "queue_clear": ("queue_clear", {}),
+                "queue_pause": ("queue_pause", {"reason": p.get("reason")}),
+                "queue_resume": ("queue_resume", {}),
+                "sweep": ("sweep", {}),
                 "reap": ("reap", {}),
             }
             if action not in mapping:
@@ -509,7 +512,11 @@ class BridgeClient:
             if sub == "status":
                 return self._http_request("GET", "/api/tunnel", timeout=15.0)
             return self._http_request("POST", "/api/tunnel", {"action": sub}, timeout=90.0)
-        if action in ("queue_clear", "reap"):
+        if action == "queue_pause":
+            return self._http_request("POST", "/api/queue/pause", {"reason": p.get("reason")}, timeout=20.0)
+        if action == "queue_resume":
+            return self._http_request("POST", "/api/queue/resume", {}, timeout=20.0)
+        if action in ("queue_clear", "reap", "sweep"):
             return self._http_request("POST", "/api/ops", {"action": action}, timeout=30.0)
         raise ValueError(f"Unknown bridge_ops action: {action}")
 
@@ -1808,7 +1815,8 @@ TOOL_SPECS = [
             "Operate and observe the bridge itself: consolidated ops report (peers, queue, tunnel, bus, audit), "
             "Prometheus-style metrics, tamper-evident audit log verification, live event feed, and supervised "
             "public-tunnel control (start/stop/restart). Read actions: status, metrics, audit, audit_verify, events, "
-            "tunnel. Control: tunnel_start, tunnel_stop, tunnel_restart, queue_clear, reap."
+            "tunnel. Control: tunnel_start, tunnel_stop, tunnel_restart, queue_pause, queue_resume, "
+            "queue_clear, sweep, reap. queue_pause stops handing jobs to Studio without dropping them."
         ),
         "inputSchema": {
             "type": "object",
@@ -1816,12 +1824,14 @@ TOOL_SPECS = [
                 "action": {
                     "type": "string",
                     "enum": ["status", "metrics", "audit", "audit_verify", "events", "tunnel", "tunnel_start",
-                             "tunnel_stop", "tunnel_restart", "queue_clear", "reap"],
+                             "tunnel_stop", "tunnel_restart", "queue_pause", "queue_resume",
+                             "queue_clear", "sweep", "reap"],
                     "default": "status",
                 },
                 "limit": {"type": "integer", "description": "Rows for audit/events (default 50)."},
                 "cursor": {"type": "integer", "description": "Event cursor for incremental reads."},
                 "format": {"type": "string", "enum": ["json", "prometheus"], "default": "json"},
+                "reason": {"type": "string", "description": "Why the queue was paused; recorded in the audit log."},
             },
         },
         "annotations": _ann("Bridge Ops, Metrics & Tunnel Control", read_only=False, destructive=False, idempotent=False),
@@ -2903,6 +2913,18 @@ RESOURCES = [
         "description": "Latest hash-chained audit entries plus chain verification status.",
         "mimeType": "application/json",
     },
+    {
+        "uri": "studio://jobs",
+        "name": "Job Queue & Per-Tool Latency",
+        "description": "Queue depth, pause state, live peer list, recent job summaries and p50/p95 wall time per tool.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "studio://handoff",
+        "name": "Markdown Handoff Brief",
+        "description": "The bus export as markdown: roster, task board, recent messages and stats — paste-ready for the next agent or human.",
+        "mimeType": "text/markdown",
+    },
 ]
 
 RESOURCE_TEMPLATES = [
@@ -3003,6 +3025,19 @@ def read_mcp_resource(client: BridgeClient, uri: str) -> dict:
     if uri == "studio://ops":
         data = client.ops_action({"action": "status"})
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
+    if uri == "studio://jobs":
+        ops = client.ops_action({"action": "status"})
+        payload = {
+            "queue": ops.get("queue"),
+            "sweeper": ops.get("sweeper"),
+            "health": {k: ops.get("health", {}).get(k) for k in ("queued", "jobs", "peers", "studio_connected", "queuePaused")},
+            "jobLatency": ops.get("jobLatency"),
+            "recentJobs": ops.get("recentJobs"),
+        }
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(payload, indent=2)}]}
+    if uri == "studio://handoff":
+        brief = client.bus_action({"action": "export", "summaryOnly": False})
+        return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": brief.get("markdown", "")}]}
     if uri == "studio://audit":
         data = client.ops_action({"action": "audit", "limit": 25})
         verify = client.ops_action({"action": "audit_verify"})

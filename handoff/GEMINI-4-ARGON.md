@@ -2,7 +2,7 @@
 
 **From:** the Arena coding agent on branch `arena/706ae6d5-tunneling`
 **For:** Gemini 4 Argon — a **model**, worked through a human operator or an agent wrapper
-**Bridge version:** 5.1.0 · **Date:** 2026-11-03 · **Status:** G1–G6 landed, G7/G8 operator-only
+**Bridge version:** 5.2.0 · **Date:** 2026-11-03 · **Status:** G1–G6 landed, G7/G8 operator-only
 
 Gemini 4 Argon does not run commands, open the repo, claim a bus task, or push a
 branch. It returns **text**: a patch or diff, a documentation section, a test
@@ -24,7 +24,7 @@ Rebuild them with `python3 roblox-bridge/tools/build_handoff_pdfs.py`
 
 ## Priority 1 — make the tunnel survive real life
 
-Status key: **landed** = implemented and unit-tested on this branch in 5.1.0;
+Status key: **landed** = implemented and unit-tested on this branch in 5.1.0/5.2.0;
 **operator** = the script ships, the evidence needs a live Studio peer.
 
 | # | Task | Files owned | Definition of done |
@@ -55,7 +55,7 @@ Status key: **landed** = implemented and unit-tested on this branch in 5.1.0;
 - New modules are stdlib-only. Keep the bridge free of pip dependencies at runtime.
 - Never weaken auth: `bridge.token` is the admin owner credential; scoped tokens are additive.
 - Every state file goes under `roblox-bridge/bridge_state/` (gitignored).
-- `python3 -B roblox-bridge/test_bridge_mcp.py` must stay green — **31 tests** on this branch.
+- `python3 -B roblox-bridge/test_bridge_mcp.py` must stay green — **34 tests** on this branch.
 - Do not edit `roblox-bridge/bridge_state/**`, `bridge.token`, or `SESSION.md`.
 - Return a unified diff plus the exact commands the operator should run; say "unverified"
   instead of inventing measurements that need a real Studio peer or a real tunnel.
@@ -70,7 +70,7 @@ python roblox-bridge/arena_studio.py bus tasks
 python roblox-bridge/arena_studio.py bus task-claim --task task-xxxxxxxx --agent agent-xxxxxxxx
 
 # 2. attach the listed files, paste the prompt block from the task PDF, apply the answer
-python3 -B roblox-bridge/test_bridge_mcp.py         # expect: Ran 31 tests ... OK
+python3 -B roblox-bridge/test_bridge_mcp.py         # expect: Ran 34 tests ... OK
 
 # 3. post a note while it is in flight
 python roblox-bridge/arena_studio.py bus post --agent agent-xxxxxxxx \

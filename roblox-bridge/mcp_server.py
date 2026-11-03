@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 mcp_server.py — Standalone Model Context Protocol (MCP) stdio server for
-Roblox Studio (v5.1.0).
+Roblox Studio (v5.2.0).
 
 Works out-of-the-box with Claude Code, Claude Desktop, Cursor, Codex CLI,
 VS Code Copilot, Windsurf, Zed, Cline, and any standard MCP host.

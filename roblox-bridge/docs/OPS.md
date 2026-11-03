@@ -1,6 +1,6 @@
 # v5 Ops Platform — tunnels, multi-agent coordination, telemetry, scoped auth
 
-_Applies to bridge `5.1.0`._
+_Applies to bridge `5.2.0`._
 
 Everything in this document ships in `roblox-bridge/` and is **stdlib-only**
 (no pip installs). It layers on top of the v4 MCP + plugin bridge; nothing in the
@@ -217,6 +217,8 @@ curl -X POST -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/jso
 | Timeouts | `"timeout": 60` seconds. The reaper fails stuck jobs and emits `job.timeout` into the audit chain. |
 | Orphan recovery | A job claimed by a peer that stopped polling for >20 s is requeued automatically (`bridge_jobs_reaped_total`, `job.requeued_orphan` event). |
 | Cancellation | `POST /api/jobs/<id>/cancel`, queue-wide `POST /api/queue/clear` (admin). |
+| Maintenance pause | `POST /api/queue/pause {"reason":"asset import"}` (admin) stops *handing* jobs to Studio while new work keeps queueing; peers stay registered (`/api/poll` returns `{"job":null,"paused":true}` every 8 s). `POST /api/queue/resume` releases the held work and wakes waiting peers. MCP: `bridge_ops {"action":"queue_pause"\|"queue_resume"}`; dashboard: **Pause queue** button in the Ops Console. Nothing is cancelled by a pause. |
+| Dead-peer handoff | `POST /api/bus {"action":"sweep"}` releases tasks leased by agents silent for `offlineSeconds` (default 900) so a live peer can claim them immediately; `POST /api/ops {"action":"sweep"}` and `bridge_ops {"action":"sweep"}` do the same. |
 
 ---
 
@@ -231,7 +233,8 @@ bridge_job_duration_ms{...} p50/p90/p95/p99, count, sum
 bridge_job_retries_total, bridge_job_dedupe_total, bridge_jobs_reaped_total
 bridge_queue_depth, bridge_peers_online, bridge_agents_online, bridge_tasks_open
 bridge_auth_rejections_total{code,path}, bridge_token_requests_total
-bridge_tunnel_online, bridge_uptime_seconds
+bridge_tunnel_online, bridge_queue_paused, bridge_sweeps_total
+bridge_agents_reaped_total, bridge_tasks_released_total, bridge_uptime_seconds
 ```
 
 ```bash
@@ -256,8 +259,24 @@ Appends take an OS file lock and adopt the on-disk head, so two processes cannot
 silently fork the chain.
 
 **Ops report** — `GET /api/ops` bundles health, tunnel, bus, metrics, open tasks,
-recent jobs and audit head. The dashboard's **tab 7 — Ops Console & Agent Bus**
-renders it live.
+recent jobs and audit head, plus four v5.2 blocks:
+
+* `queue` — `{paused, reason, pausedAt, depth}`: the maintenance switch and how
+  much work it is holding.
+* `sweeper` — `{intervalSeconds, offlineSeconds, lastSweep, sweeps, tasksReaped, agentsReaped}`:
+  the automatic stale-agent sweep, which runs on the reaper thread every
+  `--sweep-interval` seconds (default 300, `BRIDGE_SWEEP_INTERVAL`, `0` disables)
+  and releases tasks from agents silent longer than `--sweep-offline`
+  (default 900, `BRIDGE_SWEEP_OFFLINE`).
+* `jobLatency` — per-tool `{count, p50, p95, max, mean}` wall time over the last
+  300 completed jobs, computed in-process (no Prometheus needed) and shown as a
+  one-line summary under the dashboard metric box.
+* `recentJobs` / `openTasks` — unchanged, newest first.
+
+The dashboard's **tab 7 — Ops Console & Agent Bus** renders it live, and adds
+three operator controls: **Pause queue / Resume queue**, **Sweep** (release dead
+peers' tasks) and the per-task **Claim / Done** buttons that post as
+`web-operator` (or whatever `arena_agent_id` the browser has stored).
 
 ---
 
@@ -275,7 +294,9 @@ renders it live.
 | `POST /api/tunnel` | admin | `start` / `stop` / `restart` |
 | `GET /api/tokens` | admin | list tokens (never returns hashes) |
 | `POST /api/tokens` | admin | `create` / `revoke` / `roles` |
-| `POST /api/ops` | admin | `reap`, `queue_clear` |
+| `POST /api/ops` | admin | `reap`, `queue_clear`, `queue_pause`, `queue_resume`, `sweep` |
+| `POST /api/queue/pause` | admin | hold jobs for maintenance (`reason` recorded in audit) |
+| `POST /api/queue/resume` | admin | release held jobs and wake waiting peers |
 | `POST /api/jobs` | write | + `idempotencyKey`, `priority`, `maxRetries`, `timeout` |
 
 `GET /api/health` stays public (no place data, no secrets) so tunnels and uptime
@@ -289,7 +310,11 @@ monitors can probe it.
 * **7 prompts** (was 4): `multi_agent_handoff`, `bus_standup` and `task_triage`
   render live bus state (roster, task board, cursor) and fall back to a one-line
   "live bus state is unavailable" note when the bridge is offline.
-* **3 new resources**: `studio://bus`, `studio://ops`, `studio://audit`.
+* **10 resources** (was 5 at v4, 8 at v5.0): `studio://state`, `peers`,
+  `console`, `selection`, `survey`, `bus`, `ops`, `audit`, plus v5.2's
+  `studio://jobs` (queue depth, pause state, sweeper counters, recent jobs and
+  per-tool p50/p95) and `studio://handoff` (the bus export as markdown —
+  `text/markdown`, paste-ready brief for the next agent or human).
 * Read-scoped tokens see mutating tools as blocked, both in `tools/call` and in
   the returned `isError` payload (`reason: insufficient_scope`).
 
@@ -298,7 +323,14 @@ monitors can probe it.
 {"name":"bridge_ops","arguments":{"action":"metrics","format":"prometheus"}}
 {"name":"bridge_ops","arguments":{"action":"audit_verify"}}
 {"name":"bridge_ops","arguments":{"action":"tunnel_restart"}}
+{"name":"bridge_ops","arguments":{"action":"queue_pause","reason":"asset import"}}
+{"name":"bridge_ops","arguments":{"action":"queue_resume"}}
+{"name":"bridge_ops","arguments":{"action":"sweep"}}
 ```
+
+`bridge_ops` actions: `status`, `metrics`, `audit`, `audit_verify`, `events`,
+`tunnel`, `tunnel_start`, `tunnel_stop`, `tunnel_restart`, `queue_pause`
+(`reason`), `queue_resume`, `queue_clear`, `sweep`, `reap`.
 
 ---
 
@@ -321,17 +353,20 @@ Override with `--state-dir` or `BRIDGE_STATE_DIR`.
 ## 9. Tests
 
 ```bash
-python3 -B roblox-bridge/test_bridge_mcp.py          # 31 tests
+python3 -B roblox-bridge/test_bridge_mcp.py          # 34 tests
 ```
 
-v5 / v5.1 coverage: scoped roles over HTTP and MCP, rate-limit 429s, bus presence/
+v5 / v5.1 / v5.2 coverage: scoped roles over HTTP and MCP, rate-limit 429s, bus presence/
 mailbox/lease expiry/handoff export, stale-agent sweeping, incremental
 (`since` / `summaryOnly`) handoff briefs, MCP prompt rendering with live bus state
 and the offline fallback, named-token validation, idempotency, priority ordering,
 retry-then-fail, orphan requeue, timeout reaping, Prometheus exposition, SSE
 snapshot, audit tamper detection, responsive Ops tab + `node --check` of the
 dashboard script, the latency script (percentiles, 401 path), the two operator
-scripts' failure modes, tunnel URL scraping and the missing-binary path.
+scripts' failure modes, tunnel URL scraping and the missing-binary path, and
+v5.2's maintenance pause (jobs held, admin-only, resume reclaims the same job),
+the automatic sweeper (release + metric + audit entry, silent no-op, idempotent),
+per-tool latency percentiles, and the two new `studio://` resources.
 
 ## 10. Live acceptance and drills
 

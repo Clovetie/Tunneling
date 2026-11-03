@@ -44,7 +44,7 @@ from bus_core import AgentBus
 from telemetry import Telemetry
 from tunnel_manager import TunnelManager
 
-VERSION = "5.1.0"
+VERSION = "5.2.0"
 PEER_ONLINE_WINDOW = 5.0  # play DataModel peers are transient; do not route work to stale peers
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_DIR = HERE / "snapshots"
@@ -143,6 +143,8 @@ class BridgeState:
         tunnel_name: str = None,
         public_url: str = None,
         tunnel_binary: str = None,
+        sweep_interval: float = 300.0,
+        sweep_offline_seconds: float = 900.0,
     ):
         self.token = token or ""
         self.read_only = bool(read_only)
@@ -191,6 +193,15 @@ class BridgeState:
             state_dir=self.state_dir,
             auto_start=bool(auto_tunnel),
         )
+        # Automatic stale-agent sweeping (0 disables the background sweep).
+        self.sweep_interval = max(0.0, float(sweep_interval or 0))
+        self.sweep_offline_seconds = max(60.0, float(sweep_offline_seconds or 900))
+        self._last_sweep = 0.0
+        self._sweeps = 0
+        # Maintenance switch: keep accepting work, stop handing it to Studio.
+        self.queue_paused = False
+        self.queue_paused_reason = None
+        self.queue_paused_at = None
         # Job dedupe + retry bookkeeping
         self.idempotency = {}
         self._reaper_stop = threading.Event()
@@ -254,6 +265,60 @@ class BridgeState:
                 self.reap_jobs()
             except Exception:  # noqa: BLE001 - the reaper must never die
                 continue
+            if self.sweep_interval <= 0:
+                continue
+            try:
+                if _now() - self._last_sweep >= self.sweep_interval:
+                    self.auto_sweep()
+            except Exception:  # noqa: BLE001 - the sweeper must never kill the reaper
+                continue
+
+    def auto_sweep(self) -> dict:
+        """Release tasks held by agents that stopped heart-beating.
+
+        Runs on the reaper thread every `sweep_interval` seconds. A no-op sweep is
+        cheap and deliberately silent; a sweep that releases work is broadcast on
+        the bus, recorded in the audit log and counted in metrics.
+        """
+        result = self.bus.sweep_stale(self.sweep_offline_seconds)
+        self._last_sweep = _now()
+        self._sweeps += 1
+        if result.get("tasksReaped"):
+            self.telemetry.metrics.inc("bridge_agents_reaped_total", len(result.get("agents") or []))
+            self.telemetry.metrics.inc("bridge_tasks_released_total", result["tasksReaped"])
+            self.telemetry.events.emit("bus.sweep", {
+                "released": result["tasksReaped"], "agents": result.get("agents", []),
+            }, level="warn")
+            self.telemetry.audit.append("bus.sweep", actor="sweeper",
+                                        detail={"released": result["tasksReaped"],
+                                                "agents": result.get("agents", [])})
+        return result
+
+    def pause_queue(self, reason: str = None) -> dict:
+        """Stop handing jobs to Studio; new work still queues (nothing is lost)."""
+        with self.lock:
+            self.queue_paused = True
+            self.queue_paused_reason = (reason or "paused by operator")[:200]
+            self.queue_paused_at = _now()
+            queued = len(self.pending)
+        self.telemetry.events.emit("queue.paused", {"reason": self.queue_paused_reason, "queued": queued}, level="warn")
+        self.telemetry.audit.append("queue.pause", actor="operator", detail={"reason": self.queue_paused_reason, "queued": queued})
+        return {"paused": True, "reason": self.queue_paused_reason, "queued": queued}
+
+    def resume_queue(self) -> dict:
+        with self.lock:
+            was_paused = self.queue_paused
+            paused_for = round(_now() - self.queue_paused_at, 1) if self.queue_paused_at else 0
+            self.queue_paused = False
+            self.queue_paused_reason = None
+            self.queue_paused_at = None
+            queued = len(self.pending)
+        with self.poll_cv:
+            self.poll_cv.notify_all()
+        if was_paused:
+            self.telemetry.events.emit("queue.resumed", {"queued": queued})
+            self.telemetry.audit.append("queue.resume", actor="operator", detail={"queued": queued, "pausedSeconds": paused_for})
+        return {"paused": False, "queued": queued, "pausedSeconds": paused_for}
 
     def reap_jobs(self) -> dict:
         """Fail timed-out jobs and re-queue work orphaned by a dead/absent peer."""
@@ -430,6 +495,14 @@ class BridgeState:
         deadline = time.monotonic() + wait_seconds
         with self.poll_cv:
             while True:
+                if self.queue_paused:
+                    # Keep the peer alive (lastPoll still updates) but hand out nothing.
+                    self.peers[peer_info["peerId"]]["lastPoll"] = _now()
+                    if self.poll_cv.wait(timeout=max(0.1, min(0.5, deadline - time.monotonic()))):
+                        continue
+                    if time.monotonic() >= deadline:
+                        return None
+                    continue
                 self.peers[peer_info["peerId"]]["lastPoll"] = _now()
                 best = None
                 for job_id in list(self.pending):
@@ -780,6 +853,14 @@ class BridgeState:
                     },
                     "agents": self.bus.stats()["agents"],
                     "agentsOnline": self.bus.stats()["agentsOnline"],
+                    "queuePaused": self.queue_paused,
+                    "queuePausedReason": self.queue_paused_reason,
+                    "sweeper": {
+                        "intervalSeconds": self.sweep_interval,
+                        "offlineSeconds": self.sweep_offline_seconds,
+                        "lastSweep": self._last_sweep or None,
+                        "sweeps": self._sweeps,
+                    },
                 }
         if op == "state":
             with self.lock:
@@ -854,6 +935,12 @@ class BridgeState:
             return self.telemetry.events.since(int(body.get("cursor") or 0), int(body.get("limit") or 200), body.get("kinds"))
         if op in ("ops", "ops_report"):
             return self.ops_report()
+        if op == "queue_pause":
+            return self.pause_queue(body.get("reason"))
+        if op == "queue_resume":
+            return self.resume_queue()
+        if op == "sweep":
+            return self.auto_sweep()
         if op == "queue_clear":
             cancelled = self.clear_queue()
             self.telemetry.audit.append("queue.clear", actor="internal", detail={"cancelled": cancelled})
@@ -906,6 +993,8 @@ class BridgeState:
         ))
         t.gauge("bridge_uptime_seconds", round(_now() - self.started, 1))
         t.gauge("bridge_tunnel_online", 1 if self.tunnel.state == "online" else 0)
+        t.gauge("bridge_queue_paused", 1 if self.queue_paused else 0)
+        t.gauge("bridge_sweeps_total", self._sweeps)
         return t.snapshot(uptime=_now() - self.started)
 
     def ops_report(self) -> dict:
@@ -930,8 +1019,48 @@ class BridgeState:
             "openTasks": tasks["tasks"][:20],
             "audit": audit["entries"],
             "recentJobs": recent,
+            "queue": {
+                "paused": self.queue_paused,
+                "reason": self.queue_paused_reason,
+                "pausedAt": self.queue_paused_at,
+                "depth": health.get("queued"),
+            },
+            "sweeper": {
+                "intervalSeconds": self.sweep_interval,
+                "offlineSeconds": self.sweep_offline_seconds,
+                "lastSweep": self._last_sweep or None,
+                "sweeps": self._sweeps,
+                "tasksReaped": bus_stats.get("tasksReaped"),
+                "agentsReaped": bus_stats.get("agentsReaped"),
+            },
+            "jobLatency": self._job_latency_summary(),
             "servedAt": _now(),
         }
+
+    def _job_latency_summary(self, limit: int = 300) -> dict:
+        """p50/p95 wall time per tool over recent completed jobs (no external deps)."""
+        with self.lock:
+            samples = {}
+            for job_id in list(self.history)[-limit:]:
+                job = self.jobs.get(job_id) or {}
+                duration = job.get("duration_ms")
+                if not isinstance(duration, (int, float)) or duration <= 0:
+                    continue
+                samples.setdefault(job.get("type") or "unknown", []).append(float(duration))
+        out = {}
+        for tool, values in samples.items():
+            values.sort()
+            count = len(values)
+            if not count:
+                continue
+            out[tool] = {
+                "count": count,
+                "p50": round(values[min(count - 1, int(0.50 * count))], 1),
+                "p95": round(values[min(count - 1, int(0.95 * count))], 1),
+                "max": round(values[-1], 1),
+                "mean": round(sum(values) / count, 1),
+            }
+        return dict(sorted(out.items(), key=lambda kv: -kv[1]["count"])[:20])
 
 
 def summary(job: dict) -> dict:
@@ -1291,7 +1420,7 @@ def make_http_handler(state: BridgeState):
                     return
                 peer_info = state.record_poll(qs)
                 job = state.poll_for_job(peer_info, wait_seconds=8.0)
-                return self._send(200, {"job": job})
+                return self._send(200, {"job": job, "paused": state.queue_paused})
 
             if path.startswith("/api/jobs/"):
                 if not self._require(qs, "read", allow_loopback=True):
@@ -1395,6 +1524,14 @@ def make_http_handler(state: BridgeState):
                 cancelled = state.clear_queue()
                 state.telemetry.audit.append("queue.clear", actor=ctx["label"], detail={"cancelled": cancelled})
                 return self._send(200, {"cancelled": cancelled})
+
+            if path in ("/api/queue/pause", "/api/queue/resume"):
+                ctx = self._require(qs, "admin")
+                if not ctx:
+                    return
+                if path.endswith("pause"):
+                    return self._send(200, state.pause_queue(body.get("reason")))
+                return self._send(200, state.resume_queue())
 
             if path == "/api/snapshots":
                 if not self._require(qs, "write"):
@@ -1630,7 +1767,7 @@ def dashboard_html() -> str:
 </style></head><body>
 
 <header>
-  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v5.1</span></h1>
+  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v5.2</span></h1>
   <span id="status" class="pill off">checking&hellip;</span>
   <span id="ro-badge" class="pill ro" style="display:none">Read-Only Inspector</span>
   <span id="place" class="pill info-pill" style="display:none"></span>
@@ -1984,6 +2121,12 @@ def dashboard_html() -> str:
       <div class="card"><div class="k">Audit Entries</div><div class="v" id="ops-audit-count">0</div></div>
     </div>
 
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-6px 0 14px">
+      <button class="sm" id="queue-toggle" onclick="toggleQueue()">Pause queue</button>
+      <span class="sub" id="queue-state">Queue live</span>
+      <span class="sub" id="sweeper-state"></span>
+    </div>
+
     <div class="two-col">
       <div class="prompt-card">
         <div class="prompt-head">
@@ -2042,6 +2185,7 @@ def dashboard_html() -> str:
             <option value="low">low</option>
           </select>
           <button class="primary sm" onclick="createTask()">Add</button>
+          <button class="sm" onclick="sweepAgents()" title="Release tasks held by agents that stopped reporting">Sweep</button>
         </div>
         <div id="bus-tasks" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto"></div>
       </div>
@@ -2062,6 +2206,7 @@ def dashboard_html() -> str:
           </div>
         </div>
         <pre id="ops-metrics" style="max-height:180px;overflow:auto">Metrics not loaded.</pre>
+        <div class="sub" id="ops-latency"></div>
         <div class="sub" id="ops-audit-note"></div>
         <pre id="ops-audit" style="max-height:150px;overflow:auto">Audit log not loaded.</pre>
       </div>
@@ -2921,6 +3066,7 @@ async function tick(){
 
 // ---------------------------- v5 Ops Console ----------------------------
 let EV_SOURCE = null, EV_RETRY = null, EV_DELAY = 1000, EV_WANT = false;
+let QUEUE_PAUSED = false;
 async function opsJson(path, opts){
   const r = await fetch(path, Object.assign({cache:'no-store', headers:authHeaders()}, opts || {}));
   const data = await r.json().catch(() => ({}));
@@ -2950,6 +3096,27 @@ async function refreshOps(){
       document.getElementById('ops-audit').textContent = ops.audit.slice(0,8).map(e => `${e.seq} ${e.action} · ${e.actor} · ${e.outcome}`).join('\n');
     }
     renderBus(ops.openTasks || [], null);
+    // Queue pause switch + sweeper status.
+    const queue = ops.queue || {};
+    QUEUE_PAUSED = !!queue.paused;
+    const qBtn = document.getElementById('queue-toggle');
+    if(qBtn) qBtn.textContent = QUEUE_PAUSED ? 'Resume queue' : 'Pause queue';
+    const qState = document.getElementById('queue-state');
+    if(qState) qState.textContent = QUEUE_PAUSED
+      ? `Queue paused${queue.reason ? ' — ' + queue.reason : ''} · ${queue.depth == null ? '?' : queue.depth} held`
+      : `Queue live · ${queue.depth == null ? 0 : queue.depth} queued`;
+    const sweeper = ops.sweeper || {};
+    const sState = document.getElementById('sweeper-state');
+    if(sState) sState.textContent = sweeper.intervalSeconds
+      ? `Sweeper every ${Math.round(sweeper.intervalSeconds)}s (silent > ${Math.round(sweeper.offlineSeconds || 0)}s) · reaped ${sweeper.tasksReaped || 0}`
+      : 'Sweeper disabled';
+    const latency = ops.jobLatency || {};
+    const row = document.getElementById('ops-latency');
+    if(row){
+      const top = Object.entries(latency).slice(0, 4)
+        .map(([tool, d]) => `${tool} p50 ${d.p50}ms / p95 ${d.p95}ms (n=${d.count})`);
+      row.textContent = top.length ? 'Latency: ' + top.join(' · ') : '';
+    }
   } catch(_){}
 }
 async function tunnelAction(action){
@@ -3042,6 +3209,29 @@ async function createTask(){
     })});
     document.getElementById('task-title').value = '';
     toast('Task added to the board.');
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+async function toggleQueue(){
+  const wantPause = !QUEUE_PAUSED;
+  try {
+    const res = await opsJson(wantPause ? '/api/queue/pause' : '/api/queue/resume', {
+      method:'POST',
+      body: JSON.stringify(wantPause ? {reason: 'paused from the Ops Console'} : {})
+    });
+    QUEUE_PAUSED = !!res.paused;
+    toast(wantPause ? `Queue paused (${res.queued} job(s) held).` : 'Queue resumed — Studio will pick work up.');
+    refreshOps();
+  } catch(err){ toast(err.message); }
+}
+async function sweepAgents(){
+  try {
+    const res = await opsJson('/api/bus', {method:'POST', body:JSON.stringify({
+      action:'sweep', offlineSeconds:900, agentId: currentAgent()
+    })});
+    toast(res.tasksReaped
+      ? `Released ${res.tasksReaped} task(s) from ${(res.agents || []).join(', ') || 'offline agents'}.`
+      : 'No stale agents — nothing to release.');
     refreshBus();
   } catch(err){ toast(err.message); }
 }
@@ -3179,6 +3369,8 @@ def create_http_server(
     tunnel_name: str = None,
     public_url: str = None,
     tunnel_binary: str = None,
+    sweep_interval: float = 300.0,
+    sweep_offline_seconds: float = 900.0,
 ):
     resolved_token = load_token_default(token)
     state = BridgeState(
@@ -3192,6 +3384,8 @@ def create_http_server(
         tunnel_name=tunnel_name,
         public_url=public_url,
         tunnel_binary=tunnel_binary,
+        sweep_interval=sweep_interval,
+        sweep_offline_seconds=sweep_offline_seconds,
     )
     httpd = ThreadingHTTPServer((host, port), make_http_handler(state))
     httpd.daemon_threads = True
@@ -3231,6 +3425,12 @@ def main():
                     help="Optional hostname label for a named tunnel")
     ap.add_argument("--public-url", default=os.environ.get("BRIDGE_PUBLIC_URL"),
                     help="Report a tunnel URL you run yourself (disables supervision)")
+    ap.add_argument("--sweep-interval", type=float,
+                    default=float(os.environ.get("BRIDGE_SWEEP_INTERVAL", "300")),
+                    help="Seconds between automatic stale-agent sweeps (0 disables)")
+    ap.add_argument("--sweep-offline", type=float,
+                    default=float(os.environ.get("BRIDGE_SWEEP_OFFLINE", "900")),
+                    help="An agent must be silent this long before its tasks are released")
     ap.add_argument("--state-dir", default=os.environ.get("BRIDGE_STATE_DIR"),
                     help="Directory for bus/token/audit/tunnel state (default: roblox-bridge/bridge_state)")
     args = ap.parse_args()
@@ -3247,6 +3447,8 @@ def main():
         tunnel_token=args.tunnel_token,
         tunnel_name=args.tunnel_name,
         public_url=args.public_url,
+        sweep_interval=args.sweep_interval,
+        sweep_offline_seconds=args.sweep_offline,
     )
     ro_str = " [READ-ONLY INSPECTOR]" if state.read_only else ""
     bound_port = srv.server_address[1]
