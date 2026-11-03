@@ -3551,7 +3551,7 @@ function studioCard(s, detailed){
   const age = s.online ? (s.ageSeconds < 2 ? 'live' : Math.round(s.ageSeconds) + 's ago') : 'offline';
   const pin = s.pinned
     ? `<button class="pin" onclick="unpinStudio()" title="Unpin">pinned</button>`
-    : `<button class="pin" onclick="pinStudio('${esc(s.peerId)}')" title="Make this the default Studio">pin</button>`;
+    : `<button class="pin" onclick='pinStudio(${esc(JSON.stringify(s.peerId))})' title="Make this the default Studio">pin</button>`;
   return `<div class="${cls}">
     <span class="${dot}"></span>
     <div>
