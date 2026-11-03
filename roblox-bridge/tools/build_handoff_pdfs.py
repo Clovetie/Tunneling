@@ -970,6 +970,18 @@ CONTEXTS = {
 }
 
 
+SCOPE_LOCK = {
+    "G1": "server.py, mcp_core.py, auth_core.py, bus_core.py, telemetry.py, existing tests",
+    "G2": "bridge source (this task is tooling + docs only)",
+    "G3": "any Python in server.py outside dashboard_html()",
+    "G4": "bus_core.py, server.py, existing prompts and MCP tools",
+    "G5": "handle() action names, lease rules for agents that are still online",
+    "G6": "the current export signature/defaults, other bus actions",
+    "G7": "bridge source (docs section 10 only)",
+    "G8": "bridge source (docs section 10 only)",
+}
+
+
 def build_tasks_pdf(out_path: Path):
     styles = make_styles()
     doc = BaseDocTemplate(
@@ -1122,6 +1134,8 @@ def _tasks_story(styles):
              Paragraph(f"<font name='Courier' size='7'>{escape_xml(task['files'])}</font>", styles["small"])],
             [Paragraph("<b>Attach to prompt</b>", styles["small"]),
              Paragraph(escape_xml(task["attach"]), styles["small"])],
+            [Paragraph("<b>Out of scope</b>", styles["small"]),
+             Paragraph(md(SCOPE_LOCK.get(task["id"], "")), styles["small"])],
         ], colWidths=[92, content_width - 92])
         meta.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
