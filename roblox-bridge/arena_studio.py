@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v5.2.0).
+arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v5.3.0).
 
 Supports every MCP tool and bridge operation from your terminal or HANDS MODE (`ab.ps1`),
 with strict UTF-8 handling on Windows, macOS, and Linux.
@@ -448,6 +448,18 @@ def main() -> int:
     p.add_argument("--verify", action="store_true")
     p.add_argument("--limit", type=int, default=20)
 
+    p = sub.add_parser("studios", help="multi-Studio fleet: list, pin, label, broadcast")
+    p.add_argument("action", nargs="?", default="list", choices=["list", "pin", "unpin", "label", "broadcast"])
+    p.add_argument("--peer", default=None, help="peerId from `studios list`")
+    p.add_argument("--place", default=None, help="Place id, as an alternative to --peer")
+    p.add_argument("--label", default=None, help="Human label (empty string clears it)")
+    p.add_argument("--tool", default="ping_studio",
+                   choices=["ping_studio", "get_studio_state", "survey_place", "inspect_instance",
+                            "script_read", "get_console_output"],
+                   help="Read-only tool to fan out with `broadcast`")
+    p.add_argument("--path", default=None, help="Instance/script path for path-based broadcasts")
+    p.add_argument("--timeout", type=float, default=20.0)
+
     p = sub.add_parser("queue", help="inspect, hold or clear the job queue")
     p.add_argument("action", nargs="?", default="status", choices=["status", "pause", "resume", "clear"])
     p.add_argument("--reason", default=None, help="Why the queue is paused (recorded in the audit log)")
@@ -544,6 +556,31 @@ def main() -> int:
     if args.cmd == "clear-queue":
         print(json.dumps(call("POST", "/api/queue/clear"), indent=2, ensure_ascii=False))
         return 0
+
+    if args.cmd == "studios":
+        if args.action == "pin":
+            body = {"action": "set_active"}
+            if args.peer:
+                body["peerId"] = args.peer
+            if args.place:
+                body["placeId"] = int(args.place)
+            out = call("POST", "/api/studios", body)
+        elif args.action == "unpin":
+            out = call("POST", "/api/studios", {"action": "clear_active"})
+        elif args.action == "label":
+            out = call("POST", "/api/studios", {"action": "label", "peerId": args.peer,
+                                                "label": args.label or ""})
+        elif args.action == "broadcast":
+            out = call("POST", "/api/studios", {
+                "action": "broadcast",
+                "tool": args.tool,
+                "path": args.path,
+                "timeout": args.timeout,
+            })
+        else:
+            out = call("GET", "/api/studios")
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0 if "error" not in out else 1
 
     if args.cmd == "queue":
         if args.action == "pause":

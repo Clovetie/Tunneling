@@ -2,6 +2,67 @@
 
 All notable changes for the Roblox Studio bridge are documented here.
 
+## 5.3.0 — multi-studio fleet, dual-era MCP (2026-07-28 + tasks), animated console
+
+> Unit-tested against the stateful mock Studio with two simulated peers. The
+> modern MCP paths were verified against the published 2026-07-28 / 2025-11-25
+> specifications; live Studio acceptance (G7/G8) is still operator-only.
+
+### Added
+- **Studio fleet (`/api/studios`, `studio_fleet`, `studio://studios`)** — the
+  bridge now treats several Studio windows as a managed fleet, the same idea as
+  Studio's built-in `list_roblox_studios` / `set_active_studio`:
+  `list` returns every peer with `peerId`, place, DataModel, online age, label,
+  pinned/default flags and queued job counts; `set_active` pins a default target;
+  `clear_active` returns to automatic edit-first routing; `label` names a window.
+  Pins and labels persist in `bridge_state/fleet.json`.
+- **Pin is a preference, not a gate**: an untargeted job prefers the pinned
+  Studio but falls back to `auto` routing the moment that Studio stops polling,
+  so closing a window can never stall the queue (covered by a test).
+- **Broadcast fan-out** (`POST /api/studios {"action":"broadcast"}`,
+  `studio_fleet {action:'broadcast'}`): runs one read-only job on every online
+  Studio in parallel and returns per-peer `{ok, status, durationMs, result,
+  error}` with fleet-wide totals. Mutating kinds are refused with a `400` — a
+  fan-out can never write to every place at once.
+- **Dual-era MCP transport**: speaks the modern **2026-07-28** revision as well
+  as every legacy revision back to `2024-11-05`. `server/discover` returns
+  `supportedVersions` / `capabilities` / `serverInfo` / `instructions` /
+  `ttlMs` / `cacheScope`; per-request version negotiation happens through
+  `MCP-Protocol-Version` or `_meta`; unknown versions answer `-32022` with the
+  supported list; `Mcp-Method` / `Mcp-Name` header/body mismatches answer
+  `-32020`; modern results carry `resultType: "complete"` and list results carry
+  cache hints. Legacy clients see byte-identical old shapes.
+- **Task-augmented tool calls** (MCP tasks, SEP-1686 / SEP-2663): any tool can be
+  invoked with `params.task`, returning `{resultType:"task", taskId, status,
+  pollIntervalMs, ttlMs}` immediately; `tasks/get`, `tasks/result` (blocking,
+  tagged with `_meta` related-task), `tasks/list` and `tasks/cancel` complete the
+  lifecycle. Tools advertise `execution.taskSupport: "optional"` and
+  `capabilities.tasks` declares `list` / `cancel` / `requests.tools.call`.
+- **Console redesign**: sticky multi-studio strip with live chips, pin and
+  broadcast controls, animated tab/pane transitions (fade + rise), glass panels
+  with gradient accents and hover lift, count-up stat numbers, styled
+  scrollbars and a `prefers-reduced-motion` opt-out — all in one self-contained
+  document with no CDNs, web fonts or external images.
+- **`/api/health`** now reports `studios {count, online, active, routing}`;
+  `/api/ops` adds `fleet` and `mcp {protocolVersions, modernProtocol, tasks}`.
+
+### Changed
+- `list_studios` keeps its old shape; `studio_fleet` is the richer, pinnable
+  view. Any tool already accepted `peerId`, so targeting did not need new
+  argument plumbing.
+- Dashboard badge `v5.3`, version `5.3.0` across server, MCP surface, CLI,
+  telemetry, bus, auth, tunnel manager and docs.
+
+### Verification
+- `python3 -B roblox-bridge/test_bridge_mcp.py` — **41 tests pass** (6 new:
+  fleet list/pin/routing/persistence, labels + broadcast + write refusal, the
+  `studio_fleet` tool and resource, modern-era discovery/`resultType`/`-32022`/
+  `-32020`, the task lifecycle, and the console's fleet strip + motion hooks).
+- Modern-protocol behaviour was checked against the 2026-07-28 changelog and the
+  tasks SEP; no claim is made about Studio-specific multi-instance inference
+  (Roblox's built-in server infers the target from context — this bridge is
+  explicit: `peerId` or a pin).
+
 ## 5.2.0 — unattended handoff: automatic sweeper, maintenance pause, job/ops resources
 
 > Unit-tested against the stateful mock Studio. Nothing here needs a live peer to

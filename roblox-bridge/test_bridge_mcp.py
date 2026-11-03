@@ -298,7 +298,7 @@ class TestV5OpsPlatform(unittest.TestCase):
     def test_ops_report_and_public_health_shape(self):
         status, health = self._req("/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "5.2.0")
+        self.assertEqual(health["version"], "5.3.0")
         self.assertIn("tunnel", health)
         self.assertIn("agents", health)
         status, ops = self._req("/api/ops", token=self.admin_token)
@@ -576,7 +576,7 @@ class TestV5OpsPlatform(unittest.TestCase):
     def test_bridge_ops_control_actions_and_ops_resources(self):
         from mcp_core import MCPDispatcher, RESOURCES
         uris = [r["uri"] for r in RESOURCES]
-        self.assertEqual(len(uris), 10)
+        self.assertEqual(len(uris), 11)
         self.assertIn("studio://jobs", uris)
         self.assertIn("studio://handoff", uris)
 
@@ -634,6 +634,264 @@ class TestV5OpsPlatform(unittest.TestCase):
         self.assertEqual(resumed.returncode, 0, msg=resumed.stdout + resumed.stderr)
         self.assertFalse(json.loads(resumed.stdout)["paused"])
         self.assertFalse(self.state.queue_paused)
+
+        # `studios` CLI mirrors /api/studios (empty fleet here, but the shape holds).
+        studios = subprocess.run(cli[:-1] + ["studios", "list"], env=env, capture_output=True,
+                                 text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(studios.returncode, 0, msg=studios.stdout + studios.stderr)
+        fleet = json.loads(studios.stdout)
+        self.assertEqual(fleet["count"], 0)
+        self.assertIn("studios", fleet)
+
+    # -- v5.3: multi-studio fleet, modern MCP era, tasks ---------------------
+
+    def _two_studios(self):
+        alpha = self.state.record_poll({"peer": ["peer-alpha"], "dm": ["edit"], "place": ["Alpha"],
+                                        "placeId": ["111"], "gameId": ["9001"], "pv": ["3.1"]})
+        beta = self.state.record_poll({"peer": ["peer-beta"], "dm": ["edit"], "place": ["Beta"],
+                                       "placeId": ["222"], "gameId": ["9002"], "pv": ["3.1"]})
+        return alpha, beta
+
+    def test_fleet_list_pin_routing_and_persistence(self):
+        alpha, beta = self._two_studios()
+        status, fleet = self._req("/api/studios", token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(fleet["count"], 2)
+        self.assertEqual(fleet["routing"], "auto")
+        ids = [s["peerId"] for s in fleet["studios"]]
+        self.assertEqual(ids, ["peer-alpha", "peer-beta"])
+        self.assertEqual([s["defaultTarget"] for s in fleet["studios"]], [True, False])
+
+        status, pinned = self._req("/api/studios", method="POST",
+                                   body={"action": "set_active", "peerId": "peer-beta"},
+                                   token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(pinned["active"], "peer-beta")
+
+        job, _ = self.state.enqueue_job("ping", note="pinned routing")
+        self.assertIsNone(self.state.poll_for_job(alpha, wait_seconds=0.1))
+        claimed = self.state.poll_for_job(beta, wait_seconds=0.5)
+        self.assertEqual(claimed["id"], job["id"])
+        self.state.complete_job({"id": job["id"], "ok": True, "result": {"pong": True}, "peerId": "peer-beta"})
+
+        # The pin survives a restart (fleet.json in the state dir).
+        reloaded = BridgeState(token=self.admin_token, state_dir=self.tmp)
+        try:
+            self.assertEqual(reloaded.fleet_snapshot()["pinned"], "peer-beta")
+        finally:
+            reloaded._reaper_stop.set()
+
+        # A closed pinned Studio must not stall the queue: routing falls back to auto.
+        self.state.peers["peer-beta"]["lastPoll"] = time.time() - 300
+        self.assertTrue(self.state.fleet_snapshot()["routing"] == "auto")
+        job2, _ = self.state.enqueue_job("ping", note="fallback routing")
+        self.assertIsNotNone(self.state.poll_for_job(alpha, wait_seconds=0.5))
+        self.state.complete_job({"id": job2["id"], "ok": True, "result": {}, "peerId": "peer-alpha"})
+
+        status, cleared = self._req("/api/studios", method="POST", body={"action": "clear_active"},
+                                    token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertIsNone(cleared["active"])
+
+        # Unknown peers are a 404, not a silent success.
+        bad = self._req("/api/studios", method="POST", body={"action": "set_active", "peerId": "nope"},
+                        token=self.admin_token)
+        self.assertEqual(bad[0], 404)
+
+    def test_fleet_labels_broadcast_and_write_refusal(self):
+        _alpha, _beta = self._two_studios()
+        status, labelled = self._req("/api/studios", method="POST",
+                                     body={"action": "label", "peerId": "peer-beta", "label": "Beta Main"},
+                                     token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(labelled["label"], "Beta Main")
+        _, fleet = self._req("/api/studios", token=self.admin_token)
+        self.assertEqual([s["label"] for s in fleet["studios"]], ["Alpha (edit)", "Beta Main"])
+
+        # Broadcast fans the job out to every online peer and collects results.
+        def serve(peer):
+            job = self.state.poll_for_job(peer, wait_seconds=3.0)
+            if job:
+                self.state.complete_job({"id": job["id"], "ok": True, "result": {"pong": peer["peerId"]},
+                                         "peerId": peer["peerId"]})
+
+        peers = [self.state.peers["peer-alpha"], self.state.peers["peer-beta"]]
+        threads = [threading.Thread(target=serve, args=(p,), daemon=True) for p in peers]
+        for th in threads:
+            th.start()
+        status, result = self._req("/api/studios", method="POST",
+                                   body={"action": "broadcast", "type": "ping", "timeout": 8},
+                                   token=self.admin_token)
+        for th in threads:
+            th.join(timeout=5)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["peers"], 2)
+        self.assertEqual(result["succeeded"], 2)
+        self.assertEqual({r["peerId"] for r in result["results"]}, {"peer-alpha", "peer-beta"})
+        self.assertEqual(result["results"][0]["result"]["pong"], "peer-alpha")
+
+        # Mutating kinds are refused — a broadcast must never edit every place.
+        with self.assertRaises(ValueError):
+            self.state.broadcast(kind="write_script", payload={}, timeout=1)
+        refused = self._req("/api/studios", method="POST",
+                            body={"action": "broadcast", "type": "write_script", "timeout": 1},
+                            token=self.admin_token)
+        self.assertEqual(refused[0], 400)
+
+    def test_fleet_mcp_tool_and_resource(self):
+        self._two_studios()
+        from mcp_core import MCPDispatcher
+        dispatcher = MCPDispatcher(self.state.mcp_client)
+        listed = dispatcher.handle_payload({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "studio_fleet", "arguments": {"action": "list"}},
+        })
+        self.assertFalse(listed["result"]["isError"], listed)
+        structured = listed["result"]["structuredContent"]
+        self.assertEqual(structured["count"], 2)
+
+        pinned = dispatcher.handle_payload({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "studio_fleet", "arguments": {"action": "set_active", "peerId": "peer-alpha"}},
+        })
+        self.assertEqual(pinned["result"]["structuredContent"]["active"], "peer-alpha")
+
+        resource = dispatcher.handle_payload({
+            "jsonrpc": "2.0", "id": 3, "method": "resources/read",
+            "params": {"uri": "studio://studios"},
+        })
+        payload = json.loads(resource["result"]["contents"][0]["text"])
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["pinned"], "peer-alpha")
+
+        # Broadcast through MCP with a write-only tool name is rejected.
+        bad = dispatcher.handle_payload({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "studio_fleet", "arguments": {"action": "broadcast", "broadcastTool": "script_read",
+                                                             "timeout": 1}},
+        })
+        self.assertTrue(bad["result"]["isError"])
+        self.assertIn("path", bad["result"]["content"][0]["text"])
+
+    def test_modern_mcp_era_discover_resulttype_and_headers(self):
+        from mcp_core import MCPDispatcher, MODERN_PROTOCOL_VERSION
+        dispatcher = MCPDispatcher(self.state.mcp_client)
+        discover = dispatcher.handle_payload({"jsonrpc": "2.0", "id": 1, "method": "server/discover"})
+        result = discover["result"]
+        self.assertIn(MODERN_PROTOCOL_VERSION, result["supportedVersions"])
+        self.assertIn("tasks", result["capabilities"])
+        self.assertEqual(result["serverInfo"]["name"], "arena-roblox-studio-mcp")
+
+        # Version travels per request in _meta; unknown versions get -32022.
+        rejected = dispatcher.handle_payload({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/list",
+            "_meta": {"io.modelcontextprotocol/protocolVersion": "2019-01-01"},
+        })
+        self.assertEqual(rejected["error"]["code"], -32022)
+        self.assertIn("supportedVersions", rejected["error"]["data"])
+
+        modern = dispatcher.handle_payload({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/list",
+            "_meta": {"io.modelcontextprotocol/protocolVersion": MODERN_PROTOCOL_VERSION},
+        })
+        self.assertEqual(modern["result"]["resultType"], "complete")
+        self.assertEqual(modern["result"]["ttlMs"], 60000)
+        self.assertEqual(modern["result"]["cacheScope"], "private")
+
+        legacy = dispatcher.handle_payload({"jsonrpc": "2.0", "id": 4, "method": "tools/list"})
+        self.assertNotIn("resultType", legacy["result"])
+
+        # Over HTTP the version can ride in MCP-Protocol-Version and the routing
+        # headers must agree with the body (-32020 when they do not).
+        req = urllib.request.Request(
+            self.base + "/mcp",
+            data=json.dumps({"jsonrpc": "2.0", "id": 5, "method": "tools/list"}).encode(),
+            headers={"Authorization": f"Bearer {self.admin_token}",
+                     "Content-Type": "application/json",
+                     "MCP-Protocol-Version": MODERN_PROTOCOL_VERSION},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode())
+        self.assertEqual(payload["result"]["resultType"], "complete")
+
+
+        mismatch = urllib.request.Request(
+            self.base + "/mcp",
+            data=json.dumps({"jsonrpc": "2.0", "id": 6, "method": "tools/list"}).encode(),
+            headers={"Authorization": f"Bearer {self.admin_token}",
+                     "Content-Type": "application/json",
+                     "Mcp-Method": "tools/call"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(mismatch, timeout=20)
+            self.fail("expected -32020 for a Mcp-Method/body mismatch")
+        except urllib.error.HTTPError as exc:
+            body = json.loads(exc.read().decode())
+            self.assertEqual(exc.code, 400)
+            self.assertEqual(body["error"]["code"], -32020)
+
+    def test_mcp_tasks_lifecycle(self):
+        from mcp_core import MCPDispatcher
+        dispatcher = MCPDispatcher(self.state.mcp_client)
+        created = dispatcher.handle_payload({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "studio_fleet", "arguments": {"action": "list"},
+                       "task": {"ttl": 60000}},
+        })
+        task = created["result"]
+        self.assertEqual(task["resultType"], "task")
+        self.assertTrue(task["taskId"].startswith("task-"))
+        self.assertEqual(task["status"], "working")
+        self.assertEqual(task["pollIntervalMs"], 1000)
+
+        deadline = time.time() + 10
+        status = "working"
+        while time.time() < deadline:
+            got = dispatcher.handle_payload({"jsonrpc": "2.0", "id": 2, "method": "tasks/get",
+                                             "params": {"taskId": task["taskId"]}})
+            status = got["result"]["status"]
+            if status in ("completed", "failed"):
+                break
+            time.sleep(0.05)
+        self.assertEqual(status, "completed")
+
+        result = dispatcher.handle_payload({"jsonrpc": "2.0", "id": 3, "method": "tasks/result",
+                                            "params": {"taskId": task["taskId"], "timeoutMs": 5000}})
+        payload = result["result"]
+        self.assertEqual(payload["_meta"]["io.modelcontextprotocol/related-task"]["taskId"], task["taskId"])
+        self.assertFalse(payload["isError"])
+        self.assertTrue(payload["structuredContent"]["studios"] == [])
+
+        listing = dispatcher.handle_payload({"jsonrpc": "2.0", "id": 4, "method": "tasks/list"})
+        self.assertEqual(len(listing["result"]["tasks"]), 1)
+
+        unknown = dispatcher.handle_payload({"jsonrpc": "2.0", "id": 5, "method": "tasks/get",
+                                             "params": {"taskId": "task-nope"}})
+        self.assertEqual(unknown["error"]["code"], -32602)
+
+        # A cancelled task reports cancelled and keeps its terminal state.
+        cancelled = dispatcher.handle_payload({"jsonrpc": "2.0", "id": 6, "method": "tasks/cancel",
+                                               "params": {"taskId": task["taskId"]}})
+        self.assertEqual(cancelled["result"]["status"], "completed")  # finished tasks are untouched
+
+        tools = dispatcher.handle_payload({"jsonrpc": "2.0", "id": 7, "method": "tools/list"})
+        self.assertEqual(tools["result"]["tools"][0]["execution"]["taskSupport"], "optional")
+
+    def test_dashboard_fleet_strip_motion_and_health_fields(self):
+        html = self.state.dashboard_html() if hasattr(self.state, "dashboard_html") else None
+        if html is None:
+            from server import dashboard_html
+            html = dashboard_html()
+        for needle in ("fleet-bar", "fleet-chips", "studio-card", "broadcastPing",
+                       "prefers-reduced-motion", "animateValue", "paneIn", "brand"):
+            self.assertIn(needle, html)
+        status, health = self._req("/api/health")
+        self.assertEqual(status, 200)
+        self.assertIn("studios", health)
+        self.assertEqual(health["studios"]["count"], 0)
+        self.assertIn("protocolVersions", self._req("/api/ops", token=self.admin_token)[1]["mcp"])
 
     # -- tunnel supervisor --------------------------------------------------
 
@@ -984,7 +1242,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         ], auth_mode="query")
         self.assertEqual(st_b, 200)
         self.assertEqual(len(batch_resp), 3)
-        self.assertEqual(len(batch_resp[1]["result"]["resources"]), 10)
+        self.assertEqual(len(batch_resp[1]["result"]["resources"]), 11)
         self.assertEqual(len(batch_resp[2]["result"]["prompts"]), 7)
 
     def test_02_all_core_studio_tools_end_to_end(self):
@@ -1000,12 +1258,18 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         done = self.call_tool("agent_bus", {"action": "task_complete", "taskId": task["id"], "agentId": reg["id"], "result": "ok"})
         self.assertEqual(done["status"], "done")
         ops = self.call_tool("bridge_ops", {"action": "status"})
-        self.assertEqual(ops["version"], "5.2.0")
+        self.assertEqual(ops["version"], "5.3.0")
         self.assertIn("tunnel", ops)
         metrics = self.call_tool("bridge_ops", {"action": "metrics"})
         self.assertIn("counters", metrics)
         verify = self.call_tool("bridge_ops", {"action": "audit_verify"})
         self.assertTrue(verify["ok"])
+        fleet = self.call_tool("studio_fleet", {"action": "list"})
+        self.assertGreaterEqual(fleet["count"], 1)
+        self.assertTrue(fleet["studios"][0]["defaultTarget"])
+        relabelled = self.call_tool("studio_fleet", {"action": "label", "peerId": fleet["studios"][0]["peerId"],
+                                                     "label": "Primary Edit"})
+        self.assertEqual(relabelled["label"], "Primary Edit")
 
         # 1. Session & Peers
         st = self.call_tool("get_studio_state")

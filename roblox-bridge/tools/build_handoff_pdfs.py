@@ -66,7 +66,7 @@ ROOT = BRIDGE.parent
 OUT_DIR = ROOT / "handoff"
 
 BRANCH = "arena/706ae6d5-tunneling"
-VERSION = "5.2.0"
+VERSION = "5.3.0"
 TODAY = datetime.date.today().isoformat()
 
 # GitHub-flavoured palette
@@ -498,8 +498,8 @@ def _code_story(styles, base):
         Paragraph("1. What this release contains", styles["h1"]),
         Paragraph(
             "v5 turns the local Studio bridge into an ops platform. The MCP tool surface grows to "
-            "<b>70 tools</b> (adds <font name='Courier'>agent_bus</font> and <font name='Courier'>bridge_ops</font>) "
-            "and <b>8 resources</b>. Four new stdlib modules carry the new behaviour, and the existing "
+            "<b>71 tools</b> (adds <font name='Courier'>agent_bus</font>, <font name='Courier'>bridge_ops</font> and <font name='Courier'>studio_fleet</font>) "
+            "and <b>11 resources</b>. Four new stdlib modules carry the new behaviour, and the existing "
             "server/CLI/setup paths are extended without breaking v4 callers.", styles["body"]),
     ]
     bullets = [
@@ -540,7 +540,7 @@ def _code_story(styles, base):
             "Copy the new files into <font name='Courier'>roblox-bridge/</font> and apply the diffs to the "
             "modified files (both sides are shown in this document). Then:", styles["body"]),
         Paragraph(
-            "python3 -B roblox-bridge/test_bridge_mcp.py        # expect: Ran 35 tests ... OK<br/>"
+            "python3 -B roblox-bridge/test_bridge_mcp.py        # expect: Ran 41 tests ... OK<br/>"
             "python3 roblox-bridge/arena_studio.py ops           # peers, queue, tunnel, agents, tasks<br/>"
             "python3 roblox-bridge/arena_studio.py audit --verify # hash chain intact<br/>"
             "python3 setup.py --tunnel                           # supervised public tunnel",
@@ -727,7 +727,7 @@ TASKS = [
             "python3 roblox-bridge/arena_studio.py tunnel status",
         ],
         "prompt": (
-            "You are working on the Arena Roblox Studio bridge, version 5.2.0, file roblox-bridge/tunnel_manager.py.\n"
+            "You are working on the Arena Roblox Studio bridge, version 5.3.0, file roblox-bridge/tunnel_manager.py.\n"
             "Context: TunnelManager supervises cloudflared/ngrok. _command() returns:\n"
             "  named:   [binary, 'tunnel', '--no-autoupdate', 'run', '--token', token]\n"
             "  quick:   [binary, 'tunnel', '--url', 'http://127.0.0.1:<port>', '--no-autoupdate']\n"
@@ -938,7 +938,7 @@ TASKS = [
             "python3 roblox-bridge/arena_studio.py audit --verify",
         ],
         "prompt": (
-            "Here is the operator checklist for a live acceptance run of the Arena bridge 5.2.0. Turn it into a "
+            "Here is the operator checklist for a live acceptance run of the Arena bridge 5.3.0. Turn it into a "
             "precise, copy-pasteable acceptance script with expected outputs and failure triage.\n"
             "Steps: (1) Studio open on a scratch place with the ArenaBridge.lua plugin enabled; (2) python setup.py "
             "--tunnel; (3) confirm /api/tunnel state=online, publicUrl non-empty, health.ok=true; (4) from an MCP "
@@ -1094,7 +1094,7 @@ def _tasks_story(styles):
             "paste the prompt, take the returned patch/docs, run the verification commands, and record the result "
             "on the Agent Bus.", styles["body"]),
         Paragraph(
-            "G1 to G6 have since been implemented on this branch (bridge 5.2.0, 35 tests); their prompts are kept "
+            "G1 to G6 have since been implemented on this branch (bridge 5.3.0, 41 tests); their prompts are kept "
             "verbatim so a second model can re-derive or audit the same work. G7 and G8 need a live Studio peer: "
             "the scripts ship in <font name='Courier'>jobs/</font>, the evidence does not.", styles["body"]),
     ]
@@ -1102,7 +1102,7 @@ def _tasks_story(styles):
         "<b>One task per session.</b> Attach only the files listed under 'Attach' to keep context focused.",
         "<b>Paste the prompt block verbatim.</b> It already names files, constraints and the exact deliverables.",
         "<b>Reject invented measurements.</b> G2 and G7/G8 require real numbers from a machine that can reach Studio; placeholders must stay visible.",
-        "<b>Apply and verify.</b> Run the verification commands and `python3 -B roblox-bridge/test_bridge_mcp.py`; the suite must stay green (35 tests).",
+        "<b>Apply and verify.</b> Run the verification commands and `python3 -B roblox-bridge/test_bridge_mcp.py`; the suite must stay green (41 tests).",
         "<b>Record it.</b> Ask the operator to claim the task on the bus, then complete it with artifacts (files touched, test output).",
     ]:
         story.append(Paragraph(md(tip), styles["bullet"], bulletText="-"))
@@ -1149,7 +1149,7 @@ def _tasks_story(styles):
         "Runtime state belongs in gitignored `roblox-bridge/bridge_state/`; never commit tokens, audit logs or bus data.",
         "Keep the JSON shapes stable: `/api/health`, `/api/tunnel`, `/api/ops`, `/api/metrics`, `/api/bus`, `/api/audit`.",
         "Do not rename existing MCP tools or bus actions; additive changes only.",
-        "Every change keeps `python3 -B roblox-bridge/test_bridge_mcp.py` green (35 tests).",
+        "Every change keeps `python3 -B roblox-bridge/test_bridge_mcp.py` green (41 tests).",
         "Report honestly: if a step needs a live Roblox Studio peer, say it is unverified rather than claiming success.",
     ]:
         story.append(Paragraph(md(rule), styles["bullet"], bulletText="-"))
@@ -1246,7 +1246,7 @@ def _tasks_story(styles):
                   XPreformatted(escape_xml(safe_text(
                       "Result      : pass / pass-with-caveats / blocked\n"
                       "Files       : <paths touched by the applied patch>\n"
-                      "Tests       : python3 -B roblox-bridge/test_bridge_mcp.py -> Ran 35 tests ... OK\n"
+                      "Tests       : python3 -B roblox-bridge/test_bridge_mcp.py -> Ran 41 tests ... OK\n"
                       "Evidence    : <diff / JSON / doc section>\n"
                       "Unverified  : <anything that needs live Studio or a real tunnel>\n"
                       "Open risks  :"

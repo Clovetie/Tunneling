@@ -34,6 +34,8 @@ import uuid
 from mcp_core import (
     BridgeClient,
     MCPDispatcher,
+    MODERN_PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
     TOOL_MAP,
     TOOL_SPECS,
     is_tool_call_read_only,
@@ -44,7 +46,7 @@ from bus_core import AgentBus
 from telemetry import Telemetry
 from tunnel_manager import TunnelManager
 
-VERSION = "5.2.0"
+VERSION = "5.3.0"
 PEER_ONLINE_WINDOW = 5.0  # play DataModel peers are transient; do not route work to stale peers
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_DIR = HERE / "snapshots"
@@ -198,6 +200,13 @@ class BridgeState:
         self.sweep_offline_seconds = max(60.0, float(sweep_offline_seconds or 900))
         self._last_sweep = 0.0
         self._sweeps = 0
+        # Multi-studio fleet: pinned peer (the "active studio"), labels, and the
+        # persisted fleet file. Routing prefers the pin, then falls back to auto
+        # so a closed Studio cannot silently stall the queue.
+        self._fleet_path = self.state_dir / "fleet.json"
+        self.studio_pin = None
+        self.peer_labels = {}
+        self._load_fleet()
         # Maintenance switch: keep accepting work, stop handing it to Studio.
         self.queue_paused = False
         self.queue_paused_reason = None
@@ -362,6 +371,229 @@ class BridgeState:
         self.telemetry.metrics.inc("bridge_jobs_reaped_total", recovered + timed_out)
         return {"recovered": recovered, "timedOut": timed_out}
 
+    # -- multi-studio fleet ---------------------------------------------------
+
+    def _load_fleet(self):
+        try:
+            raw = json.loads(self._fleet_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if isinstance(raw, dict):
+            self.studio_pin = raw.get("pinned") or None
+            labels = raw.get("labels")
+            if isinstance(labels, dict):
+                self.peer_labels = {str(k): str(v)[:60] for k, v in labels.items()}
+
+    def _save_fleet(self):
+        try:
+            self._fleet_path.write_text(
+                json.dumps({"pinned": self.studio_pin, "labels": self.peer_labels},
+                           ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def fleet_snapshot(self) -> dict:
+        """One entry per Studio DataModel the bridge can talk to."""
+        with self.lock:
+            peers = self._active_peers_unlocked()
+            queued_by_peer = {}
+            for job_id in self.pending:
+                job = self.jobs.get(job_id) or {}
+                target = job.get("target_peer")
+                if target:
+                    queued_by_peer[target] = queued_by_peer.get(target, 0) + 1
+            pin = self.studio_pin
+            labels = dict(self.peer_labels)
+            online_count = sum(1 for p in peers if p["online"])
+        studios = []
+        pin_online = False
+        for p in peers:
+            entry = {
+                "peerId": p["peerId"],
+                "studioId": p["peerId"],
+                "label": labels.get(p["peerId"]) or f"{p['place']} ({p['dm']})",
+                "dm": p["dm"],
+                "place": p["place"],
+                "placeId": p["placeId"],
+                "gameId": p["gameId"],
+                "online": p["online"],
+                "ageSeconds": p["ageSeconds"],
+                "client": p["client"],
+                "playerCount": p["playerCount"],
+                "pluginVersion": p["pluginVersion"],
+                "studioVersion": p.get("studioVersion") or None,
+                "pinned": p["peerId"] == pin,
+                "queuedJobs": queued_by_peer.get(p["peerId"], 0),
+                "defaultTarget": False,
+            }
+            if entry["pinned"] and p["online"]:
+                pin_online = True
+            studios.append(entry)
+        # Mark which peer an untargeted job would actually reach.
+        if pin_online:
+            for entry in studios:
+                entry["defaultTarget"] = entry["pinned"] and entry["online"]
+        else:
+            for entry in studios:
+                entry["defaultTarget"] = bool(entry["online"] and entry["dm"] == "edit")
+                if entry["defaultTarget"]:
+                    break
+        return {
+            "ok": True,
+            "count": len(studios),
+            "online": online_count,
+            "pinned": pin,
+            "pinOnline": pin_online,
+            "routing": "pinned" if pin_online else "auto",
+            "studios": studios,
+            "hint": (
+                "Target one with peerId on any tool, or POST /api/studios "
+                "{\"action\":\"set_active\",\"peerId\":\"...\"} to make it the default."
+            ),
+        }
+
+    def set_active_peer(self, peer_id: str = None, place_id: int = None) -> dict:
+        with self.lock:
+            peers = self._active_peers_unlocked()
+            chosen = None
+            if peer_id:
+                chosen = next((p for p in peers if p["peerId"] == peer_id), None)
+                if not chosen:
+                    raise KeyError(f"No connected Studio with peerId {peer_id!r}")
+            elif place_id:
+                chosen = next((p for p in peers if p["placeId"] == int(place_id) and p["online"]), None) \
+                    or next((p for p in peers if p["placeId"] == int(place_id)), None)
+                if not chosen:
+                    raise KeyError(f"No connected Studio on placeId {place_id}")
+            else:
+                raise ValueError("set_active needs peerId or placeId")
+            self.studio_pin = chosen["peerId"]
+            self._save_fleet()
+        self.telemetry.audit.append("fleet.set_active", actor="operator",
+                                    detail={"peerId": chosen["peerId"], "place": chosen["place"]})
+        return {"ok": True, "active": chosen["peerId"], "place": chosen["place"], "dm": chosen["dm"]}
+
+    def clear_active_peer(self) -> dict:
+        with self.lock:
+            previous = self.studio_pin
+            self.studio_pin = None
+            self._save_fleet()
+        if previous:
+            self.telemetry.audit.append("fleet.clear_active", actor="operator", detail={"previous": previous})
+        return {"ok": True, "active": None, "previous": previous}
+
+    def label_peer(self, peer_id: str, label: str = None) -> dict:
+        with self.lock:
+            peers = self._active_peers_unlocked()
+            if not any(p["peerId"] == peer_id for p in peers):
+                raise KeyError(f"No connected Studio with peerId {peer_id!r}")
+            if label:
+                self.peer_labels[peer_id] = str(label)[:60]
+            else:
+                self.peer_labels.pop(peer_id, None)
+            self._save_fleet()
+            saved = self.peer_labels.get(peer_id)
+        return {"ok": True, "peerId": peer_id, "label": saved}
+
+    def fleet_action(self, payload: dict = None) -> dict:
+        body = dict(payload or {})
+        action = (body.get("action") or "list").lower()
+        if action in ("list", "status"):
+            return self.fleet_snapshot()
+        if action in ("set_active", "pin", "activate"):
+            return self.set_active_peer(body.get("peerId") or body.get("peer_id"),
+                                        body.get("placeId") or body.get("place_id"))
+        if action in ("clear_active", "unpin"):
+            return self.clear_active_peer()
+        if action == "label":
+            return self.label_peer(body.get("peerId") or body.get("peer_id"), body.get("label"))
+        raise ValueError(f"Unknown fleet action: {action}")
+
+    BROADCAST_TOOL_KINDS = {
+        "ping_studio": ("ping", {}),
+        "get_studio_state": ("studio_state", {}),
+        "survey_place": ("survey", {"includeSource": False}),
+        "inspect_instance": ("inspect", {"depth": 2}),
+        "script_read": ("read_script", {}),
+        "get_console_output": ("get_console", {}),
+    }
+
+    def broadcast(self, kind: str = "ping", payload: dict = None, timeout: float = 20.0,
+                  dm: str = None, tool: str = None) -> dict:
+        """Fan one read-only job out to every online Studio and collect per-peer results."""
+        if tool:
+            mapped = self.BROADCAST_TOOL_KINDS.get(tool)
+            if not mapped:
+                raise ValueError(f"broadcast does not know tool {tool!r}; use one of "
+                                 f"{', '.join(self.BROADCAST_TOOL_KINDS)}")
+            kind, defaults = mapped
+            payload = {**defaults, **(payload or {})}
+        if kind not in self.BROADCAST_KINDS:
+            raise ValueError(
+                f"broadcast only runs read-only kinds ({', '.join(self.BROADCAST_KINDS)}); "
+                f"refusing {kind!r}"
+            )
+        with self.lock:
+            targets = [p for p in self._active_peers_unlocked()
+                       if p["online"] and (not dm or dm == "auto" or p["dm"] == dm)]
+        if not targets:
+            return {"ok": False, "reason": "no_peer", "error": "No online Studio to broadcast to.",
+                    "kind": kind, "results": []}
+
+        started = _now()
+        submitted = []
+        for peer in targets:
+            try:
+                job, event = self.enqueue_job(kind=kind, payload=payload, note=f"broadcast:{kind}",
+                                              peer_id=peer["peerId"], timeout=max(10.0, timeout))
+            except Exception as exc:  # noqa: BLE001 - one bad peer must not kill the fan-out
+                submitted.append({"peer": peer, "job": None, "event": None, "error": str(exc)})
+                continue
+            submitted.append({"peer": peer, "job": job, "event": event, "error": None})
+
+        deadline = time.monotonic() + max(1.0, timeout)
+        results = []
+        for item in submitted:
+            peer, job, event, error = item["peer"], item["job"], item["event"], item["error"]
+            row = {
+                "peerId": peer["peerId"],
+                "place": peer["place"],
+                "placeId": peer["placeId"],
+                "dm": peer["dm"],
+                "label": self.peer_labels.get(peer["peerId"]) or f"{peer['place']} ({peer['dm']})",
+            }
+            if job is None:
+                row.update({"ok": False, "status": "error", "error": error})
+                results.append(row)
+                continue
+            event.wait(timeout=max(0.1, deadline - time.monotonic()))
+            with self.lock:
+                finished = dict(self.jobs.get(job["id"]) or job)
+            row.update({
+                "jobId": finished.get("id"),
+                "status": finished.get("status"),
+                "ok": finished.get("status") == "done" and bool(finished.get("ok", True)),
+                "durationMs": finished.get("duration_ms"),
+                "result": finished.get("result"),
+                "error": finished.get("error"),
+            })
+            results.append(row)
+
+        done = sum(1 for r in results if r.get("ok"))
+        summary = {
+            "ok": done > 0,
+            "kind": kind,
+            "peers": len(results),
+            "succeeded": done,
+            "failed": len(results) - done,
+            "elapsedMs": round((_now() - started) * 1000.0, 1),
+            "results": results,
+        }
+        self.telemetry.events.emit("fleet.broadcast", {"kind": kind, "peers": len(results), "ok": done})
+        return summary
+
     # -- peer tracking -------------------------------------------------------
 
     def record_poll(self, qs: dict) -> dict:
@@ -457,10 +689,25 @@ class BridgeState:
 
     # -- job routing & matching ----------------------------------------------
 
+    # Read-only job kinds that are safe to fan out across every open Studio.
+    BROADCAST_KINDS = (
+        "ping", "studio_state", "survey", "inspect", "search_tree", "get_properties",
+        "compare_instances", "read_script", "read_scripts", "get_console", "snapshot_list",
+    )
+
     def _peer_matches_job_unlocked(self, peer: dict, job: dict) -> bool:
         req_peer = job.get("target_peer")
         if req_peer and peer["peerId"] != req_peer:
             return False
+        if not req_peer and job.get("target_dm") in (None, "", "auto") and not job.get("place_id"):
+            # An explicitly pinned Studio wins over "any edit peer", but only
+            # while it is actually online — a closed Studio must not stall work.
+            pin = self.studio_pin
+            if pin:
+                pinned = next((p for p in self._active_peers_unlocked()
+                               if p["peerId"] == pin and p["online"]), None)
+                if pinned and peer["peerId"] != pin:
+                    return False
 
         req_place = job.get("place_id")
         if req_place and peer["placeId"] != int(req_place):
@@ -853,6 +1100,12 @@ class BridgeState:
                     },
                     "agents": self.bus.stats()["agents"],
                     "agentsOnline": self.bus.stats()["agentsOnline"],
+                    "studios": {
+                        "count": len(peers),
+                        "online": sum(1 for p in peers if p["online"]),
+                        "active": self.studio_pin,
+                        "routing": "pinned" if self.studio_pin else "auto",
+                    },
                     "queuePaused": self.queue_paused,
                     "queuePausedReason": self.queue_paused_reason,
                     "sweeper": {
@@ -885,6 +1138,8 @@ class BridgeState:
                         "publicUrl": self.tunnel.public_url,
                     },
                 }
+        if op == "studios":
+            return self.fleet_snapshot()
         if op == "peers":
             with self.lock:
                 peers = self._active_peers_unlocked()
@@ -919,6 +1174,16 @@ class BridgeState:
                 return dict(self.jobs[job["id"]])
         if op == "bus":
             return self.bus.handle(body)
+        if op == "fleet":
+            return self.fleet_action(body)
+        if op == "broadcast":
+            return self.broadcast(
+                kind=body.get("type") or body.get("kind") or "ping",
+                payload=body.get("payload"),
+                timeout=float(body.get("timeout") or 20.0),
+                dm=body.get("dm"),
+                tool=body.get("tool"),
+            )
         if op == "tunnel":
             return self.tunnel_action(body)
         if op == "tokens":
@@ -1034,6 +1299,12 @@ class BridgeState:
                 "agentsReaped": bus_stats.get("agentsReaped"),
             },
             "jobLatency": self._job_latency_summary(),
+            "fleet": self.fleet_snapshot(),
+            "mcp": {
+                "protocolVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
+                "modernProtocol": MODERN_PROTOCOL_VERSION,
+                "tasks": len(getattr(self.mcp_dispatcher, "tasks", {}) or {}),
+            },
             "servedAt": _now(),
         }
 
@@ -1346,6 +1617,11 @@ def make_http_handler(state: BridgeState):
                     return
                 return self._send(200, state.direct_dispatch("peers", {}))
 
+            if path == "/api/studios":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, state.fleet_snapshot())
+
             # --- v5 observability & collaboration --------------------------------
             if path == "/api/ops":
                 if not self._require(qs, "read"):
@@ -1460,6 +1736,37 @@ def make_http_handler(state: BridgeState):
                         {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {exc}"}},
                         extra_headers={"Mcp-Session-Id": state.session_id},
                     )
+                # Dual-era MCP over Streamable HTTP:
+                #  * modern clients send the version in MCP-Protocol-Version (and
+                #    optionally per-request _meta) instead of an initialize handshake
+                #  * Mcp-Method / Mcp-Name must agree with the body (-32020)
+                header_version = (self.headers.get("MCP-Protocol-Version") or "").strip()
+                header_method = (self.headers.get("Mcp-Method") or "").strip()
+                header_name = (self.headers.get("Mcp-Name") or "").strip()
+                if isinstance(rpc_in, dict):
+                    if header_version:
+                        meta = rpc_in.get("_meta")
+                        if not isinstance(meta, dict):
+                            meta = {}
+                            rpc_in["_meta"] = meta
+                        meta.setdefault("io.modelcontextprotocol/protocolVersion", header_version)
+                    body_method = (rpc_in.get("method") or "").strip()
+                    if header_method and body_method and header_method != body_method:
+                        return self._send(400, {
+                            "jsonrpc": "2.0", "id": rpc_in.get("id"),
+                            "error": {"code": -32020, "message": "Mcp-Method header does not match the JSON-RPC method",
+                                      "data": {"header": header_method, "body": body_method}},
+                        }, extra_headers={"Mcp-Session-Id": state.session_id})
+                    if header_name and body_method in ("tools/call", "resources/read", "prompts/get"):
+                        params = rpc_in.get("params") or {}
+                        body_name = params.get("name") or params.get("uri") or ""
+                        if body_name and header_name != body_name:
+                            return self._send(400, {
+                                "jsonrpc": "2.0", "id": rpc_in.get("id"),
+                                "error": {"code": -32020, "message": "Mcp-Name header does not match the request name",
+                                          "data": {"header": header_name, "body": body_name}},
+                            }, extra_headers={"Mcp-Session-Id": state.session_id})
+
                 rpc_in, scope_error = self._enforce_mcp_scope(rpc_in, ctx)
                 if scope_error is not None:
                     return self._send(200, scope_error, extra_headers={"Mcp-Session-Id": state.session_id})
@@ -1561,6 +1868,26 @@ def make_http_handler(state: BridgeState):
                     return self._send(400, {"error": str(exc)})
                 state.telemetry.metrics.inc("bridge_bus_actions_total", 1, {"action": action})
                 return self._send(200, result)
+
+            if path == "/api/studios":
+                action = (body.get("action") or "list").lower()
+                ctx = self._require(qs, "read" if action in ("list", "status") else "write")
+                if not ctx:
+                    return
+                try:
+                    if action == "broadcast":
+                        return self._send(200, state.broadcast(
+                            kind=body.get("type") or body.get("kind") or "ping",
+                            payload=body.get("payload") if body.get("payload") else {"path": body["path"]} if body.get("path") else None,
+                            timeout=float(body.get("timeout") or 20.0),
+                            dm=body.get("dm"),
+                            tool=body.get("tool"),
+                        ))
+                    return self._send(200, state.fleet_action(body))
+                except KeyError as exc:
+                    return self._send(404, {"error": str(exc)})
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
 
             if path == "/api/ops":
                 action = (body.get("action") or "status").lower()
@@ -1678,97 +2005,201 @@ def dashboard_html() -> str:
 <title>Roblox Studio MCP, 3D Viewport Vision &amp; Open-Source Kit (v4.0)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
- :root{color-scheme:dark;--bg:#0b0f16;--panel:#131922;--panel2:#0e131b;--border:#232c3a;
-       --txt:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--amber:#d29922}
+ :root{color-scheme:dark;--bg:#070b12;--bg2:#0a1018;--panel:rgba(19,25,34,.82);--panel2:#0d131c;
+       --border:#22303f;--border2:#2c3f55;--txt:#e8eff7;--muted:#8fa0b4;--accent:#5cc8ff;
+       --accent2:#a78bfa;--green:#45e0a0;--red:#ff6b6b;--amber:#ffc857;--radius:14px;
+       --shadow:0 18px 40px -24px rgba(0,0,0,.9)}
  *{box-sizing:border-box}
+ html{scroll-behavior:smooth}
  body{margin:0;background:var(--bg);color:var(--txt);
-      font:13.5px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+      font:13.5px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+      -webkit-font-smoothing:antialiased;position:relative;min-height:100vh}
+ body::before{content:"";position:fixed;inset:-30% -10% auto -10%;height:75vh;z-index:-1;pointer-events:none;
+      background:
+        radial-gradient(46% 60% at 18% 20%,rgba(92,200,255,.16),transparent 70%),
+        radial-gradient(40% 55% at 78% 10%,rgba(167,139,250,.16),transparent 70%),
+        radial-gradient(52% 60% at 55% 78%,rgba(69,224,160,.09),transparent 72%);
+      filter:blur(6px);animation:aura 22s ease-in-out infinite alternate}
+ body::after{content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;opacity:.35;
+      background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+                       linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+      background-size:46px 46px;
+      -webkit-mask-image:radial-gradient(ellipse at 50% 0%,#000 20%,transparent 78%);
+      mask-image:radial-gradient(ellipse at 50% 0%,#000 20%,transparent 78%)}
+ @keyframes aura{0%{transform:translate3d(-2%,0,0) scale(1)}50%{transform:translate3d(2%,2%,0) scale(1.06)}100%{transform:translate3d(-1%,3%,0) scale(1.02)}}
+ ::selection{background:rgba(92,200,255,.28);color:#fff}
+ *::-webkit-scrollbar{width:10px;height:10px}
+ *::-webkit-scrollbar-track{background:transparent}
+ *::-webkit-scrollbar-thumb{background:#1e2a38;border-radius:99px;border:2px solid transparent;background-clip:content-box}
+ *::-webkit-scrollbar-thumb:hover{background:#2c3f55;background-clip:content-box}
  code,pre,textarea,input,select{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
- header{padding:14px 24px;background:var(--panel);border-bottom:1px solid var(--border);
-        display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:20}
- h1{font-size:16px;font-weight:700;margin:0;letter-spacing:.2px}
+ header{padding:16px 26px;background:linear-gradient(180deg,rgba(12,18,26,.94),rgba(12,18,26,.72));
+        -webkit-backdrop-filter:blur(14px) saturate(140%);backdrop-filter:blur(14px) saturate(140%);
+        border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+        position:sticky;top:0;z-index:30}
+ header::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
+        background:linear-gradient(90deg,transparent,rgba(92,200,255,.55),rgba(167,139,250,.55),transparent);
+        opacity:.7}
+ h1{font-size:16.5px;font-weight:750;margin:0;letter-spacing:.2px;display:flex;align-items:center;gap:9px}
+ h1 .brand{background:linear-gradient(92deg,#e8eff7 10%,#9ddcff 55%,#c3b3ff 95%);
+        -webkit-background-clip:text;background-clip:text;color:transparent}
+ h1 .logo{width:22px;height:22px;border-radius:7px;flex:0 0 auto;
+        background:conic-gradient(from 210deg,#5cc8ff,#a78bfa,#45e0a0,#5cc8ff);
+        box-shadow:0 0 18px rgba(92,200,255,.42);animation:spin 14s linear infinite}
+ @keyframes spin{to{transform:rotate(360deg)}}
  h2{font-size:15px;font-weight:700;margin:0 0 8px}
- h3{font-size:13.5px;font-weight:700;margin:0 0 6px;color:#c9d1d9}
+ h3{font-size:13.5px;font-weight:700;margin:0 0 6px;color:#d7e3f1}
  .sub{color:var(--muted);font-size:12px}
  .spacer{flex:1}
- .pill{padding:4px 11px;border-radius:999px;font-size:11.5px;font-weight:600;border:1px solid transparent}
- .on{background:#0f2f1b;color:var(--green);border-color:#23562f}
- .off{background:#2d1618;color:var(--red);border-color:#5c2326}
- .ro{background:#2b220c;color:var(--amber);border-color:#5a4414}
- .info-pill{background:#122338;color:var(--accent);border-color:#244870}
- nav{display:flex;gap:6px;padding:10px 24px;background:var(--panel2);border-bottom:1px solid var(--border);
-     overflow-x:auto}
+ .pill{padding:4px 11px;border-radius:999px;font-size:11.5px;font-weight:650;border:1px solid transparent;
+       display:inline-flex;align-items:center;gap:6px;transition:.18s}
+ .on{background:rgba(69,224,160,.12);color:var(--green);border-color:rgba(69,224,160,.4)}
+ .off{background:rgba(255,107,107,.12);color:var(--red);border-color:rgba(255,107,107,.36)}
+ .ro{background:rgba(255,200,87,.12);color:var(--amber);border-color:rgba(255,200,87,.38)}
+ .info-pill{background:rgba(92,200,255,.1);color:var(--accent);border-color:rgba(92,200,255,.34)}
+ .pill.live::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;
+       box-shadow:0 0 0 0 currentColor;animation:pulse 2.1s ease-out infinite}
+ @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(69,224,160,.55)}70%{box-shadow:0 0 0 7px rgba(69,224,160,0)}100%{box-shadow:0 0 0 0 rgba(69,224,160,0)}}
+ nav{display:flex;gap:6px;padding:10px 22px;background:rgba(10,16,24,.72);
+     -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+     border-bottom:1px solid var(--border);overflow-x:auto;position:relative;z-index:25}
  .tab-btn{background:transparent;color:var(--muted);border:1px solid transparent;padding:7px 14px;
-          border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap}
- .tab-btn:hover{color:var(--txt);background:#17202c}
- .tab-btn.active{color:#fff;background:#1b2838;border-color:#2f4663}
- main{padding:20px 24px;max-width:1280px;margin:0 auto}
+          border-radius:10px;cursor:pointer;font-size:12.8px;font-weight:650;white-space:nowrap;
+          position:relative;transition:color .18s,background .18s,transform .18s,box-shadow .18s}
+ .tab-btn:hover{color:var(--txt);background:rgba(255,255,255,.05);transform:translateY(-1px)}
+ .tab-btn.active{color:#fff;background:linear-gradient(180deg,rgba(92,200,255,.2),rgba(92,200,255,.07));
+          border-color:rgba(92,200,255,.38);box-shadow:0 6px 18px -12px rgba(92,200,255,.9),inset 0 1px 0 rgba(255,255,255,.08)}
+ .tab-btn.active::after{content:"";position:absolute;left:14px;right:14px;bottom:-6px;height:2px;border-radius:2px;
+          background:linear-gradient(90deg,transparent,var(--accent),transparent)}
+ main{padding:22px 26px 60px;max-width:1300px;margin:0 auto;animation:fadeUp .4s ease both}
+ @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
  .tab-pane{display:none}
- .tab-pane.active{display:block}
+ .tab-pane.active{display:block;animation:paneIn .3s cubic-bezier(.2,.7,.3,1) both}
+ @keyframes paneIn{from{opacity:0;transform:translateY(10px) scale(.996)}to{opacity:1;transform:none}}
  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px}
- .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px}
- .card .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
- .card .v{font:600 19px/1.25 ui-monospace,monospace;margin-top:5px}
+ .card{background:linear-gradient(180deg,rgba(24,32,44,.9),rgba(15,21,29,.9));border:1px solid var(--border);
+       border-radius:var(--radius);padding:15px;position:relative;overflow:hidden;
+       transition:transform .22s cubic-bezier(.2,.7,.3,1),border-color .22s,box-shadow .22s}
+ .card::before{content:"";position:absolute;inset:0 0 auto 0;height:2px;opacity:0;transition:opacity .25s;
+       background:linear-gradient(90deg,transparent,var(--accent),var(--accent2),transparent)}
+ .card:hover{transform:translateY(-3px);border-color:var(--border2);box-shadow:var(--shadow)}
+ .card:hover::before{opacity:.9}
+ .card .k{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.9px;font-weight:650}
+ .card .v{font:650 20px/1.25 ui-monospace,monospace;margin-top:6px;letter-spacing:-.3px}
  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px;
-          padding:12px;background:var(--panel);border:1px solid var(--border);border-radius:10px}
- button,.btn{background:#1f2937;color:var(--txt);border:1px solid #334155;border-radius:7px;
-             padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer;transition:.12s}
- button:hover{background:#283548;border-color:#4b5f7a}
- button.primary{background:#1f6feb;border-color:#388bfd;color:#fff}
- button.primary:hover{background:#2977f5}
- button.danger{background:#3a181c;border-color:#6e2b31;color:#ff8b85}
- button.sm{padding:4px 9px;font-size:11.5px}
+          padding:12px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+          -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+ button,.btn{background:linear-gradient(180deg,#1e2a38,#1a2330);color:var(--txt);border:1px solid #31465c;
+             border-radius:9px;padding:7px 13px;font-size:12.5px;font-weight:650;cursor:pointer;
+             transition:transform .14s,box-shadow .18s,background .18s,border-color .18s;
+             box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+ button:hover{background:linear-gradient(180deg,#26374b,#1e2a38);border-color:#44618a;transform:translateY(-1px);
+             box-shadow:0 10px 22px -16px rgba(92,200,255,.9)}
+ button:active{transform:translateY(1px) scale(.99)}
+ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{
+             outline:2px solid rgba(92,200,255,.7);outline-offset:2px}
+ button.primary{background:linear-gradient(180deg,#2f86f6,#1f6feb);border-color:#4f9dff;color:#fff}
+ button.primary:hover{background:linear-gradient(180deg,#3d95ff,#2a7bf0);box-shadow:0 12px 26px -16px rgba(56,139,253,1)}
+ button.danger{background:linear-gradient(180deg,#3a181c,#2c1216);border-color:#6e2b31;color:#ff9d97}
+ button.sm{padding:4px 10px;font-size:11.5px;border-radius:8px}
+ button.ghost{background:transparent;border-color:var(--border)}
  input,select,textarea{background:var(--panel2);color:var(--txt);border:1px solid var(--border);
-                       border-radius:7px;padding:7px 10px;font-size:12.5px;width:100%}
- textarea{min-height:110px;resize:vertical;line-height:1.45}
+                       border-radius:9px;padding:8px 11px;font-size:12.5px;width:100%;transition:border-color .18s,box-shadow .18s}
+ input:hover,select:hover,textarea:hover{border-color:var(--border2)}
+ textarea{min-height:110px;resize:vertical;line-height:1.5}
  table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--border);
-       border-radius:10px;overflow:hidden;margin-bottom:18px}
- th{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);
-    text-align:left;padding:10px 12px;background:var(--panel2);border-bottom:1px solid var(--border)}
- td{padding:9px 12px;border-bottom:1px solid #1b222e;vertical-align:top;font-size:12.5px}
+       border-radius:var(--radius);overflow:hidden;margin-bottom:18px}
+ th{font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);
+    text-align:left;padding:10px 12px;background:rgba(13,19,28,.9);border-bottom:1px solid var(--border);font-weight:650}
+ td{padding:9px 12px;border-bottom:1px solid rgba(27,34,46,.8);vertical-align:top;font-size:12.5px}
+ tbody tr{transition:background .16s}
+ tbody tr:nth-child(even) td{background:rgba(255,255,255,.012)}
  tr:last-child td{border-bottom:none}
- tr.clickable:hover td{background:#17202d;cursor:pointer}
+ tr.clickable:hover td{background:rgba(92,200,255,.06);cursor:pointer}
  .s-done{color:var(--green)}.s-error,.s-cancelled{color:var(--red)}.s-running{color:var(--amber)}
  .s-queued{color:var(--muted)}
- code{background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-size:12px}
- pre{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px;
-     overflow:auto;margin:8px 0 0;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+ code{background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:6px;padding:1px 6px;font-size:12px}
+ pre{background:rgba(9,14,21,.9);border:1px solid var(--border);border-radius:11px;padding:12px;
+     overflow:auto;margin:8px 0 0;font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
  .empty{padding:22px;text-align:center;color:var(--muted)}
  .two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(460px,1fr));gap:14px;margin-bottom:16px}
- .prompt-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:15px;
-              display:flex;flex-direction:column;gap:8px}
+ .prompt-card{background:linear-gradient(180deg,rgba(21,29,40,.92),rgba(14,20,28,.92));
+              border:1px solid var(--border);border-radius:var(--radius);padding:16px;
+              display:flex;flex-direction:column;gap:9px;transition:border-color .2s,box-shadow .2s}
+ .prompt-card:hover{border-color:var(--border2);box-shadow:var(--shadow)}
  .prompt-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
- .cmd-row{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--panel2);
-          border:1px solid var(--border);border-radius:8px;margin-bottom:7px}
+ .cmd-row{display:flex;align-items:center;gap:10px;padding:9px 11px;background:rgba(255,255,255,.03);
+          border:1px solid var(--border);border-radius:10px;margin-bottom:7px;transition:border-color .16s,background .16s}
+ .cmd-row:hover{border-color:var(--border2);background:rgba(92,200,255,.05)}
  .cmd-row code{background:none;border:none;padding:0;flex:1;overflow-x:auto;white-space:nowrap}
  .cmd-desc{color:var(--muted);font-size:11.5px;min-width:190px;text-align:right}
- .toast{position:fixed;bottom:20px;right:20px;background:#1f6feb;color:#fff;padding:9px 16px;
-        border-radius:8px;font-weight:600;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s;z-index:99}
- .toast.show{opacity:1}
+ .toast{position:fixed;bottom:22px;right:22px;background:linear-gradient(180deg,#2f86f6,#1f6feb);color:#fff;
+        padding:10px 17px;border-radius:11px;font-weight:650;font-size:12.5px;opacity:0;pointer-events:none;
+        transform:translateY(14px) scale(.97);transition:opacity .24s,transform .24s;z-index:99;
+        box-shadow:0 18px 40px -18px rgba(31,111,235,.9)}
+ .toast.show{opacity:1;transform:none}
+ /* ---- multi-studio fleet ---- */
+ .fleet-bar{display:flex;align-items:center;gap:10px;padding:9px 24px;background:rgba(10,16,24,.82);
+        border-bottom:1px solid var(--border);overflow-x:auto;position:relative;z-index:22;
+        -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+ .fleet-label{font-size:11px;letter-spacing:.9px;text-transform:uppercase;color:var(--muted);
+        font-weight:700;display:flex;align-items:center;gap:7px;flex:0 0 auto}
+ .dot-live{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 12px rgba(69,224,160,.9);
+        animation:blink 2.4s ease-in-out infinite}
+ .dot-dead{background:var(--red);box-shadow:0 0 10px rgba(255,107,107,.7);animation:none}
+ @keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+ .fleet-chips{display:flex;gap:8px;align-items:center;flex:1;min-width:0}
+ .studio-card{display:flex;align-items:center;gap:9px;padding:7px 11px;border-radius:11px;flex:0 0 auto;
+        background:linear-gradient(180deg,rgba(24,33,45,.95),rgba(14,20,28,.95));
+        border:1px solid var(--border);transition:transform .18s,border-color .18s,box-shadow .18s;
+        animation:chipIn .32s cubic-bezier(.2,.7,.3,1) both}
+ .studio-card:hover{transform:translateY(-2px);border-color:var(--border2);box-shadow:var(--shadow)}
+ .studio-card.pinned{border-color:rgba(92,200,255,.6);
+        box-shadow:0 0 0 1px rgba(92,200,255,.25),0 14px 28px -22px rgba(92,200,255,.9)}
+ .studio-card.active-target{border-color:rgba(69,224,160,.55)}
+ .studio-card .place{font-weight:650;font-size:12.3px;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .studio-card .meta{font-size:10.5px;color:var(--muted);display:flex;gap:6px;align-items:center}
+ .studio-card .pin{background:transparent;border:1px solid var(--border);border-radius:7px;padding:2px 7px;
+        font-size:10.5px;color:var(--muted)}
+ .studio-card .pin:hover{color:var(--accent);border-color:rgba(92,200,255,.55)}
+ @keyframes chipIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+ .badge-dm{font-size:10px;padding:1px 6px;border-radius:999px;border:1px solid var(--border);
+        background:rgba(255,255,255,.04);color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+ #fleet-detail{display:flex;flex-wrap:wrap;gap:10px;min-height:34px}
+ #fleet-detail .studio-card{min-width:240px}
+ @media(prefers-reduced-motion:reduce){
+   *,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+ }
  @media(max-width:720px){
    .two-col{grid-template-columns:1fr}
    .cmd-desc{display:none}
    .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
    .card .v{font-size:17px;word-break:break-all;overflow-wrap:anywhere}
-   .prompt-card{padding:11px}
-   header{flex-wrap:wrap;gap:6px}
+   .prompt-card{padding:12px}
+   header{flex-wrap:wrap;gap:6px;padding:12px 14px}
+   nav{padding:8px 12px}
+   .fleet-bar{padding:8px 12px}
+   main{padding:14px 12px 48px}
    #tok-input{width:130px!important}
    pre{max-height:190px}
    .wrap{padding:0 10px}
+   h1{font-size:15px}
  }
  @media(max-width:420px){
    .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-   .card{padding:9px}
+   .card{padding:10px}
    .card .k{font-size:10px}
-   h1{font-size:16px}
+   h1{font-size:14.5px}
+   .studio-card .place{max-width:130px}
  }
  html,body{max-width:100%;overflow-x:hidden}
  img,pre,input,textarea,select{max-width:100%}
 </style></head><body>
 
 <header>
-  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v5.2</span></h1>
-  <span id="status" class="pill off">checking&hellip;</span>
+  <h1><span class="logo" aria-hidden="true"></span><span class="brand">Roblox Studio MCP &amp; Bridge</span> <span class="sub">v5.3</span></h1>
+  <span id="status" class="pill off live">checking&hellip;</span>
+  <span id="fleet-badge" class="pill info-pill" style="display:none">0 studios</span>
   <span id="ro-badge" class="pill ro" style="display:none">Read-Only Inspector</span>
   <span id="place" class="pill info-pill" style="display:none"></span>
   <button class="sm" onclick="runSelfTest()">Run Self-Test</button>
@@ -1777,6 +2208,12 @@ def dashboard_html() -> str:
   <input id="tok-input" type="password" placeholder="auto-loaded on localhost" style="width:185px;padding:4px 8px">
   <button class="sm" onclick="toggleToken()">Show</button>
 </header>
+
+<div class="fleet-bar" id="fleet-bar">
+  <span class="fleet-label"><span class="dot-live" id="fleet-dot"></span> Studios</span>
+  <div class="fleet-chips" id="fleet-chips"><span class="sub">Looking for connected Studio windows&hellip;</span></div>
+  <button class="sm" onclick="broadcastPing()" title="Ping every online Studio and show per-peer latency">Broadcast ping</button>
+</div>
 
 <nav>
   <button class="tab-btn active" onclick="showTab('monitor', this)">1. Live Monitor</button>
@@ -2125,6 +2562,23 @@ def dashboard_html() -> str:
       <button class="sm" id="queue-toggle" onclick="toggleQueue()">Pause queue</button>
       <span class="sub" id="queue-state">Queue live</span>
       <span class="sub" id="sweeper-state"></span>
+    </div>
+
+    <div class="prompt-card" style="margin-bottom:14px">
+      <div class="prompt-head">
+        <div><h3>Studio Fleet</h3>
+          <div class="sub">Every connected Studio window. <b>Pin</b> makes one the default target for
+            untargeted jobs (skipped automatically if that Studio closes); <b>Broadcast</b> runs a read-only
+            ping on all of them and reports per-peer latency. Any MCP tool also takes a <code>peerId</code>.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="sm" onclick="broadcastPing()">Broadcast ping</button>
+          <button class="sm" onclick="unpinStudio()">Clear pin</button>
+        </div>
+      </div>
+      <div id="fleet-detail"><span class="sub">No Studio windows connected yet.</span></div>
+      <div class="sub" id="fleet-note"></div>
+      <pre id="fleet-broadcast" style="max-height:170px;display:none"></pre>
     </div>
 
     <div class="two-col">
@@ -3073,6 +3527,107 @@ async function opsJson(path, opts){
   if(!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
   return data;
 }
+const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+function animateValue(el, to){
+  if(!el) return;
+  const target = Number(to);
+  if(!isFinite(target)){ el.textContent = to; return; }
+  if(REDUCED_MOTION || document.hidden){ el.textContent = target; return; }
+  const from = Number(String(el.textContent).replace(/[^0-9.-]/g, '')) || 0;
+  if(from === target){ el.textContent = target; return; }
+  const t0 = performance.now(), dur = 420;
+  const step = (t) => {
+    const p = Math.min(1, (t - t0) / dur);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = Math.round(from + (target - from) * eased);
+    if(p < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+let FLEET = {studios: [], count: 0, online: 0, pinned: null, routing: 'auto'};
+function studioCard(s, detailed){
+  const dot = s.online ? 'dot-live' : 'dot-live dot-dead';
+  const cls = 'studio-card' + (s.pinned ? ' pinned' : '') + (s.defaultTarget ? ' active-target' : '');
+  const age = s.online ? (s.ageSeconds < 2 ? 'live' : Math.round(s.ageSeconds) + 's ago') : 'offline';
+  const pin = s.pinned
+    ? `<button class="pin" onclick="unpinStudio()" title="Unpin">pinned</button>`
+    : `<button class="pin" onclick="pinStudio('${esc(s.peerId)}')" title="Make this the default Studio">pin</button>`;
+  return `<div class="${cls}">
+    <span class="${dot}"></span>
+    <div>
+      <div class="place" title="${esc(s.place)} · ${esc(s.peerId)}">${esc(s.label || s.place)}</div>
+      <div class="meta"><span class="badge-dm">${esc(s.dm)}</span>
+        <span>${esc(age)}</span>
+        ${s.queuedJobs ? `<span>· ${s.queuedJobs} queued</span>` : ''}
+        ${detailed && s.placeId ? `<span>· id ${esc(String(s.placeId))}</span>` : ''}
+        ${s.defaultTarget ? '<span>· default</span>' : ''}
+      </div>
+    </div>
+    ${pin}
+  </div>`;
+}
+function renderFleet(d){
+  FLEET = d || FLEET;
+  const studios = FLEET.studios || [];
+  const chips = document.getElementById('fleet-chips');
+  const detail = document.getElementById('fleet-detail');
+  const badge = document.getElementById('fleet-badge');
+  const dot = document.getElementById('fleet-dot');
+  if(chips){
+    chips.innerHTML = studios.length
+      ? studios.map(s => studioCard(s, false)).join('')
+      : '<span class="sub">No Studio peers yet — open Roblox Studio with the ArenaBridge plugin.</span>';
+  }
+  if(detail){
+    detail.innerHTML = studios.length
+      ? studios.map(s => studioCard(s, true)).join('')
+      : '<span class="sub">No Studio windows connected yet.</span>';
+  }
+  if(badge){
+    badge.style.display = studios.length ? 'inline-flex' : 'none';
+    badge.textContent = `${FLEET.online || 0}/${studios.length} studios`;
+  }
+  if(dot) dot.classList.toggle('dot-dead', !(FLEET.online > 0));
+  const note = document.getElementById('fleet-note');
+  if(note){
+    note.textContent = !studios.length ? '' :
+      (FLEET.pinned
+        ? `Pinned: ${FLEET.pinOnline ? 'routing untargeted jobs to the pinned Studio' : 'pinned Studio is offline — falling back to auto edit-first routing'}`
+        : 'Routing: auto (edit DataModels first). Pin a Studio to make it the default target.');
+  }
+}
+async function refreshFleet(){
+  try { renderFleet(await opsJson('/api/studios')); } catch(_){}
+}
+async function pinStudio(peerId){
+  try {
+    const res = await opsJson('/api/studios', {method:'POST', body:JSON.stringify({action:'set_active', peerId})});
+    toast(`Pinned ${res.place || peerId} as the default Studio.`);
+    refreshFleet(); refreshOps();
+  } catch(err){ toast(err.message); }
+}
+async function unpinStudio(){
+  try {
+    await opsJson('/api/studios', {method:'POST', body:JSON.stringify({action:'clear_active'})});
+    toast('Pin cleared — back to auto routing.');
+    refreshFleet(); refreshOps();
+  } catch(err){ toast(err.message); }
+}
+async function broadcastPing(){
+  const box = document.getElementById('fleet-broadcast');
+  if(box){ box.style.display = 'block'; box.textContent = 'Broadcasting to every online Studio…'; }
+  try {
+    const res = await opsJson('/api/studios', {method:'POST', body:JSON.stringify({action:'broadcast', type:'ping', timeout:12})});
+    const rows = (res.results || []).map(r =>
+      `${r.ok ? '✓' : '✗'} ${r.label || r.peerId} · ${r.status}${r.durationMs != null ? ' · ' + Math.round(r.durationMs) + 'ms' : ''}${r.error ? ' · ' + r.error : ''}`);
+    if(box) box.textContent = `${res.succeeded}/${res.peers} studios responded in ${res.elapsedMs}ms\n` + (rows.join('\n') || res.error || 'no peers');
+    toast(res.peers ? `${res.succeeded}/${res.peers} studios answered the broadcast.` : (res.error || 'No Studio peers.'));
+    refreshFleet();
+  } catch(err){
+    if(box) box.textContent = err.message;
+    toast(err.message);
+  }
+}
 async function refreshOps(){
   try {
     const ops = await opsJson('/api/ops');
@@ -3084,7 +3639,8 @@ async function refreshOps(){
     pill.className = 'pill ' + (t.state === 'online' ? 'on' : (t.state === 'degraded' ? 'ro' : 'off'));
     document.getElementById('ops-agents').textContent = (ops.bus && ops.bus.agentsOnline) || 0;
     document.getElementById('ops-tasks').textContent = (ops.openTasks || []).length;
-    document.getElementById('ops-queue').textContent = (ops.health && ops.health.queued) || 0;
+    animateValue(document.getElementById('ops-queue'), (ops.health && ops.health.queued) || 0);
+    if(ops.fleet) renderFleet(ops.fleet);
     document.getElementById('ops-audit-count').textContent = (ops.audit || []).length;
     const health = t.health || {};
     document.getElementById('ops-tunnel-meta').textContent =
@@ -3331,10 +3887,14 @@ async function copyMcpConfig(){
   } catch(err){ toast(err.message || 'Cannot build MCP config'); }
 }
 
-initBoot().then(() => { tick(); refreshOps(); refreshBus(); setInterval(tick, 1500); setInterval(() => {
-  const active = document.getElementById('tab-ops').classList.contains('active');
-  if(active){ refreshOps(); refreshBus(); }
-}, 4000); });
+initBoot().then(() => { tick(); refreshOps(); refreshBus(); refreshFleet();
+  setInterval(tick, 1500);
+  setInterval(refreshFleet, 3000);
+  setInterval(() => {
+    const active = document.getElementById('tab-ops').classList.contains('active');
+    if(active){ refreshOps(); refreshBus(); }
+  }, 4000);
+});
 </script></body></html>"""
 
 

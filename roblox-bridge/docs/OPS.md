@@ -1,6 +1,6 @@
 # v5 Ops Platform — tunnels, multi-agent coordination, telemetry, scoped auth
 
-_Applies to bridge `5.2.0`._
+_Applies to bridge `5.3.0`._
 
 Everything in this document ships in `roblox-bridge/` and is **stdlib-only**
 (no pip installs). It layers on top of the v4 MCP + plugin bridge; nothing in the
@@ -174,6 +174,63 @@ python roblox-bridge/tools/seed_agent_bus.py --offline  # writes state dir direc
 
 ---
 
+## 2.1 Several Studios at once (the fleet)
+
+The bridge has always tracked multiple DataModel peers; v5.3 turns that into a
+managed fleet you can address deliberately. Roblox's built-in Studio MCP server
+ships the same idea as `list_roblox_studios` + `set_active_studio`; the bridge
+mirrors it with one difference that matters for a queue: **a pin is a
+preference, not a hard gate** — if the pinned Studio closes, untargeted jobs fall
+back to automatic `edit`-first routing instead of stalling.
+
+```bash
+curl -s $BRIDGE/api/studios -H "X-Arena-Token: $BRIDGE_TOKEN"            # the fleet
+curl -s -X POST $BRIDGE/api/studios -H "X-Arena-Token: $BRIDGE_TOKEN" \
+     -d '{"action":"set_active","peerId":"edit-1234"}'                    # pin
+curl -s -X POST $BRIDGE/api/studios -H "X-Arena-Token: $BRIDGE_TOKEN" \
+     -d '{"action":"label","peerId":"edit-1234","label":"Lobby (main)"}'  # human name
+curl -s -X POST $BRIDGE/api/studios -H "X-Arena-Token: $BRIDGE_TOKEN" \
+     -d '{"action":"broadcast","type":"ping","timeout":12}'                # fan-out
+```
+
+Via MCP:
+
+```jsonc
+{"name":"studio_fleet","arguments":{"action":"list"}}
+{"name":"studio_fleet","arguments":{"action":"set_active","peerId":"edit-1234"}}
+{"name":"studio_fleet","arguments":{"action":"clear_active"}}
+{"name":"studio_fleet","arguments":{"action":"broadcast","broadcastTool":"survey_place"}}
+```
+
+| Field (from `list`) | Meaning |
+|---|---|
+| `peerId` / `studioId` | Stable handle for this Studio window — pass it as `peerId` on **any** tool |
+| `dm` | `edit`, `server` or `client` DataModel |
+| `place`, `placeId`, `gameId` | Which experience is open |
+| `online`, `ageSeconds` | Last poll age; `online` means polled within 5 s |
+| `pinned`, `defaultTarget` | Which Studio the pin selects, and which one an untargeted job actually reaches |
+| `queuedJobs` | Jobs currently addressed to this peer |
+| `label` | Human name (empty clears it) |
+
+**Routing rules**
+
+1. Explicit `peerId` on the job/tool → that Studio only.
+2. `place_id` → the Studio with that place open.
+3. Pinned Studio online → untargeted jobs go there (`routing: "pinned"`).
+4. Otherwise `auto`: `edit` DataModels first, then any live peer.
+
+Pins and labels persist in `bridge_state/fleet.json`, so a restart does not
+forget which window you were working in.
+
+**Broadcast** (`studio_fleet {action:'broadcast'}`) fans one job out to every
+online Studio and returns per-peer `{ok, status, durationMs, result, error}`. It
+is deliberately restricted to read-only kinds — `ping`, `studio_state`,
+`survey`, `inspect`, `search_tree`, `get_properties`, `compare_instances`,
+`read_script`, `read_scripts`, `get_console` — so a fan-out can never edit every
+place at once. Anything else is a `400 ValueError`, not a silent write.
+
+---
+
 ## 3. Scoped tokens & rate limits
 
 `bridge.token` remains the admin owner credential. Mint additive tokens:
@@ -271,7 +328,18 @@ recent jobs and audit head, plus four v5.2 blocks:
 * `jobLatency` — per-tool `{count, p50, p95, max, mean}` wall time over the last
   300 completed jobs, computed in-process (no Prometheus needed) and shown as a
   one-line summary under the dashboard metric box.
+* `fleet` — the same document as `GET /api/studios` (per-Studio `online`,
+  `pinned`, `defaultTarget`, `queuedJobs`, labels).
+* `mcp` — `{protocolVersions, modernProtocol, tasks}`: which protocol eras the
+  bridge speaks and how many task-augmented calls are tracked.
 * `recentJobs` / `openTasks` — unchanged, newest first.
+
+**Dashboard.** The Ops Console got a v5.3 visual pass: a sticky **studio strip**
+under the header with one chip per connected Studio (online dot, place, DataModel
+badge, pin button, broadcast ping), animated tab and pane transitions, glass
+panels with hover lift, count-up stat numbers, and a `prefers-reduced-motion`
+opt-out that disables every animation. No external assets, fonts or CDNs — the
+page is one self-contained HTML document served by the bridge itself.
 
 The dashboard's **tab 7 — Ops Console & Agent Bus** renders it live, and adds
 three operator controls: **Pause queue / Resume queue**, **Sweep** (release dead
@@ -297,6 +365,8 @@ peers' tasks) and the per-task **Claim / Done** buttons that post as
 | `POST /api/ops` | admin | `reap`, `queue_clear`, `queue_pause`, `queue_resume`, `sweep` |
 | `POST /api/queue/pause` | admin | hold jobs for maintenance (`reason` recorded in audit) |
 | `POST /api/queue/resume` | admin | release held jobs and wake waiting peers |
+| `GET /api/studios` | read | fleet: peers, labels, pin, routing, queued counts |
+| `POST /api/studios` | write/admin | `set_active`, `clear_active`, `label`, `broadcast` (broadcast needs `write`) |
 | `POST /api/jobs` | write | + `idempotencyKey`, `priority`, `maxRetries`, `timeout` |
 
 `GET /api/health` stays public (no place data, no secrets) so tunnels and uptime
@@ -306,15 +376,43 @@ monitors can probe it.
 
 ## 7. MCP surface changes
 
-* **70 tools** (was 68): `agent_bus` and `bridge_ops`.
+* **71 tools** (was 68 at v5.0): `agent_bus`, `bridge_ops` and `studio_fleet`.
 * **7 prompts** (was 4): `multi_agent_handoff`, `bus_standup` and `task_triage`
   render live bus state (roster, task board, cursor) and fall back to a one-line
   "live bus state is unavailable" note when the bridge is offline.
-* **10 resources** (was 5 at v4, 8 at v5.0): `studio://state`, `peers`,
+* **11 resources** (was 5 at v4, 8 at v5.0): `studio://state`, `peers`,
   `console`, `selection`, `survey`, `bus`, `ops`, `audit`, plus v5.2's
   `studio://jobs` (queue depth, pause state, sweeper counters, recent jobs and
-  per-tool p50/p95) and `studio://handoff` (the bus export as markdown —
-  `text/markdown`, paste-ready brief for the next agent or human).
+  per-tool p50/p95), `studio://studios` (the fleet) and `studio://handoff` (the
+  bus export as markdown — `text/markdown`, paste-ready brief for the next agent
+  or human).
+* **Dual-era protocol.** The server speaks the modern **`2026-07-28`** revision
+  and every legacy revision back to `2024-11-05`:
+  * `server/discover` returns `supportedVersions`, `capabilities`, `serverInfo`,
+    `instructions`, `ttlMs` and `cacheScope` — no handshake required.
+  * A modern client can send any request first and put its version in the HTTP
+    `MCP-Protocol-Version` header or in per-request
+    `_meta["io.modelcontextprotocol/protocolVersion"]`; an unknown version gets
+    `-32022` with the supported list, and `Mcp-Method` / `Mcp-Name` headers that
+    disagree with the JSON-RPC body get `-32020`.
+  * Modern responses carry `resultType: "complete"`; list results carry
+    `ttlMs: 60000` and `cacheScope: "private"`. Legacy clients see the old shape,
+    unchanged.
+* **Task-augmented tool calls.** Any tool can run as a task:
+  ```jsonc
+  {"method":"tools/call","params":{"name":"survey_place","arguments":{},"task":{"ttl":600000}}}
+  // → {"resultType":"task","taskId":"task-…","status":"working","pollIntervalMs":1000,"ttlMs":600000}
+  {"method":"tasks/get","params":{"taskId":"task-…"}}      // working → completed / failed
+  {"method":"tasks/result","params":{"taskId":"task-…","timeoutMs":120000}}
+  {"method":"tasks/list"}  {"method":"tasks/cancel","params":{"taskId":"task-…"}}
+  ```
+  `tasks/result` blocks until the task is terminal (or the timeout) and tags the
+  payload with `_meta["io.modelcontextprotocol/related-task"]`. Tools advertise
+  `execution.taskSupport: "optional"`, and `capabilities.tasks` declares
+  `list`, `cancel` and `requests.tools.call`. Cancelling marks the task
+  `cancelled`; the in-flight Studio job still finishes and its result is dropped.
+* **Fleet tool**: `studio_fleet` (`list`, `set_active`, `clear_active`, `label`,
+  `broadcast`) plus the `studio://studios` resource.
 * Read-scoped tokens see mutating tools as blocked, both in `tools/call` and in
   the returned `isError` payload (`reason: insufficient_scope`).
 
@@ -353,10 +451,10 @@ Override with `--state-dir` or `BRIDGE_STATE_DIR`.
 ## 9. Tests
 
 ```bash
-python3 -B roblox-bridge/test_bridge_mcp.py          # 35 tests
+python3 -B roblox-bridge/test_bridge_mcp.py          # 41 tests
 ```
 
-v5 / v5.1 / v5.2 coverage: scoped roles over HTTP and MCP, rate-limit 429s, bus presence/
+v5 / v5.1 / v5.2 / v5.3 coverage: scoped roles over HTTP and MCP, rate-limit 429s, bus presence/
 mailbox/lease expiry/handoff export, stale-agent sweeping, incremental
 (`since` / `summaryOnly`) handoff briefs, MCP prompt rendering with live bus state
 and the offline fallback, named-token validation, idempotency, priority ordering,
@@ -366,8 +464,13 @@ dashboard script, the latency script (percentiles, 401 path), the two operator
 scripts' failure modes, tunnel URL scraping and the missing-binary path, and
 v5.2's maintenance pause (jobs held, admin-only, resume reclaims the same job),
 the automatic sweeper (release + metric + audit entry, silent no-op, idempotent),
-per-tool latency percentiles, the two new `studio://` resources, and the
-`arena_studio.py queue` CLI round trip.
+per-tool latency percentiles, the `studio://jobs` / `studio://handoff` resources,
+the `arena_studio.py queue` CLI round trip, and v5.3's fleet (list, pin, routing
+fallback when the pin goes offline, persistence across a restart, labels,
+broadcast fan-out with per-peer results, refusal of write kinds), the modern MCP
+era (`server/discover`, `-32022`, `-32020` header mismatch, `resultType`), and the
+task lifecycle (`tools/call` + `task`, `tasks/get`, `tasks/result`, `tasks/list`,
+`tasks/cancel`).
 
 ## 10. Live acceptance and drills
 

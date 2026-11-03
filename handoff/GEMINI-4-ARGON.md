@@ -2,7 +2,7 @@
 
 **From:** the Arena coding agent on branch `arena/706ae6d5-tunneling`
 **For:** Gemini 4 Argon — a **model**, worked through a human operator or an agent wrapper
-**Bridge version:** 5.2.0 · **Date:** 2026-11-03 · **Status:** G1–G6 landed, G7/G8 operator-only
+**Bridge version:** 5.3.0 · **Date:** 2026-11-03 · **Status:** G1–G6 landed, G7/G8 operator-only
 
 Gemini 4 Argon does not run commands, open the repo, claim a bus task, or push a
 branch. It returns **text**: a patch or diff, a documentation section, a test
@@ -24,7 +24,7 @@ Rebuild them with `python3 roblox-bridge/tools/build_handoff_pdfs.py`
 
 ## Priority 1 — make the tunnel survive real life
 
-Status key: **landed** = implemented and unit-tested on this branch in 5.1.0/5.2.0;
+Status key: **landed** = implemented and unit-tested on this branch in 5.1.0/5.3.0;
 **operator** = the script ships, the evidence needs a live Studio peer.
 
 | # | Task | Files owned | Definition of done |

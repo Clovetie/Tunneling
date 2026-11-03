@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
 mcp_core.py — Zero-dependency Model Context Protocol (MCP) engine & Roblox Studio
-tool suite for Arena <-> Roblox Studio (v5.2.0).
+tool suite for Arena <-> Roblox Studio (v5.3.0).
 
 Supports:
-  - MCP specification versions 2025-06-18, 2025-03-26, and 2024-11-05
+  - Dual-era MCP: 2026-07-28 (stateless, server/discover, resultType) and the
+    legacy 2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05 handshake eras
+  - Task-augmented tool calls (tasks/get · tasks/result · tasks/list · tasks/cancel)
   - Transports: stdio (via mcp_server.py) and Streamable HTTP /mcp (via server.py)
-  - 68 curated, annotated Roblox Studio & Luau engineering tools
+  - 71 curated, annotated Roblox Studio & Luau engineering tools
   - Live MCP Resources + Resource Templates + Workflow Prompts
   - Exact 53-bit-safe 32-bit FNV-1a hashing matching ArenaBridge.lua bit-for-bit
   - Local pre-flight Luau syntax + undefined-global static analysis (luau_check)
@@ -20,6 +22,8 @@ import math
 import os
 import random
 import re
+import threading
+import uuid
 import subprocess
 import tempfile
 import time
@@ -28,13 +32,21 @@ import urllib.request
 from pathlib import Path
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "5.2.0"
+MCP_SERVER_VERSION = "5.3.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
+    "2026-07-28",   # stateless era: server/discover, per-request _meta, resultType
+    "2025-11-25",   # final legacy era: tasks, elicitation, structured output
     "2025-06-18",
     "2025-03-26",
     "2024-11-05",
 )
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
+MODERN_PROTOCOL_VERSION = "2026-07-28"
+LEGACY_PROTOCOL_VERSIONS = tuple(v for v in SUPPORTED_PROTOCOL_VERSIONS if v != MODERN_PROTOCOL_VERSION)
+# Beyond this many tracked tasks the oldest finished ones are pruned.
+TASK_HISTORY_LIMIT = 200
+TASK_DEFAULT_TTL_MS = 3_600_000
+TASK_POLL_INTERVAL_MS = 1000
 
 KNOWN_ROBLOX_GLOBALS = {
     "game", "workspace", "script", "plugin", "version", "loadstring",
@@ -466,6 +478,23 @@ class BridgeClient:
         if self.direct_dispatch:
             return self.direct_dispatch("bus", payload)
         return self._http_request("POST", "/api/bus", payload, timeout=30.0)
+
+    def fleet_action(self, payload: dict = None) -> dict:
+        payload = dict(payload or {})
+        if self.direct_dispatch:
+            return self.direct_dispatch("fleet", payload)
+        action = (payload.get("action") or "list").lower()
+        if action in ("list", "status"):
+            return self._http_request("GET", "/api/studios", timeout=15.0)
+        return self._http_request("POST", "/api/studios", payload, timeout=30.0)
+
+    def broadcast(self, kind: str = "ping", payload: dict = None, timeout: float = 20.0,
+                  dm: str = None) -> dict:
+        body = {"action": "broadcast", "type": kind, "payload": payload or {},
+                "timeout": timeout, "dm": dm}
+        if self.direct_dispatch:
+            return self.direct_dispatch("broadcast", body)
+        return self._http_request("POST", "/api/studios", body, timeout=timeout + 15.0)
 
     def ops_action(self, payload: dict = None) -> dict:
         p = dict(payload or {})
@@ -1836,6 +1865,43 @@ TOOL_SPECS = [
         },
         "annotations": _ann("Bridge Ops, Metrics & Tunnel Control", read_only=False, destructive=False, idempotent=False),
     },
+    {
+        "name": "studio_fleet",
+        "description": (
+            "Work with several Roblox Studio windows at once. `list` returns every connected DataModel with "
+            "peerId, place, dm, online age, label and which one untargeted jobs would reach. `set_active` pins "
+            "one Studio as the default target (the pin is skipped automatically when that Studio closes, so the "
+            "queue never stalls); `clear_active` returns to the automatic edit-first routing; `label` names a "
+            "Studio for humans. `broadcast` runs one read-only job on every online Studio and returns per-peer "
+            "results — use it to survey or health-check the whole fleet in one call. Any other tool accepts "
+            "`peerId` to target a single Studio."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "set_active", "clear_active", "label", "broadcast"],
+                    "default": "list",
+                },
+                "peerId": {"type": "string", "description": "Target Studio peerId (from `list`)."},
+                "placeId": {"type": "integer", "description": "Alternative to peerId when pinning by place."},
+                "label": {"type": "string", "description": "Human label for a Studio (empty clears it)."},
+                "broadcastTool": {
+                    "type": "string",
+                    "enum": ["ping_studio", "get_studio_state", "survey_place", "inspect_instance",
+                             "script_read", "get_console_output"],
+                    "default": "ping_studio",
+                    "description": "Read-only tool to fan out with `broadcast`.",
+                },
+                "path": {"type": "string", "description": "Path argument when broadcasting a path-based tool."},
+                "includeSource": {"type": "boolean", "description": "survey_place: include script sources."},
+                "timeout": {"type": "number", "description": "Per-broadcast budget in seconds (default 20)."},
+                "dm": {"type": "string", "enum": ["auto", "edit", "server", "client"], "default": "auto"},
+            },
+        },
+        "annotations": _ann("Multi-Studio Fleet Control", read_only=False, destructive=False, idempotent=True),
+    },
 ]
 
 TOOL_MAP = {t["name"]: t for t in TOOL_SPECS}
@@ -2087,6 +2153,27 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
 
     if name == "list_studios":
         return client.peers()
+
+    if name == "studio_fleet":
+        action = (args.get("action") or "list").lower()
+        if action != "broadcast":
+            return client.fleet_action(args)
+        mapping = {
+            "ping_studio": ("ping", {}),
+            "get_studio_state": ("studio_state", {}),
+            "survey_place": ("survey", {"includeSource": bool(args.get("includeSource", False))}),
+            "inspect_instance": ("inspect", {"path": args.get("path") or "game", "depth": 2}),
+            "script_read": ("read_script", {"path": args.get("path") or ""}),
+            "get_console_output": ("get_console", {}),
+        }
+        kind, payload = mapping.get(args.get("broadcastTool") or "ping_studio", ("ping", {}))
+        if kind == "read_script" and not payload.get("path"):
+            raise ValueError("script_read broadcast needs a `path`")
+        result = client.broadcast(kind=kind, payload=payload,
+                                  timeout=float(args.get("timeout") or 20.0),
+                                  dm=args.get("dm"))
+        result["tool"] = args.get("broadcastTool") or "ping_studio"
+        return result
 
     if name == "get_studio_state":
         bridge_health = client.health()
@@ -2920,6 +3007,12 @@ RESOURCES = [
         "mimeType": "application/json",
     },
     {
+        "uri": "studio://studios",
+        "name": "Connected Studio Fleet",
+        "description": "Every connected Studio window with peerId, place, DataModel kind, online age, label, pinned/default routing and queued job counts.",
+        "mimeType": "application/json",
+    },
+    {
         "uri": "studio://handoff",
         "name": "Markdown Handoff Brief",
         "description": "The bus export as markdown: roster, task board, recent messages and stats — paste-ready for the next agent or human.",
@@ -3024,6 +3117,9 @@ def read_mcp_resource(client: BridgeClient, uri: str) -> dict:
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(payload, indent=2)}]}
     if uri == "studio://ops":
         data = client.ops_action({"action": "status"})
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
+    if uri == "studio://studios":
+        data = client.fleet_action({"action": "list"})
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
     if uri == "studio://jobs":
         ops = client.ops_action({"action": "status"})
@@ -4887,6 +4983,10 @@ class MCPDispatcher:
 
     def __init__(self, client: BridgeClient):
         self.client = client
+        # Task-augmented tool calls (MCP tasks / SEP-1686 + SEP-2663) map onto a
+        # background execution of the normal tool path, so any tool can be a task.
+        self.tasks = {}
+        self._task_lock = threading.Lock()
 
     def visible_tools(self) -> list:
         if not self.client.read_only:
@@ -4932,6 +5032,278 @@ class MCPDispatcher:
         return {"jsonrpc": "2.0", "id": msg_id, "error": err}
 
     def _handle_one(self, msg: dict):
+        """Era-aware wrapper: validates the per-request protocol version, serves
+        `server/discover`, then decorates the legacy dispatch result for modern
+        (2026-07-28) clients with `resultType` and cache hints."""
+        if not isinstance(msg, dict):
+            return self._dispatch_method(msg)
+        method = msg.get("method") or ""
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        meta = msg.get("_meta") if isinstance(msg.get("_meta"), dict) else {}
+        nested = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+        requested = (
+            meta.get("io.modelcontextprotocol/protocolVersion")
+            or nested.get("io.modelcontextprotocol/protocolVersion")
+            or params.get("protocolVersion")
+        )
+        if requested and requested not in SUPPORTED_PROTOCOL_VERSIONS and method not in ("initialize", "server/discover"):
+            return self._err(msg.get("id"), -32022, "Unsupported protocol version", {
+                "requestedVersion": requested,
+                "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
+            })
+        modern = requested == MODERN_PROTOCOL_VERSION
+
+        if method == "server/discover":
+            return self._ok(msg.get("id"), self.discover_result())
+
+        if method == "tasks/get":
+            tid = (params or {}).get("taskId")
+            view = self._task_view(tid)
+            if view is None:
+                return self._err(msg.get("id"), -32602, f"Unknown task: {tid!r}")
+            return self._ok(msg.get("id"), view)
+
+        if method == "tasks/result":
+            tid = (params or {}).get("taskId")
+            timeout_ms = (params or {}).get("timeoutMs") or 120000
+            payload = self._task_result(tid, float(timeout_ms) / 1000.0)
+            if payload is None:
+                return self._err(msg.get("id"), -32602, f"Unknown task: {tid!r}")
+            return self._ok(msg.get("id"), payload)
+
+        if method == "tasks/list":
+            return self._ok(msg.get("id"), {"tasks": self._task_list()})
+
+        if method == "tasks/cancel":
+            tid = (params or {}).get("taskId")
+            view = self._task_cancel(tid)
+            if view is None:
+                return self._err(msg.get("id"), -32602, f"Unknown task: {tid!r}")
+            return self._ok(msg.get("id"), view)
+
+        resp = self._dispatch_method(msg)
+        if modern and isinstance(resp, dict) and isinstance(resp.get("result"), dict):
+            result = resp["result"]
+            result.setdefault("resultType", "complete")
+            if method in ("tools/list", "resources/list", "resources/templates/list", "prompts/list"):
+                result.setdefault("ttlMs", 60000)
+                result.setdefault("cacheScope", "private")
+        return resp
+
+    # -- discovery & tasks ---------------------------------------------------
+
+    def capabilities(self) -> dict:
+        return {
+            "tools": {"listChanged": False},
+            "resources": {"subscribe": False, "listChanged": False},
+            "prompts": {"listChanged": False},
+            "tasks": {
+                "list": {},
+                "cancel": {},
+                "requests": {"tools": {"call": {}}},
+            },
+        }
+
+    def _instructions(self) -> str:
+        mode_tag = " (Read-Only Inspector)" if self.client.read_only else ""
+        return (
+            f"Arena <-> Roblox Studio MCP Server v{MCP_SERVER_VERSION}{mode_tag}. "
+            "Use `get_studio_state` or `survey_place` first to understand the open place. "
+            "With several Studio windows connected, `studio_fleet {action:'list'}` shows them, "
+            "`set_active` pins a default target and `broadcast` fans a read-only job out to all. "
+            "Long work can be task-augmented (`params.task`), then polled with `tasks/get` and "
+            "collected with `tasks/result`. "
+            "Use `multi_edit` / `write_script` (with `replaceInstance: true` when updating already-required ModuleScripts) "
+            "and `luau_check` to prevent undefined-global runtime bugs."
+        )
+
+    def discover_result(self) -> dict:
+        return {
+            "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
+            "protocolVersion": MODERN_PROTOCOL_VERSION,
+            "capabilities": self.capabilities(),
+            "serverInfo": {"name": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION},
+            "instructions": self._instructions(),
+            "ttlMs": 300000,
+            "cacheScope": "public",
+        }
+
+    @staticmethod
+    def _iso(ts: float) -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+    def _task_view(self, task_id: str):
+        with self._task_lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return None
+            return {
+                "taskId": task["taskId"],
+                "status": task["status"],
+                "statusMessage": task.get("statusMessage"),
+                "createdAt": self._iso(task["createdAt"]),
+                "lastUpdatedAt": self._iso(task["updatedAt"]),
+                "ttlMs": task["ttlMs"],
+                "pollIntervalMs": TASK_POLL_INTERVAL_MS,
+                "tool": task["tool"],
+            }
+
+    def _task_list(self) -> list:
+        with self._task_lock:
+            items = sorted(self.tasks.values(), key=lambda t: t["createdAt"], reverse=True)
+        return [
+            {
+                "taskId": t["taskId"],
+                "status": t["status"],
+                "statusMessage": t.get("statusMessage"),
+                "createdAt": self._iso(t["createdAt"]),
+                "lastUpdatedAt": self._iso(t["updatedAt"]),
+                "ttlMs": t["ttlMs"],
+                "pollIntervalMs": TASK_POLL_INTERVAL_MS,
+            }
+            for t in items
+        ]
+
+    def _task_cancel(self, task_id: str):
+        with self._task_lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return None
+            if task["status"] == "working":
+                task["status"] = "cancelled"
+                task["statusMessage"] = "Cancelled by the client; the in-flight Studio job still finishes, its result is discarded."
+                task["result"] = None
+                task["updatedAt"] = time.time()
+        return self._task_view(task_id)
+
+    def _task_prune(self):
+        with self._task_lock:
+            if len(self.tasks) <= TASK_HISTORY_LIMIT:
+                return
+            finished = sorted(
+                (t for t in self.tasks.values() if t["status"] != "working"),
+                key=lambda t: t["createdAt"],
+            )
+            for task in finished[: len(self.tasks) - TASK_HISTORY_LIMIT]:
+                self.tasks.pop(task["taskId"], None)
+
+    def _create_task(self, name: str, args: dict, task_params: dict) -> dict:
+        ttl_ms = int(task_params.get("ttl") or TASK_DEFAULT_TTL_MS)
+        task_id = "task-" + uuid.uuid4().hex[:20]
+        now = time.time()
+        initial_message = f"Running {name}…"
+        task = {
+            "taskId": task_id,
+            "tool": name,
+            "status": "working",
+            "statusMessage": initial_message,
+            "createdAt": now,
+            "updatedAt": now,
+            "ttlMs": ttl_ms,
+            "ttlDeadline": now + ttl_ms / 1000.0,
+            "result": None,
+        }
+        with self._task_lock:
+            self.tasks[task_id] = task
+        self._task_prune()
+
+        def worker():
+            try:
+                payload = self._invoke_tool(name, args)
+            except Exception as exc:  # noqa: BLE001 - surface into the task
+                payload = {
+                    "isError": True,
+                    "content": [{"type": "text", "text": f"{name} failed: {exc}"}],
+                    "structuredContent": {"ok": False, "error": str(exc)},
+                }
+            with self._task_lock:
+                current = self.tasks.get(task_id)
+                if not current:
+                    return
+                if current["status"] == "cancelled":
+                    current["updatedAt"] = time.time()
+                    return
+                current["result"] = payload
+                current["status"] = "failed" if payload.get("isError") else "completed"
+                current["statusMessage"] = (
+                    f"{name} failed" if payload.get("isError") else f"{name} completed"
+                )
+                current["updatedAt"] = time.time()
+
+        threading.Thread(target=worker, name=f"mcp-task-{task_id[-6:]}", daemon=True).start()
+        return {
+            "resultType": "task",
+            "taskId": task_id,
+            "status": "working",
+            "statusMessage": initial_message,
+            "createdAt": self._iso(now),
+            "lastUpdatedAt": self._iso(now),
+            "ttlMs": ttl_ms,
+            "pollIntervalMs": TASK_POLL_INTERVAL_MS,
+        }
+
+    def _task_result(self, task_id: str, timeout: float):
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._task_lock:
+                task = self.tasks.get(task_id)
+                if not task:
+                    return None
+                if task["status"] in ("completed", "failed", "cancelled"):
+                    payload = task["result"] or {
+                        "isError": True,
+                        "content": [{"type": "text", "text": task.get("statusMessage") or task["status"]}],
+                    }
+                    payload = dict(payload)
+                    payload["_meta"] = {"io.modelcontextprotocol/related-task": {"taskId": task_id}}
+                    payload["resultType"] = "complete"
+                    return payload
+            if time.monotonic() >= deadline:
+                return {
+                    "resultType": "task",
+                    "taskId": task_id,
+                    "status": "working",
+                    "statusMessage": "Still running; call tasks/result again.",
+                    "pollIntervalMs": TASK_POLL_INTERVAL_MS,
+                }
+            time.sleep(0.05)
+
+    def _invoke_tool(self, tname: str, targs: dict) -> dict:
+        """Run one tool call and return the MCP CallToolResult payload."""
+        if self.client.read_only and not is_tool_call_read_only(tname, targs):
+            return {
+                "isError": True,
+                "content": [{
+                    "type": "text",
+                    "text": f"Blocked by Read-Only Inspector mode: tool '{tname}' with arguments {json.dumps(targs)} mutates Studio state.",
+                }],
+            }
+        try:
+            data = execute_tool(self.client, tname, targs)
+            if isinstance(data, dict):
+                data.setdefault("ok", True)
+                data.setdefault("warnings", [])
+            img_b64 = data.pop("_mcp_image_png_b64", None) if isinstance(data, dict) else None
+            content_items = [{"type": "text", "text": json.dumps(data, indent=2)}]
+            if img_b64:
+                content_items.insert(0, {
+                    "type": "image",
+                    "data": img_b64,
+                    "mimeType": "image/png",
+                })
+            return {"isError": False, "content": content_items, "structuredContent": data}
+        except Exception as tool_exc:
+            if isinstance(tool_exc, NoPeerError):
+                data = {"ok": False, "reason": tool_exc.reason, "dm": tool_exc.dm, "warnings": []}
+                return {"isError": True, "content": [{"type": "text", "text": json.dumps(data)}], "structuredContent": data}
+            data = {"ok": False, "reason": "tool_error", "error": str(tool_exc), "warnings": []}
+            return {
+                "isError": True,
+                "content": [{"type": "text", "text": json.dumps(data, indent=2)}],
+                "structuredContent": data,
+            }
+
+    def _dispatch_method(self, msg: dict):
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
             return self._err(msg.get("id") if isinstance(msg, dict) else None, -32600, "Invalid Request")
 
@@ -4951,31 +5323,29 @@ class MCPDispatcher:
                     requested_ver if requested_ver in SUPPORTED_PROTOCOL_VERSIONS
                     else DEFAULT_PROTOCOL_VERSION
                 )
-                mode_tag = " (Read-Only Inspector)" if self.client.read_only else ""
-                return self._ok(msg_id, {
+                payload = {
                     "protocolVersion": negotiated,
-                    "capabilities": {
-                        "tools": {"listChanged": False},
-                        "resources": {"subscribe": False, "listChanged": False},
-                        "prompts": {"listChanged": False},
-                    },
+                    "capabilities": self.capabilities(),
                     "serverInfo": {
                         "name": MCP_SERVER_NAME,
                         "version": MCP_SERVER_VERSION,
                     },
-                    "instructions": (
-                        f"Arena <-> Roblox Studio MCP Server v{MCP_SERVER_VERSION}{mode_tag}. "
-                        "Use `get_studio_state` or `survey_place` first to understand the open place. "
-                        "Use `multi_edit` / `write_script` (with `replaceInstance: true` when updating already-required ModuleScripts) "
-                        "and `luau_check` to prevent undefined-global runtime bugs."
-                    ),
-                })
+                    "instructions": self._instructions(),
+                }
+                if negotiated == MODERN_PROTOCOL_VERSION:
+                    payload["resultType"] = "complete"
+                return self._ok(msg_id, payload)
 
             if method == "ping":
                 return self._ok(msg_id, {})
 
             if method == "tools/list":
-                return self._ok(msg_id, {"tools": self.visible_tools()})
+                tools = []
+                for spec in self.visible_tools():
+                    entry = dict(spec)
+                    entry.setdefault("execution", {"taskSupport": "optional"})
+                    tools.append(entry)
+                return self._ok(msg_id, {"tools": tools})
 
             if method == "tools/call":
                 tname = params.get("name")
@@ -4987,43 +5357,9 @@ class MCPDispatcher:
                 if validation_err:
                     return self._err(msg_id, -32602, validation_err)
 
-                if self.client.read_only and not is_tool_call_read_only(tname, targs):
-                    return self._ok(msg_id, {
-                        "isError": True,
-                        "content": [{
-                            "type": "text",
-                            "text": f"Blocked by Read-Only Inspector mode: tool '{tname}' with arguments {json.dumps(targs)} mutates Studio state.",
-                        }],
-                    })
-
-                try:
-                    data = execute_tool(self.client, tname, targs)
-                    if isinstance(data, dict):
-                        data.setdefault("ok", True)
-                        data.setdefault("warnings", [])
-                    img_b64 = data.pop("_mcp_image_png_b64", None) if isinstance(data, dict) else None
-                    content_items = [{"type": "text", "text": json.dumps(data, indent=2)}]
-                    if img_b64:
-                        content_items.insert(0, {
-                            "type": "image",
-                            "data": img_b64,
-                            "mimeType": "image/png",
-                        })
-                    return self._ok(msg_id, {
-                        "isError": False,
-                        "content": content_items,
-                        "structuredContent": data,
-                    })
-                except Exception as tool_exc:
-                    if isinstance(tool_exc, NoPeerError):
-                        data = {"ok": False, "reason": tool_exc.reason, "dm": tool_exc.dm, "warnings": []}
-                        return self._ok(msg_id, {"isError": True, "content": [{"type": "text", "text": json.dumps(data)}], "structuredContent": data})
-                    data = {"ok": False, "reason": "tool_error", "error": str(tool_exc), "warnings": []}
-                    return self._ok(msg_id, {
-                        "isError": True,
-                        "content": [{"type": "text", "text": json.dumps(data, indent=2)}],
-                        "structuredContent": data,
-                    })
+                if isinstance(params.get("task"), dict):
+                    return self._ok(msg_id, self._create_task(tname, targs, params["task"]))
+                return self._ok(msg_id, self._invoke_tool(tname, targs))
 
             if method == "resources/list":
                 return self._ok(msg_id, {"resources": RESOURCES})
