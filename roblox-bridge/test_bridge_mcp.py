@@ -298,7 +298,7 @@ class TestV5OpsPlatform(unittest.TestCase):
     def test_ops_report_and_public_health_shape(self):
         status, health = self._req("/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "5.3.1")
+        self.assertEqual(health["version"], "5.3.2")
         self.assertIn("tunnel", health)
         self.assertIn("agents", health)
         status, ops = self._req("/api/ops", token=self.admin_token)
@@ -893,7 +893,7 @@ class TestV5OpsPlatform(unittest.TestCase):
         self.assertEqual(health["studios"]["count"], 0)
         self.assertIn("protocolVersions", self._req("/api/ops", token=self.admin_token)[1]["mcp"])
 
-    # -- v5.3.1: the "tunnel page looks frozen" trap --------------------------
+    # -- v5.3.2: the "tunnel page looks frozen" trap --------------------------
 
     def test_dashboard_needs_token_off_loopback_and_says_so(self):
         """A dashboard opened through a tunnel/LAN address gets no token from
@@ -951,6 +951,63 @@ class TestV5OpsPlatform(unittest.TestCase):
         external = "\n".join(line for line, _ in
                               bridge_setup.describe_launch(cmd, False, "auto", "https://x.example", 8077))
         self.assertIn("external https://x.example", external)
+
+    def test_tunnel_connect_script_verifies_a_live_endpoint(self):
+        """jobs/tunnel_connect.py is the one-command "is my tunnel working?" check."""
+        wave = Path(self.tmp) / "wave.json"
+        wave.write_text(json.dumps({"name": "test wave", "tasks": [
+            {"title": "HX — first verification task", "priority": "high", "tags": ["test"],
+             "detail": "unit test task"},
+            {"title": "HX — second verification task", "priority": "low", "detail": "unit test task"},
+        ]}), encoding="utf-8")
+        evidence = Path(self.tmp) / "connect.json"
+        script = str(HERE.parent / "jobs" / "tunnel_connect.py")
+
+        first = subprocess.run(
+            [sys.executable, "-B", script, "--url", self.base, "--token", self.admin_token,
+             "--seed-tasks", str(wave), "--json-out", str(evidence)],
+            capture_output=True, text=True, encoding="utf-8", timeout=120,
+        )
+        self.assertEqual(first.returncode, 0, msg=first.stdout + first.stderr)
+        rows = {r["step"]: r["status"] for r in json.loads(evidence.read_text())["rows"]}
+        for step in ("health", "mcp-discovery", "mcp-initialize", "tools/list",
+                     "resources/list", "prompts/list", "studio_fleet", "seed-tasks"):
+            self.assertEqual(rows.get(step), "pass", f"{step} -> {rows.get(step)}")
+        # No Studio peer in this fixture: those steps must skip, not fail.
+        self.assertEqual(rows.get("get_studio_state"), "skipped")
+        self.assertEqual(rows.get("ping_studio"), "skipped")
+        self.assertIn("71 tools", first.stdout)
+
+        board = self._req("/api/bus?action=tasks&includeDone=1", token=self.admin_token)[1]
+        titles = [t["title"] for t in board["tasks"]]
+        self.assertIn("HX — first verification task", titles)
+        self.assertEqual(len(titles), 2)
+
+        # Re-running is idempotent by title.
+        second = subprocess.run(
+            [sys.executable, "-B", script, "--url", self.base, "--token", self.admin_token,
+             "--seed-tasks", str(wave)],
+            capture_output=True, text=True, encoding="utf-8", timeout=120,
+        )
+        self.assertEqual(second.returncode, 0, msg=second.stdout + second.stderr)
+        self.assertIn("0 created · 2 already present", second.stdout)
+        self.assertEqual(len(self._req("/api/bus?action=tasks&includeDone=1",
+                                       token=self.admin_token)[1]["tasks"]), 2)
+
+        # Distinct failure signals: wrong token -> 2, unreachable host -> 3.
+        bad = subprocess.run(
+            [sys.executable, "-B", script, "--url", self.base, "--token", "not-the-token"],
+            capture_output=True, text=True, encoding="utf-8", timeout=60,
+        )
+        self.assertEqual(bad.returncode, 2, msg=bad.stdout + bad.stderr)
+        self.assertIn("token rejected", bad.stdout)
+
+        dead = subprocess.run(
+            [sys.executable, "-B", script, "--url", "http://127.0.0.1:9", "--token", "x"],
+            capture_output=True, text=True, encoding="utf-8", timeout=60,
+        )
+        self.assertEqual(dead.returncode, 3, msg=dead.stdout + dead.stderr)
+        self.assertIn("never reached", dead.stdout)
 
     # -- tunnel supervisor --------------------------------------------------
 
@@ -1317,7 +1374,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         done = self.call_tool("agent_bus", {"action": "task_complete", "taskId": task["id"], "agentId": reg["id"], "result": "ok"})
         self.assertEqual(done["status"], "done")
         ops = self.call_tool("bridge_ops", {"action": "status"})
-        self.assertEqual(ops["version"], "5.3.1")
+        self.assertEqual(ops["version"], "5.3.2")
         self.assertIn("tunnel", ops)
         metrics = self.call_tool("bridge_ops", {"action": "metrics"})
         self.assertIn("counters", metrics)

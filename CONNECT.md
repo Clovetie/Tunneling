@@ -1,6 +1,6 @@
 # CONNECT — Arena ↔ Roblox Studio bridge, operator's manual
 
-> **v5 note (2026-11-03):** the bridge is now `5.3.1` with a multi-Studio fleet, a supervised tunnel, a
+> **v5 note (2026-11-03):** the bridge is now `5.3.2` with a multi-Studio fleet, a supervised tunnel, a
 > multi-agent bus, scoped tokens, Prometheus metrics and a hash-chained audit log.
 > Full reference: [`roblox-bridge/docs/OPS.md`](roblox-bridge/docs/OPS.md).
 > Operational quickies:

@@ -2,6 +2,42 @@
 
 All notable changes for the Roblox Studio bridge are documented here.
 
+## 5.3.2 — one-command tunnel verification, and a v6 wave of tasks for other agents
+
+> The agent that builds this repo cannot resolve `*.trycloudflare.com` (its egress
+> is allow-listed), so tunnel verification stays with the operator. This release
+> makes that one command instead of a checklist.
+
+### Added
+- **`jobs/tunnel_connect.py`** — proves a public tunnel carries a working MCP
+  endpoint in ~1 s, using the same calls a client makes: public `/api/health`,
+  modern `server/discover`, legacy `initialize`, `tools/list` (with
+  `execution.taskSupport`), `resources/list`, `prompts/list`, `studio_fleet`, then
+  `get_studio_state` / `ping_studio` when a Studio is attached. Distinct exit
+  codes: `0` healthy, `2` token rejected, `3` never reached (tunnel down, stale
+  URL, or DNS blocked on this machine), `4` reachable but MCP broken. `--json-out`
+  writes paste-ready evidence.
+- **Task seeding over the tunnel**: `--seed-tasks handoff/bus_seed_v6.json`
+  registers an agent and files the wave, idempotently by title (re-running reports
+  `0 created · N already present`).
+- **`handoff/bus_seed_v6.json`** — the five tasks that need a human at a real
+  machine: H1 two-Studio fleet verification, H2 fill the §11 latency table, H3 the
+  console in a real browser through the tunnel, H4 playtest parity against
+  Studio's built-in MCP server, H5 a named tunnel end to end. None of them block
+  the code; all of them are evidence.
+- **`docs/OPS.md` §10.3** — the command, what each row means, and how to recognise
+  the "this machine cannot resolve the tunnel" failure.
+
+### Changed
+- Version `5.3.2` across server, MCP surface, CLI, telemetry, bus, auth, tunnel
+  manager and docs.
+
+### Verification
+- `python3 -B roblox-bridge/test_bridge_mcp.py` — **44 tests pass** (1 new:
+  the connector against a real token-protected bridge — every row PASS, Studio
+  rows SKIP without a peer, seeding creates then skips, wrong token → exit 2,
+  dead host → exit 3).
+
 ## 5.3.1 — make the "frozen console" and "no tunnel" cases explain themselves
 
 > Two support reports drove this patch: a bridge started without `--tunnel`

@@ -24,7 +24,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-TELEMETRY_VERSION = "5.3.1"
+TELEMETRY_VERSION = "5.3.2"
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "bridge_state"
 
 # Bounded sample count per histogram key; percentiles are computed from this

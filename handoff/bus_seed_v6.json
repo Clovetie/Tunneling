@@ -1,0 +1,42 @@
+{
+  "name": "v6 verification wave (H1-H5)",
+  "note": "Tasks that need a human at a real machine: two Studio windows, a browser, a live tunnel. The bridge code paths behind them are already unit-tested; what is missing is evidence. Seed with: python3 jobs/tunnel_connect.py --url <tunnel> --token <token> --seed-tasks handoff/bus_seed_v6.json",
+  "tasks": [
+    {
+      "title": "H1 — Two-Studio fleet: pin, fallback and broadcast with real windows",
+      "priority": "high",
+      "tags": ["fleet", "verification", "H1"],
+      "estimateMinutes": 25,
+      "detail": "Open two Studio windows on two different places, both with the ArenaBridge plugin. Via MCP or the console: (1) studio_fleet {action:'list'} must show two entries with distinct peerId and correct place/placeId; (2) set_active on window B, then run a read-only tool with no peerId and confirm the job is claimed by B; (3) close B, wait >5 s, run the same call again and confirm it lands on A (routing falls back to auto instead of stalling); (4) broadcast {broadcastTool:'ping_studio'} and confirm both windows answer with per-peer latency; (5) label a window and confirm the label survives a bridge restart (bridge_state/fleet.json). Paste the JSON evidence into docs/OPS.md 2.1 at the bottom. Acceptance: every step observed once, with the fleet document pasted verbatim."
+    },
+    {
+      "title": "H2 — Fill the latency budget table (OPS section 11) through the tunnel",
+      "priority": "normal",
+      "tags": ["latency", "tunnel", "H2"],
+      "estimateMinutes": 20,
+      "detail": "With the tunnel online and one Studio window open, run: python3 jobs/measure_tunnel_latency.py --url local=http://127.0.0.1:8077 --url tunnel=<public url> --token <token> --runs 20 --json-out jobs/tunnel_latency.json. Then paste p50/p95 for ping_studio, get_studio_state, survey_place (includeSource=false) into the empty table in docs/OPS.md section 11, and note the tunnel overhead (tunnel p50 minus local p50). If any number looks wrong, file a message on the bus instead of editing the budget. Acceptance: table filled from a real run, JSON committed, and the measurement date recorded."
+    },
+    {
+      "title": "H3 — Ops Console in a real browser through the tunnel",
+      "priority": "high",
+      "tags": ["ui", "verification", "H3"],
+      "estimateMinutes": 20,
+      "detail": "Open the tunnel URL in Chrome and Firefox with no token stored. Expected: the amber token banner appears and every /api call stops (no silently stale numbers); pasting the token into the banner loads the fleet strip, the counters animate and the tab transitions run; the token survives a page reload. Then check: (a) resize to 720 px and 380 px — no horizontal scroll, stat cards two-up; (b) enable OS 'reduce motion' — animations stop; (c) restart the bridge, keep the tab open and confirm the blue 'older bridge version' banner with Reload appears. Record pass/fail per item in docs/OPS.md section 12 as a dated note. Acceptance: all five observations recorded, with the browser versions used."
+    },
+    {
+      "title": "H4 — Playtest parity gap analysis against Studio's built-in MCP server",
+      "priority": "normal",
+      "tags": ["research", "playtest", "H4"],
+      "estimateMinutes": 30,
+      "detail": "Studio's built-in MCP server now ships start_stop_play, user_mouse_input, user_keyboard_input, character_navigation, screen_capture and a playtest subagent. Our bridge has start_stop_play, run_playtest_scenario, get_console_output and screenshot_gui. Produce a table of what a client can/cannot do through each, using the official Studio MCP docs plus our tool specs (do not guess): tool name, parity, cheapest way to close the gap in the plugin (ArenaBridge.lua) or not at all. Output handoff/playtest-parity.md, no code changes. Acceptance: one row per capability with a source link, plus a one-line recommendation per gap."
+    },
+    {
+      "title": "H5 — Named tunnel with a stable hostname, end to end",
+      "priority": "low",
+      "tags": ["tunnel", "H5"],
+      "estimateMinutes": 30,
+      "dependsOn": [],
+      "detail": "Follow docs/OPS.md section 1.1 with a real Zero Trust named tunnel: create it, run python3 setup.py --tunnel --tunnel-token <token>, confirm /api/tunnel reports named=true, namedTokenValid=true and the stable hostname, and that a deliberate bad token surfaces state=error with an actionable lastError (never a restart loop). Then note in section 1.1 anything the runbook got wrong. Acceptance: the stable URL serves /api/health and /mcp, plus one sentence on what changed if the runbook needed a fix."
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # v5 Ops Platform — tunnels, multi-agent coordination, telemetry, scoped auth
 
-_Applies to bridge `5.3.1`._
+_Applies to bridge `5.3.2`._
 
 Everything in this document ships in `roblox-bridge/` and is **stdlib-only**
 (no pip installs). It layers on top of the v4 MCP + plugin bridge; nothing in the
@@ -470,7 +470,8 @@ fallback when the pin goes offline, persistence across a restart, labels,
 broadcast fan-out with per-peer results, refusal of write kinds), the modern MCP
 era (`server/discover`, `-32022`, `-32020` header mismatch, `resultType`), and the
 task lifecycle (`tools/call` + `task`, `tasks/get`, `tasks/result`, `tasks/list`,
-`tasks/cancel`).
+`tasks/cancel`), and `jobs/tunnel_connect.py` end to end (healthy run, idempotent
+task seeding, and its three distinct failure exit codes).
 
 ## 10. Live acceptance and drills
 
@@ -523,6 +524,42 @@ peer stops heart-beating (20 s grace), so expect a ~30 s window.
 | `verdict: pass`, job `queued` then `done` | reaper requeued the orphan and Studio picked it up on reconnect |
 | `verdict: pass`, `reaped delta > 0` | job was reaped by the timeout/requeue path |
 | `verdict: fail` | the job stayed `running`; check the bridge log for `job.requeued_orphan` events |
+
+### 10.3 One-command tunnel check
+
+`jobs/tunnel_connect.py` answers "is this tunnel actually carrying a working MCP
+endpoint?" in about a second. It makes exactly the calls a client makes — public
+`/api/health`, modern `server/discover`, legacy `initialize`, `tools/list`,
+`resources/list`, `prompts/list`, `studio_fleet` — then `get_studio_state` and
+`ping_studio` when a Studio is attached (otherwise they report SKIP, not FAIL).
+
+```bash
+python3 jobs/tunnel_connect.py --url https://<name>.trycloudflare.com --token "$BRIDGE_TOKEN"
+# [PASS] health: v5.3.2 · 41ms · studios 1/1 online · queued 0
+# [PASS] mcp-discovery: server/discover ok · supports 2026-07-28, 2025-11-25 …
+# [PASS] tools/list: 71 tools · 71 task-capable · resultType complete
+# [SKIP] ping_studio: no Studio peer is polling the bridge right now
+```
+
+Exit codes: `0` healthy · `2` token rejected · `3` never reached (tunnel down,
+stale URL, or **this machine cannot resolve trycloudflare** — corporate DNS and
+CI sandboxes block it) · `4` reachable but the MCP path is broken. Add
+`--json-out handoff/tunnel-connect.json` for evidence.
+
+**File work for other agents through the same tunnel:**
+
+```bash
+python3 jobs/tunnel_connect.py --url https://<name>.trycloudflare.com \
+    --token "$BRIDGE_TOKEN" --seed-tasks handoff/bus_seed_v6.json
+# [PASS] seed-tasks: 5 created · 0 already present · agent agent-22c967a6 (v6 verification wave (H1-H5))
+```
+
+Seeding is idempotent by task title, so re-running never duplicates the board.
+`handoff/bus_seed_v6.json` holds the five items that need a human at a real
+machine (two Studio windows, a browser, a live tunnel, a playtest comparison, a
+named tunnel): H1 fleet verification, H2 latency table, H3 console in a real
+browser, H4 playtest parity, H5 named tunnel. Nothing in that wave blocks the
+code; it is evidence collection.
 
 ## 11. Latency budget (G2)
 

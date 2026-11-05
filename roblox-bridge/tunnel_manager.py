@@ -30,7 +30,7 @@ import urllib.request
 from collections import deque
 from pathlib import Path
 
-TUNNEL_VERSION = "5.3.1"
+TUNNEL_VERSION = "5.3.2"
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "bridge_state"
 
 CLOUDFLARE_URL_RE = re.compile(r"https://[a-z0-9][a-z0-9-]*\.trycloudflare\.com", re.I)

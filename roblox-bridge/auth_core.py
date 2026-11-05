@@ -25,7 +25,7 @@ import threading
 import time
 from pathlib import Path
 
-AUTH_VERSION = "5.3.1"
+AUTH_VERSION = "5.3.2"
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "bridge_state"
 
 ROLE_RANK = {"read": 1, "write": 2, "admin": 3}
