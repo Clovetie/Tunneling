@@ -1,0 +1,167 @@
+# Staged at .github/ci.yml, not .github/workflows/ci.yml, because the Arena
+# session's GitHub App has no `workflows` permission and GitHub refuses any push
+# that creates a file under .github/workflows/ without it. To activate:
+#
+#     git mv .github/ci.yml .github/workflows/ci.yml && git push
+#
+# (or grant the App Workflows: Read and write, then `git mv` it yourself and I can
+# push). Every step below is also a plain local command, so nothing here is
+# required to develop against the bridge.
+name: CI
+
+# Everything the bridge needs to prove itself is in-repo and stdlib-only: the
+# regression suite drives a mock Studio peer over real HTTP, the Luau checks run
+# against the analyzer committed under roblox-bridge/tools/, and no job needs a
+# Studio install, a network service or a pip install.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge-suite:
+    name: Bridge suite (Python ${{ python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ python-version }}
+
+      - name: Restore the analyzer's exec bit (lost on some checkouts)
+        run: bash roblox-bridge/tools/fix-perms.sh
+
+      - name: Regression suite
+        working-directory: roblox-bridge
+        run: python3 -B test_bridge_mcp.py
+
+      - name: No third-party imports
+        # AGENTS.md rule 1: the bridge ships as stdlib-only Python. Anything new
+        # in the runtime modules must be in the standard library or in this repo.
+        run: |
+          python3 - <<'PY'
+          import ast, pathlib, sys
+          root = pathlib.Path("roblox-bridge")
+          local = {p.stem for p in root.glob("*.py")}
+          stdlib = set(sys.stdlib_module_names)
+
+
+          def guarded(tree):
+              """Line numbers inside a `try:` body — an optional dependency with a
+              documented fallback (AGENTS.md) is allowed, an unconditional import is not."""
+              lines = set()
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Try):
+                      for stmt in node.body:
+                          for inner in ast.walk(stmt):
+                              if hasattr(inner, "lineno"):
+                                  lines.add(inner.lineno)
+              return lines
+
+
+          offenders = []
+          for path in sorted(root.glob("*.py")):
+              allowed = local | stdlib
+              if path.name == "setup.py" or path.name.startswith("test_"):
+                  allowed |= {"ast", "unittest"}
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              skip = guarded(tree)
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      names = [a.name.split(".")[0] for a in node.names]
+                  elif isinstance(node, ast.ImportFrom):
+                      names = [] if node.level else [(node.module or "").split(".")[0]]
+                  else:
+                      continue
+                  if node.lineno in skip:
+                      continue
+                  for name in names:
+                      if name and name not in allowed:
+                          offenders.append(f"{path.name}:{node.lineno} imports {name!r}")
+          if offenders:
+              print("\n".join(sorted(set(offenders))))
+              sys.exit("runtime modules must stay stdlib-only (see AGENTS.md rule 1)")
+          print("stdlib-only: clean")
+          PY
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs-py${{ python-version }}
+          path: |
+            roblox-bridge/bridge_state
+          if-no-files-found: ignore
+
+  studio-plugin:
+    name: Studio plugin pre-flight (Luau)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore the analyzer's exec bit
+        run: bash roblox-bridge/tools/fix-perms.sh
+
+      - name: Undefined-global scan over every .lua in the repo
+        run: bash roblox-bridge/tools/check_globals.sh roblox-bridge
+
+      - name: ArenaBridge.lua through the bridge's own pre-flight
+        working-directory: roblox-bridge
+        run: >
+          python3 -B -m unittest
+          test_bridge_mcp.TestHashAndToolchain.test_arena_bridge_lua_passes_luau_check
+          test_bridge_mcp.TestHashAndToolchain.test_every_self_stamped_module_agrees_on_the_version
+
+  kit-and-docs:
+    name: Asset kit and docs consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Licence manifest for the bundled kit assets
+        run: python3 -B tools/verify_licences.py
+
+      - name: Docs reference a version that exists
+        run: |
+          python3 - <<'PY'
+import pathlib, re, sys
+
+version = re.search(r'^VERSION = "([0-9.]+)"',
+                    pathlib.Path("roblox-bridge/server.py").read_text(), re.M).group(1)
+CLAIMS = (r"bridge[^\d\n]{0,10}?(\d+\.\d+\.\d+)", r"server\.py[^\d\n]{0,4}?v(\d+\.\d+\.\d+)",
+          r"^# .*?\(v(\d+\.\d+\.\d+)\)")
+stale, seen = [], 0
+for doc in ("CONNECT.md", "AGENTS.md", "roblox-bridge/README.md", "roblox-bridge/docs/OPS.md"):
+    hits = 0
+    for line in pathlib.Path(doc).read_text(encoding="utf-8").splitlines():
+        for pat in CLAIMS:
+            m = re.search(pat, line)
+            if m:
+                hits += 1
+                seen += 1
+                if m.group(1) != version:
+                    stale.append(f"{doc}: {line.strip()[:110]}")
+    if not hits:
+        stale.append(f"{doc}: carries no version claim any more (guard is blind)")
+if stale:
+    print("\n".join(stale))
+    sys.exit(1)
+print(f"docs agree on bridge {version} ({seen} claims checked)")
+          PY
