@@ -456,8 +456,10 @@ bash roblox-bridge/tools/check_globals.sh roblox-bridge   # undefined Luau globa
 python3 -B tools/verify_licences.py                  # kit asset licence manifest
 ```
 
-`.github/workflows/ci.yml` runs exactly those (plus a stdlib-only import audit and
-a doc/version consistency check) on Python 3.10, 3.12 and 3.13.
+`.github/ci.yml` runs exactly those (plus a stdlib-only import audit and a
+doc/version consistency check) on Python 3.10, 3.12 and 3.13 — once it is moved
+into `.github/workflows/`, which needs the `workflows` permission on whatever
+identity pushes it (`git mv .github/ci.yml .github/workflows/ci.yml && git push`).
 
 v5 / v5.1 / v5.2 / v5.3 coverage: scoped roles over HTTP and MCP, rate-limit 429s, bus presence/
 mailbox/lease expiry/handoff export, stale-agent sweeping, incremental

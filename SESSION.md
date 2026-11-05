@@ -306,15 +306,18 @@ what that research proved out:
   (was 43), including `ArenaBridge.lua` through the bridge's own `luau_check`
   (clean, no unused locals) and a new test that fails if any module's version
   string disagrees.
-- **CI:** `.github/workflows/ci.yml` runs the suite on 3.10/3.12/3.13, audits
-  that runtime modules stay stdlib-only (guarded optional imports excepted),
-  scans every `.lua` for undefined globals, re-checks the kit licence manifest
-  and fails if a doc claims a bridge version that is not the one in
-  `server.py`. Each step is a plain local command, so it runs the same way on
-  your machine. **This file is written in the workspace but not in git yet**:
-  pushing a workflow needs the `workflows` permission, which this session's
-  GitHub App does not have. Land it with
-  `git add .github && git commit -m 'ci: run the bridge suite, Luau pre-flight and the stdlib audit' && git push`.
+- **CI:** the workflow is committed at `.github/ci.yml` (suite on 3.10/3.12/3.13,
+  a stdlib-only import audit with guarded optional imports excepted, an undefined
+  Luau global scan over every `.lua`, the kit licence manifest, and a guard that
+  each doc claiming a bridge version agrees with `server.py`). It does **not**
+  run from there: GitHub refuses any push that creates a file under
+  `.github/workflows/` unless the acting GitHub App holds the `workflows`
+  permission, and this session's App does not (a `git push` is rejected by a
+  server-side hook; the Contents API answers `403 Resource not accessible by
+  integration`). Activate it with `git mv .github/ci.yml .github/workflows/ci.yml
+  && git push`, or grant the App Workflows: Read and write and move it yourself.
+  Every step is also a plain local command, so CI is convenience, not a gate on
+  contributing.
 - **Still needs a live peer:** the four playtest tools are proven against the mock
   and contract-identical plugin handlers, but a real Studio run is what confirms
   CoreGui refusal messages, device-override effects on the viewport image, and

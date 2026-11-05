@@ -76,6 +76,15 @@ All notable changes for the Roblox Studio bridge are documented here.
 - The mock Studio now tracks `playtest_running` (single-world sessions report
   `isRunning` honestly), and a stopped playtest clears its simulated client peer.
 
+- **CI, staged one directory out:** `.github/ci.yml` runs the suite on Python
+  3.10 / 3.12 / 3.13, audits that runtime modules stay stdlib-only (a guarded
+  optional import with a documented fallback, like Pillow in `image_pipeline`,
+  passes), scans every `.lua` for undefined globals, re-checks the kit licence
+  manifest, and fails if a doc claims a bridge version other than the one in
+  `server.py`. Move it into `.github/workflows/` to activate — that push needs
+  the GitHub App to hold the `workflows` permission, which is why it waits a
+  directory up. Every step is also a plain local command.
+
 ### Verified
 - `python3 -B roblox-bridge/test_bridge_mcp.py` → **Ran 64 tests … OK** (was 43):
   19 of them in `TestV54ConfirmationGate` (gate modes, signed state, replay,
