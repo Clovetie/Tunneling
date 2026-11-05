@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """
 mcp_core.py — Zero-dependency Model Context Protocol (MCP) engine & Roblox Studio
-tool suite for Arena <-> Roblox Studio (v4.0.0).
+tool suite for Arena <-> Roblox Studio (v5.4.0).
 
 Supports:
-  - MCP specification versions 2025-06-18, 2025-03-26, and 2024-11-05
+  - Dual-era MCP: 2026-07-28 (stateless, server/discover, resultType, MRTR,
+    subscriptions/listen, tasks extension) and the legacy 2025-11-25 /
+    2025-06-18 / 2025-03-26 / 2024-11-05 handshake eras
+  - Multi Round-Trip Requests: destructive calls can answer with
+    resultType "input_required" + a signed requestState (human-in-the-loop)
+  - Task-augmented tool calls (tasks/get · tasks/update · tasks/cancel, plus the
+    legacy tasks/result · tasks/list pair for 2025-11-25 clients)
+  - subscriptions/listen: one opt-in stream for resource-update notifications
   - Transports: stdio (via mcp_server.py) and Streamable HTTP /mcp (via server.py)
-  - 68 curated, annotated Roblox Studio & Luau engineering tools
+  - 75 curated, annotated Roblox Studio & Luau engineering tools
   - Live MCP Resources + Resource Templates + Workflow Prompts
   - Exact 53-bit-safe 32-bit FNV-1a hashing matching ArenaBridge.lua bit-for-bit
   - Local pre-flight Luau syntax + undefined-global static analysis (luau_check)
@@ -20,6 +27,8 @@ import math
 import os
 import random
 import re
+import threading
+import uuid
 import subprocess
 import tempfile
 import time
@@ -27,14 +36,115 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from confirm_gate import (  # noqa: E402  (v5.4.0 human-in-the-loop gate)
+    ConfirmGate,
+    GateError,
+    canonical_digest,
+    danger_keys_in,
+)
+
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "4.0.0"
+MCP_SERVER_VERSION = "5.4.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
+    "2026-07-28",   # stateless era: server/discover, per-request _meta, resultType
+    "2025-11-25",   # final legacy era: tasks, elicitation, structured output
     "2025-06-18",
     "2025-03-26",
     "2024-11-05",
 )
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
+MODERN_PROTOCOL_VERSION = "2026-07-28"
+LEGACY_PROTOCOL_VERSIONS = tuple(v for v in SUPPORTED_PROTOCOL_VERSIONS if v != MODERN_PROTOCOL_VERSION)
+# Beyond this many tracked tasks the oldest finished ones are pruned.
+TASK_HISTORY_LIMIT = 200
+TASK_DEFAULT_TTL_MS = 3_600_000
+TASK_POLL_INTERVAL_MS = 1000
+
+# --- 2026-07-28 era plumbing -------------------------------------------------
+#: Namespaced `_meta` keys a self-describing request carries.
+META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+META_LOG_LEVEL = "io.modelcontextprotocol/logLevel"
+META_SUBSCRIPTION_ID = "io.modelcontextprotocol/subscriptionId"
+META_RELATED_TASK = "io.modelcontextprotocol/related-task"
+#: The official tasks extension (SEP-2663) is announced under `extensions`.
+TASKS_EXTENSION_KEY = "io.modelcontextprotocol/tasks"
+#: Trace-context keys (SEP-414): forward the caller's spans into the audit chain.
+TRACE_META_KEYS = ("traceparent", "tracestate", "baggage")
+
+#: What `subscriptions/listen` can actually deliver from this bridge.
+SUBSCRIPTION_TYPES = (
+    "toolsListChanged",
+    "promptsListChanged",
+    "resourcesListChanged",
+    "resourceSubscriptions",
+)
+#: Types whose lists are static in this server, so nothing can ever change.
+SUBSCRIPTION_TYPES_IDLE = ("promptsListChanged", "resourcesListChanged")
+#: telemetry event kind -> MCP resource URI that a change to it invalidates.
+RESOURCE_EVENT_TRIGGERS = {
+    "studio://state": ("peer.join", "peer.leave", "peer.stale", "job.claim",
+                       "job.done", "job.error", "job.timeout", "fleet.broadcast",
+                       "bridge.start"),
+    "studio://console": ("console.line", "job.error", "job.done"),
+    "studio://ops": ("queue.paused", "queue.resumed", "tunnel.action",
+                     "tunnel.blocked", "mcp.confirm.approved", "mcp.confirm.denied"),
+    "studio://bus": ("bus.message", "bus.task", "bus.sweep", "bus.agent"),
+}
+
+#: `bridge_ops` actions that describe the confirmation queue itself. Reading them
+#: is always allowed — an operator (or an agent reporting state) must be able to
+#: see what is waiting even while every other call is gated. *Answering* is not:
+#: the principal whose call is blocked must never be the one unblocking it.
+CONFIRM_CONTROL_ACTIONS = ("confirmations", "subscriptions")
+CONFIRM_ANSWER_ACTIONS = ("confirm_approve", "confirm_deny")
+
+#: Reasons a *client* can recover from by answering again. The 2026-07-28 MRTR
+#: rules say a missing or unusable answer is not a tool failure: a modern client
+#: gets a fresh InputRequiredResult, with the reason spelled out so it can tell
+#: the human what went wrong.
+REPROMPT_REASONS = frozenset({
+    "digest_mismatch", "principal_mismatch", "replayed", "expired",
+    "unknown_request", "cancelled",
+})
+
+#: Tools `--require-confirm=destructive` gates: anything that can change the
+#: place, the live servers, or the published asset data.
+CONFIRM_GATED_TOOLS = (
+    "delete_instance", "reparent_or_rename", "set_properties", "mass_set_properties",
+    "build_tree", "build_biome", "build_skybox", "scatter_props", "edit_terrain",
+    "multi_edit", "write_script", "batch_write", "find_and_replace_scripts",
+    "insert_asset", "import_image", "import_images_batch", "import_audio",
+    "import_rbxmx", "import_place_rbxlx", "install_dropin_system", "install_template",
+    "install_kit_module", "spawn_prefab", "drift_and_sync", "manage_snapshots",
+    "open_cloud_action", "start_stop_play", "run_studio_tests", "simulate_input",
+    "undo_redo",
+)
+
+#: `manage_device_simulator` actions, in the order the tool schema advertises
+#: them. The schema enum is derived from this tuple so the two cannot drift.
+DEVICE_SIMULATOR_ACTIONS = (
+    "status", "list", "set_device", "set", "set_orientation", "set_resolution",
+    "set_pixel_density", "set_scaling_mode", "create_profile", "update_profile",
+    "remove_profile", "stop",
+)
+
+#: Accepted `simulate_input` step verbs (mapped onto VirtualInput calls).
+INPUT_ACTIONS = (
+    "keydown", "keyup", "press", "type", "move", "click", "doubleclick",
+    "rightclick", "middleclick", "drag", "wheel", "tap", "longpress", "swipe",
+    "pinch", "wait",
+)
+#: Steps that need a screen position (either `position` or a `target` instance).
+INPUT_POSITION_ACTIONS = (
+    "move", "click", "doubleclick", "rightclick", "middleclick", "tap",
+    "longpress", "swipe", "pinch", "drag",
+)
+#: Steps that need a `key`.
+INPUT_KEY_ACTIONS = ("keydown", "keyup", "press")
+MAX_INPUT_STEPS = 128
 
 KNOWN_ROBLOX_GLOBALS = {
     "game", "workspace", "script", "plugin", "version", "loadstring",
@@ -56,6 +166,7 @@ READ_ONLY_JOB_TYPES = {
     "ping", "studio_state", "inspect", "search_tree", "compare_instances",
     "get_properties", "read_script", "read_scripts", "hash_scripts",
     "script_search", "script_grep", "survey", "console", "require_fresh",
+    "playtest_caps",
 }
 
 
@@ -459,6 +570,148 @@ class BridgeClient:
             return self.direct_dispatch("peers", {})
         return self._http_request("GET", "/api/peers", timeout=10.0)
 
+    # -- v5 coordination & ops helpers ---------------------------------------
+
+    def bus_action(self, payload: dict = None) -> dict:
+        payload = dict(payload or {})
+        if self.direct_dispatch:
+            return self.direct_dispatch("bus", payload)
+        return self._http_request("POST", "/api/bus", payload, timeout=30.0)
+
+    def fleet_action(self, payload: dict = None) -> dict:
+        payload = dict(payload or {})
+        if self.direct_dispatch:
+            return self.direct_dispatch("fleet", payload)
+        action = (payload.get("action") or "list").lower()
+        if action in ("list", "status"):
+            return self._http_request("GET", "/api/studios", timeout=15.0)
+        return self._http_request("POST", "/api/studios", payload, timeout=30.0)
+
+    def broadcast(self, kind: str = "ping", payload: dict = None, timeout: float = 20.0,
+                  dm: str = None) -> dict:
+        body = {"action": "broadcast", "type": kind, "payload": payload or {},
+                "timeout": timeout, "dm": dm}
+        if self.direct_dispatch:
+            return self.direct_dispatch("broadcast", body)
+        return self._http_request("POST", "/api/studios", body, timeout=timeout + 15.0)
+
+    def ops_action(self, payload: dict = None) -> dict:
+        p = dict(payload or {})
+        action = (p.get("action") or "status").lower()
+        if self.direct_dispatch:
+            mapping = {
+                "status": ("ops", {}),
+                "metrics": ("metrics", {}),
+                "audit": ("audit", {"limit": p.get("limit", 50)}),
+                "audit_verify": ("audit", {"verify": True}),
+                "events": ("events", {"cursor": p.get("cursor", 0), "limit": p.get("limit", 50)}),
+                "tunnel": ("tunnel", {"action": "status"}),
+                "tunnel_start": ("tunnel", {"action": "start"}),
+                "tunnel_stop": ("tunnel", {"action": "stop"}),
+                "tunnel_restart": ("tunnel", {"action": "restart"}),
+                "queue_clear": ("queue_clear", {}),
+                "queue_pause": ("queue_pause", {"reason": p.get("reason")}),
+                "queue_resume": ("queue_resume", {}),
+                "sweep": ("sweep", {}),
+                "reap": ("reap", {}),
+                "confirmations": ("confirmations", {"action": "status"}),
+                "confirm_approve": ("confirmations", {
+                    "action": "approve", "requestId": p.get("requestId"),
+                    "remember": p.get("remember"), "note": p.get("note"), "source": "mcp",
+                }),
+                "confirm_deny": ("confirmations", {
+                    "action": "deny", "requestId": p.get("requestId"),
+                    "note": p.get("note"), "source": "mcp",
+                }),
+                "subscriptions": ("subscriptions", {}),
+            }
+            if action not in mapping:
+                raise ValueError(f"Unknown bridge_ops action: {action}")
+            op, body = mapping[action]
+            return self.direct_dispatch(op, body)
+
+        if action == "status":
+            return self._http_request("GET", "/api/ops", timeout=20.0)
+        if action == "metrics":
+            fmt = p.get("format") or "json"
+            if fmt == "prometheus":
+                return {"format": "prometheus", "text": self._http_request_text("/api/metrics?format=prometheus")}
+            return self._http_request("GET", "/api/metrics", timeout=20.0)
+        if action == "audit":
+            return self._http_request("GET", f"/api/audit?limit={int(p.get('limit') or 50)}", timeout=20.0)
+        if action == "audit_verify":
+            return self._http_request("GET", "/api/audit?verify=1", timeout=20.0)
+        if action == "events":
+            return self._http_request(
+                "GET", f"/api/events?once=1&since={int(p.get('cursor') or 0)}&limit={int(p.get('limit') or 50)}", timeout=20.0
+            )
+        if action in ("tunnel", "tunnel_start", "tunnel_stop", "tunnel_restart"):
+            sub = {"tunnel": "status", "tunnel_start": "start", "tunnel_stop": "stop", "tunnel_restart": "restart"}[action]
+            if sub == "status":
+                return self._http_request("GET", "/api/tunnel", timeout=15.0)
+            return self._http_request("POST", "/api/tunnel", {"action": sub}, timeout=90.0)
+        if action == "queue_pause":
+            return self._http_request("POST", "/api/queue/pause", {"reason": p.get("reason")}, timeout=20.0)
+        if action == "queue_resume":
+            return self._http_request("POST", "/api/queue/resume", {}, timeout=20.0)
+        if action in ("queue_clear", "reap", "sweep"):
+            return self._http_request("POST", "/api/ops", {"action": action}, timeout=30.0)
+        if action == "confirmations":
+            return self._http_request("GET", "/api/confirmations", timeout=15.0)
+        if action in ("confirm_approve", "confirm_deny"):
+            return self._http_request("POST", "/api/confirmations", {
+                "action": "approve" if action == "confirm_approve" else "deny",
+                "requestId": p.get("requestId"),
+                "remember": p.get("remember"),
+                "note": p.get("note"),
+                "source": "mcp",
+            }, timeout=30.0)
+        if action == "subscriptions":
+            return self._http_request("GET", "/api/subscriptions", timeout=15.0)
+        raise ValueError(f"Unknown bridge_ops action: {action}")
+
+    def publish_event(self, kind: str, detail: dict = None, level: str = "info") -> dict:
+        """Push one MCP-side event into the bridge's telemetry + audit chain.
+
+        The dispatcher can live in `server.py` (embedded / direct dispatch) or in
+        a standalone `mcp_server.py` attached over HTTP, so both paths exist.
+        Observability must never break a tool call, so failures are swallowed.
+        """
+        body = {"kind": kind, "detail": detail or {}, "level": level}
+        try:
+            if self.direct_dispatch:
+                return self.direct_dispatch("mcp_event", body)
+            return self._http_request("POST", "/api/mcp/events", body, timeout=10.0)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "reason": "event_sink_unavailable", "error": str(exc)[:180]}
+
+    def confirmations_action(self, payload: dict = None) -> dict:
+        """Read or answer the pending-confirmation registry."""
+        payload = dict(payload or {})
+        action = (payload.get("action") or "status").lower()
+        if self.direct_dispatch:
+            return self.direct_dispatch("confirmations", payload)
+        if action == "status":
+            return self._http_request("GET", "/api/confirmations", timeout=15.0)
+        return self._http_request("POST", "/api/confirmations", payload, timeout=30.0)
+
+    def subscriptions_status(self) -> dict:
+        if self.direct_dispatch:
+            return self.direct_dispatch("subscriptions", {})
+        return self._http_request("GET", "/api/subscriptions", timeout=15.0)
+
+    def _http_request_text(self, path: str, timeout: float = 20.0) -> str:
+        url = f"{self.base_url}{path}"
+        headers = {"X-Arena-Token": self.token} if self.token else {}
+        req = urllib.request.Request(url, method="GET", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            return exc.read().decode("utf-8", "replace")[:2000]
+        except urllib.error.URLError as exc:
+            raise BridgeTransportError(f"Cannot reach bridge at {self.base_url} ({exc.reason})") from exc
+
     def get_job(self, job_id: str) -> dict:
         if self.direct_dispatch:
             return self.direct_dispatch("get_job", {"id": job_id})
@@ -507,6 +760,18 @@ class BridgeClient:
             "note": note or f"mcp:{job_type}",
             "wait": wait,
         }
+        # v5.4.0: tag the job with the MCP request that caused it, so a queued
+        # job can be traced back to the caller and (when the client forwarded
+        # OpenTelemetry context) into that caller's own spans.
+        call_ctx = current_call_context()
+        if call_ctx:
+            if call_ctx.get("trace"):
+                body["trace"] = dict(call_ctx["trace"])
+            if call_ctx.get("principal"):
+                body["actor"] = {
+                    "principal": call_ctx["principal"],
+                    "protocolVersion": call_ctx.get("requestedVersion"),
+                }
         if dm and dm != "auto":
             body["dm"] = dm
         if peer_id:
@@ -958,6 +1223,25 @@ TOOL_SPECS = [
                 "serverCode": {"type": "string", "description": "Optional Luau verification code executed in the live Play Server VM."},
                 "clientCode": {"type": "string", "description": "Optional Luau verification code executed in the live Play Client VM (mode='play')."},
                 "playerName": {"type": "string", "description": "Optional target player name for the clientCode probe."},
+                "inputSteps": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": (
+                        "Optional real input delivered to the Play Client (same step shapes as `simulate_input`) "
+                        "after warmup and before the probes — so a scenario can press E, click a button or type "
+                        "into a TextBox instead of only reading state. Failures become warnings, never silence."
+                    ),
+                },
+                "inputHoldMs": {"type": "number", "default": 60, "description": "Down-time per click/key press for inputSteps."},
+                "inputSettleMs": {"type": "number", "default": 250, "description": "Pause after inputSteps so handlers run before the probes."},
+                "deviceOrientation": {
+                    "type": "string",
+                    "enum": ["Landscape", "Portrait", "LandscapeLeft", "LandscapeRight"],
+                    "description": (
+                        "Optional: force the Studio Device Simulator to this orientation for the scenario (and "
+                        "restore it afterwards), which is how you catch mobile-orientation layout regressions."
+                    ),
+                },
                 "timeout": {"type": "number", "default": 45, "minimum": 5, "maximum": 120},
                 "keepAlive": {"type": "boolean", "default": True, "description": "Keep the play session running after the scenario; call start_stop_play(stop) explicitly to end it."},
                 "autoRestart": {"type": "boolean", "default": False, "description": "Restart the session once if the server peer disappears before probes complete."},
@@ -1481,7 +1765,7 @@ TOOL_SPECS = [
     },
     {
         "name": "audit_ui_layout",
-        "description": "Multi-device responsive Roblox UI layout solver & UX linter. Evaluates a live Studio `ScreenGui`/`StarterGui` path OR a repo UI prefab across Desktop (1920x1080), Tablet (1024x768), and Mobile (844x390), computing exact `[x, y, w, h]` bounds and flagging overflow, missing `UIScale`, `ResetOnSpawn=true`, tiny mobile buttons (<36px), sibling overlaps, and stretched 9-slice images.",
+        "description": "Multi-device responsive Roblox UI layout solver & UX linter. Evaluates a live Studio `ScreenGui`/`StarterGui` path OR a repo UI prefab across Desktop (1920x1080), Tablet (1024x768), and Mobile (844x390), computing exact `[x, y, w, h]` bounds and flagging overflow, missing `UIScale`, `ResetOnSpawn=true`, tiny mobile buttons (<36px), sibling overlaps, and stretched 9-slice images. With `deviceSweep` the sizes come from Studio's own Device Simulator (applied, measured back, restored) instead of presets.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1491,6 +1775,16 @@ TOOL_SPECS = [
                     "type": "array",
                     "items": {"type": "string", "enum": ["desktop", "tablet", "mobile"]},
                     "description": "Target viewports to evaluate (defaults to all 3: desktop, tablet, mobile).",
+                },
+                "deviceSweep": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Measure on the real thing: drive Studio's Device Simulator to each viewport's "
+                        "resolution, read the applied size back, audit against that measured size, then "
+                        "restore the simulator. Needs Studio 0.717+ and a live peer; falls back to the "
+                        "derived audit with a warning when unavailable."
+                    ),
                 },
                 "dm": DM_PROP,
                 "peerId": PEER_PROP,
@@ -1678,6 +1972,309 @@ TOOL_SPECS = [
         },
         "annotations": _ann("Roblox Open Cloud Publish / DataStore / Messaging", read_only=False, destructive=False, idempotent=False),
     },
+
+    # --- Group Z: v5 multi-agent collaboration & bridge operations ----------
+    {
+        "name": "agent_bus",
+        "description": (
+            "Shared multi-agent coordination bus for this bridge (does not touch the Roblox place). "
+            "Register presence, exchange messages, run a claim-based task board with leases, read the activity feed, "
+            "and export a markdown handoff brief. Use it when two or more AI agents (or a human and an agent) share "
+            "one Studio session: `action='register'` first, then `task_claim` before working, `task_complete` with a "
+            "result, and `post` to report progress. Read actions: stats, agents, inbox, tasks, thread, feed. "
+            "Writes: register, heartbeat, post, mark_read, task_create, task_claim, task_renew, task_release, "
+            "task_update, task_complete, task_delete, status."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "register", "heartbeat", "status", "agents", "post", "inbox", "thread", "mark_read",
+                        "tasks", "task_create", "task_claim", "task_renew", "task_release", "task_update",
+                        "task_complete", "task_delete", "feed", "export", "stats",
+                    ],
+                    "description": "Bus operation to perform.",
+                },
+                "agentId": {"type": "string", "description": "Your agent id (returned by register) or your registered name."},
+                "createdBy": {"type": "string", "description": "Alias for agentId on `task_create`."},
+                "actor": {"type": "string", "description": "Alias for agentId on `task_update`."},
+                "name": {"type": "string", "description": "Agent display name for `register`."},
+                "role": {"type": "string", "description": "Free-form role label, e.g. 'builder', 'qa', 'reviewer', 'human'."},
+                "capabilities": {"type": "array", "items": {"type": "string"}, "description": "Capability tags for `register`."},
+                "status": {"type": "string", "enum": ["online", "busy", "idle", "offline"], "description": "Presence status for `heartbeat`/`status`."},
+                "to": {"type": "string", "description": "Recipient agent id/name, or omit for a broadcast."},
+                "subject": {"type": "string", "description": "Short message subject."},
+                "body": {"type": "string", "description": "Message body for `post`."},
+                "kind": {"type": "string", "enum": ["note", "question", "answer", "handoff", "alert", "result"], "default": "note"},
+                "priority": {"type": "string", "enum": ["low", "normal", "high", "critical"], "default": "normal"},
+                "threadId": {"type": "string", "description": "Optional thread id to group a conversation."},
+                "since": {"type": "integer", "description": "Cursor for `inbox`/`feed` (use the `cursor` returned last time)."},
+                "limit": {"type": "integer", "description": "Max rows to return (default 50)."},
+                "unreadOnly": {"type": "boolean", "description": "Only unread messages for `inbox`."},
+                "messageIds": {"type": "array", "items": {"type": "string"}, "description": "Messages to mark read."},
+                "all": {"type": "boolean", "description": "Mark every message read."},
+                "taskId": {"type": "string", "description": "Task id for claim/renew/release/update/complete/delete."},
+                "title": {"type": "string", "description": "Task title for `task_create`."},
+                "detail": {"type": "string", "description": "Task detail / acceptance criteria."},
+                "assignee": {"type": "string", "description": "Optional pre-assigned agent id for `task_create`/`task_update`."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Task tags."},
+                "dependsOn": {"type": "array", "items": {"type": "string"}, "description": "Task ids that must complete before this task can be claimed."},
+                "leaseSeconds": {"type": "integer", "description": "Lease duration for `task_claim`/`task_renew` (default 900)."},
+                "result": {"type": "string", "description": "Outcome summary for `task_complete`."},
+                "artifacts": {"type": "array", "items": {"type": "string"}, "description": "Files/URLs produced by the task."},
+                "path": {"type": "string", "description": "Optional file path for `export` (markdown handoff brief)."},
+                "includeDone": {"type": "boolean", "description": "Include finished tasks in `tasks` / `export`."},
+            },
+        },
+        "annotations": _ann("Multi-Agent Coordination Bus", read_only=True, destructive=False, idempotent=False),
+    },
+    {
+        "name": "bridge_ops",
+        "description": (
+            "Operate and observe the bridge itself: consolidated ops report (peers, queue, tunnel, bus, audit), "
+            "Prometheus-style metrics, tamper-evident audit log verification, live event feed, and supervised "
+            "public-tunnel control (start/stop/restart). Read actions: status, metrics, audit, audit_verify, events, "
+            "tunnel, confirmations, subscriptions. Control: tunnel_start, tunnel_stop, tunnel_restart, queue_pause, "
+            "queue_resume, queue_clear, sweep, reap, confirm_approve, confirm_deny. queue_pause stops handing jobs "
+            "to Studio without dropping them. `confirmations` lists the pending human-approval requests of *this* "
+            "MCP connection (the process answering the call). confirm_approve/confirm_deny answer one — but never "
+            "the caller's own parked call: a connection cannot unblock itself, so approving your own request comes "
+            "back as `operator_only` with the operator commands to use instead."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["status", "metrics", "audit", "audit_verify", "events", "tunnel", "tunnel_start",
+                             "tunnel_stop", "tunnel_restart", "queue_pause", "queue_resume",
+                             "queue_clear", "sweep", "reap",
+                             "confirmations", "confirm_approve", "confirm_deny", "subscriptions"],
+                    "default": "status",
+                },
+                "requestId": {"type": "string", "description": "Confirmation requestId for confirm_approve/confirm_deny."},
+                "remember": {"type": "boolean", "description": "confirm_approve only: skip the gate for this tool for a bounded window."},
+                "subscriptionId": {"type": "string", "description": "subscriptions only: id shown by subscriptions/listen."},
+                "note": {"type": "string", "description": "Reason recorded in the audit chain alongside a decision."},
+                "limit": {"type": "integer", "description": "Rows for audit/events (default 50)."},
+                "cursor": {"type": "integer", "description": "Event cursor for incremental reads."},
+                "format": {"type": "string", "enum": ["json", "prometheus"], "default": "json"},
+                "reason": {"type": "string", "description": "Why the queue was paused; recorded in the audit log."},
+            },
+        },
+        "annotations": _ann("Bridge Ops, Metrics & Tunnel Control", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "studio_fleet",
+        "description": (
+            "Work with several Roblox Studio windows at once. `list` returns every connected DataModel with "
+            "peerId, place, dm, online age, label and which one untargeted jobs would reach. `set_active` pins "
+            "one Studio as the default target (the pin is skipped automatically when that Studio closes, so the "
+            "queue never stalls); `clear_active` returns to the automatic edit-first routing; `label` names a "
+            "Studio for humans. `broadcast` runs one read-only job on every online Studio and returns per-peer "
+            "results — use it to survey or health-check the whole fleet in one call. Any other tool accepts "
+            "`peerId` to target a single Studio."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "set_active", "clear_active", "label", "broadcast"],
+                    "default": "list",
+                },
+                "peerId": {"type": "string", "description": "Target Studio peerId (from `list`)."},
+                "placeId": {"type": "integer", "description": "Alternative to peerId when pinning by place."},
+                "label": {"type": "string", "description": "Human label for a Studio (empty clears it)."},
+                "broadcastTool": {
+                    "type": "string",
+                    "enum": ["ping_studio", "get_studio_state", "survey_place", "inspect_instance",
+                             "script_read", "get_console_output"],
+                    "default": "ping_studio",
+                    "description": "Read-only tool to fan out with `broadcast`.",
+                },
+                "path": {"type": "string", "description": "Path argument when broadcasting a path-based tool."},
+                "includeSource": {"type": "boolean", "description": "survey_place: include script sources."},
+                "timeout": {"type": "number", "description": "Per-broadcast budget in seconds (default 20)."},
+                "dm": {"type": "string", "enum": ["auto", "edit", "server", "client"], "default": "auto"},
+            },
+        },
+        "annotations": _ann("Multi-Studio Fleet Control", read_only=False, destructive=False, idempotent=True),
+    },
+
+    # --- Group H: Live Playtest Control (input, devices, native tests) ------
+    {
+        "name": "simulate_input",
+        "description": (
+            "Drive a running playtest with real synthetic input through Roblox's VirtualInput API "
+            "(UserInputService:CreateVirtualInput). Key presses, typed text into the focused TextBox, "
+            "mouse move / click / drag / wheel, and touch taps, swipes, long-presses and pinches are "
+            "delivered to the Play Client DataModel exactly like hardware, so UI hit-testing, "
+            "InputBegan/InputEnded handlers, ContextActionService bindings and ProximityPrompts all fire. "
+            "Steps run in order and the result is a per-step receipt (delivered / skipped / error), which "
+            "makes a failed click visible instead of silent. Requires a live playtest (start_stop_play or "
+            "run_playtest_scenario first) and Studio 0.720+; probe with `playtest_capabilities`. Input that "
+            "would land on Roblox's own CoreGui (top bar, chat, escape menu) is refused by the engine and "
+            "reported as `coregui_refused`, not swallowed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": (
+                        "Ordered input steps (max 128). Common shapes: "
+                        "{action:'press', key:'E'} | {action:'keydown'|'keyup', key:'LeftShift'} | "
+                        "{action:'type', text:'hello'} | {action:'click', target:'Players.LocalPlayer.PlayerGui.Shop.Buy'} | "
+                        "{action:'click', position:[640,360]} | {action:'move', position:[x,y]} | "
+                        "{action:'drag', from:[x1,y1], to:[x2,y2], durationMs:400} | "
+                        "{action:'wheel', amount:3} | {action:'tap', position:[x,y]} | "
+                        "{action:'swipe', from:[x1,y1], to:[x2,y2]} | {action:'longpress', position:[x,y], ms:700} | "
+                        "{action:'pinch', center:[x,y], from:[x1,y1], to:[x2,y2], ms:300} | {action:'wait', ms:250}."
+                    ),
+                },
+                "holdMs": {
+                    "type": "number",
+                    "default": 60,
+                    "description": "Milliseconds a press/click stays down before it is released (default 60).",
+                },
+                "settleMs": {
+                    "type": "number",
+                    "default": 150,
+                    "description": "Pause after the last step so the game can react before the receipt is collected.",
+                },
+                "playerName": {
+                    "type": "string",
+                    "description": "Which play client to drive in a multiplayer test; omit for the only one.",
+                },
+                "captureAfter": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Attach a viewport PNG captured right after the last step.",
+                },
+                "timeout": {"type": "number", "default": 45, "description": "Overall budget in seconds."},
+                "dm": DM_PROP,
+                "peerId": PEER_PROP,
+            },
+            "required": ["steps"],
+        },
+        "annotations": _ann("Simulate Real Playtest Input (VirtualInput)", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "manage_device_simulator",
+        "description": (
+            "Control Studio's Device Simulator through StudioDeviceSimulatorService: `list` the device "
+            "presets, `status` the current one, `set_device` to emulate a phone/tablet/console, "
+            "`set_orientation` to force Portrait/LandscapeLeft/LandscapeRight, `set_resolution` / "
+            "`set_pixel_density` / `set_scaling_mode` to override the viewport, `create_profile` / "
+            "`update_profile` / `remove_profile` to keep custom DeviceConfiguration entries on disk, and "
+            "`stop` to go back to the plain Studio viewport. This turns the multi-device UI audit from "
+            "geometry you computed into pixels Studio actually drew — read `screenshot_gui` or "
+            "`capture_viewport` after a `set_device`, and always `stop` (or restore) when done. Requires "
+            "Studio 0.717+; probe with `playtest_capabilities`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": list(DEVICE_SIMULATOR_ACTIONS),
+                    "default": "status",
+                    "description": (
+                        "Which Device Simulator call to make. `set` applies whichever of "
+                        "deviceId/orientation/width/height/density/scalingMode you passed in one "
+                        "job, device first, because SetDeviceAsync clears the other overrides."
+                    ),
+                },
+                "deviceId": {
+                    "type": "string",
+                    "description": (
+                        "Device id from `list` for set_device/remove_profile, e.g. 'iPhone15Pro'. "
+                        "'default' is accepted by set_device and means the same as `stop`."
+                    ),
+                },
+                "orientation": {
+                    "type": "string",
+                    "enum": ["Portrait", "LandscapeLeft", "LandscapeRight"],
+                    "description": "set_orientation: ScreenOrientation name; 'Landscape' is accepted as LandscapeRight.",
+                },
+                "width": {"type": "integer", "minimum": 1, "maximum": 7680,
+                          "description": "set_resolution: landscape-space width in pixels (1..7680)."},
+                "height": {"type": "integer", "minimum": 1, "maximum": 4320,
+                           "description": "set_resolution: landscape-space height in pixels (1..4320)."},
+                "density": {"type": "number", "minimum": 72, "maximum": 10000,
+                            "description": "set_pixel_density: DPI override (72..10000). Session-level; cleared by the next set_device."},
+                "scalingMode": {"type": "string", "enum": ["ScaleToPhysicalSize", "ActualResolution", "FitToWindow"],
+                                 "description": "set_scaling_mode: how the simulated resolution maps to the Studio viewport."},
+                "profile": {
+                    "type": "object",
+                    "description": (
+                        "DeviceConfiguration for create_profile/update_profile. Required: Name (1-200 chars, "
+                        "not 'default'), Width (1-7680), Height (1-4320), PixelDensity (72-10000). Optional: "
+                        "DeviceForm ('Phone'|'Tablet'|'Desktop'|'Console'|'VR'), ResolutionScale (0-10), "
+                        "PortraitKeyboardHeight, LandscapeKeyboardHeight. Example "
+                        "{Name:'BudgetPhone', Width:720, Height:360, PixelDensity:160, DeviceForm:'Phone'}."
+                    ),
+                },
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Drive Studio's Device Simulator", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "run_studio_tests",
+        "description": (
+            "Run tests through Studio's own runner (StudioTestService): mode `run` = Test > Run (no game loop), "
+            "`play` = Test > Play (Play Solo), `multiplayer` = one server + 1-8 simulated clients via "
+            "ExecuteMultiplayerTestAsync. With `module` the bridge injects a temporary RobloxScript runner that "
+            "requires that ModuleScript, awaits its `run(ctx)` (or a TestEZ/OpenTest suite), collects the report "
+            "and calls StudioTestService:EndTest(report) — the runner is always destroyed afterwards, even on "
+            "timeout. Without `module` Studio runs whatever its own test service discovers. `args` is forwarded "
+            "and readable inside the session via GetTestArgs, `collectClientLogs` returns each client's Output "
+            "tail separately, and `keepOpen` leaves the session running for follow-up `execute_luau`. "
+            "Requires Studio 0.700+ (0.715+ for multiplayer); probe with `playtest_capabilities`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["run", "play", "multiplayer"], "default": "run"},
+                "module": {
+                    "type": "string",
+                    "description": "Test ModuleScript path (e.g. 'ServerScriptService.Tests.ShopTests'). Omit to let Studio run its own discovered tests.",
+                },
+                "players": {"type": "integer", "minimum": 1, "maximum": 8, "default": 2, "description": "multiplayer: simulated clients (1-8)."},
+                "args": {"type": "object", "description": "Value forwarded into the session (read with StudioTestService:GetTestArgs())."},
+                "timeoutSec": {"type": "number", "default": 120, "description": "Hard watchdog: the session is ended and the runner cleaned up after this."},
+                "collectClientLogs": {"type": "boolean", "default": True},
+                "keepOpen": {"type": "boolean", "default": False, "description": "Leave the test session running after the report is collected."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Run Native Studio Tests (StudioTestService)", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "playtest_capabilities",
+        "description": (
+            "Probe what this Studio build can actually do for live playtesting instead of guessing from a version "
+            "string: VirtualInput (CreateVirtualInput + the six Send* methods), StudioDeviceSimulatorService "
+            "(device profiles, orientation, resolution, DPI, scaling), StudioTestService (Run / Play / "
+            "AddPlayers / CanLeaveTest / LeaveTest / ExecuteMultiplayerTestAsync), whether a playtest is running, "
+            "and the DataModels available to receive input. Each capability carries `available`, `security` and the "
+            "exact runtime call that proved it, so `simulate_input`, `manage_device_simulator` and `run_studio_tests` "
+            "are either confirmed or reported unsupported before you waste a run on them."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dm": DM_PROP,
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Probe Playtest API Capabilities", read_only=True, destructive=False, idempotent=True),
+    },
 ]
 
 TOOL_MAP = {t["name"]: t for t in TOOL_SPECS}
@@ -1716,6 +2313,17 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
     if name == "audit_3d_scene" and not args.get("autoFixUnanchored") and not args.get("snapFloating"):
         return True
     if name == "open_cloud_action" and args.get("action") in ("datastore_list", "datastore_get"):
+        return True
+    if name == "manage_device_simulator" and args.get("action", "status") in ("status", "list"):
+        return True
+    if name == "agent_bus" and args.get("action", "stats") in (
+        "stats", "agents", "inbox", "tasks", "thread", "feed", "status",
+    ):
+        return True
+    if name == "bridge_ops" and args.get("action", "status") in (
+        "status", "metrics", "audit", "audit_verify", "events", "tunnel", "subscriptions",
+        "confirmations",
+    ):
         return True
     return False
 
@@ -1894,6 +2502,12 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
     dm = args.get("dm", "auto")
     peer_id = args.get("peerId")
 
+    # Bridge-level tools never depend on a Studio peer.
+    if name == "agent_bus":
+        return client.bus_action(args)
+    if name == "bridge_ops":
+        return client.ops_action(args)
+
     if name == "self_test":
         return run_bridge_self_test(client, include_studio_smoke=args.get("includeStudioSmoke", True), timeout=args.get("timeout", 180))
 
@@ -1915,6 +2529,27 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
 
     if name == "list_studios":
         return client.peers()
+
+    if name == "studio_fleet":
+        action = (args.get("action") or "list").lower()
+        if action != "broadcast":
+            return client.fleet_action(args)
+        mapping = {
+            "ping_studio": ("ping", {}),
+            "get_studio_state": ("studio_state", {}),
+            "survey_place": ("survey", {"includeSource": bool(args.get("includeSource", False))}),
+            "inspect_instance": ("inspect", {"path": args.get("path") or "game", "depth": 2}),
+            "script_read": ("read_script", {"path": args.get("path") or ""}),
+            "get_console_output": ("get_console", {}),
+        }
+        kind, payload = mapping.get(args.get("broadcastTool") or "ping_studio", ("ping", {}))
+        if kind == "read_script" and not payload.get("path"):
+            raise ValueError("script_read broadcast needs a `path`")
+        result = client.broadcast(kind=kind, payload=payload,
+                                  timeout=float(args.get("timeout") or 20.0),
+                                  dm=args.get("dm"))
+        result["tool"] = args.get("broadcastTool") or "ping_studio"
+        return result
 
     if name == "get_studio_state":
         bridge_health = client.health()
@@ -2219,6 +2854,7 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
                     stop_result = {"ok": False, "error": str(exc)}
             return {
                 "ok": False, "reason": reason, "warnings": [reason], "mode": mode,
+                "input": None, "deviceOrientation": None,
                 "durationSec": round(time.monotonic() - t_start, 2),
                 "serverPeerSeen": server_peer_seen, "clientPeerSeen": client_peer_seen,
                 "clientRouteReady": client_route_ready, "playerJoined": player_joined, "autoRestarted": restarted,
@@ -2229,12 +2865,62 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
                 "consoleExcerpt": [], "console": [],
             }
 
+        warnings_so_far = []
         warmup_complete = time.monotonic()
         phase_timings["startupAndWarmupSec"] = round(warmup_complete - t_start, 3)
+        warnings = warnings_so_far
+
+        # v5.4.0: real input can now be part of a scenario, so a playtest proves
+        # "pressing E opens the door" rather than only "the door exists".
+        input_out = None
+        orientation_out = None
+        wanted_orientation = args.get("deviceOrientation")
+        if wanted_orientation:
+            try:
+                orientation_out = device_simulator_helper(
+                    client, {"action": "set", "orientation": wanted_orientation}, peer_id=peer_id
+                )
+                if orientation_out.get("unsupported"):
+                    warnings.append("deviceOrientation was skipped: StudioDeviceSimulatorService is unavailable here.")
+            except Exception as exc:  # noqa: BLE001
+                warnings.append("deviceOrientation failed: " + str(exc)[:160])
+        input_steps = args.get("inputSteps") or []
+        if input_steps:
+            steps_norm, step_problems = normalise_input_steps(input_steps)
+            if step_problems:
+                raise ValueError("run_playtest_scenario inputSteps: " + "; ".join(step_problems))
+            phase_start = time.monotonic()
+            try:
+                input_out = _unwrap_job(client.submit_job(
+                    "virtual_input",
+                    {
+                        "steps": steps_norm,
+                        "holdMs": float(args.get("inputHoldMs") or 60.0),
+                        "settleMs": float(args.get("inputSettleMs") or 250.0),
+                        "playerName": args.get("playerName"),
+                        "_playerName": args.get("playerName"),
+                    },
+                    wait=min(60.0, max(10.0, timeout / 2)),
+                    dm="client",
+                    peer_id=peer_id,
+                ))
+                input_summary = _input_receipt_summary(input_out)
+                input_out["summary"] = input_summary
+                if input_out.get("unsupported"):
+                    warnings.append("inputSteps were skipped: VirtualInput is unavailable in this Studio build.")
+                elif input_summary["delivered"] < input_summary["total"]:
+                    warnings.append(
+                        f"inputSteps: {input_summary['total'] - input_summary['delivered']} of "
+                        f"{input_summary['total']} step(s) were not delivered."
+                    )
+            except Exception as exc:  # noqa: BLE001 - a scenario must still stop the session
+                input_out = {"ok": False, "error": str(exc), "summary": {"delivered": 0, "refused": 0, "errors": 1, "total": len(input_steps)}}
+                warnings.append("inputSteps failed: " + str(exc)[:180])
+            phase_timings["inputSec"] = round(time.monotonic() - phase_start, 3)
+
         server_out = None
         client_out = None
         errors_caught = []
-        warnings = []
         logs_res = {"lines": [], "nextIndex": args.get("consoleSinceIndex", 0)}
 
         phase_start = time.monotonic()
@@ -2257,6 +2943,30 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
             if "error" in ln.get("type", "").lower():
                 errors_caught.append(ln.get("message", ""))
         phase_timings["consoleReadSec"] = round(time.monotonic() - phase_start, 3)
+
+        if wanted_orientation and isinstance(orientation_out, dict):
+            # Restore exactly what the peer reported before the override — the
+            # engine has no "unset orientation", so a guessed default would be
+            # its own mutation.
+            before = orientation_out.get("before") or {}
+            if orientation_out.get("unsupported"):
+                orientation_out["restored"] = True  # nothing was applied
+            elif before.get("orientation"):
+                try:
+                    device_simulator_helper(
+                        client, {"action": "set", "orientation": before["orientation"]}, peer_id=peer_id
+                    )
+                    orientation_out["restored"] = True
+                except Exception:  # noqa: BLE001 - the operator can always fix it in Studio
+                    orientation_out["restored"] = False
+                    warnings.append(
+                        f"could not restore the device orientation to {before['orientation']}: "
+                        "fix it in Studio's Device Simulator panel."
+                    )
+            else:
+                orientation_out["restored"] = False
+                warnings.append("orientation override left in place: the peer did not report its previous orientation.")
+                restored = False
 
         keep_alive = args.get("keepAlive", True)
         stop_result = None
@@ -2563,6 +3273,18 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
     if name == "spawn_prefab":
         return spawn_prefab_helper(client=client, args=args, peer_id=peer_id)
 
+    if name == "simulate_input":
+        return simulate_input_helper(client=client, args=args, peer_id=peer_id, dm=dm)
+
+    if name == "manage_device_simulator":
+        return device_simulator_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "run_studio_tests":
+        return run_studio_tests_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "playtest_capabilities":
+        return playtest_capabilities_helper(client=client, args=args, peer_id=peer_id, dm=dm)
+
     raise KeyError(f"Unknown tool: {name}")
 
 
@@ -2723,6 +3445,42 @@ RESOURCES = [
         "description": "Service breakdown, instance census, script inventory + hashes, remotes, tags, and settings.",
         "mimeType": "application/json",
     },
+    {
+        "uri": "studio://bus",
+        "name": "Multi-Agent Bus (Presence, Tasks, Messages)",
+        "description": "Registered agents, open task board with leases, and the current activity cursor — shared by every agent on this bridge.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "studio://ops",
+        "name": "Bridge Operations Report",
+        "description": "Queue depth, peer health, tunnel state, metrics, recent audit entries, and open tasks in one document.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "studio://audit",
+        "name": "Tamper-Evident Audit Log (head)",
+        "description": "Latest hash-chained audit entries plus chain verification status.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "studio://jobs",
+        "name": "Job Queue & Per-Tool Latency",
+        "description": "Queue depth, pause state, live peer list, recent job summaries and p50/p95 wall time per tool.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "studio://studios",
+        "name": "Connected Studio Fleet",
+        "description": "Every connected Studio window with peerId, place, DataModel kind, online age, label, pinned/default routing and queued job counts.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "studio://handoff",
+        "name": "Markdown Handoff Brief",
+        "description": "The bus export as markdown: roster, task board, recent messages and stats — paste-ready for the next agent or human.",
+        "mimeType": "text/markdown",
+    },
 ]
 
 RESOURCE_TEMPLATES = [
@@ -2775,6 +3533,26 @@ PROMPTS = [
             {"name": "studioRoot", "description": "Studio container path (e.g. ServerScriptService.NightLoop)", "required": True},
         ],
     },
+    {
+        "name": "multi_agent_handoff",
+        "description": "Hand work to another agent: read the live board, release what you cannot finish, and post a handoff with the next concrete step.",
+        "arguments": [
+            {"name": "agentName", "description": "Who is handing off (defaults to the bus roster)", "required": False},
+            {"name": "focus", "description": "What the next agent should pick up first", "required": False},
+        ],
+    },
+    {
+        "name": "bus_standup",
+        "description": "Render a five-line standup from the live Agent Bus: what changed, who owns what, what is blocked.",
+        "arguments": [
+            {"name": "since", "description": "Bus cursor to report from (defaults to the current cursor)", "required": False},
+        ],
+    },
+    {
+        "name": "task_triage",
+        "description": "Rank open Agent Bus tasks by priority and dependencies, propose a claim order, and flag tasks without acceptance criteria.",
+        "arguments": [],
+    },
 ]
 
 
@@ -2794,6 +3572,36 @@ def read_mcp_resource(client: BridgeClient, uri: str) -> dict:
     if uri == "studio://survey":
         data = execute_tool(client, "survey_place", {"includeSource": False})
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
+    if uri == "studio://bus":
+        data = client.bus_action({"action": "stats"})
+        board = client.bus_action({"action": "tasks", "includeDone": False})
+        roster = client.bus_action({"action": "agents"})
+        payload = {"stats": data, "agents": roster, "openTasks": board}
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(payload, indent=2)}]}
+    if uri == "studio://ops":
+        data = client.ops_action({"action": "status"})
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
+    if uri == "studio://studios":
+        data = client.fleet_action({"action": "list"})
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
+    if uri == "studio://jobs":
+        ops = client.ops_action({"action": "status"})
+        payload = {
+            "queue": ops.get("queue"),
+            "sweeper": ops.get("sweeper"),
+            "health": {k: ops.get("health", {}).get(k) for k in ("queued", "jobs", "peers", "studio_connected", "queuePaused")},
+            "jobLatency": ops.get("jobLatency"),
+            "recentJobs": ops.get("recentJobs"),
+        }
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(payload, indent=2)}]}
+    if uri == "studio://handoff":
+        brief = client.bus_action({"action": "export", "summaryOnly": False})
+        return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": brief.get("markdown", "")}]}
+    if uri == "studio://audit":
+        data = client.ops_action({"action": "audit", "limit": 25})
+        verify = client.ops_action({"action": "audit_verify"})
+        payload = {"entries": data, "verification": verify}
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(payload, indent=2)}]}
     if uri.startswith("studio://scripts/"):
         path = uri[len("studio://scripts/") :]
         data = execute_tool(client, "script_read", {"path": path})
@@ -3751,9 +4559,101 @@ def audit_ui_layout_helper(client: BridgeClient, args: dict, peer_id: str = None
             tree = [insp]
         source_label = f"studio:{target_path}"
 
-    audit = run_multi_viewport_audit(tree, viewports=args.get("viewports"))
+    viewports = args.get("viewports")
+    sweep = None
+    warnings = []
+    specs = viewports
+    if args.get("deviceSweep"):
+        specs, sweep, sweep_warnings = _device_sweep_viewports(client, viewports, peer_id=peer_id)
+        warnings.extend(sweep_warnings)
+    audit = run_multi_viewport_audit(tree, viewports=specs)
     audit["source"] = source_label
+    if sweep is not None:
+        audit["deviceSweep"] = sweep
+        audit["warnings"] = list(audit.get("warnings") or []) + warnings
     return audit
+
+
+#: What each logical viewport asks Studio's Device Simulator for during a sweep.
+DEVICE_SWEEP_TARGETS = {
+    "desktop": (1920, 1080),
+    "tablet": (1024, 768),
+    "mobile": (390, 844),
+}
+
+
+def _device_sweep_viewports(client: BridgeClient, viewports, peer_id: str = None):
+    """Drive Studio's Device Simulator per profile and audit the measured size.
+
+    Returns `(specs, sweep_report, warnings)`. `specs` is what gets handed to
+    `run_multi_viewport_audit` — preset names when the sweep is unavailable, or
+    `{name, width, height}` dicts from what Studio actually applied.
+    """
+    names = list(viewports) if viewports else ["desktop", "tablet", "mobile"]
+    try:
+        before = _unwrap_job(client.submit_job(
+            "device_simulator", {"action": "status"}, wait=25.0, dm="edit", peer_id=peer_id,
+        ))
+    except Exception as exc:  # noqa: BLE001 - a missing peer must degrade, not explode
+        return None, {"applied": False, "reason": "no-peer", "error": str(exc)[:200]}, [
+            "deviceSweep skipped: the Device Simulator could not be read (" + str(exc)[:120] + ")."
+        ]
+    if before.get("unsupported"):
+        return None, {"applied": False, "reason": "unavailable"}, [
+            "deviceSweep skipped: StudioDeviceSimulatorService is unavailable in this build "
+            "(probe with playtest_capabilities); audited against the standard presets instead."
+        ]
+    previous = before.get("status") or {}
+    profiles = []
+    specs = []
+    for name in names:
+        width, height = DEVICE_SWEEP_TARGETS.get(name, (1920, 1080))
+        entry = {"viewport": name, "requested": [width, height], "applied": False, "measured": None}
+        try:
+            res = _unwrap_job(client.submit_job(
+                "device_simulator",
+                {"action": "set_resolution", "width": width, "height": height},
+                wait=25.0, dm="edit", peer_id=peer_id,
+            ))
+            measured = ((res.get("status") or {}).get("resolution")
+                        or ((res.get("measured") or {}).get("resolution")))
+            if measured and len(measured) == 2:
+                entry["measured"] = [float(measured[0]), float(measured[1])]
+                entry["applied"] = True
+                specs.append({"name": name, "width": entry["measured"][0], "height": entry["measured"][1]})
+            else:
+                specs.append(name)
+        except Exception as exc:  # noqa: BLE001
+            entry["error"] = str(exc)[:160]
+            specs.append(name)
+        profiles.append(entry)
+    restored = {"attempted": True, "ok": False}
+    try:
+        prev_resolution = (previous or {}).get("resolution")
+        if (previous or {}).get("simulationActive") and prev_resolution and len(prev_resolution) == 2:
+            _unwrap_job(client.submit_job(
+                "device_simulator",
+                {"action": "set_resolution", "width": int(prev_resolution[0]), "height": int(prev_resolution[1])},
+                wait=25.0, dm="edit", peer_id=peer_id,
+            ))
+        else:
+            _unwrap_job(client.submit_job("device_simulator", {"action": "stop"}, wait=25.0,
+                                          dm="edit", peer_id=peer_id))
+        restored = {"attempted": True, "ok": True, "to": prev_resolution or "native"}
+    except Exception as exc:  # noqa: BLE001
+        restored = {"attempted": True, "ok": False, "error": str(exc)[:160]}
+    warnings = [] if restored["ok"] else [
+        "Device Simulator could not be restored — run manage_device_simulator(action='stop') in Studio."
+    ]
+    if len(specs) != len(profiles):  # defensive; keeps profiles and specs in lockstep
+        specs = names
+    return specs, {
+        "applied": True,
+        "before": previous,
+        "profiles": profiles,
+        "restored": restored,
+        "engine": "StudioDeviceSimulatorService",
+    }, warnings
 
 
 def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
@@ -4203,7 +5103,7 @@ def import_image_helper(client: BridgeClient, args: dict, peer_id: str = None) -
                 ext = ".bmp"
         raw_bytes = _b64.b64decode(b64_in)
     elif args.get("imageUrl"):
-        req = urllib.request.Request(args["imageUrl"], headers={"User-Agent": "ArenaRobloxMCP/4.0.0"})
+        req = urllib.request.Request(args["imageUrl"], headers={"User-Agent": f"ArenaRobloxMCP/{MCP_SERVER_VERSION}"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw_bytes = resp.read()
         url_path = args["imageUrl"].split("?", 1)[0]
@@ -4491,7 +5391,437 @@ def spawn_prefab_helper(client: BridgeClient, args: dict, peer_id: str = None) -
     }
 
 
-def get_mcp_prompt(name: str, arguments: dict = None) -> dict:
+BUS_FALLBACK = (
+    "Live bus state is unavailable (bridge offline, read-only client, or the bus is empty). "
+    "Work from the handoff brief you were given and state any assumption you had to make."
+)
+
+
+
+# ---------------------------------------------------------------------------
+# Live playtest control: VirtualInput, Device Simulator, StudioTestService
+# ---------------------------------------------------------------------------
+
+#: VirtualInput / StudioTestService / StudioDeviceSimulatorService were added in
+#: these Studio engine versions; the number only explains an absent capability,
+#: `playtest_capabilities` is what proves it.
+DEVICE_FORMS = ("Phone", "Tablet", "Desktop", "Console", "VR")
+
+PLAYTEST_API_BASELINE = {
+    "VirtualInput": "0.720",
+    "StudioDeviceSimulatorService": "0.717",
+    "StudioTestService": "0.700",
+    "StudioTestService:ExecuteMultiplayerTestAsync": "0.715",
+}
+
+
+def normalise_input_steps(steps: list) -> tuple:
+    """Validate + canonicalise `simulate_input` / scenario input steps.
+
+    Returns `(normalised, problems)`. Agents write friendly shapes
+    (`{action:'click', target:'StarterGui.Main.Buy'}`); the plugin only ever
+    sees `{action, position|[x,y], key, text, amount, ms}` plus an optional
+    `target` path it resolves to viewport pixels itself.
+    """
+    normalised = []
+    problems = []
+    if not isinstance(steps, list):
+        return [], ["`steps` must be an array of input step objects"]
+    if not steps:
+        return [], ["`steps` must contain at least one step"]
+    if len(steps) > MAX_INPUT_STEPS:
+        problems.append(f"`steps` is limited to {MAX_INPUT_STEPS} entries (got {len(steps)})")
+    for index, raw in enumerate(steps[:MAX_INPUT_STEPS]):
+        label = f"step {index + 1}"
+        if not isinstance(raw, dict):
+            problems.append(f"{label}: expected an object")
+            continue
+        action = str(raw.get("action") or "").strip().lower()
+        if action not in INPUT_ACTIONS:
+            problems.append(f"{label}: unknown action {action!r} (expected one of {', '.join(INPUT_ACTIONS)})")
+            continue
+        step = {"action": action}
+        key = raw.get("key") or raw.get("keyCode")
+        if action in INPUT_KEY_ACTIONS:
+            if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,24}", key.strip()):
+                problems.append(f"{label}: `{action}` needs an Enum.KeyCode name such as 'E' or 'LeftShift'")
+                continue
+            step["key"] = key.strip()
+        if action == "type":
+            text = raw.get("text")
+            if not isinstance(text, str) or not text:
+                problems.append(f"{label}: `type` needs a non-empty `text`")
+                continue
+            if len(text) > 512:
+                problems.append(f"{label}: `text` is limited to 512 characters")
+                continue
+            step["text"] = text
+        if action in INPUT_POSITION_ACTIONS:
+            position = raw.get("position")
+            target = raw.get("target")
+            anchored = False
+            if isinstance(position, (list, tuple)) and len(position) == 2:
+                try:
+                    step["position"] = [round(float(position[0]), 2), round(float(position[1]), 2)]
+                    anchored = True
+                except (TypeError, ValueError):
+                    problems.append(f"{label}: `position` must be two numbers [x, y]")
+                    continue
+            elif isinstance(target, str) and target.strip():
+                step["target"] = target.strip()
+                anchored = True
+            if action in ("drag", "swipe", "pinch"):
+                pair = {}
+                for side in ("from", "to"):
+                    value = raw.get(side)
+                    if isinstance(value, (list, tuple)) and len(value) == 2:
+                        try:
+                            pair[side] = [round(float(value[0]), 2), round(float(value[1]), 2)]
+                        except (TypeError, ValueError):
+                            problems.append(f"{label}: `{side}` must be two numbers [x, y]")
+                            pair = None
+                            break
+                    else:
+                        problems.append(f"{label}: `{action}` needs both `from` and `to` as [x, y]")
+                        pair = None
+                        break
+                if pair is None:
+                    continue
+                step.update(pair)
+                # A pinch may name a centre as well; it is optional garnish.
+                centre = raw.get("center")
+                if isinstance(centre, (list, tuple)) and len(centre) == 2:
+                    try:
+                        step["center"] = [round(float(centre[0]), 2), round(float(centre[1]), 2)]
+                    except (TypeError, ValueError):
+                        problems.append(f"{label}: `center` must be two numbers [x, y]")
+                        continue
+            elif not anchored:
+                problems.append(f"{label}: `{action}` needs `position` [x, y] or a `target` instance path")
+                continue
+        if action == "wheel":
+            try:
+                step["amount"] = float(raw.get("amount", 1))
+            except (TypeError, ValueError):
+                problems.append(f"{label}: `amount` must be a number of wheel notches")
+                continue
+        ms = raw.get("ms", raw.get("durationMs"))
+        if ms is not None:
+            try:
+                step["ms"] = max(0.0, min(float(ms), 10000.0))
+            except (TypeError, ValueError):
+                problems.append(f"{label}: `ms` must be a number (0-10000)")
+                continue
+        pointer = str(raw.get("pointerType") or "").strip().lower()
+        if pointer:
+            if pointer not in ("mouse", "touch", "pen"):
+                problems.append(f"{label}: `pointerType` must be mouse, touch or pen")
+                continue
+            step["pointerType"] = pointer
+        if action == "wait" and "ms" not in step:
+            step["ms"] = 100.0
+        normalised.append(step)
+    return normalised, problems
+
+
+def _input_receipt_summary(receipt: dict) -> dict:
+    """Collapse a plugin receipt into the counts agents (and warnings) need."""
+    steps = (receipt or {}).get("steps") or []
+    delivered = sum(1 for s in steps if s.get("delivered"))
+    refused = sum(1 for s in steps if str(s.get("reason") or "") == "coregui_refused")
+    errored = sum(1 for s in steps if s.get("error"))
+    return {
+        "delivered": delivered,
+        "refused": refused,
+        "errors": errored,
+        "total": len(steps),
+    }
+
+
+def simulate_input_helper(client: BridgeClient, args: dict, peer_id: str = None, dm: str = "auto") -> dict:
+    """Deliver synthetic input to a live play client, then optionally capture it."""
+    steps, problems = normalise_input_steps(args.get("steps") or [])
+    if problems:
+        raise ValueError("simulate_input: " + "; ".join(problems))
+    timeout = max(5.0, min(float(args.get("timeout") or 45.0), 300.0))
+    target_dm = "client" if (dm or "auto") in ("auto", "client") else dm
+    result = _unwrap_job(client.submit_job(
+        "virtual_input",
+        {
+            "steps": steps,
+            "holdMs": max(0.0, min(float(args.get("holdMs") if args.get("holdMs") is not None else 60.0), 5000.0)),
+            "settleMs": max(0.0, min(float(args.get("settleMs") if args.get("settleMs") is not None else 150.0), 15000.0)),
+            "playerName": args.get("playerName"),
+            # `_playerName` is what forwardJobToClient reads to pick the Player.
+            "_playerName": args.get("playerName"),
+        },
+        wait=timeout,
+        dm=target_dm,
+        peer_id=peer_id,
+    ))
+    summary = _input_receipt_summary(result)
+    warnings = []
+    if result.get("unsupported"):
+        warnings.append(
+            "VirtualInput is unavailable in this Studio build (needs "
+            f"{PLAYTEST_API_BASELINE['VirtualInput']}+); steps were not delivered."
+        )
+    if summary["refused"]:
+        warnings.append(f"{summary['refused']} step(s) aimed at Roblox CoreGui and were refused by the engine.")
+    if summary["errors"]:
+        warnings.append(f"{summary['errors']} step(s) failed inside Studio; see `steps[].error`.")
+    if summary["delivered"] == 0 and not result.get("unsupported"):
+        warnings.append("No input was delivered — start a playtest first "
+                        "(`start_stop_play` with `action=\"start_play\"`).")
+    payload = {
+        "ok": bool(result.get("unsupported")) is False and summary["delivered"] > 0,
+        "delivered": summary["delivered"],
+        "refused": summary["refused"],
+        "errors": summary["errors"],
+        "steps": result.get("steps", []),
+        "dm": result.get("dm", target_dm),
+        "viewport": result.get("viewport"),
+        "focused": result.get("focused"),
+        "warnings": warnings,
+    }
+    for key in ("unsupported", "reason", "cursorOverlay"):
+        if key in result:
+            payload[key] = result[key]
+    if args.get("captureAfter") and not result.get("unsupported"):
+        shot = capture_viewport_helper(client, {"perspective": "front", "includeHud": True}, peer_id=peer_id)
+        if shot.get("_mcp_image_png_b64"):
+            payload["_mcp_image_png_b64"] = shot["_mcp_image_png_b64"]
+            payload["capturedAfter"] = True
+        else:
+            payload["warnings"].append("captureAfter produced no image: " + str(shot.get("reason") or "no peer"))
+    return payload
+
+
+#: `DeviceInfo` / `DeviceConfiguration` fields arrive from the engine in
+#: PascalCase; every other field this bridge returns is camelCase, so list rows
+#: are translated on the way out and callers never have to know which layer
+#: produced them.
+_DEVICE_INFO_KEYS = {
+    "DeviceId": "deviceId", "Name": "name", "IsCustom": "isCustom",
+    "DeviceForm": "deviceForm", "Width": "width", "Height": "height",
+    "PixelDensity": "pixelDensity", "ResolutionScale": "resolutionScale",
+    "PortraitKeyboardHeight": "portraitKeyboardHeight",
+    "LandscapeKeyboardHeight": "landscapeKeyboardHeight",
+}
+
+
+def _device_info_row(row) -> dict:
+    if not isinstance(row, dict):
+        return {"deviceId": str(row), "name": str(row), "isCustom": False}
+    return {_DEVICE_INFO_KEYS.get(key, key): value for key, value in row.items()}
+
+
+def device_simulator_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Drive StudioDeviceSimulatorService through one job."""
+    action = (args.get("action") or "status").strip().lower()
+    if action == "set":
+        # One job that applies whichever overrides were supplied, in the order the
+        # engine needs (device first: resolution/DPI overrides are cleared by it).
+        action = "set"
+    payload = {"action": action}
+    for key in ("deviceId", "orientation", "density", "scalingMode"):
+        if args.get(key) is not None:
+            payload[key] = args[key]
+    if args.get("orientation") is not None:
+        wanted = str(args["orientation"]).strip()
+        alias = {"landscape": "LandscapeRight", "landscapeleft": "LandscapeLeft",
+                 "landscaperight": "LandscapeRight", "portrait": "Portrait"}
+        mapped = alias.get(wanted.lower(), wanted)
+        if mapped not in ("Portrait", "LandscapeLeft", "LandscapeRight"):
+            raise ValueError(
+                "`orientation` must be Portrait, LandscapeLeft or LandscapeRight "
+                "(the engine errors on anything else)"
+            )
+        payload["orientation"] = mapped
+    if args.get("width") is not None or args.get("height") is not None:
+        width = args.get("width")
+        height = args.get("height")
+        if not (isinstance(width, int) and isinstance(height, int) and width and height):
+            raise ValueError("set_resolution needs both integer `width` and `height`")
+        if not (1 <= width <= 7680 and 1 <= height <= 4320):
+            raise ValueError("set_resolution is bounded by the engine to 1-7680 x 1-4320 pixels")
+        payload["width"] = width
+        payload["height"] = height
+    if args.get("density") is not None:
+        try:
+            dpi = float(args["density"])
+        except (TypeError, ValueError):
+            raise ValueError("`density` must be a number of DPI")
+        if not 72 <= dpi <= 10000:
+            raise ValueError("`density` must be between 72 and 10000 DPI")
+    if args.get("profile") is not None:
+        profile = args["profile"]
+        if not isinstance(profile, dict):
+            raise ValueError("`profile` must be a DeviceConfiguration object")
+        # The service speaks PascalCase; accept camelCase so agents do not have
+        # to remember which casing each layer of the stack uses.
+        canonical = {"name": "Name", "width": "Width", "height": "Height",
+                     "pixelDensity": "PixelDensity", "deviceForm": "DeviceForm",
+                     "resolutionScale": "ResolutionScale",
+                     "portraitKeyboardHeight": "PortraitKeyboardHeight",
+                     "landscapeKeyboardHeight": "LandscapeKeyboardHeight"}
+        normalised = {}
+        for key, value in profile.items():
+            normalised[canonical.get(key, key)] = value
+        name = str(normalised.get("Name") or "").strip()
+        if action in ("create_profile", "update_profile"):
+            if not re.fullmatch(r"[A-Za-z0-9_. -]{1,200}", name or "") or name.lower() == "default":
+                raise ValueError("`profile.Name` must be 1-200 characters and cannot be 'default'")
+        if action == "create_profile":
+            for field, lo, hi in (("Width", 1, 7680), ("Height", 1, 4320), ("PixelDensity", 72, 10000)):
+                value = normalised.get(field)
+                if not (isinstance(value, (int, float)) and lo <= value <= hi):
+                    raise ValueError(f"`profile.{field}` is required and must be within {lo}-{hi}")
+        scale = normalised.get("ResolutionScale")
+        if scale is not None and not (isinstance(scale, (int, float)) and 0 < scale <= 10):
+            raise ValueError("`profile.ResolutionScale` must be greater than 0 and at most 10")
+        form = normalised.get("DeviceForm")
+        if isinstance(form, str) and form:
+            # Kept as a name: the peer turns it into Enum.DeviceForm.<name>, and a
+            # plain string survives JSON round-trips through the bridge intact.
+            if form not in DEVICE_FORMS:
+                raise ValueError("`profile.DeviceForm` must be one of: " + ", ".join(sorted(DEVICE_FORMS)))
+            normalised["DeviceForm"] = form
+        payload["profile"] = normalised
+    if action not in DEVICE_SIMULATOR_ACTIONS:
+        raise ValueError(
+            "manage_device_simulator action must be one of: " + ", ".join(sorted(DEVICE_SIMULATOR_ACTIONS))
+        )
+    result = _unwrap_job(client.submit_job("device_simulator", payload, wait=60.0, dm="edit", peer_id=peer_id))
+    result.setdefault("ok", True)
+    if isinstance(result.get("devices"), list):
+        result["devices"] = [_device_info_row(row) for row in result["devices"]]
+    warnings = list(result.get("warnings") or [])
+    if result.get("unsupported"):
+        warnings.append(
+            "StudioDeviceSimulatorService is unavailable in this Studio build (needs "
+            f"{PLAYTEST_API_BASELINE['StudioDeviceSimulatorService']}+) — nothing was applied."
+        )
+    if action != "stop" and not result.get("unsupported") and result.get("applied"):
+        warnings.append("The simulated device stays applied until you call `stop` (or set it back).")
+    result["warnings"] = warnings
+    result["baseline"] = PLAYTEST_API_BASELINE["StudioDeviceSimulatorService"]
+    return result
+
+
+def run_studio_tests_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """StudioTestService-backed native test session with a bounded watchdog."""
+    mode = (args.get("mode") or "run").strip().lower()
+    if mode not in ("run", "play", "multiplayer"):
+        raise ValueError("run_studio_tests mode must be run, play or multiplayer")
+    players = int(args.get("players") or 2)
+    if mode == "multiplayer" and not (1 <= players <= 8):
+        raise ValueError("multiplayer `players` must be between 1 and 8 (Studio's own limit)")
+    timeout_sec = max(5.0, min(float(args.get("timeoutSec") or 120.0), 900.0))
+    module = (args.get("module") or "").strip()
+    if module and not re.fullmatch(r"(game\.)?[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,12}", module):
+        raise ValueError("module must be a dot-separated instance path such as ServerScriptService.Tests.ShopTests")
+    payload = {
+        "mode": mode,
+        "module": module or None,
+        "players": players if mode == "multiplayer" else None,
+        "args": args.get("args") if isinstance(args.get("args"), dict) else None,
+        "timeoutSec": timeout_sec,
+        "collectClientLogs": bool(args.get("collectClientLogs", True)),
+        "keepOpen": bool(args.get("keepOpen", False)),
+        "runnerName": f"__ArenaTestRunner_{uuid.uuid4().hex[:8]}",
+    }
+    result = _unwrap_job(client.submit_job("studio_tests", payload, wait=timeout_sec + 20.0, dm="edit", peer_id=peer_id))
+    result.setdefault("mode", mode)
+    result.setdefault("warnings", [])
+    if result.get("unsupported"):
+        result.setdefault("warnings", []).append(
+            f"StudioTestService is unavailable in this Studio build (needs "
+            f"{PLAYTEST_API_BASELINE['StudioTestService']}+; multiplayer needs "
+            f"{PLAYTEST_API_BASELINE['StudioTestService:ExecuteMultiplayerTestAsync']})."
+        )
+    if result.get("timedOut"):
+        result.setdefault("warnings", []).append(
+            "The watchdog fired before EndTest ran; the temporary runner was destroyed and the session stopped."
+        )
+    result["ok"] = bool(result.get("ok", not result.get("failed"))) and not result.get("timedOut")
+    return result
+
+
+def playtest_capabilities_helper(client: BridgeClient, args: dict, peer_id: str = None, dm: str = "auto") -> dict:
+    """Ask the live peer which playtest APIs actually exist right now."""
+    result = _unwrap_job(client.submit_job(
+        "playtest_caps", {"expect": PLAYTEST_API_BASELINE}, wait=30.0,
+        dm=dm if dm and dm != "auto" else "edit", peer_id=peer_id,
+    ))
+    result.setdefault("ok", True)
+    result.setdefault("baselineVersions", PLAYTEST_API_BASELINE)
+    result.setdefault("warnings", [])
+    studio_version = str(result.get("studioVersion") or "")
+    for name, key, baseline_key in (
+        ("simulate_input", "virtualInput", "VirtualInput"),
+        ("manage_device_simulator", "deviceSimulator", "StudioDeviceSimulatorService"),
+        ("run_studio_tests", "studioTestService", "StudioTestService"),
+    ):
+        cap = result.get(key) or {}
+        if not cap.get("available"):
+            result["warnings"].append(
+                f"{name} is unavailable in this build (expected from Studio "
+                f"{PLAYTEST_API_BASELINE[baseline_key]}+); probed, not assumed."
+            )
+    if result.get("playtest", {}).get("running") is False:
+        result["warnings"].append("No playtest is running, so input and client-side capabilities cannot be exercised yet.")
+    if studio_version:
+        result.setdefault("notes", []).append(
+            "The Studio version is reported for context only — availability above is what was actually probed."
+        )
+    return result
+
+
+def _bus_lines(client, include_tasks: bool = True, tasks_include_done: bool = False) -> str:
+    """Compact bus snapshot for prompt rendering; never raises."""
+    if client is None:
+        return BUS_FALLBACK
+    try:
+        stats = client.bus_action({"action": "stats"})
+        roster = client.bus_action({"action": "agents", "includeOffline": True}).get("agents", [])
+    except Exception:
+        return BUS_FALLBACK
+    lines = [
+        f"Bus stats: {stats.get('agents')} agents ({stats.get('agentsOnline')} online), "
+        f"{stats.get('tasks')} tasks, cursor {stats.get('cursor')}."
+    ]
+    if roster:
+        lines.append("Roster:")
+        for a in roster:
+            state = "online" if a.get("online") else "offline"
+            lines.append(
+                f"  - {a.get('name')} ({a.get('role')}, {state}, open tasks {a.get('openTasks')}, "
+                f"last seen {a.get('ageSeconds')}s ago)"
+            )
+    else:
+        lines.append("Roster: _no agents registered_.")
+    if include_tasks:
+        try:
+            tasks = client.bus_action({"action": "tasks", "includeDone": tasks_include_done}).get("tasks", [])
+        except Exception:
+            tasks = []
+        if tasks:
+            lines.append("Task board:")
+            for t in tasks[:20]:
+                owner = t.get("assignee") or "unclaimed"
+                deps = t.get("dependsOn") or []
+                dep_note = f", blocked by {', '.join(deps)}" if deps else ""
+                lines.append(
+                    f"  - {t.get('id')} [{t.get('status')}/{t.get('priority')}] {t.get('title')} "
+                    f"(owner: {owner}{dep_note})"
+                )
+        else:
+            lines.append("Task board: _empty_.")
+    return "\n".join(lines)
+
+
+def get_mcp_prompt(name: str, arguments: dict = None, client=None) -> dict:
     arguments = arguments or {}
     if name == "survey_and_architecture":
         text = (
@@ -4526,6 +5856,51 @@ def get_mcp_prompt(name: str, arguments: dict = None) -> dict:
             f"3. Run `drift_and_sync(mode='push', localDir='{ld}', studioRoot='{sr}')` (automatically snapshots live scripts and replaces instances in one undoable step).\n"
             f"4. Re-run `drift_and_sync(mode='check', ...)` to confirm `inSync: true`."
         )
+    elif name == "multi_agent_handoff":
+        who = arguments.get("agentName") or "<your agent name>"
+        focus = arguments.get("focus") or "<what you are handing over>"
+        snapshot = _bus_lines(client)
+        text = (
+            f"You are {who} and you are handing work to another agent on the same Roblox Studio bridge.\n\n"
+            f"{snapshot}\n\n"
+            "Do this now:\n"
+            "1. Call `agent_bus {action:'export', summaryOnly:true}` and keep the brief short enough to paste into a message.\n"
+            f"2. Release (or complete, with artifacts) every task you own that you will not finish. State why. Focus: {focus}\n"
+            "3. Post exactly one handoff message: `agent_bus {action:'post', kind:'handoff', to:'<agent name>', "
+            "subject:'handoff: <task id>', body:'<state, next concrete step, files touched>'} .\n"
+            "4. Do not claim a new task until the handoff is posted; the next agent needs the lease and the note.\n"
+            "5. Reply with the message id and the task ids you released."
+        )
+    elif name == "bus_standup":
+        since = arguments.get("since")
+        snapshot = _bus_lines(client)
+        cursor_line = (
+            f"Report only activity after cursor {since}."
+            if since not in (None, "", 0)
+            else "Use the current cursor as the starting point."
+        )
+        text = (
+            "Produce a five-line standup for the humans watching this bridge.\n\n"
+            f"{snapshot}\n\n"
+            f"{cursor_line}\n"
+            "Do this:\n"
+            "1. Call `agent_bus {action:'export', since:<cursor>}` to get only recent activity.\n"
+            "2. Summarise as exactly five lines: done / in progress / blocked / who is idle / next claim.\n"
+            "3. Name task ids, not vibes. If nothing changed, say so in one line instead of padding.\n"
+            "4. Post the standup with `agent_bus {action:'post', kind:'status', subject:'standup'}`."
+        )
+    elif name == "task_triage":
+        snapshot = _bus_lines(client)
+        text = (
+            "Triage the open Agent Bus tasks so the team claims work in the right order.\n\n"
+            f"{snapshot}\n\n"
+            "Do this:\n"
+            "1. Read the board with `agent_bus {action:'tasks', includeDone:false}`.\n"
+            "2. Rank by: dependency depth (unblock others first), then priority (critical > high > normal > low), then age.\n"
+            "3. Flag every task with no acceptance criteria, no owner and no detail; propose the one-line criterion to add.\n"
+            "4. Output a numbered claim order with the task id, the owner you suggest, and the reason.\n"
+            "5. Do not claim anything yourself unless the user asks you to; this prompt only plans."
+        )
     else:
         raise KeyError(f"Unknown prompt: {name}")
 
@@ -4539,11 +5914,99 @@ def get_mcp_prompt(name: str, arguments: dict = None) -> dict:
 # Protocol-Compliant JSON-RPC 2.0 MCP Request Dispatcher
 # ---------------------------------------------------------------------------
 
-class MCPDispatcher:
-    """Stateless/session-friendly JSON-RPC 2.0 handler for stdio & Streamable HTTP."""
+# ---------------------------------------------------------------------------
+# Request-scoped context (protocol era, principal, trace) for this thread
+# ---------------------------------------------------------------------------
 
-    def __init__(self, client: BridgeClient):
+_CALL_CTX = threading.local()
+
+
+def current_call_context() -> dict:
+    """The MCP request context the current tool call belongs to (or None)."""
+    return getattr(_CALL_CTX, "value", None)
+
+
+def set_call_context(ctx: dict):
+    """Install a request context; returns the previous one for nesting."""
+    previous = getattr(_CALL_CTX, "value", None)
+    _CALL_CTX.value = ctx
+    return previous
+
+
+def clear_call_context(previous):
+    _CALL_CTX.value = previous
+
+
+def take_subscription_stream(rpc_out) -> dict:
+    """Extract (and strip) the private `_arenaStream` marker from a response.
+
+    `subscriptions/listen` answers with an acknowledgement *plus* an instruction
+    to keep the response stream open. Transports own that stream — stdio writes
+    notifications to stdout, Streamable HTTP switches the POST response to SSE —
+    so the marker is handed to them here and never reaches the wire.
+    """
+    candidates = []
+    if isinstance(rpc_out, dict):
+        candidates.append(rpc_out)
+    elif isinstance(rpc_out, list):
+        candidates.extend(item for item in rpc_out if isinstance(item, dict))
+    for resp in candidates:
+        result = resp.get("result")
+        if isinstance(result, dict) and isinstance(result.get("_arenaStream"), dict):
+            info = dict(result.pop("_arenaStream"))
+            return {
+                "subscriptionId": info.get("subscriptionId"),
+                "maxSeconds": info.get("maxSeconds"),
+                "pollSeconds": info.get("pollSeconds"),
+                "ack": {"jsonrpc": "2.0", "id": resp.get("id"), "result": result},
+            }
+    return None
+
+
+class MCPDispatcher:
+    """Era-aware JSON-RPC 2.0 handler for stdio & Streamable HTTP.
+
+    Modern era (`2026-07-28`) is served the way the stateless spec describes it:
+    every request carries its own version/capabilities/principal in `_meta`,
+    every result carries `resultType`, `tasks` is an announced extension
+    (`io.modelcontextprotocol/tasks`) polled with `tasks/get` and answered with
+    `tasks/update`, change notifications arrive through `subscriptions/listen`,
+    and a dangerous call can pause for a human with Multi Round-Trip Requests
+    (`resultType: "input_required"` + a signed, single-use `requestState`).
+
+    Legacy clients (2025-11-25 and older) keep their original shapes
+    byte-for-byte — including `initialize`, `tasks/result` and `tasks/list`,
+    which the modern era no longer has.
+    """
+
+    def __init__(self, client: BridgeClient, gate=None, auto_task_ms: float = None,
+                 legacy_wait_seconds: float = None, notifier=None):
         self.client = client
+        # Task-augmented tool calls (the 2026-07-28 tasks extension, and the
+        # 2025-11-25 in-core experiment) map onto a background execution of the
+        # normal tool path, so any tool can be a task.
+        self.tasks = {}
+        self._task_threads = {}
+        self._task_lock = threading.Lock()
+        self.gate = gate if gate is not None else ConfirmGate(mode="off")
+        if auto_task_ms is None:
+            try:
+                auto_task_ms = float(os.environ.get("BRIDGE_MCP_AUTO_TASK_MS") or 0)
+            except (TypeError, ValueError):
+                auto_task_ms = 0.0
+        self.auto_task_ms = max(0.0, min(float(auto_task_ms or 0), 600_000.0))
+        if legacy_wait_seconds is None:
+            try:
+                legacy_wait_seconds = float(os.environ.get("BRIDGE_CONFIRM_WAIT_SECONDS") or 45)
+            except (TypeError, ValueError):
+                legacy_wait_seconds = 45.0
+        self.legacy_wait_seconds = max(0.0, min(float(legacy_wait_seconds or 0), 300.0))
+        self.notifier = notifier
+        self.subscriptions = {}
+        self._sub_lock = threading.Lock()
+        self._sub_seq = 0
+
+    # -- visibility ----------------------------------------------------------
 
     def visible_tools(self) -> list:
         if not self.client.read_only:
@@ -4561,6 +6024,8 @@ class MCPDispatcher:
                 copy_t["annotations"] = dict(t["annotations"], readOnlyHint=True, destructiveHint=False)
                 allowed.append(copy_t)
         return allowed
+
+    # -- entry points --------------------------------------------------------
 
     def handle_payload(self, payload):
         """Process a single JSON-RPC message dict or batch list.
@@ -4588,7 +6053,1174 @@ class MCPDispatcher:
             err["data"] = data
         return {"jsonrpc": "2.0", "id": msg_id, "error": err}
 
+    @staticmethod
+    def _meta_of(msg: dict, params: dict) -> dict:
+        """Merge the two legal `_meta` homes; top-level request metadata wins."""
+        nested = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+        top = msg.get("_meta") if isinstance(msg.get("_meta"), dict) else {}
+        merged = dict(nested)
+        merged.update(top)
+        return merged
+
+    def request_context(self, msg: dict) -> dict:
+        """Everything era-dependent about one request, in one dict.
+
+        `x-arena-principal` is injected by server.py from the authenticated
+        token so a confirmation can never be replayed by a different caller;
+        stdio clients default to their clientInfo name and finally to `owner`.
+        """
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        meta = self._meta_of(msg, params)
+        requested = meta.get(META_PROTOCOL_VERSION) or params.get("protocolVersion")
+        caps = meta.get(META_CLIENT_CAPABILITIES)
+        if not isinstance(caps, dict):
+            caps = {}
+        extensions = caps.get("extensions") if isinstance(caps.get("extensions"), dict) else {}
+        info = meta.get(META_CLIENT_INFO) if isinstance(meta.get(META_CLIENT_INFO), dict) else {}
+        trace = {}
+        for key in TRACE_META_KEYS:
+            value = meta.get(key)
+            if isinstance(value, str) and value.strip():
+                trace[key] = value.strip()[:400]
+        log_level = meta.get(META_LOG_LEVEL)
+        principal = meta.get("x-arena-principal") or info.get("name") or "owner"
+        return {
+            "method": msg.get("method") or "",
+            "meta": meta,
+            "params": params,
+            "requestedVersion": requested,
+            "modern": requested == MODERN_PROTOCOL_VERSION,
+            "capabilities": caps,
+            "extensions": extensions,
+            "clientInfo": info,
+            # Presence, not truthiness: an empty `{}` is a full declaration.
+            "tasks_capable": TASKS_EXTENSION_KEY in extensions or "tasks" in caps,
+            "elicitation_capable": "elicitation" in caps,
+            "logLevel": str(log_level).strip().lower() if isinstance(log_level, str) else None,
+            "trace": trace,
+            "principal": str(principal)[:80],
+        }
+
     def _handle_one(self, msg: dict):
+        """Validates the per-request protocol version, serves the modern-era
+        methods, then decorates results for 2026-07-28 clients."""
+        if not isinstance(msg, dict):
+            return self._dispatch_method(msg)
+        method = msg.get("method") or ""
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        ctx = self.request_context(msg)
+        requested = ctx["requestedVersion"]
+        if (requested and requested not in SUPPORTED_PROTOCOL_VERSIONS
+                and method not in ("initialize", "server/discover")):
+            return self._err(msg.get("id"), -32022, "Unsupported protocol version", {
+                "requestedVersion": requested,
+                "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
+            })
+        modern = ctx["modern"]
+
+        if method == "server/discover":
+            return self._ok(msg.get("id"), self.discover_result())
+
+        if method in ("tasks/get", "tasks/result", "tasks/list", "tasks/cancel", "tasks/update"):
+            return self._handle_tasks(msg.get("id"), method, params, ctx)
+
+        if method == "subscriptions/listen":
+            try:
+                ack = self.subscribe(params, ctx)
+            except ValueError as exc:
+                return self._err(msg.get("id"), -32602, str(exc))
+            if modern and isinstance(ack, dict):
+                ack.setdefault("resultType", "complete")
+            return self._ok(msg.get("id"), ack)
+
+        previous = set_call_context(ctx)
+        try:
+            resp = self._dispatch_method(msg, ctx)
+        finally:
+            clear_call_context(previous)
+
+        if modern and isinstance(resp, dict) and isinstance(resp.get("result"), dict):
+            result = resp["result"]
+            result.setdefault("resultType", "complete")
+            if method in ("tools/list", "resources/list", "resources/templates/list", "prompts/list"):
+                result.setdefault("ttlMs", 60000)
+                result.setdefault("cacheScope", "private")
+            self._decorate_meta(result, ctx)
+        return resp
+
+    def _decorate_meta(self, result: dict, ctx: dict):
+        """`serverInfo` on every modern result, plus per-request log shipping."""
+        meta = dict(result.get("_meta") or {})
+        meta.setdefault(META_SERVER_INFO, {"name": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION})
+        log_level = ctx.get("logLevel")
+        if log_level:
+            entries = self._capture_log_tail(ctx, log_level)
+            if entries:
+                if self.notifier:
+                    for note in self._log_notifications(entries, ctx):
+                        try:
+                            self.notifier(note)
+                        except Exception:  # noqa: BLE001 - a dead stream must not fail the call
+                            break
+                else:
+                    # A single-shot Streamable HTTP response has no stream to
+                    # carry notifications/message on, so the lines ride along in
+                    # _meta instead. Documented in docs/OPS.md §13.
+                    meta.setdefault("io.modelcontextprotocol/logEntries", entries[:50])
+        result["_meta"] = meta
+
+    @staticmethod
+    def _log_level_rank(level: str) -> int:
+        order = {"debug": 0, "info": 1, "notice": 2, "warning": 3, "warn": 3,
+                 "error": 4, "critical": 5}
+        return order.get(str(level).strip().lower(), 1)
+
+    def _capture_log_tail(self, ctx: dict, level: str) -> list:
+        """Bridge log lines produced while this request was in flight."""
+        cursor = int(ctx.get("_logCursor") or 0)
+        try:
+            batch = self.client.ops_action({"action": "events", "cursor": cursor, "limit": 100})
+        except Exception:  # noqa: BLE001 - logs are best-effort garnish
+            return []
+        minimum = self._log_level_rank(level)
+        rows = []
+        for event in (batch or {}).get("events", []):
+            if self._log_level_rank(event.get("level") or "info") < minimum:
+                continue
+            rows.append({
+                "level": event.get("level") or "info",
+                "logger": event.get("kind"),
+                "data": event.get("data") if isinstance(event.get("data"), str)
+                        else json.dumps(event.get("data") or {}, default=str)[:400],
+                "seq": event.get("seq"),
+            })
+        ctx["_logCursor"] = int((batch or {}).get("cursor") or cursor)
+        return rows
+
+    @staticmethod
+    def _log_notifications(entries: list, ctx: dict) -> list:
+        out = []
+        for row in entries:
+            out.append({
+                "jsonrpc": "2.0",
+                "method": "notifications/message",
+                "params": {
+                    "level": row["level"],
+                    "logger": f"arena-bridge/{row['logger']}",
+                    "data": row["data"],
+                    "_meta": {"relatedRequest": ctx.get("method")},
+                },
+            })
+        return out
+
+    # -- discovery -----------------------------------------------------------
+
+    def capabilities(self, modern: bool = False) -> dict:
+        if not modern:
+            return {
+                "tools": {"listChanged": False},
+                "resources": {"subscribe": False, "listChanged": False},
+                "prompts": {"listChanged": False},
+                "tasks": {
+                    "list": {},
+                    "cancel": {},
+                    "requests": {"tools": {"call": {}}},
+                },
+            }
+        return {
+            # The visible tool set really does change with the confirmation
+            # policy and read-only mode, so the modern era advertises it.
+            "tools": {"listChanged": True},
+            "resources": {"subscribe": False, "listChanged": False},
+            "prompts": {"listChanged": False},
+            "subscriptions": {"types": list(SUBSCRIPTION_TYPES)},
+            "extensions": {TASKS_EXTENSION_KEY: {"requests": {"tools": {"call": {}}}, "cancel": {}}},
+            # Kept for clients that still read the 2025-11-25 capability name.
+            "tasks": {
+                "cancel": {},
+                "requests": {"tools": {"call": {}}},
+            },
+        }
+
+    def _instructions(self) -> str:
+        mode_tag = " (Read-Only Inspector)" if self.client.read_only else ""
+        lines = [
+            f"Arena <-> Roblox Studio MCP Server v{MCP_SERVER_VERSION}{mode_tag}.",
+            "Use `get_studio_state` or `survey_place` first to understand the open place.",
+            "With several Studio windows connected, `studio_fleet {action:'list'}` shows them, "
+            "`set_active` pins a default target and `broadcast` fans a read-only job out to all.",
+            "Long work can be task-augmented (`params.task`): poll it with `tasks/get`, answer a "
+            "`input_required` task with `tasks/update`, stop it with `tasks/cancel`.",
+            "Live playtests are drivable: `playtest_capabilities` probes, `simulate_input` sends real "
+            "keyboard/mouse/touch input, `manage_device_simulator` switches the device, and "
+            "`run_studio_tests` runs Studio's own test session (up to 8 simulated clients).",
+            "Use `multi_edit` / `write_script` (with `replaceInstance: true` when updating already-required "
+            "ModuleScripts) and `luau_check` to prevent undefined-global runtime bugs.",
+        ]
+        if self.gate.enabled:
+            lines.append(
+                f"--require-confirm={self.gate.mode} is active: a gated call answers with "
+                "`resultType: \"input_required\"` and a signed `requestState`; re-issue the same call "
+                "with `inputResponses` (or have the operator approve it) to run it."
+            )
+        return " ".join(lines)
+
+    def discover_result(self) -> dict:
+        return {
+            "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
+            "protocolVersion": MODERN_PROTOCOL_VERSION,
+            "capabilities": self.capabilities(modern=True),
+            "serverInfo": {"name": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION},
+            "instructions": self._instructions(),
+            "ttlMs": 300000,
+            "cacheScope": "public",
+            "extensions": [
+                {
+                    "name": TASKS_EXTENSION_KEY,
+                    "version": "1.0",
+                    "methods": ["tasks/get", "tasks/update", "tasks/cancel"],
+                }
+            ],
+            "subscriptions": {
+                "types": list(SUBSCRIPTION_TYPES),
+                "transport": "long-lived POST /mcp (or stdio) response stream",
+                "idleTypes": list(SUBSCRIPTION_TYPES_IDLE),
+            },
+            "confirmation": {
+                "mode": self.gate.mode,
+                "ttlSeconds": self.gate.ttl_seconds,
+                "gatedToolCount": len(self.gate.destructive_tools),
+            },
+        }
+
+    # -- tasks (io.modelcontextprotocol/tasks) -------------------------------
+
+    @staticmethod
+    def _iso(ts: float) -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+    def _task_view(self, task_id: str, modern: bool = False):
+        with self._task_lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return None
+            view = {
+                "taskId": task["taskId"],
+                "status": task["status"],
+                "statusMessage": task.get("statusMessage"),
+                "createdAt": self._iso(task["createdAt"]),
+                "lastUpdatedAt": self._iso(task["updatedAt"]),
+                "ttlMs": task["ttlMs"],
+                "pollIntervalMs": TASK_POLL_INTERVAL_MS,
+                "tool": task["tool"],
+            }
+            if modern:
+                if task["status"] == "input_required":
+                    view["inputRequests"] = task.get("inputRequests") or {}
+                    if task.get("requestState"):
+                        view["requestState"] = task["requestState"]
+                elif task["status"] == "completed" and task.get("result") is not None:
+                    view["result"] = task["result"]
+                elif task["status"] == "failed":
+                    view["error"] = task.get("error") or {
+                        "code": -32603,
+                        "message": task.get("statusMessage") or "task failed",
+                    }
+            return view
+
+    def _task_list(self) -> list:
+        with self._task_lock:
+            items = sorted(self.tasks.values(), key=lambda t: t["createdAt"], reverse=True)
+        return [
+            {
+                "taskId": t["taskId"],
+                "status": t["status"],
+                "statusMessage": t.get("statusMessage"),
+                "createdAt": self._iso(t["createdAt"]),
+                "lastUpdatedAt": self._iso(t["updatedAt"]),
+                "ttlMs": t["ttlMs"],
+                "pollIntervalMs": TASK_POLL_INTERVAL_MS,
+            }
+            for t in items
+        ]
+
+    def _task_cancel(self, task_id: str):
+        request_id = None
+        with self._task_lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return None
+            if task["status"] in ("working", "input_required"):
+                task["status"] = "cancelled"
+                task["statusMessage"] = ("Cancelled by the client; the in-flight Studio job still "
+                                         "finishes, its result is discarded.")
+                task["result"] = None
+                task["updatedAt"] = time.time()
+                request_id = task.get("requestId")
+        if request_id:
+            try:
+                self.gate.cancel(request_id, reason="task_cancelled")
+            except Exception:  # noqa: BLE001
+                pass
+        return self._task_view(task_id)
+
+    def _drop_unstarted_thread(self, task_id: str):
+        with self._task_lock:
+            self._task_threads.pop(task_id, None)
+
+    def _task_prune(self):
+        with self._task_lock:
+            if len(self.tasks) <= TASK_HISTORY_LIMIT:
+                return
+            finished = sorted(
+                (t for t in self.tasks.values() if t["status"] != "working"),
+                key=lambda t: t["createdAt"],
+            )
+            for task in finished[: len(self.tasks) - TASK_HISTORY_LIMIT]:
+                self.tasks.pop(task["taskId"], None)
+
+    def _handle_tasks(self, msg_id, method: str, params: dict, ctx: dict):
+        """`tasks/get` · `tasks/update` · `tasks/cancel` (both eras) plus the
+        legacy `tasks/result` (blocking) and `tasks/list` the modern era dropped."""
+        modern = ctx["modern"]
+        if modern and method in ("tasks/list", "tasks/result"):
+            return self._err(msg_id, -32601, f"'{method}' does not exist in the 2026-07-28 tasks extension", {
+                "use": ["tasks/get", "tasks/update", "tasks/cancel"],
+                "note": ("Poll tasks/get until the status is terminal; the final result is in its "
+                         "'result' field."),
+            })
+
+        if method == "tasks/get":
+            view = self._task_view((params or {}).get("taskId"), modern=modern)
+            if view is None:
+                return self._err(msg_id, -32602, f"Unknown task: {(params or {}).get('taskId')!r}")
+            return self._ok(msg_id, view)
+
+        if method == "tasks/result":
+            tid = (params or {}).get("taskId")
+            timeout_ms = (params or {}).get("timeoutMs") or 120000
+            payload = self._task_result(tid, float(timeout_ms) / 1000.0)
+            if payload is None:
+                return self._err(msg_id, -32602, f"Unknown task: {tid!r}")
+            return self._ok(msg_id, payload)
+
+        if method == "tasks/list":
+            return self._ok(msg_id, {"tasks": self._task_list()})
+
+        if method == "tasks/cancel":
+            tid = (params or {}).get("taskId")
+            view = self._task_cancel(tid)
+            if view is None:
+                return self._err(msg_id, -32602, f"Unknown task: {tid!r}")
+            return self._ok(msg_id, view)
+
+        if method == "tasks/update":
+            return self._task_update(msg_id, params or {}, ctx)
+
+        return self._err(msg_id, -32601, f"Unknown task method: {method}")
+
+    def _task_update(self, msg_id, params: dict, ctx: dict):
+        """Client-to-server input on a live task (SEP-2663)."""
+        task_id = params.get("taskId")
+        with self._task_lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return self._err(msg_id, -32602, f"Unknown task: {task_id!r}")
+            status = task["status"]
+            status_message = params.get("statusMessage")
+            if status_message and isinstance(status_message, str) and status in ("working", "input_required"):
+                task["statusMessage"] = status_message[:300]
+                task["updatedAt"] = time.time()
+            if status != "input_required":
+                return self._err(msg_id, -32602, f"Task {task_id!r} is not waiting for input (status {status}).",
+                                 {"status": status})
+            request_id = task.get("requestId")
+        responses = params.get("inputResponses", params.get("responses"))
+        if responses is None:
+            return self._err(msg_id, -32602, "tasks/update needs `inputResponses` for a task in input_required",
+                             {"taskId": task_id, "requestId": request_id})
+        if not ctx.get("elicitation_capable"):
+            # Answering here is claiming to carry a human's decision. A client
+            # that has not declared `elicitation` cannot make that claim; the
+            # operator answers out-of-band instead (POST /api/confirmations).
+            return self._err(msg_id, -32021,
+                             "This client has not declared the elicitation capability, so it may not answer "
+                             "a confirmation on a human's behalf",
+                             {"requiredCapability": "elicitation", "requestId": request_id,
+                              "operatorAction": f"POST /api/confirmations {{\"action\":\"approve\",\"requestId\":\"{request_id}\"}}"})
+        try:
+            decision = self.gate.resolve(
+                request_id, responses, ctx.get("principal"), source="client",
+                expected_digest=canonical_digest(task["tool"], task["args"]),
+            )
+        except GateError as exc:
+            with self._task_lock:
+                current = self.tasks.get(task_id) or {}
+            if current.get("status") != "input_required":
+                return self._ok(msg_id, {"taskId": task_id, "status": current.get("status"),
+                                         "note": "the request was already answered ("
+                                                 f"{exc.reason})"})
+            return self._err(msg_id, -32602, exc.message, {"reason": exc.reason, "requestId": request_id})
+        approved = decision.get("state") == "approved"
+        with self._task_lock:
+            task = self.tasks.get(task_id)
+            status = task["status"] if task else "unknown"
+            if task and status == "input_required":
+                # The worker may already have finished (a fast approve, or an
+                # out-of-band answer that arrived first) — never resurrect a
+                # terminal task, and never overwrite its result.
+                task["status"] = "working" if approved else "failed"
+                task["statusMessage"] = (
+                    f"{task['tool']} running after approval" if approved
+                    else f"{task['tool']} declined: {decision.get('note') or 'no reason given'}"
+                )
+                if not approved:
+                    task["error"] = {"code": -32602, "message": task["statusMessage"],
+                                    "data": {"reason": "declined", "requestId": request_id}}
+                    task["status"] = "failed"
+                    task["result"] = {
+                        "isError": True,
+                        "content": [{"type": "text", "text": json.dumps({
+                            "ok": False, "reason": "declined", "requestId": request_id,
+                            "note": decision.get("note"),
+                        })}],
+                        "structuredContent": {"ok": False, "reason": "declined",
+                                              "note": decision.get("note")},
+                    }
+                task["inputRequests"] = None
+                task["requestState"] = None
+                task["updatedAt"] = time.time()
+                status = task["status"]
+        return self._ok(msg_id, {
+            "taskId": task_id,
+            "status": status,
+            "decision": decision.get("state"),
+            "remembered": bool(decision.get("remembered")),
+        })
+
+    def _create_task(self, name: str, args: dict, task_params: dict, ctx: dict = None) -> dict:
+        ttl_ms = int((task_params or {}).get("ttl") or TASK_DEFAULT_TTL_MS)
+        task = self._start_task(name, args, ttl_ms=ttl_ms, ctx=ctx, start=False)
+        handle = self._task_handle(task["taskId"])
+        self._begin_task(task["taskId"])
+        return handle
+
+    def _begin_task(self, task_id: str):
+        """Start a task registered with start=False."""
+        with self._task_lock:
+            thread = self._task_threads.pop(task_id, None)
+        if thread is not None:
+            thread.start()
+
+    def _task_handle(self, task_id: str) -> dict:
+        with self._task_lock:
+            task = self.tasks.get(task_id) or {}
+            handle = {
+                "resultType": "task",
+                "taskId": task_id,
+                "status": task.get("status", "working"),
+                "statusMessage": task.get("statusMessage"),
+                "createdAt": self._iso(task.get("createdAt", time.time())),
+                "lastUpdatedAt": self._iso(task.get("updatedAt", time.time())),
+                "ttlMs": task.get("ttlMs", TASK_DEFAULT_TTL_MS),
+                "pollIntervalMs": TASK_POLL_INTERVAL_MS,
+            }
+        if handle["status"] == "input_required":
+            view = self._task_view(task_id, modern=True) or {}
+            handle["inputRequests"] = view.get("inputRequests") or {}
+            if view.get("requestState"):
+                handle["requestState"] = view["requestState"]
+        return handle
+
+    def _start_task(self, name: str, args: dict, ttl_ms: int, ctx: dict = None, inline: bool = False,
+                    start: bool = True) -> dict:
+        """Register a background execution and start the worker immediately."""
+        task_id = "task-" + uuid.uuid4().hex[:20]
+        now = time.time()
+        ctx = ctx or {}
+        initial_message = f"Running {name}…"
+        task = {
+            "taskId": task_id,
+            "tool": name,
+            "args": args or {},
+            "status": "working",
+            "statusMessage": initial_message,
+            "createdAt": now,
+            "updatedAt": now,
+            "ttlMs": ttl_ms,
+            "ttlDeadline": now + ttl_ms / 1000.0,
+            "result": None,
+            "error": None,
+            "principal": ctx.get("principal", "owner"),
+            "modern": bool(ctx.get("modern")),
+            "elicitation": bool(ctx.get("elicitation_capable")),
+            "inline": inline,
+            "requestId": None,
+            "inputRequests": None,
+            "requestState": None,
+            "trace": dict(ctx.get("trace") or {}),
+        }
+        with self._task_lock:
+            self.tasks[task_id] = task
+        self._task_prune()
+        self._notify_subscribers("notifications/tasks", {"taskId": task_id, "status": "working"})
+
+        def publish_waiting(request_id, input_requests, state_token):
+            with self._task_lock:
+                current = self.tasks.get(task_id)
+                if not current or current["status"] not in ("working", "input_required"):
+                    return
+                current["status"] = "input_required"
+                current["requestId"] = request_id
+                current["inputRequests"] = input_requests
+                current["requestState"] = state_token
+                current["statusMessage"] = (
+                    f"{name} is waiting for a human to approve it "
+                    f"(requestId {request_id}); answer with tasks/update."
+                )
+                current["updatedAt"] = time.time()
+            self._notify_subscribers("notifications/tasks", {"taskId": task_id, "status": "input_required"})
+
+        def worker():
+            ctx_token = set_call_context({
+                "principal": task["principal"], "trace": task["trace"], "modern": task["modern"],
+                "logLevel": None, "_logCursor": 0,
+            })
+            try:
+                gate = self._gate_for_task(name, args, task, publish_waiting)
+                if gate is not None and gate.get("verdict") != "run":
+                    payload = gate.get("result") or {
+                        "isError": True,
+                        "content": [{"type": "text", "text": json.dumps(gate.get("error") or {})}],
+                        "structuredContent": {"ok": False, **(gate.get("error") or {})},
+                    }
+                else:
+                    payload = self._invoke_tool(name, args)
+            except Exception as exc:  # noqa: BLE001 - surface into the task
+                payload = {
+                    "isError": True,
+                    "content": [{"type": "text", "text": f"{name} failed: {exc}"}],
+                    "structuredContent": {"ok": False, "error": str(exc)},
+                }
+            finally:
+                clear_call_context(ctx_token)
+            with self._task_lock:
+                current = self.tasks.get(task_id)
+                if not current:
+                    return
+                if current["status"] == "cancelled":
+                    current["updatedAt"] = time.time()
+                    return
+                current["result"] = payload
+                failed = bool(payload.get("isError"))
+                current["status"] = "failed" if failed else "completed"
+                current["statusMessage"] = f"{name} failed" if failed else f"{name} completed"
+                if failed:
+                    current["error"] = {
+                        "code": -32603,
+                        "message": f"{name} failed",
+                        "data": (payload.get("structuredContent") or {}).get("reason"),
+                    }
+                current["updatedAt"] = time.time()
+            self._notify_subscribers("notifications/tasks", {
+                "taskId": task_id,
+                "status": "failed" if payload.get("isError") else "completed",
+            })
+
+        thread = threading.Thread(target=worker, name=f"mcp-task-{task_id[-6:]}", daemon=True)
+        if start:
+            thread.start()
+        else:
+            with self._task_lock:
+                self._task_threads[task_id] = thread
+        return task
+
+    def _task_result(self, task_id: str, timeout: float):
+        """Blocking result collection — 2025-11-25 era only."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            with self._task_lock:
+                task = self.tasks.get(task_id)
+                if not task:
+                    return None
+                if task["status"] in ("completed", "failed", "cancelled"):
+                    payload = task["result"] or {
+                        "isError": True,
+                        "content": [{"type": "text", "text": task.get("statusMessage") or task["status"]}],
+                    }
+                    payload = dict(payload)
+                    payload["_meta"] = {META_RELATED_TASK: {"taskId": task_id}}
+                    payload["resultType"] = "complete"
+                    return payload
+            if time.monotonic() >= deadline:
+                return {
+                    "resultType": "task",
+                    "taskId": task_id,
+                    "status": "working",
+                    "statusMessage": "Still running; call tasks/result again.",
+                    "pollIntervalMs": TASK_POLL_INTERVAL_MS,
+                }
+            time.sleep(0.05)
+
+    # -- confirmation gate (Multi Round-Trip Requests) -----------------------
+
+    def _gate_pre(self, name: str, args: dict, params: dict, ctx: dict) -> dict:
+        """Decide whether this `tools/call` may run. Returns None when it may."""
+        gate = self.gate
+        if not gate.enabled:
+            return None
+        spec = TOOL_MAP.get(name) or {}
+        # Reading the queue AND answering it stay ungated: an approval is itself the
+        # authorization step, so gating it with a gate would be circular. The guard
+        # that matters is the self-approval refusal in `_local_ops`.
+        if name == "bridge_ops" and str((args or {}).get("action") or "") in (
+                CONFIRM_CONTROL_ACTIONS + CONFIRM_ANSWER_ACTIONS):
+            return None  # the queue stays reachable while the gate is closed
+        if self.gate.mode != "all" and is_tool_call_read_only(name, args or {}):
+            return None  # a `status` / `dryRun` action of a write tool is not a write
+        if not gate.requires(name, spec.get("annotations") or {}):
+            return None
+        principal = ctx.get("principal", "owner")
+        if gate.allowance_active(name, principal):
+            return None
+
+        state_token = params.get("requestState")
+        digest = canonical_digest(name, args)
+        if state_token:
+            try:
+                payload = gate.parse_state(state_token)
+            except GateError as exc:
+                return self._reprompt_or_error(name, args, exc, ctx)
+            if payload.get("dig") != digest:
+                return self._reprompt_or_error(
+                    name, args,
+                    GateError("digest_mismatch",
+                              "The retried call is not the call the confirmation was issued for."),
+                    ctx,
+                )
+            request_id = payload.get("id")
+            try:
+                decided = gate.take_decision(request_id, principal)
+            except GateError as exc:
+                return self._reprompt_or_error(name, args, exc, ctx)
+            if decided is not None:
+                if not decided.get("approved"):
+                    return self._confirmation_denied(name, decided, ctx)
+                self._publish("mcp.confirm.applied", {"requestId": request_id, "tool": name,
+                                                       "source": decided.get("source")})
+                return None
+            if not ctx.get("elicitation_capable"):
+                rec = gate.pending(request_id)
+                if rec is None:
+                    return self._reprompt_or_error(
+                        name, args,
+                        GateError("unknown_request", "That confirmation is no longer pending; "
+                                                      "re-issue the call."), ctx)
+                return self._input_required(name, args, rec, ctx, note=(
+                    "This client has not declared the `elicitation` capability, so it cannot answer on a "
+                    "human's behalf. The bridge operator must approve it "
+                    "(`arena_studio.py approve <requestId>` or the Ops console), then retry this call."
+                ))
+            try:
+                decision = gate.resolve(request_id, params.get("inputResponses"), principal,
+                                        source="client", expected_digest=digest)
+            except GateError as exc:
+                return self._reprompt_or_error(name, args, exc, ctx)
+            if decision.get("state") != "approved":
+                return self._confirmation_denied(name, decision, ctx)
+            return None
+
+        # First sight of the call: open a request and answer per era.
+        rec = gate.request(name, args, principal, danger_keys_in(args))
+        if ctx.get("modern"):
+            return self._input_required(name, args, rec, ctx)
+        # Legacy clients have no MRTR round-trip, so hold the call for an
+        # out-of-band approval instead (bounded by BRIDGE_CONFIRM_WAIT_SECONDS).
+        answered = gate.wait(rec, min(gate.ttl_seconds, self.legacy_wait_seconds) or gate.ttl_seconds)
+        if answered and rec.state == "approved":
+            return None
+        if not answered:
+            return self._confirmation_error(name, GateError(
+                "confirmation_timeout",
+                f"No decision within {int(self.legacy_wait_seconds)}s. Approve it with "
+                f"`arena_studio.py approve {rec.id}` (or the Ops console) and retry the same call.",
+            ), ctx, extra={"requestId": rec.id, "expiresAt": self._iso(rec.expires)})
+        return self._confirmation_denied(name, {"state": rec.state, "note": rec.note,
+                                                "requestId": rec.id}, ctx)
+
+    def _gate_for_task(self, name: str, args: dict, task: dict, publish_waiting) -> dict:
+        """Task workers cannot answer with `input_required` (the handle is already
+        out), so the task itself goes to `input_required` and waits."""
+        gate = self.gate
+        if not gate.enabled:
+            return None
+        spec = TOOL_MAP.get(name) or {}
+        # Reading the queue AND answering it stay ungated: an approval is itself the
+        # authorization step, so gating it with a gate would be circular. The guard
+        # that matters is the self-approval refusal in `_local_ops`.
+        if name == "bridge_ops" and str((args or {}).get("action") or "") in (
+                CONFIRM_CONTROL_ACTIONS + CONFIRM_ANSWER_ACTIONS):
+            return None
+        if self.gate.mode != "all" and is_tool_call_read_only(name, args or {}):
+            return None  # a `status` / `dryRun` action of a write tool is not a write
+        if not gate.requires(name, spec.get("annotations") or {}):
+            return None
+        principal = task.get("principal") or "owner"
+        if gate.allowance_active(name, principal):
+            return None
+        rec = gate.request(name, args, principal, danger_keys_in(args))
+        publish_waiting(rec.id, rec.to_input_requests(), gate.state_token(rec))
+        answered = gate.wait(rec)
+        if not answered:
+            return {"verdict": "answer", "result": {
+                "isError": True,
+                "content": [{"type": "text", "text": json.dumps({
+                    "ok": False, "reason": "confirmation_expired", "requestId": rec.id,
+                    "tool": name,
+                    "hint": "The approval window closed. Re-issue the call (or raise --confirm-ttl).",
+                }, indent=2)}],
+                "structuredContent": {"ok": False, "reason": "confirmation_expired", "requestId": rec.id},
+            }}
+        if rec.state != "approved":
+            return {"verdict": "denied", "result": {
+                "isError": True,
+                "content": [{"type": "text", "text": json.dumps({
+                    "ok": False, "reason": "declined", "requestId": rec.id, "tool": name,
+                    "note": rec.note, "decidedBy": rec.decision_source,
+                }, indent=2)}],
+                "structuredContent": {"ok": False, "reason": "declined", "note": rec.note,
+                                      "requestId": rec.id},
+            }}
+        return {"verdict": "run"}
+
+    def _input_required(self, name: str, args: dict, rec, ctx: dict, note: str = None,
+                        reason: str = None) -> dict:
+        """`InputRequiredResult` (SEP-2322): the request is over, the answer
+        comes back on a retry that echoes `requestState` verbatim."""
+        result = {
+            "resultType": "input_required",
+            "inputRequests": rec.to_input_requests({"mode": self.gate.mode}),
+            "requestState": self.gate.state_token(rec),
+            "isError": False,
+            "content": [{
+                "type": "text",
+                "text": (note + "\n\n" if note else "") + (
+                    f"`{name}` needs human approval before it runs "
+                    f"(bridge confirmation mode: {self.gate.mode}). Answer the elicitation, then "
+                    f"re-issue this exact tools/call with the same arguments plus "
+                    f"`params.inputResponses` and the unchanged `params.requestState`. "
+                    f"requestId {rec.id} · expires {self._iso(rec.expires)}."
+                ),
+            }],
+            "structuredContent": {
+                "ok": False,
+                "reason": reason or "confirmation_required",
+                "tool": name,
+                "requestId": rec.id,
+                "mode": self.gate.mode,
+                "expiresAt": self._iso(rec.expires),
+                "arguments": args,
+                "howToAnswer": {
+                    "modern": "retry tools/call with params.inputResponses + params.requestState",
+                    "outOfBand": f"POST /api/confirmations {{\"action\":\"approve\",\"requestId\":\"{rec.id}\"}}"
+                                 f" or `arena_studio.py approve {rec.id}`",
+                },
+            },
+        }
+        if note:
+            result["structuredContent"]["note"] = note
+        return result
+
+    def _confirmation_denied(self, name: str, decision: dict, ctx: dict) -> dict:
+        payload = {
+            "ok": False,
+            "reason": "declined",
+            "tool": name,
+            "requestId": decision.get("requestId"),
+            "note": decision.get("note"),
+            "decidedBy": decision.get("source"),
+        }
+        self._publish("mcp.confirm.denied_result", payload)
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
+            "structuredContent": payload,
+        }
+
+    def _reprompt_or_error(self, name: str, args: dict, exc, ctx: dict) -> dict:
+        """A wrong or spent answer re-prompts a modern client instead of
+        failing it; legacy clients (no MRTR) get the error payload."""
+        if ctx.get("modern") and exc.reason in REPROMPT_REASONS:
+            principal = ctx.get("principal", "owner")
+            rec = self.gate.request(name, args, principal, danger_keys_in(args))
+            return self._input_required(name, args, rec, ctx, note=exc.message,
+                                        reason=exc.reason)
+        return self._confirmation_error(name, exc, ctx)
+
+    def _confirmation_error(self, name: str, exc, ctx: dict, extra: dict = None) -> dict:
+        payload = {"ok": False, "reason": exc.reason, "tool": name, "error": exc.message,
+                   "confirmationMode": self.gate.mode}
+        if extra:
+            payload.update(extra)
+        return {
+            "isError": True,
+            "content": [{"type": "text", "text": json.dumps(payload, indent=2)}],
+            "structuredContent": payload,
+        }
+
+    def confirmations(self, params: dict = None) -> dict:
+        """Read (and let operators answer) the pending-confirmation registry."""
+        params = dict(params or {})
+        action = (params.get("action") or "status").strip().lower()
+        if action == "approve":
+            decision = self.gate.resolve(
+                params.get("requestId") or params.get("id"),
+                {"approve": True, "remember": bool(params.get("remember")), "note": params.get("note")},
+                source=params.get("source") or "operator",
+            )
+            self._publish("mcp.confirm.approved", decision)
+            return {"ok": True, **decision}
+        if action == "deny":
+            decision = self.gate.resolve(
+                params.get("requestId") or params.get("id"),
+                {"approve": False, "note": params.get("note")},
+                source=params.get("source") or "operator",
+            )
+            self._publish("mcp.confirm.denied", decision)
+            return {"ok": True, **decision}
+        if action == "expire":
+            return {"ok": True, "swept": self.gate.expire_stale()}
+        status = self.gate.status()
+        status["ok"] = True
+        return status
+
+    def _publish(self, kind: str, detail: dict):
+        try:
+            self.client.publish_event(kind, detail)
+        except Exception:  # noqa: BLE001 - observability is never allowed to break a call
+            pass
+
+    # -- subscriptions/listen ------------------------------------------------
+
+    def subscribe(self, params: dict, ctx: dict = None) -> dict:
+        """Open an opt-in change-notification subscription (2026-07-28).
+
+        The returned result carries `_arenaStream`, which the transport turns
+        into a long-lived response stream feeding `pump_subscription`.
+        """
+        ctx = ctx or {}
+        requested = (params or {}).get("types")
+        if not isinstance(requested, list) or not requested:
+            raise ValueError("subscriptions/listen needs a non-empty `types` array "
+                             f"(available: {', '.join(SUBSCRIPTION_TYPES)})")
+        wanted = [str(t).strip() for t in requested]
+        accepted = [t for t in wanted if t in SUBSCRIPTION_TYPES]
+        unavailable = [t for t in wanted if t in SUBSCRIPTION_TYPES_IDLE]
+        unknown = [t for t in wanted if t not in SUBSCRIPTION_TYPES and t not in SUBSCRIPTION_TYPES_IDLE]
+        if not accepted:
+            raise ValueError(f"No subscribable notification types in {unknown or wanted}; "
+                             f"this bridge offers: {', '.join(SUBSCRIPTION_TYPES)}")
+        resources = (params or {}).get("resources")
+        if resources is not None and not isinstance(resources, list):
+            raise ValueError("`resources` must be an array of studio:// URIs")
+        if "resourceSubscriptions" in accepted:
+            if resources:
+                known = {r["uri"] for r in RESOURCES}
+                bad = [u for u in resources if u not in known]
+                if bad:
+                    raise ValueError(f"Unknown resource URIs: {', '.join(map(str, bad))}")
+                targets = list(resources)
+            else:
+                targets = [uri for uri in RESOURCE_EVENT_TRIGGERS]
+            accepted = [t for t in accepted if t != "resourceSubscriptions"] + ["resourceSubscriptions"]
+        else:
+            targets = []
+        sub_id = "sub-" + uuid.uuid4().hex[:12]
+        with self._sub_lock:
+            self._sub_seq += 1
+            self.subscriptions[sub_id] = {
+                "id": sub_id,
+                "types": accepted,
+                "resources": targets,
+                "principal": ctx.get("principal") or "owner",
+                "created": time.time(),
+                "cursor": int((params or {}).get("cursor") or 0),
+                "toolsFingerprint": None,
+                "emitted": 0,
+                "sequence": self._sub_seq,
+            }
+        ack = {
+            "subscriptionId": sub_id,
+            "types": accepted,
+            "resources": targets,
+            "keepAliveSeconds": 15,
+            "_arenaStream": {"subscriptionId": sub_id,
+                             "maxSeconds": (params or {}).get("maxSeconds"),
+                             "pollSeconds": (params or {}).get("pollSeconds")},
+        }
+        if unavailable:
+            ack["idleTypes"] = unavailable
+            ack["note"] = (f"{', '.join(unavailable)} are acknowledged but cannot fire: this server's "
+                           "prompt and resource lists are static.")
+        if unknown:
+            ack["unknownTypes"] = unknown
+        return ack
+
+    def drop_subscription(self, sub_id: str) -> dict:
+        with self._sub_lock:
+            return {"dropped": self.subscriptions.pop(sub_id, None) is not None}
+
+    def subscription_status(self) -> dict:
+        with self._sub_lock:
+            rows = list(self.subscriptions.values())
+        return {
+            "count": len(rows),
+            "subscriptions": [
+                {"subscriptionId": r["id"], "types": r["types"], "resources": r["resources"],
+                 "emitted": r["emitted"], "ageSeconds": round(time.time() - r["created"], 1)}
+                for r in rows
+            ],
+        }
+
+    def _notify_subscribers(self, method: str, params: dict):
+        """Fan a notification out to every subscription that opted in to it."""
+        if not self.subscriptions:
+            return []
+        sent = 0
+        with self._sub_lock:
+            rows = list(self.subscriptions.values())
+        for rec in rows:
+            if method == "notifications/tasks":
+                continue  # task progress is polled; documented in docs/OPS.md §13
+            if method == "notifications/tools/list_changed" and "toolsListChanged" not in rec["types"]:
+                continue
+            if method == "notifications/resources/updated" and "resourceSubscriptions" not in rec["types"]:
+                continue
+            meta = dict(rec.get("meta") or {})
+            meta[META_SUBSCRIPTION_ID] = rec["id"]
+            note = {"jsonrpc": "2.0", "method": method,
+                    "params": {**dict(params or {}), "_meta": meta}}
+            sink = rec.get("sink")
+            if callable(sink):
+                try:
+                    sink(note)
+                    rec["emitted"] += 1
+                    sent += 1
+                except Exception:  # noqa: BLE001 - a dead stream ends that subscriber
+                    with self._sub_lock:
+                        self.subscriptions.pop(rec["id"], None)
+        return sent
+
+    def _event_to_updates(self, rec: dict, event: dict) -> list:
+        """Map one bridge telemetry event onto resource-update notifications."""
+        kind = event.get("kind") or ""
+        out = []
+        for uri in rec.get("resources") or []:
+            triggers = RESOURCE_EVENT_TRIGGERS.get(uri)
+            if not triggers:
+                continue
+            if kind in triggers or any(kind.startswith(t) for t in triggers if t.endswith(".")):
+                out.append({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/resources/updated",
+                    "params": {
+                        "uri": uri,
+                        "timestamp": self._iso(time.time()),
+                        "_meta": {META_SUBSCRIPTION_ID: rec["id"],
+                                  "io.modelcontextprotocol/eventKind": kind},
+                    },
+                })
+        return out
+
+    def tools_fingerprint(self) -> str:
+        import hashlib as _hashlib
+        names = ",".join(sorted(t["name"] for t in self.visible_tools()))
+        return _hashlib.sha256(
+            f"{names}|read_only={int(bool(self.client.read_only))}|confirm={self.gate.mode}".encode()
+        ).hexdigest()[:16]
+
+    def pump_subscription(self, sub_id: str, sink, stop_event: threading.Event = None,
+                          max_seconds: float = None, poll_seconds: float = 0.5) -> dict:
+        """Write change notifications for one subscription until it ends.
+
+        `sink(notification_dict)` is provided by the transport (stdout for
+        stdio, one SSE frame per notification for Streamable HTTP).
+        """
+        with self._sub_lock:
+            rec = self.subscriptions.get(sub_id)
+        if rec is None:
+            return {"ok": False, "reason": f"Unknown subscription: {sub_id!r}"}
+        rec["sink"] = sink
+        started = time.monotonic()
+        cursor = rec["cursor"]
+        poll_seconds = max(0.05, min(float(poll_seconds or 0.5), 10.0))
+        emitted = 0
+        try:
+            while True:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                if max_seconds is not None and time.monotonic() - started > float(max_seconds):
+                    break
+                try:
+                    batch = self.client.ops_action({"action": "events", "cursor": cursor, "limit": 60})
+                except Exception:  # noqa: BLE001 - the bridge may be mid-restart
+                    time.sleep(poll_seconds)
+                    continue
+                for event in (batch or {}).get("events", []):
+                    seq = event.get("seq")
+                    if isinstance(seq, int):
+                        cursor = max(cursor, seq)
+                        rec["cursor"] = cursor
+                    for note in self._event_to_updates(rec, event):
+                        try:
+                            sink(note)
+                            emitted += 1
+                            rec["emitted"] += 1
+                        except Exception:  # noqa: BLE001
+                            return {"ok": False, "reason": "stream closed", "emitted": emitted}
+                if "toolsListChanged" in rec["types"]:
+                    fingerprint = self.tools_fingerprint()
+                    if rec["toolsFingerprint"] is None:
+                        rec["toolsFingerprint"] = fingerprint
+                    elif fingerprint != rec["toolsFingerprint"]:
+                        rec["toolsFingerprint"] = fingerprint
+                        try:
+                            sink({"jsonrpc": "2.0", "method": "notifications/tools/list_changed",
+                                  "params": {"_meta": {META_SUBSCRIPTION_ID: sub_id}}})
+                            emitted += 1
+                            rec["emitted"] += 1
+                        except Exception:  # noqa: BLE001
+                            return {"ok": False, "reason": "stream closed", "emitted": emitted}
+                if max_seconds is not None and time.monotonic() - started > float(max_seconds) - poll_seconds:
+                    break
+                time.sleep(poll_seconds)
+        finally:
+            with self._sub_lock:
+                active = self.subscriptions.get(sub_id)
+                if active is not None:
+                    active["sink"] = None
+            self._emit_subscription_end(sub_id, emitted, cursor)
+        return {"ok": True, "emitted": emitted, "cursor": cursor,
+                "seconds": round(time.monotonic() - started, 2)}
+
+    def _emit_subscription_end(self, sub_id: str, emitted: int, cursor: int):
+        with self._sub_lock:
+            rec = self.subscriptions.pop(sub_id, None)
+        if rec is None:
+            return
+        self._publish("mcp.subscription.closed", {"subscriptionId": sub_id, "emitted": emitted,
+                                                   "cursor": cursor,
+                                                   "seconds": round(time.time() - rec["created"], 1)})
+
+    # -- tool invocation -----------------------------------------------------
+
+    def _local_ops(self, tname: str, targs: dict) -> dict:
+        """`bridge_ops` actions that describe *this* dispatcher, not the bridge.
+
+        Pending confirmations and live subscriptions belong to the process that
+        answers the JSON-RPC — a stdio proxy attached to a remote bridge must not
+        be pointed at that bridge's registry, or it would be approving a different
+        connection's requests. Returns None for everything else.
+        """
+        if tname != "bridge_ops":
+            return None
+        action = str((targs or {}).get("action") or "").strip().lower()
+        if action in CONFIRM_ANSWER_ACTIONS:
+            # Deliberate: the connection whose call is parked on a human is not
+            # the one allowed to un-park it. Reading the queue stays available,
+            # and a *different* principal (an operator-side agent, a reviewer)
+            # may still answer through this tool.
+            request_id = str((targs or {}).get("requestId") or (targs or {}).get("id") or "")
+            blocked = self.gate.pending(request_id)
+            caller = (current_call_context() or {}).get("principal") or "owner"
+            if blocked is not None and self.gate.same_principal(blocked.principal, caller):
+                return self._self_approval_refusal(action)
+            verb = action.replace("_", " ")
+            if blocked is None:
+                return {
+                    "ok": False,
+                    "reason": "unknown_request",
+                    "error": f"{verb}: no confirmation {request_id!r} is pending on this connection.",
+                    "pending": [row["requestId"] for row in self.gate.status()["pending"]],
+                }
+            return self.confirmations({
+                "action": "approve" if action == "confirm_approve" else "deny",
+                "requestId": request_id,
+                "remember": (targs or {}).get("remember"),
+                "note": (targs or {}).get("note"),
+                "source": "mcp-operator",
+            })
+        if action == "confirmations":
+            return self.confirmations(targs)
+        if action == "subscriptions":
+            return {"ok": True, **self.subscription_status()}
+        return None
+
+    def _self_approval_refusal(self, action: str) -> dict:
+        """Why an agent cannot approve its own parked call, and what to do instead."""
+        capable = bool((current_call_context() or {}).get("elicitation_capable"))
+        verb = action.replace("_", " ")
+        return {
+            "ok": False,
+            "reason": "operator_only",
+            "error": (
+                f"{verb} a confirmation is an operator decision: the connection whose call is "
+                "waiting is not allowed to answer it."
+            ),
+            "howToAnswer": [
+                "arena_studio.py approve <requestId>   /   arena_studio.py deny <requestId>",
+                "the Ops console\'s Confirmations tab",
+                ("retry tools/call with requestState + inputResponses (this client declares the "
+                 "`elicitation` capability)") if capable else
+                ("an MCP client that declares the `elicitation` capability can answer in-band with "
+                 "requestState + inputResponses"),
+            ],
+            "pending": [row["requestId"] for row in self.gate.status()["pending"]],
+        }
+
+    def _invoke_tool(self, tname: str, targs: dict) -> dict:
+        """Run one tool call and return the MCP CallToolResult payload."""
+        local = self._local_ops(tname, targs)
+        if local is not None:
+            return {
+                "isError": False,
+                "content": [{"type": "text", "text": json.dumps(local, indent=2)}],
+                "structuredContent": local,
+            }
+        if self.client.read_only and not is_tool_call_read_only(tname, targs):
+            return {
+                "isError": True,
+                "content": [{
+                    "type": "text",
+                    "text": f"Blocked by Read-Only Inspector mode: tool '{tname}' with arguments {json.dumps(targs)} mutates Studio state.",
+                }],
+            }
+        try:
+            data = execute_tool(self.client, tname, targs)
+            if isinstance(data, dict):
+                data.setdefault("ok", True)
+                data.setdefault("warnings", [])
+            img_b64 = data.pop("_mcp_image_png_b64", None) if isinstance(data, dict) else None
+            content_items = [{"type": "text", "text": json.dumps(data, indent=2)}]
+            if img_b64:
+                content_items.insert(0, {
+                    "type": "image",
+                    "data": img_b64,
+                    "mimeType": "image/png",
+                })
+            return {"isError": False, "content": content_items, "structuredContent": data}
+        except Exception as tool_exc:
+            if isinstance(tool_exc, NoPeerError):
+                data = {"ok": False, "reason": tool_exc.reason, "dm": tool_exc.dm, "warnings": []}
+                return {"isError": True, "content": [{"type": "text", "text": json.dumps(data)}], "structuredContent": data}
+            data = {"ok": False, "reason": "tool_error", "error": str(tool_exc), "warnings": []}
+            return {
+                "isError": True,
+                "content": [{"type": "text", "text": json.dumps(data, indent=2)}],
+                "structuredContent": data,
+            }
+
+    def _dispatch_method(self, msg: dict, ctx: dict = None):
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
             return self._err(msg.get("id") if isinstance(msg, dict) else None, -32600, "Invalid Request")
 
@@ -4596,6 +7228,7 @@ class MCPDispatcher:
         params = msg.get("params") or {}
         has_id = "id" in msg
         msg_id = msg.get("id")
+        ctx = ctx or self.request_context(msg)
 
         # Notifications (no id) never produce a JSON-RPC response object
         if not has_id:
@@ -4608,31 +7241,37 @@ class MCPDispatcher:
                     requested_ver if requested_ver in SUPPORTED_PROTOCOL_VERSIONS
                     else DEFAULT_PROTOCOL_VERSION
                 )
-                mode_tag = " (Read-Only Inspector)" if self.client.read_only else ""
-                return self._ok(msg_id, {
+                payload = {
                     "protocolVersion": negotiated,
-                    "capabilities": {
-                        "tools": {"listChanged": False},
-                        "resources": {"subscribe": False, "listChanged": False},
-                        "prompts": {"listChanged": False},
-                    },
+                    "capabilities": self.capabilities(modern=negotiated == MODERN_PROTOCOL_VERSION),
                     "serverInfo": {
                         "name": MCP_SERVER_NAME,
                         "version": MCP_SERVER_VERSION,
                     },
-                    "instructions": (
-                        f"Arena <-> Roblox Studio MCP Server v{MCP_SERVER_VERSION}{mode_tag}. "
-                        "Use `get_studio_state` or `survey_place` first to understand the open place. "
-                        "Use `multi_edit` / `write_script` (with `replaceInstance: true` when updating already-required ModuleScripts) "
-                        "and `luau_check` to prevent undefined-global runtime bugs."
-                    ),
-                })
+                    "instructions": self._instructions(),
+                }
+                if negotiated == MODERN_PROTOCOL_VERSION:
+                    payload["resultType"] = "complete"
+                return self._ok(msg_id, payload)
 
             if method == "ping":
+                # Removed in 2026-07-28; still answered, because a legacy client
+                # that pings is doing nothing wrong and a modern one will not ask.
                 return self._ok(msg_id, {})
 
             if method == "tools/list":
-                return self._ok(msg_id, {"tools": self.visible_tools()})
+                tools = []
+                for spec in self.visible_tools():
+                    entry = dict(spec)
+                    execution = dict(entry.get("execution") or {})
+                    execution.setdefault("taskSupport", "optional")
+                    if self.gate.enabled and self.gate.requires(
+                        spec["name"], spec.get("annotations") or {}
+                    ):
+                        execution["confirmationRequired"] = True
+                    entry["execution"] = execution
+                    tools.append(entry)
+                return self._ok(msg_id, {"tools": tools})
 
             if method == "tools/call":
                 tname = params.get("name")
@@ -4644,43 +7283,42 @@ class MCPDispatcher:
                 if validation_err:
                     return self._err(msg_id, -32602, validation_err)
 
-                if self.client.read_only and not is_tool_call_read_only(tname, targs):
-                    return self._ok(msg_id, {
-                        "isError": True,
-                        "content": [{
-                            "type": "text",
-                            "text": f"Blocked by Read-Only Inspector mode: tool '{tname}' with arguments {json.dumps(targs)} mutates Studio state.",
-                        }],
-                    })
+                # A task request is gated *inside* the task: the handle is already
+                # out, so the task itself goes to `input_required` and `tasks/update`
+                # answers it. A retry that carries `requestState` is answered
+                # in-band and runs inline instead.
+                if isinstance(params.get("task"), dict) and not params.get("requestState"):
+                    if ctx.get("modern") and not ctx.get("tasks_capable"):
+                        return self._err(msg_id, -32021,
+                                         "Task handles need the io.modelcontextprotocol/tasks extension "
+                                         "capability in this era",
+                                         {"requiredCapability": TASKS_EXTENSION_KEY,
+                                          "declared": sorted((ctx.get("extensions") or {}).keys())})
+                    return self._ok(msg_id, self._create_task(tname, targs, params["task"], ctx=ctx))
 
-                try:
-                    data = execute_tool(self.client, tname, targs)
-                    if isinstance(data, dict):
-                        data.setdefault("ok", True)
-                        data.setdefault("warnings", [])
-                    img_b64 = data.pop("_mcp_image_png_b64", None) if isinstance(data, dict) else None
-                    content_items = [{"type": "text", "text": json.dumps(data, indent=2)}]
-                    if img_b64:
-                        content_items.insert(0, {
-                            "type": "image",
-                            "data": img_b64,
-                            "mimeType": "image/png",
-                        })
-                    return self._ok(msg_id, {
-                        "isError": False,
-                        "content": content_items,
-                        "structuredContent": data,
-                    })
-                except Exception as tool_exc:
-                    if isinstance(tool_exc, NoPeerError):
-                        data = {"ok": False, "reason": tool_exc.reason, "dm": tool_exc.dm, "warnings": []}
-                        return self._ok(msg_id, {"isError": True, "content": [{"type": "text", "text": json.dumps(data)}], "structuredContent": data})
-                    data = {"ok": False, "reason": "tool_error", "error": str(tool_exc), "warnings": []}
-                    return self._ok(msg_id, {
-                        "isError": True,
-                        "content": [{"type": "text", "text": json.dumps(data, indent=2)}],
-                        "structuredContent": data,
-                    })
+                gated = self._gate_pre(tname, targs, params, ctx)
+                if gated is not None:
+                    return self._ok(msg_id, gated)
+
+                if self.auto_task_ms > 0 and ctx.get("tasks_capable"):
+                    task = self._start_task(tname, targs, TASK_DEFAULT_TTL_MS, ctx=ctx, inline=True)
+                    deadline = time.monotonic() + self.auto_task_ms / 1000.0
+                    while time.monotonic() < deadline:
+                        with self._task_lock:
+                            if self.tasks.get(task["taskId"], {}).get("status") not in ("working", "input_required"):
+                                break
+                        time.sleep(0.02)
+                    with self._task_lock:
+                        current = self.tasks.get(task["taskId"], {})
+                        finished = current.get("status") in ("completed", "failed", "cancelled")
+                        result = current.get("result")
+                    if finished and result is not None and current.get("status") == "completed":
+                        # Fast enough to answer inline; the task record survives
+                        # so an idempotent tasks/get still finds the outcome.
+                        return self._ok(msg_id, result)
+                    return self._ok(msg_id, self._task_handle(task["taskId"]))
+
+                return self._ok(msg_id, self._invoke_tool(tname, targs))
 
             if method == "resources/list":
                 return self._ok(msg_id, {"resources": RESOURCES})
@@ -4701,14 +7339,22 @@ class MCPDispatcher:
                 pname = params.get("name", "")
                 if not pname:
                     return self._err(msg_id, -32602, "Missing 'name' parameter.")
-                return self._ok(msg_id, get_mcp_prompt(pname, params.get("arguments")))
+                return self._ok(msg_id, get_mcp_prompt(pname, params.get("arguments"), self.client))
 
             if method == "logging/setLevel":
+                # Removed in 2026-07-28 (log level is per-request now via
+                # _meta['io.modelcontextprotocol/logLevel']); still honoured for
+                # clients from the eras that had it.
                 return self._ok(msg_id, {})
+
+            if method == "completion/complete":
+                return self._err(msg_id, -32601, "This server does not offer argument completion")
 
             return self._err(msg_id, -32601, f"Method not found: {method}")
 
         except KeyError as exc:
             return self._err(msg_id, -32602, str(exc))
-        except Exception as exc:
+        except ValueError as exc:
+            return self._err(msg_id, -32602, str(exc))
+        except Exception as exc:  # noqa: BLE001
             return self._err(msg_id, -32603, f"Internal error: {exc}")

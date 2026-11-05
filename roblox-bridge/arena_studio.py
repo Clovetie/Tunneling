@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v4.0.0).
+arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v5.4.0).
 
 Supports every MCP tool and bridge operation from your terminal or HANDS MODE (`ab.ps1`),
 with strict UTF-8 handling on Windows, macOS, and Linux.
@@ -20,6 +20,23 @@ Core commands:
     python3 arena_studio.py sync  ../nightloop/src ServerScriptService.NightLoop
     python3 arena_studio.py run "return {place = game.Name}" [--dm edit|server|client]
     python3 arena_studio.py runfile ../jobs/baseline_survey.lua
+
+v5 ops & multi-agent commands:
+    python3 arena_studio.py ops [--json]
+    python3 arena_studio.py metrics [--prometheus]
+    python3 arena_studio.py audit [--verify] [--limit 20]
+    python3 arena_studio.py confirmations [--json]
+    python3 arena_studio.py approve cfm-91ab3f0c2d11 [--remember] [--note "pair-tested"]
+    python3 arena_studio.py deny cfm-91ab3f0c2d11 --note "wrong place"
+    python3 arena_studio.py subscriptions [--close sub-7c2f]
+    python3 arena_studio.py tunnel status|start|stop|restart
+    python3 arena_studio.py tokens list|create --label ci --role write --ttl 86400|revoke --id tok-123
+    python3 arena_studio.py bus register --name "Gemini 4 Argon" --role partner
+    python3 arena_studio.py bus agents|tasks|feed|export
+    python3 arena_studio.py bus post --agent agent-xxxx --subject "handoff" --body "take the UI pass" --to agent-yyyy
+    python3 arena_studio.py bus task-create --title "Polish shop UI" --priority high --agent agent-xxxx
+    python3 arena_studio.py bus task-claim --task task-xxxx --agent agent-xxxx
+    python3 arena_studio.py bus task-complete --task task-xxxx --agent agent-xxxx --result "shipped"
 """
 
 import argparse
@@ -76,6 +93,26 @@ def call(method: str, path: str, payload=None, timeout: float = 140.0):
         return {"error": f"HTTP {exc.code}", "body": exc.read().decode("utf-8", "replace")[:400]}
     except urllib.error.URLError as exc:
         return {"error": f"cannot reach bridge at {BASE} ({exc.reason}). Is server.py running?"}
+
+
+def call_text(method: str, path: str, payload=None, timeout: float = 60.0) -> str:
+    """Raw-text response helper (Prometheus exposition, SSE snapshots, markdown)."""
+    url = f"{BASE}{path}"
+    headers = {}
+    if TOKEN:
+        headers["X-Arena-Token"] = TOKEN
+        url += ("&" if "?" in url else "?") + f"token={TOKEN}"
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return f"HTTP {exc.code}: " + exc.read().decode("utf-8", "replace")[:400]
+    except urllib.error.URLError as exc:
+        return f"cannot reach bridge at {BASE} ({exc.reason}). Is server.py running?"
 
 
 def submit(kind: str, payload: dict, note: str = None, wait: float = 60.0, dm: str = "auto", peer_id: str = None):
@@ -405,6 +442,85 @@ def main() -> int:
     p = sub.add_parser("system", help="install a drop-in server+shared+client system from roblox-kit/systems")
     p.add_argument("name", help="e.g. liveops/codes | liveops/playtime-gifts | monetization/offline-earnings | core/data | all")
 
+    p = sub.add_parser("ops", help="consolidated operations report (peers, queue, tunnel, bus, audit)")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("metrics", help="bridge counters, gauges and latency percentiles")
+    p.add_argument("--prometheus", action="store_true")
+
+    p = sub.add_parser("audit", help="read or verify the tamper-evident audit log")
+    p.add_argument("--verify", action="store_true")
+    p.add_argument("--limit", type=int, default=20)
+
+    p = sub.add_parser("confirmations", help="list MCP write confirmations waiting on a human")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("approve", help="answer a waiting confirmation with approval")
+    p.add_argument("request_id")
+    p.add_argument("--note", default=None)
+    p.add_argument("--remember", action="store_true",
+                   help="keep approving this tool for this principal for --confirm-allowance seconds")
+
+    p = sub.add_parser("deny", help="answer a waiting confirmation with a refusal")
+    p.add_argument("request_id")
+    p.add_argument("--note", default=None)
+
+    p = sub.add_parser("subscriptions", help="live MCP subscription streams")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--close", default=None, metavar="SUBSCRIPTION_ID")
+
+    p = sub.add_parser("studios", help="multi-Studio fleet: list, pin, label, broadcast")
+    p.add_argument("action", nargs="?", default="list", choices=["list", "pin", "unpin", "label", "broadcast"])
+    p.add_argument("--peer", default=None, help="peerId from `studios list`")
+    p.add_argument("--place", default=None, help="Place id, as an alternative to --peer")
+    p.add_argument("--label", default=None, help="Human label (empty string clears it)")
+    p.add_argument("--tool", default="ping_studio",
+                   choices=["ping_studio", "get_studio_state", "survey_place", "inspect_instance",
+                            "script_read", "get_console_output"],
+                   help="Read-only tool to fan out with `broadcast`")
+    p.add_argument("--path", default=None, help="Instance/script path for path-based broadcasts")
+    p.add_argument("--timeout", type=float, default=20.0)
+
+    p = sub.add_parser("queue", help="inspect, hold or clear the job queue")
+    p.add_argument("action", nargs="?", default="status", choices=["status", "pause", "resume", "clear"])
+    p.add_argument("--reason", default=None, help="Why the queue is paused (recorded in the audit log)")
+
+    p = sub.add_parser("tunnel", help="supervised public tunnel (cloudflared/ngrok)")
+    p.add_argument("action", nargs="?", default="status", choices=["status", "start", "stop", "restart"])
+
+    p = sub.add_parser("tokens", help="scoped access tokens (read/write/admin) & rate limits")
+    p.add_argument("action", nargs="?", default="list", choices=["list", "create", "revoke", "roles"])
+    p.add_argument("--label", default="cli-token")
+    p.add_argument("--role", default="write", choices=["read", "write", "admin"])
+    p.add_argument("--ttl", type=int, default=None, help="Token lifetime in seconds (default: never expires)")
+    p.add_argument("--rate", type=float, default=None, help="Requests per second (0 disables throttling)")
+    p.add_argument("--id", default=None, help="Token id to revoke")
+
+    p = sub.add_parser("bus", help="multi-agent coordination bus (presence, messages, tasks)")
+    p.add_argument("action", nargs="?", default="agents",
+                   choices=["register", "agents", "inbox", "post", "tasks", "task-create", "task-claim",
+                            "task-complete", "task-update", "feed", "export", "sweep", "stats"])
+    p.add_argument("--agent", default=os.environ.get("ARENA_AGENT_ID", "cli-agent"))
+    p.add_argument("--name", default=None)
+    p.add_argument("--role", default="agent")
+    p.add_argument("--to", default=None)
+    p.add_argument("--subject", default="")
+    p.add_argument("--body", default="")
+    p.add_argument("--kind", default="note")
+    p.add_argument("--priority", default="normal")
+    p.add_argument("--task", default=None)
+    p.add_argument("--title", default="")
+    p.add_argument("--detail", default="")
+    p.add_argument("--result", default="")
+    p.add_argument("--status", default=None)
+    p.add_argument("--since", type=int, default=0)
+    p.add_argument("--limit", type=int, default=30)
+    p.add_argument("--out", default=None, help="Write the exported handoff markdown here")
+    p.add_argument("--summary-only", action="store_true",
+                   help="export: one line per task, no message log")
+    p.add_argument("--offline-seconds", type=float, default=900,
+                   help="sweep: how long an agent must be silent before its tasks are released")
+
     p = sub.add_parser("import-audio", help="import a WAV/OGG/MP3 or built-in CC0 sound into Studio")
     p.add_argument("source", help="local audio file path or repo audio filename (e.g. click_001.wav)")
     p.add_argument("--target", default="SoundService")
@@ -461,6 +577,57 @@ def main() -> int:
     if args.cmd == "clear-queue":
         print(json.dumps(call("POST", "/api/queue/clear"), indent=2, ensure_ascii=False))
         return 0
+
+    if args.cmd == "studios":
+        if args.action == "pin":
+            body = {"action": "set_active"}
+            if args.peer:
+                body["peerId"] = args.peer
+            if args.place:
+                body["placeId"] = int(args.place)
+            out = call("POST", "/api/studios", body)
+        elif args.action == "unpin":
+            out = call("POST", "/api/studios", {"action": "clear_active"})
+        elif args.action == "label":
+            out = call("POST", "/api/studios", {"action": "label", "peerId": args.peer,
+                                                "label": args.label or ""})
+        elif args.action == "broadcast":
+            out = call("POST", "/api/studios", {
+                "action": "broadcast",
+                "tool": args.tool,
+                "path": args.path,
+                "timeout": args.timeout,
+            })
+        else:
+            out = call("GET", "/api/studios")
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0 if "error" not in out else 1
+
+    if args.cmd == "queue":
+        if args.action == "pause":
+            out = call("POST", "/api/queue/pause", {"reason": args.reason or "paused from the CLI"})
+        elif args.action == "resume":
+            out = call("POST", "/api/queue/resume", {})
+        elif args.action == "clear":
+            out = call("POST", "/api/queue/clear")
+        else:
+            ops = call("GET", "/api/ops")
+            if "error" in ops:
+                out = ops
+            else:
+                queue = ops.get("queue") or {}
+                sweeper = ops.get("sweeper") or {}
+                latency = ops.get("jobLatency") or {}
+                out = {
+                    "queue": queue,
+                    "sweeper": sweeper,
+                    "jobLatency": latency,
+                    "recentJobs": (ops.get("recentJobs") or [])[:5],
+                }
+                if not latency:
+                    out["note"] = "no completed jobs yet — latency fills in as work runs"
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0 if "error" not in out else 1
 
     if args.cmd == "watch":
         print(f"watching {BASE} — ctrl-c to stop")
@@ -843,6 +1010,157 @@ def main() -> int:
             "system": args.name,
             "peerId": args.peer,
         }, args.full, args.raw_json)
+
+    # ---------------------------- v5 ops & bus ----------------------------
+    if args.cmd == "ops":
+        data = call("GET", "/api/ops")
+        if args.json:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+        else:
+            h = data.get("health", {})
+            t = data.get("tunnel", {})
+            b = data.get("bus", {})
+            print(f"bridge v{data.get('version')}  uptime {data.get('uptimeSeconds')}s")
+            print(f"studio   : {'connected' if h.get('studio_connected') else 'waiting'}  peers={len(h.get('peers', []))}  queue={h.get('queued')}")
+            print(f"tunnel   : {t.get('state')}  {t.get('publicUrl') or '—'}")
+            print(f"agents   : {b.get('agentsOnline', 0)} online / {b.get('agents', 0)}  tasks open={sum(v for k, v in (b.get('taskCounts') or {}).items() if k in ('todo','in_progress','blocked'))}")
+            rows = data.get("openTasks") or []
+            if rows:
+                print("\nopen tasks:")
+                for row in rows[:10]:
+                    print(f"  [{row['status']:11}] {row['priority']:8} {row['title']}  ({row.get('assignee') or 'unclaimed'})")
+            audit = data.get("audit") or []
+            if audit:
+                print("\nrecent audit:")
+                for e in audit[:5]:
+                    print(f"  {e['seq']:>4} {e['action']:<22} {e['actor']:<20} {e['outcome']}")
+        return 0
+
+    if args.cmd == "metrics":
+        if args.prometheus:
+            print(call_text("GET", "/api/metrics?format=prometheus"))
+            return 0
+        data = call("GET", "/api/metrics")
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "audit":
+        path = "/api/audit?verify=1" if args.verify else f"/api/audit?limit={args.limit}"
+        print(json.dumps(call("GET", path), indent=2, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "confirmations":
+        data = call("GET", "/api/confirmations")
+        if args.json:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            return 0
+        gate = data.get("mode", "off")
+        print(f"confirmations: mode={gate}  pending={len(data.get('pending') or [])}")
+        counters = data.get("counters") or {}
+        if counters:
+            print("           this process: " + ", ".join(f"{k}={v}" for k, v in counters.items()))
+        for row in data.get("pending") or []:
+            print(f"  {row['requestId']}  {row['tool']:<26} expires in {row.get('secondsRemaining')}s")
+            print(f"    args: {row.get('argumentsPreview') or ''}")
+            print(f"    approve: python3 arena_studio.py approve {row['requestId']}")
+        if not (data.get("pending") or []):
+            print("  (nothing waiting — approve is only needed when the bridge runs with --require-confirm)")
+        return 0
+
+    if args.cmd in ("approve", "deny"):
+        body = {"action": args.cmd, "requestId": args.request_id, "source": "cli"}
+        if args.note:
+            body["note"] = args.note
+        if args.cmd == "approve" and getattr(args, "remember", False):
+            body["remember"] = True
+        try:
+            data = call("POST", "/api/confirmations", body)
+        except SystemExit:
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface the bridge's reason, not a stack
+            print(f"{args.cmd} failed: {exc}", file=sys.stderr)
+            print("the request may already be answered, expired, or belong to another bridge process",
+                  file=sys.stderr)
+            return 2
+        state = data.get("state", "?")
+        verb = "approved" if state == "approved" else ("denied" if state == "denied" else state)
+        print(f"{args.request_id} {verb}"
+              + (f"  (allowance for {data.get('allowanceSeconds')}s)" if data.get("remembered") else ""))
+        if state in ("approved", "denied"):
+            print("the blocked tool call resumes on the client's next retry (or immediately, if it is waiting)")
+        return 0 if state in ("approved", "denied") else 2
+
+    if args.cmd == "subscriptions":
+        if args.close:
+            print(json.dumps(call("POST", "/api/subscriptions/close", {"subscriptionId": args.close}),
+                             indent=2, ensure_ascii=False))
+            return 0
+        data = call("GET", "/api/subscriptions")
+        if args.json:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            return 0
+        rows = data.get("subscriptions") or []
+        print(f"subscriptions: {len(rows)} live")
+        for row in rows:
+            print(f"  {row.get('subscriptionId')}  {', '.join(row.get('types') or [])}"
+                  f"  since {row.get('ageSeconds', 0)}s  emitted={row.get('emitted')}")
+        if not rows:
+            print("  (agents stream with subscriptions/listen on the modern MCP era)")
+        return 0
+
+    if args.cmd == "tunnel":
+        if args.action == "status":
+            print(json.dumps(call("GET", "/api/tunnel"), indent=2, ensure_ascii=False))
+        else:
+            print(json.dumps(call("POST", "/api/tunnel", {"action": args.action}, timeout=120), indent=2, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "tokens":
+        payload = {"action": args.action}
+        if args.action == "create":
+            payload.update({"label": args.label, "role": args.role})
+            if args.ttl:
+                payload["ttlSeconds"] = args.ttl
+            if args.rate is not None:
+                payload["rateLimitPerSecond"] = args.rate
+        if args.action == "revoke":
+            if not args.id:
+                print("--id is required for revoke", file=sys.stderr)
+                return 2
+            payload["id"] = args.id
+        print(json.dumps(call("POST", "/api/tokens", payload), indent=2, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "bus":
+        payload = {"action": args.action.replace("-", "_")}
+        payload["agentId"] = args.agent
+        mapping = {
+            "name": "name", "role": "role", "to": "to", "subject": "subject", "body": "body",
+            "kind": "kind", "priority": "priority", "title": "title", "detail": "detail",
+            "result": "result", "since": "since", "limit": "limit",
+        }
+        for attr, key in mapping.items():
+            value = getattr(args, attr, None)
+            if value not in (None, "", 0):
+                payload[key] = value
+        if args.task:
+            payload["taskId"] = args.task
+        if args.status:
+            payload["status"] = args.status
+        if args.out:
+            payload["path"] = args.out
+        if getattr(args, "summary_only", False):
+            payload["summaryOnly"] = True
+        if args.action == "sweep":
+            payload["offlineSeconds"] = getattr(args, "offline_seconds", 900)
+        result = call("POST", "/api/bus", payload)
+        if args.action == "export" and isinstance(result, dict) and result.get("markdown"):
+            print(result["markdown"])
+            if result.get("path"):
+                print(f"\n[written] {result['path']}", file=sys.stderr)
+            return 0
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
 
     if args.cmd == "import-audio":
         targs = {"targetPath": args.target, "peerId": args.peer}

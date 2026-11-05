@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-server.py — Multi-Peer HTTP Bridge + Native Streamable HTTP MCP Server (v4.0.0)
+server.py — Multi-Peer HTTP Bridge + Native Streamable HTTP MCP Server (v5.4.0)
 
 Runs locally on your PC (127.0.0.1:8077 by default) with ZERO pip dependencies.
 Simultaneously serves:
   1. Roblox Studio local plugin peers (Edit + Play Server + Play Client bridge)
      via fast long-polling (`GET /api/poll`, `POST /api/result`).
   2. Native MCP Streamable HTTP endpoint (`POST /mcp`, `GET /mcp`, `DELETE /mcp`)
-     implementing MCP 2025-06-18 / 2024-11-05 JSON-RPC 2.0 (68 tools, 5 live
+     implementing MCP 2025-06-18 / 2024-11-05 JSON-RPC 2.0 (70 tools, 8 live
      resources, 2 resource templates, 4 workflow prompts).
   3. REST API for CLI (`arena_studio.py` / `ab.ps1`) & remote cloud agents
      (`GET /api/health`, `GET /api/state`, `GET /api/agent-guide`,
@@ -31,9 +31,25 @@ import time
 from urllib.parse import parse_qs, urlparse
 import uuid
 
-from mcp_core import BridgeClient, MCPDispatcher, TOOL_SPECS, run_bridge_self_test
+from confirm_gate import ConfirmGate, GateError, mode_from_env  # noqa: E402
+from mcp_core import (
+    CONFIRM_GATED_TOOLS,
+    BridgeClient,
+    take_subscription_stream,
+    MCPDispatcher,
+    MODERN_PROTOCOL_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
+    TOOL_MAP,
+    TOOL_SPECS,
+    is_tool_call_read_only,
+    run_bridge_self_test,
+)
+from auth_core import ROLE_RANK, TokenStore
+from bus_core import AgentBus
+from telemetry import Telemetry
+from tunnel_manager import TunnelManager
 
-VERSION = "4.0.0"
+VERSION = "5.4.0"
 PEER_ONLINE_WINDOW = 5.0  # play DataModel peers are transient; do not route work to stale peers
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_DIR = HERE / "snapshots"
@@ -120,10 +136,32 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
 # ----------------------------------------------------------------------------
 
 class BridgeState:
-    def __init__(self, token: str = "", read_only: bool = False, guard_place_id: int = None):
+    def __init__(
+        self,
+        token: str = "",
+        read_only: bool = False,
+        guard_place_id: int = None,
+        state_dir: str = None,
+        auto_tunnel: bool = False,
+        tunnel_flavor: str = "auto",
+        tunnel_token: str = None,
+        tunnel_name: str = None,
+        public_url: str = None,
+        tunnel_binary: str = None,
+        sweep_interval: float = 300.0,
+        sweep_offline_seconds: float = 900.0,
+        require_confirm: str = "off",
+        confirm_ttl_seconds: float = 180.0,
+        confirm_allowance_seconds: float = 600.0,
+        confirm_wait_seconds: float = 45.0,
+        auto_task_ms: float = None,
+    ):
         self.token = token or ""
         self.read_only = bool(read_only)
         self.guard_place_id = int(guard_place_id) if guard_place_id else None
+        self.started = _now()
+        self.state_dir = Path(state_dir) if state_dir else (HERE / "bridge_state")
+        self.state_dir.mkdir(parents=True, exist_ok=True)
 
         self.lock = threading.RLock()
         self.poll_cv = threading.Condition(self.lock)
@@ -149,7 +187,507 @@ class BridgeState:
             read_only=self.read_only,
             default_place_id=self.guard_place_id,
         )
-        self.mcp_dispatcher = MCPDispatcher(self.mcp_client)
+        # v5.4.0: the confirmation gate. It lives next to the dispatcher because
+        # `requestState` is signed with this bridge's secret and the pending
+        # registry is what the Ops console reads and answers.
+        self.confirm_mode = str(require_confirm or "off").strip().lower() or "off"
+        self.confirm_gate = ConfirmGate(
+            mode=self.confirm_mode,
+            secret=self.token or None,
+            ttl_seconds=float(confirm_ttl_seconds or 180.0),
+            allowance_seconds=float(confirm_allowance_seconds or 600.0),
+            destructive_tools=CONFIRM_GATED_TOOLS,
+            hook=lambda kind, detail: self.publish_mcp_event(kind, detail),
+        )
+        self.mcp_dispatcher = MCPDispatcher(
+            self.mcp_client,
+            gate=self.confirm_gate,
+            auto_task_ms=auto_task_ms,
+            legacy_wait_seconds=confirm_wait_seconds,
+        )
+
+        # --- v5 ops platform -------------------------------------------------
+        self.telemetry = Telemetry(self.state_dir)
+        self.bus = AgentBus(self.state_dir / "bus.json")
+        self.tokens = TokenStore(self.state_dir / "tokens.json", primary_token=self.token)
+        self.tunnel = TunnelManager(
+            port=int(os.environ.get("BRIDGE_PORT", 8077)),
+            binary=tunnel_binary,
+            flavor=tunnel_flavor,
+            named_token=tunnel_token,
+            name=tunnel_name,
+            public_url=public_url,
+            state_dir=self.state_dir,
+            auto_start=bool(auto_tunnel),
+        )
+        # Automatic stale-agent sweeping (0 disables the background sweep).
+        self.sweep_interval = max(0.0, float(sweep_interval or 0))
+        self.sweep_offline_seconds = max(60.0, float(sweep_offline_seconds or 900))
+        self._last_sweep = 0.0
+        self._sweeps = 0
+        # Multi-studio fleet: pinned peer (the "active studio"), labels, and the
+        # persisted fleet file. Routing prefers the pin, then falls back to auto
+        # so a closed Studio cannot silently stall the queue.
+        self._fleet_path = self.state_dir / "fleet.json"
+        self.studio_pin = None
+        self.peer_labels = {}
+        self._load_fleet()
+        # Maintenance switch: keep accepting work, stop handing it to Studio.
+        self.queue_paused = False
+        self.queue_paused_reason = None
+        self.queue_paused_at = None
+        # Job dedupe + retry bookkeeping
+        self.idempotency = {}
+        self._reaper_stop = threading.Event()
+        self._reaper = threading.Thread(target=self._reap_loop, name="job-reaper", daemon=True)
+        self._reaper.start()
+
+        self.telemetry.events.emit("bridge.start", {
+            "version": VERSION,
+            "readOnly": self.read_only,
+            "tools": len(TOOL_SPECS),
+            "authMode": "scoped" if self.token else "open",
+        })
+        self.telemetry.audit.append(
+            "bridge.start",
+            actor="system",
+            detail={"version": VERSION, "readOnly": self.read_only, "authMode": "scoped" if self.token else "open"},
+        )
+
+    # -- auth ----------------------------------------------------------------
+
+    def authenticate(self, supplied: str = None, is_loopback: bool = False, required: str = "read"):
+        """Resolve a raw token into an auth context.
+
+        Returns (context, error). `error` is a dict with `code`/`error` when the
+        request must be rejected. Auth is disabled entirely when no token is set,
+        which preserves the historical zero-config localhost experience.
+        """
+        if not self.token and not self.tokens.records:
+            return {"role": "admin", "id": "open", "label": "auth-disabled"}, None
+        record, rate = self.tokens.authenticate(supplied)
+        if record is None:
+            # No anonymous bypass: a configured token is required for every path
+            # that is not explicitly public (dashboard HTML and /api/health).
+            return None, {"code": 401, "error": "bad token"}
+        if rate and not rate.get("allowed"):
+            return None, {
+                "code": 429,
+                "error": "rate limit exceeded for this token",
+                "retryAfter": rate.get("retryAfter", 1),
+            }
+        if not TokenStore.role_allows(record.role, required):
+            return None, {
+                "code": 403,
+                "error": f"token role '{record.role}' cannot perform '{required}' actions",
+            }
+        ctx = {
+            "role": record.role,
+            "id": record.id,
+            "label": record.label,
+            "remaining": (rate or {}).get("remaining"),
+        }
+        if record.id != "primary":
+            self.telemetry.metrics.inc("bridge_token_requests_total", 1, {"token": record.id, "role": record.role})
+        return ctx, None
+
+    # -- background reaper ---------------------------------------------------
+
+    def _reap_loop(self):
+        while not self._reaper_stop.wait(2.0):
+            try:
+                self.reap_jobs()
+            except Exception:  # noqa: BLE001 - the reaper must never die
+                continue
+            if self.sweep_interval <= 0:
+                continue
+            try:
+                if _now() - self._last_sweep >= self.sweep_interval:
+                    self.auto_sweep()
+            except Exception:  # noqa: BLE001 - the sweeper must never kill the reaper
+                continue
+            try:
+                # Unanswered confirmations must not linger: expire them so the
+                # Ops console and /api/confirmations only ever show live ones.
+                self.confirm_gate.expire_stale()
+            except Exception:  # noqa: BLE001
+                continue
+
+    def auto_sweep(self) -> dict:
+        """Release tasks held by agents that stopped heart-beating.
+
+        Runs on the reaper thread every `sweep_interval` seconds. A no-op sweep is
+        cheap and deliberately silent; a sweep that releases work is broadcast on
+        the bus, recorded in the audit log and counted in metrics.
+        """
+        result = self.bus.sweep_stale(self.sweep_offline_seconds)
+        self._last_sweep = _now()
+        self._sweeps += 1
+        if result.get("tasksReaped"):
+            self.telemetry.metrics.inc("bridge_agents_reaped_total", len(result.get("agents") or []))
+            self.telemetry.metrics.inc("bridge_tasks_released_total", result["tasksReaped"])
+            self.telemetry.events.emit("bus.sweep", {
+                "released": result["tasksReaped"], "agents": result.get("agents", []),
+            }, level="warn")
+            self.telemetry.audit.append("bus.sweep", actor="sweeper",
+                                        detail={"released": result["tasksReaped"],
+                                                "agents": result.get("agents", [])})
+        return result
+
+    def pause_queue(self, reason: str = None) -> dict:
+        """Stop handing jobs to Studio; new work still queues (nothing is lost)."""
+        with self.lock:
+            self.queue_paused = True
+            self.queue_paused_reason = (reason or "paused by operator")[:200]
+            self.queue_paused_at = _now()
+            queued = len(self.pending)
+        self.telemetry.events.emit("queue.paused", {"reason": self.queue_paused_reason, "queued": queued}, level="warn")
+        self.telemetry.audit.append("queue.pause", actor="operator", detail={"reason": self.queue_paused_reason, "queued": queued})
+        return {"paused": True, "reason": self.queue_paused_reason, "queued": queued}
+
+    def resume_queue(self) -> dict:
+        with self.lock:
+            was_paused = self.queue_paused
+            paused_for = round(_now() - self.queue_paused_at, 1) if self.queue_paused_at else 0
+            self.queue_paused = False
+            self.queue_paused_reason = None
+            self.queue_paused_at = None
+            queued = len(self.pending)
+        with self.poll_cv:
+            self.poll_cv.notify_all()
+        if was_paused:
+            self.telemetry.events.emit("queue.resumed", {"queued": queued})
+            self.telemetry.audit.append("queue.resume", actor="operator", detail={"queued": queued, "pausedSeconds": paused_for})
+        return {"paused": False, "queued": queued, "pausedSeconds": paused_for}
+
+    def reap_jobs(self) -> dict:
+        """Fail timed-out jobs and re-queue work orphaned by a dead/absent peer."""
+        now = _now()
+        recovered = 0
+        timed_out = 0
+        with self.lock:
+            online = {p["peerId"] for p in self._active_peers_unlocked() if p["online"]}
+            for job in list(self.jobs.values()):
+                if job.get("status") != "running":
+                    continue
+                claimed = job.get("claimed") or now
+                timeout = float(job.get("timeout") or 120.0)
+                owner = job.get("claimedBy")
+                orphaned = bool(owner) and owner not in online and (now - claimed) > 20.0
+                if orphaned:
+                    job["status"] = "queued"
+                    job["claimedBy"] = None
+                    job["claimed"] = None
+                    job["attempts"] = int(job.get("attempts") or 0) + 1
+                    job["note"] = (job.get("note") or "") + f" [requeued: peer {owner} went away]"
+                    if job["id"] not in self.pending:
+                        self.pending.append(job["id"])
+                    recovered += 1
+                    self.poll_cv.notify_all()
+                    self.telemetry.events.emit("job.requeued_orphan", {"id": job["id"], "type": job["type"], "peer": owner}, level="warn")
+                    continue
+                if (now - claimed) > timeout:
+                    job["status"] = "error"
+                    job["ok"] = False
+                    job["error"] = f"timeout after {timeout:.0f}s in {'peer ' + owner if owner else 'queue'}"
+                    job["finished"] = now
+                    job["duration_ms"] = round((now - claimed) * 1000, 1)
+                    timed_out += 1
+                    evt = self.job_events.get(job["id"])
+                    if evt:
+                        evt.set()
+                    self.telemetry.record_job(job)
+                    self.telemetry.audit.append("job.timeout", actor="reaper", target=job["id"],
+                                                detail={"type": job["type"], "peer": owner}, outcome="error")
+        self.telemetry.metrics.inc("bridge_jobs_reaped_total", recovered + timed_out)
+        return {"recovered": recovered, "timedOut": timed_out}
+
+    # -- MCP observability & confirmations ------------------------------------
+
+    def publish_mcp_event(self, kind: str, detail: dict = None, level: str = "info"):
+        """One place for MCP-side events: dashboard stream + audit chain + counts."""
+        self.telemetry.events.emit(kind, detail or {}, level=level)
+        audit_action = str(kind)
+        if audit_action.startswith("mcp."):
+            outcome = "denied" if ("denied" in audit_action or "expired" in audit_action) else "ok"
+            self.telemetry.audit.append(
+                audit_action, actor="mcp", target=str((detail or {}).get("requestId")
+                                                       or (detail or {}).get("subscriptionId") or ""),
+                detail=detail or {}, outcome=outcome,
+            )
+        self.telemetry.metrics.inc("bridge_mcp_events_total", 1, {"kind": audit_action})
+        return {"ok": True, "kind": kind}
+
+    def mcp_dispatcher_take_stream(self, rpc_out) -> dict:
+        """See `mcp_core.take_subscription_stream` (shared with the stdio transport)."""
+        return take_subscription_stream(rpc_out)
+
+    def confirm_gate_summary(self) -> dict:
+        """Gate posture for the *unauthenticated* health endpoint: numbers only,
+        never the pending rows (they carry argument previews)."""
+        if self.confirm_gate is None:
+            return {"mode": "off", "pendingCount": 0, "counters": {}}
+        status = self.confirm_gate.status()
+        return {
+            "version": status["version"],
+            "mode": status["mode"],
+            "pendingCount": status["pendingCount"],
+            "ttlSeconds": status["ttlSeconds"],
+            "allowanceSeconds": status["allowanceSeconds"],
+            "counters": status["counters"],
+        }
+
+    def confirmations_report(self, body: dict = None) -> dict:
+        """Status plus the MCP-side answers the dispatcher still owes a client."""
+        body = dict(body or {})
+        action = (body.get("action") or "status").strip().lower()
+        if action in ("approve", "deny"):
+            request_id = body.get("requestId") or body.get("id")
+            if not request_id:
+                raise ValueError(f"{action} needs a requestId")
+            responses = {"approve": action == "approve", "note": body.get("note")}
+            if action == "approve" and body.get("remember"):
+                responses["remember"] = True
+            try:
+                decision = self.confirm_gate.resolve(
+                    request_id, responses,
+                    principal=body.get("principal"), source=body.get("source") or "operator",
+                )
+            except GateError as exc:
+                raise ValueError(f"{exc.reason}: {exc.message}") from exc
+            self.publish_mcp_event("mcp.confirm." + ("approved" if decision.get("state") == "approved"
+                                                     else "denied"),
+                                   {**decision, "answeredBy": body.get("answeredBy") or "rest"})
+            return {"ok": True, **decision}
+        if action == "expire":
+            return {"ok": True, "swept": self.confirm_gate.expire_stale()}
+        report = self.confirm_gate.status()
+        report["ok"] = True
+        report["subscriptions"] = self.mcp_dispatcher.subscription_status()
+        return report
+
+    # -- multi-studio fleet ---------------------------------------------------
+
+    def _load_fleet(self):
+        try:
+            raw = json.loads(self._fleet_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if isinstance(raw, dict):
+            self.studio_pin = raw.get("pinned") or None
+            labels = raw.get("labels")
+            if isinstance(labels, dict):
+                self.peer_labels = {str(k): str(v)[:60] for k, v in labels.items()}
+
+    def _save_fleet(self):
+        try:
+            self._fleet_path.write_text(
+                json.dumps({"pinned": self.studio_pin, "labels": self.peer_labels},
+                           ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def fleet_snapshot(self) -> dict:
+        """One entry per Studio DataModel the bridge can talk to."""
+        with self.lock:
+            peers = self._active_peers_unlocked()
+            queued_by_peer = {}
+            for job_id in self.pending:
+                job = self.jobs.get(job_id) or {}
+                target = job.get("target_peer")
+                if target:
+                    queued_by_peer[target] = queued_by_peer.get(target, 0) + 1
+            pin = self.studio_pin
+            labels = dict(self.peer_labels)
+            online_count = sum(1 for p in peers if p["online"])
+        studios = []
+        pin_online = False
+        for p in peers:
+            entry = {
+                "peerId": p["peerId"],
+                "studioId": p["peerId"],
+                "label": labels.get(p["peerId"]) or f"{p['place']} ({p['dm']})",
+                "dm": p["dm"],
+                "place": p["place"],
+                "placeId": p["placeId"],
+                "gameId": p["gameId"],
+                "online": p["online"],
+                "ageSeconds": p["ageSeconds"],
+                "client": p["client"],
+                "playerCount": p["playerCount"],
+                "pluginVersion": p["pluginVersion"],
+                "studioVersion": p.get("studioVersion") or None,
+                "pinned": p["peerId"] == pin,
+                "queuedJobs": queued_by_peer.get(p["peerId"], 0),
+                "defaultTarget": False,
+            }
+            if entry["pinned"] and p["online"]:
+                pin_online = True
+            studios.append(entry)
+        # Mark which peer an untargeted job would actually reach.
+        if pin_online:
+            for entry in studios:
+                entry["defaultTarget"] = entry["pinned"] and entry["online"]
+        else:
+            for entry in studios:
+                entry["defaultTarget"] = bool(entry["online"] and entry["dm"] == "edit")
+                if entry["defaultTarget"]:
+                    break
+        return {
+            "ok": True,
+            "count": len(studios),
+            "online": online_count,
+            "pinned": pin,
+            "pinOnline": pin_online,
+            "routing": "pinned" if pin_online else "auto",
+            "studios": studios,
+            "hint": (
+                "Target one with peerId on any tool, or POST /api/studios "
+                "{\"action\":\"set_active\",\"peerId\":\"...\"} to make it the default."
+            ),
+        }
+
+    def set_active_peer(self, peer_id: str = None, place_id: int = None) -> dict:
+        with self.lock:
+            peers = self._active_peers_unlocked()
+            chosen = None
+            if peer_id:
+                chosen = next((p for p in peers if p["peerId"] == peer_id), None)
+                if not chosen:
+                    raise KeyError(f"No connected Studio with peerId {peer_id!r}")
+            elif place_id:
+                chosen = next((p for p in peers if p["placeId"] == int(place_id) and p["online"]), None) \
+                    or next((p for p in peers if p["placeId"] == int(place_id)), None)
+                if not chosen:
+                    raise KeyError(f"No connected Studio on placeId {place_id}")
+            else:
+                raise ValueError("set_active needs peerId or placeId")
+            self.studio_pin = chosen["peerId"]
+            self._save_fleet()
+        self.telemetry.audit.append("fleet.set_active", actor="operator",
+                                    detail={"peerId": chosen["peerId"], "place": chosen["place"]})
+        return {"ok": True, "active": chosen["peerId"], "place": chosen["place"], "dm": chosen["dm"]}
+
+    def clear_active_peer(self) -> dict:
+        with self.lock:
+            previous = self.studio_pin
+            self.studio_pin = None
+            self._save_fleet()
+        if previous:
+            self.telemetry.audit.append("fleet.clear_active", actor="operator", detail={"previous": previous})
+        return {"ok": True, "active": None, "previous": previous}
+
+    def label_peer(self, peer_id: str, label: str = None) -> dict:
+        with self.lock:
+            peers = self._active_peers_unlocked()
+            if not any(p["peerId"] == peer_id for p in peers):
+                raise KeyError(f"No connected Studio with peerId {peer_id!r}")
+            if label:
+                self.peer_labels[peer_id] = str(label)[:60]
+            else:
+                self.peer_labels.pop(peer_id, None)
+            self._save_fleet()
+            saved = self.peer_labels.get(peer_id)
+        return {"ok": True, "peerId": peer_id, "label": saved}
+
+    def fleet_action(self, payload: dict = None) -> dict:
+        body = dict(payload or {})
+        action = (body.get("action") or "list").lower()
+        if action in ("list", "status"):
+            return self.fleet_snapshot()
+        if action in ("set_active", "pin", "activate"):
+            return self.set_active_peer(body.get("peerId") or body.get("peer_id"),
+                                        body.get("placeId") or body.get("place_id"))
+        if action in ("clear_active", "unpin"):
+            return self.clear_active_peer()
+        if action == "label":
+            return self.label_peer(body.get("peerId") or body.get("peer_id"), body.get("label"))
+        raise ValueError(f"Unknown fleet action: {action}")
+
+    BROADCAST_TOOL_KINDS = {
+        "ping_studio": ("ping", {}),
+        "get_studio_state": ("studio_state", {}),
+        "survey_place": ("survey", {"includeSource": False}),
+        "inspect_instance": ("inspect", {"depth": 2}),
+        "script_read": ("read_script", {}),
+        "get_console_output": ("get_console", {}),
+    }
+
+    def broadcast(self, kind: str = "ping", payload: dict = None, timeout: float = 20.0,
+                  dm: str = None, tool: str = None) -> dict:
+        """Fan one read-only job out to every online Studio and collect per-peer results."""
+        if tool:
+            mapped = self.BROADCAST_TOOL_KINDS.get(tool)
+            if not mapped:
+                raise ValueError(f"broadcast does not know tool {tool!r}; use one of "
+                                 f"{', '.join(self.BROADCAST_TOOL_KINDS)}")
+            kind, defaults = mapped
+            payload = {**defaults, **(payload or {})}
+        if kind not in self.BROADCAST_KINDS:
+            raise ValueError(
+                f"broadcast only runs read-only kinds ({', '.join(self.BROADCAST_KINDS)}); "
+                f"refusing {kind!r}"
+            )
+        with self.lock:
+            targets = [p for p in self._active_peers_unlocked()
+                       if p["online"] and (not dm or dm == "auto" or p["dm"] == dm)]
+        if not targets:
+            return {"ok": False, "reason": "no_peer", "error": "No online Studio to broadcast to.",
+                    "kind": kind, "results": []}
+
+        started = _now()
+        submitted = []
+        for peer in targets:
+            try:
+                job, event = self.enqueue_job(kind=kind, payload=payload, note=f"broadcast:{kind}",
+                                              peer_id=peer["peerId"], timeout=max(10.0, timeout))
+            except Exception as exc:  # noqa: BLE001 - one bad peer must not kill the fan-out
+                submitted.append({"peer": peer, "job": None, "event": None, "error": str(exc)})
+                continue
+            submitted.append({"peer": peer, "job": job, "event": event, "error": None})
+
+        deadline = time.monotonic() + max(1.0, timeout)
+        results = []
+        for item in submitted:
+            peer, job, event, error = item["peer"], item["job"], item["event"], item["error"]
+            row = {
+                "peerId": peer["peerId"],
+                "place": peer["place"],
+                "placeId": peer["placeId"],
+                "dm": peer["dm"],
+                "label": self.peer_labels.get(peer["peerId"]) or f"{peer['place']} ({peer['dm']})",
+            }
+            if job is None:
+                row.update({"ok": False, "status": "error", "error": error})
+                results.append(row)
+                continue
+            event.wait(timeout=max(0.1, deadline - time.monotonic()))
+            with self.lock:
+                finished = dict(self.jobs.get(job["id"]) or job)
+            row.update({
+                "jobId": finished.get("id"),
+                "status": finished.get("status"),
+                "ok": finished.get("status") == "done" and bool(finished.get("ok", True)),
+                "durationMs": finished.get("duration_ms"),
+                "result": finished.get("result"),
+                "error": finished.get("error"),
+            })
+            results.append(row)
+
+        done = sum(1 for r in results if r.get("ok"))
+        summary = {
+            "ok": done > 0,
+            "kind": kind,
+            "peers": len(results),
+            "succeeded": done,
+            "failed": len(results) - done,
+            "elapsedMs": round((_now() - started) * 1000.0, 1),
+            "results": results,
+        }
+        self.telemetry.events.emit("fleet.broadcast", {"kind": kind, "peers": len(results), "ok": done})
+        return summary
 
     # -- peer tracking -------------------------------------------------------
 
@@ -246,10 +784,25 @@ class BridgeState:
 
     # -- job routing & matching ----------------------------------------------
 
+    # Read-only job kinds that are safe to fan out across every open Studio.
+    BROADCAST_KINDS = (
+        "ping", "studio_state", "survey", "inspect", "search_tree", "get_properties",
+        "compare_instances", "read_script", "read_scripts", "get_console", "snapshot_list",
+    )
+
     def _peer_matches_job_unlocked(self, peer: dict, job: dict) -> bool:
         req_peer = job.get("target_peer")
         if req_peer and peer["peerId"] != req_peer:
             return False
+        if not req_peer and job.get("target_dm") in (None, "", "auto") and not job.get("place_id"):
+            # An explicitly pinned Studio wins over "any edit peer", but only
+            # while it is actually online — a closed Studio must not stall work.
+            pin = self.studio_pin
+            if pin:
+                pinned = next((p for p in self._active_peers_unlocked()
+                               if p["peerId"] == pin and p["online"]), None)
+                if pinned and peer["peerId"] != pin:
+                    return False
 
         req_place = job.get("place_id")
         if req_place and peer["placeId"] != int(req_place):
@@ -284,23 +837,46 @@ class BridgeState:
         deadline = time.monotonic() + wait_seconds
         with self.poll_cv:
             while True:
+                if self.queue_paused:
+                    # Keep the peer alive (lastPoll still updates) but hand out nothing.
+                    self.peers[peer_info["peerId"]]["lastPoll"] = _now()
+                    if self.poll_cv.wait(timeout=max(0.1, min(0.5, deadline - time.monotonic()))):
+                        continue
+                    if time.monotonic() >= deadline:
+                        return None
+                    continue
                 self.peers[peer_info["peerId"]]["lastPoll"] = _now()
+                best = None
                 for job_id in list(self.pending):
                     job = self.jobs.get(job_id)
                     if not job or job["status"] != "queued":
                         self.pending.remove(job_id)
                         continue
-                    if self._peer_matches_job_unlocked(peer_info, job):
-                        self.pending.remove(job_id)
-                        job["status"] = "running"
-                        job["claimed"] = _now()
-                        job["claimedBy"] = peer_info["peerId"]
-                        job["dm"] = peer_info["dm"]
-                        return {
-                            "id": job["id"],
-                            "type": job["type"],
-                            "payload": job["payload"],
-                        }
+                    if not self._peer_matches_job_unlocked(peer_info, job):
+                        continue
+                    # Priority first, then FIFO, so a critical agent probe is not
+                    # stuck behind a long bulk-build job from another agent.
+                    rank = (int(job.get("priority", 5)), job.get("created", 0))
+                    if best is None or rank < best[0]:
+                        best = (rank, job_id)
+                if best is not None:
+                    job_id = best[1]
+                    job = self.jobs[job_id]
+                    self.pending.remove(job_id)
+                    job["status"] = "running"
+                    job["claimed"] = _now()
+                    job["claimedBy"] = peer_info["peerId"]
+                    job["dm"] = peer_info["dm"]
+                    job["attempts"] = int(job.get("attempts") or 0) + 1
+                    self.telemetry.events.emit("job.claim", {
+                        "id": job["id"], "type": job["type"], "peer": peer_info["peerId"],
+                        "priority": job.get("priority", 5),
+                    })
+                    return {
+                        "id": job["id"],
+                        "type": job["type"],
+                        "payload": job["payload"],
+                    }
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -315,6 +891,9 @@ class BridgeState:
         "clone_instance", "reparent_instance", "delete", "attributes",
         "tags", "selection", "camera", "history", "terrain",
         "insert_asset", "import_image", "playtest", "open_script",
+        # v5.4 playtest surface: synthetic input drives the live game and the
+        # native test runner writes a temporary Script, so both are mutations.
+        "virtual_input", "device_simulator", "studio_tests",
     }
 
     def enqueue_job(
@@ -325,6 +904,12 @@ class BridgeState:
         dm: str = None,
         peer_id: str = None,
         place_id: int = None,
+        idempotency_key: str = None,
+        priority: int = 5,
+        max_retries: int = 0,
+        timeout: float = None,
+        trace: dict = None,
+        actor: dict = None,
     ):
         payload_dict = dict(payload or {}) if isinstance(payload, dict) else {}
 
@@ -339,6 +924,7 @@ class BridgeState:
                 or (kind == "playtest" and payload_dict.get("action") == "status")
                 or (kind == "open_script" and payload_dict.get("listOnly") is True)
                 or (kind == "find_replace_scripts" and payload_dict.get("dryRun") is True)
+                or (kind == "device_simulator" and payload_dict.get("action") in ("status", "list"))
             )
             if not read_sub_ok:
                 raise PermissionError(
@@ -351,7 +937,28 @@ class BridgeState:
 
         effective_place = place_id if place_id is not None else self.guard_place_id
 
+        priority = max(0, min(int(priority if priority is not None else 5), 9))
+        max_retries = max(0, min(int(max_retries or 0), 5))
+        idempotency_key = (idempotency_key or "").strip()[:200] or None
+
         with self.poll_cv:
+            now = _now()
+            # Purge idempotency keys older than an hour so the map stays bounded.
+            if len(self.idempotency) > 512:
+                for key in [k for k, v in self.idempotency.items() if now - v.get("ts", 0) > 3600]:
+                    self.idempotency.pop(key, None)
+
+            if idempotency_key:
+                prior = self.idempotency.get(idempotency_key)
+                prior_job = self.jobs.get(prior["id"]) if prior else None
+                if prior_job and prior_job.get("status") not in ("error", "cancelled"):
+                    prior_job["deduplicated"] = int(prior_job.get("deduplicated") or 0) + 1
+                    self.telemetry.metrics.inc("bridge_job_dedupe_total", 1, {"type": kind})
+                    self.telemetry.events.emit("job.dedupe", {
+                        "id": prior_job["id"], "type": kind, "key": idempotency_key,
+                    })
+                    return prior_job, self.job_events.setdefault(prior_job["id"], threading.Event())
+
             jid = uuid.uuid4().hex[:12]
             done_evt = threading.Event()
             job = {
@@ -365,7 +972,7 @@ class BridgeState:
                 "dm": None,
                 "claimedBy": None,
                 "status": "queued",
-                "created": _now(),
+                "created": now,
                 "claimed": None,
                 "finished": None,
                 "duration_ms": None,
@@ -373,29 +980,86 @@ class BridgeState:
                 "result": None,
                 "error": None,
                 "logs": [],
+                "priority": priority,
+                "maxRetries": max_retries,
+                "retries": 0,
+                "attempts": 0,
+                "timeout": float(timeout) if timeout else None,
+                "idempotencyKey": idempotency_key,
+                "deduplicated": 0,
+                # v5.4.0 provenance: which MCP caller (and which of its spans)
+                # caused this job. Absent for REST/CLI callers.
+                "trace": dict(trace) if isinstance(trace, dict) and trace else None,
+                "actor": dict(actor) if isinstance(actor, dict) and actor else None,
             }
             self.jobs[jid] = job
             self.job_events[jid] = done_evt
             self.pending.append(jid)
             self.history.append(jid)
+            if idempotency_key:
+                self.idempotency[idempotency_key] = {"id": jid, "ts": now}
             while len(self.jobs) > 600:
                 oldest = next(iter(self.jobs))
                 if oldest == jid:
                     break
                 self.jobs.pop(oldest, None)
                 self.job_events.pop(oldest, None)
+            self.telemetry.metrics.inc("bridge_jobs_enqueued_total", 1, {"type": kind})
+            self.telemetry.events.emit("job.enqueue", {
+                "id": jid, "type": kind, "dm": effective_dm, "priority": priority,
+                "note": note, "idempotencyKey": idempotency_key,
+            })
+            if kind in self.MUTATING_JOB_TYPES:
+                self.telemetry.audit.append(
+                    "job.enqueue", actor=note or "agent", target=jid,
+                    detail={"type": kind, "dm": effective_dm, "priority": priority},
+                )
             self.poll_cv.notify_all()
             return job, done_evt
 
+    TRANSIENT_ERROR_HINTS = (
+        "timeout", "timed out", "time-out", "peer", "disconnect", "connection",
+        "econn", "temporarily", "busy", "try again", "socket", "network",
+        "unknown job type", "not ready",
+    )
+
+    def _is_transient_error(self, body: dict, job: dict) -> bool:
+        if body.get("retryable") is True:
+            return True
+        message = str(body.get("error") or "").lower()
+        if not message:
+            return False
+        return any(hint in message for hint in self.TRANSIENT_ERROR_HINTS)
+
     def complete_job(self, body: dict) -> bool:
         jid = body.get("id")
-        with self.lock:
+        with self.poll_cv:
             job = self.jobs.get(jid)
             if not job:
                 return False
             now = _now()
-            job["status"] = "done" if body.get("ok") else "error"
-            job["ok"] = bool(body.get("ok"))
+            ok = bool(body.get("ok"))
+            if not ok and int(job.get("retries") or 0) < int(job.get("maxRetries") or 0) \
+                    and self._is_transient_error(body, job):
+                job["retries"] = int(job.get("retries") or 0) + 1
+                job["attempts"] = int(job.get("attempts") or 0)
+                job["status"] = "queued"
+                job["claimedBy"] = None
+                job["claimed"] = None
+                job["error"] = None
+                job["note"] = (job.get("note") or "") + f" [retry {job['retries']}: {str(body.get('error'))[:120]}]"
+                if jid not in self.pending:
+                    self.pending.append(jid)
+                self.telemetry.metrics.inc("bridge_job_retries_total", 1, {"type": job["type"]})
+                self.telemetry.events.emit("job.retry", {
+                    "id": jid, "type": job["type"], "retry": job["retries"],
+                    "error": str(body.get("error"))[:200],
+                }, level="warn")
+                self.poll_cv.notify_all()
+                return True
+
+            job["status"] = "done" if ok else "error"
+            job["ok"] = ok
             job["result"] = body.get("result")
             job["error"] = body.get("error")
             job["logs"] = body.get("logs") or []
@@ -409,6 +1073,12 @@ class BridgeState:
             evt = self.job_events.get(jid)
             if evt:
                 evt.set()
+            self.telemetry.record_job(job)
+            if not ok:
+                self.telemetry.audit.append(
+                    "job.error", actor=job.get("claimedBy") or "studio", target=jid,
+                    detail={"type": job["type"], "error": str(job.get("error"))[:300]}, outcome="error",
+                )
             return True
 
     def cancel_job(self, jid: str) -> dict:
@@ -515,6 +1185,7 @@ class BridgeState:
             with self.lock:
                 online, st = self.legacy_studio_summary_unlocked()
                 peers = self._active_peers_unlocked()
+                tunnel_state = self.tunnel.state
                 return {
                     "ok": True,
                     "version": VERSION,
@@ -525,6 +1196,30 @@ class BridgeState:
                     "peers": peers,
                     "queued": len(self.pending),
                     "jobs": len(self.jobs),
+                    "uptimeSeconds": round(_now() - self.started, 1),
+                    "authMode": "scoped" if self.token else "open",
+                    "confirmGate": self.confirm_gate_summary(),
+                    "tunnel": {
+                        "state": tunnel_state,
+                        "publicUrl": self.tunnel.public_url,
+                        "localUrl": self.tunnel.local_url,
+                    },
+                    "agents": self.bus.stats()["agents"],
+                    "agentsOnline": self.bus.stats()["agentsOnline"],
+                    "studios": {
+                        "count": len(peers),
+                        "online": sum(1 for p in peers if p["online"]),
+                        "active": self.studio_pin,
+                        "routing": "pinned" if self.studio_pin else "auto",
+                    },
+                    "queuePaused": self.queue_paused,
+                    "queuePausedReason": self.queue_paused_reason,
+                    "sweeper": {
+                        "intervalSeconds": self.sweep_interval,
+                        "offlineSeconds": self.sweep_offline_seconds,
+                        "lastSweep": self._last_sweep or None,
+                        "sweeps": self._sweeps,
+                    },
                 }
         if op == "state":
             with self.lock:
@@ -542,7 +1237,15 @@ class BridgeState:
                     "snapshots": len(self.snapshots),
                     "recent": recent,
                     "server_time": _now(),
+                    "uptimeSeconds": round(_now() - self.started, 1),
+                    "bus": self.bus.stats(),
+                    "tunnel": {
+                        "state": self.tunnel.state,
+                        "publicUrl": self.tunnel.public_url,
+                    },
                 }
+        if op == "studios":
+            return self.fleet_snapshot()
         if op == "peers":
             with self.lock:
                 peers = self._active_peers_unlocked()
@@ -565,13 +1268,207 @@ class BridgeState:
                 dm=body.get("dm"),
                 peer_id=body.get("peer_id"),
                 place_id=body.get("place_id"),
+                idempotency_key=body.get("idempotencyKey") or body.get("idempotency_key"),
+                priority=body.get("priority", 5),
+                max_retries=body.get("maxRetries", body.get("max_retries", 0)),
+                timeout=body.get("timeout"),
+                trace=body.get("trace") if isinstance(body.get("trace"), dict) else None,
+                actor=body.get("actor") if isinstance(body.get("actor"), dict) else None,
             )
             wait = float(body.get("wait") or 0)
             if wait > 0:
                 evt.wait(timeout=min(wait, 120.0))
             with self.lock:
                 return dict(self.jobs[job["id"]])
+        if op == "confirmations":
+            return self.confirmations_report(body)
+        if op == "subscriptions":
+            return self.mcp_dispatcher.subscription_status()
+        if op == "mcp_event":
+            return self.publish_mcp_event(body.get("kind"), body.get("detail"),
+                                          body.get("level") or "info")
+        if op == "bus":
+            return self.bus.handle(body)
+        if op == "fleet":
+            return self.fleet_action(body)
+        if op == "broadcast":
+            return self.broadcast(
+                kind=body.get("type") or body.get("kind") or "ping",
+                payload=body.get("payload"),
+                timeout=float(body.get("timeout") or 20.0),
+                dm=body.get("dm"),
+                tool=body.get("tool"),
+            )
+        if op == "tunnel":
+            return self.tunnel_action(body)
+        if op == "tokens":
+            return self.tokens.handle(body)
+        if op == "metrics":
+            return self.metrics_snapshot()
+        if op == "audit":
+            if body.get("verify"):
+                return self.telemetry.audit.verify()
+            return self.telemetry.audit.tail(int(body.get("limit") or 100), body.get("action"))
+        if op == "events":
+            if body.get("wait") is not None:
+                return self.telemetry.events.tail(int(body.get("cursor") or 0), float(body.get("wait") or 0), int(body.get("limit") or 100))
+            return self.telemetry.events.since(int(body.get("cursor") or 0), int(body.get("limit") or 200), body.get("kinds"))
+        if op in ("ops", "ops_report"):
+            return self.ops_report()
+        if op == "queue_pause":
+            return self.pause_queue(body.get("reason"))
+        if op == "queue_resume":
+            return self.resume_queue()
+        if op == "sweep":
+            return self.auto_sweep()
+        if op == "queue_clear":
+            cancelled = self.clear_queue()
+            self.telemetry.audit.append("queue.clear", actor="internal", detail={"cancelled": cancelled})
+            return {"cancelled": cancelled}
+        if op == "reap":
+            return self.reap_jobs()
         raise ValueError(f"Unknown internal op: {op}")
+
+    # -- tunnel control ------------------------------------------------------
+
+    def tunnel_action(self, payload: dict) -> dict:
+        """Refuse to publish an unauthenticated bridge, then delegate."""
+        action = ((payload or {}).get("action") or "status").lower()
+        if action in ("start", "restart") and not self.token:
+            status = self.tunnel.status()
+            status.update({
+                "state": "blocked",
+                "running": False,
+                "lastError": (
+                    "Refusing to expose the bridge publicly without a token. "
+                    "Run `python setup.py` (it writes bridge.token) or start server.py with --token."
+                ),
+                "security": "blocked_no_token",
+            })
+            self.telemetry.events.emit("tunnel.blocked", {"reason": "no_token"}, level="warn")
+            self.telemetry.audit.append("tunnel.blocked", actor="system", detail={"reason": "no_token"}, outcome="denied")
+            return status
+        return self.tunnel.handle(payload)
+
+    # -- ops reporting -------------------------------------------------------
+
+    def metrics_snapshot(self) -> dict:
+        with self.lock:
+            online, _ = self.legacy_studio_summary_unlocked()
+            peers_online = sum(1 for p in self._active_peers_unlocked() if p["online"])
+            queued = len(self.pending)
+            running = sum(1 for j in self.jobs.values() if j.get("status") == "running")
+            jobs_total = len(self.jobs)
+            online_flag = online
+        bus_stats = self.bus.stats()
+        t = self.telemetry.metrics
+        t.gauge("bridge_peers_online", peers_online)
+        t.gauge("bridge_studio_connected", 1 if online_flag else 0)
+        t.gauge("bridge_queue_depth", queued)
+        t.gauge("bridge_jobs_running", running)
+        t.gauge("bridge_jobs_tracked", jobs_total)
+        t.gauge("bridge_agents_online", bus_stats["agentsOnline"])
+        t.gauge("bridge_tasks_open", sum(
+            v for k, v in bus_stats["taskCounts"].items() if k in ("todo", "in_progress", "blocked")
+        ))
+        t.gauge("bridge_uptime_seconds", round(_now() - self.started, 1))
+        t.gauge("bridge_tunnel_online", 1 if self.tunnel.state == "online" else 0)
+        t.gauge("bridge_queue_paused", 1 if self.queue_paused else 0)
+        t.gauge("bridge_sweeps_total", self._sweeps)
+        return t.snapshot(uptime=_now() - self.started)
+
+    def ops_report(self) -> dict:
+        health = self.direct_dispatch("health", {})
+        metrics = self.metrics_snapshot()
+        bus_stats = self.bus.stats()
+        tasks = self.bus.list_tasks(include_done=False)
+        audit = self.telemetry.audit.tail(10)
+        with self.lock:
+            recent = [summary(self.jobs[i]) for i in list(self.history)[-12:]][::-1]
+        gate_status = self.confirm_gate.status()
+        confirm_block = {
+            "mode": gate_status["mode"],
+            "enabled": gate_status["mode"] != "off",
+            "ttlSeconds": gate_status["ttlSeconds"],
+            "allowanceSeconds": gate_status["allowanceSeconds"],
+            "pending": gate_status["pending"],
+            "pendingCount": gate_status["pendingCount"],
+            "allowances": gate_status["allowances"],
+            "counters": gate_status["counters"],
+            "recentDecisions": gate_status["recentDecisions"][:10],
+        }
+        try:
+            subscriptions_block = self.mcp_dispatcher.subscription_status()
+        except Exception:  # noqa: BLE001
+            subscriptions_block = {"count": 0, "subscriptions": []}
+        self.telemetry.metrics.gauge("bridge_confirmations_pending", gate_status["pendingCount"])
+        self.telemetry.metrics.gauge("bridge_mcp_subscriptions", subscriptions_block.get("count", 0))
+        return {
+            "ok": True,
+            "version": VERSION,
+            "uptimeSeconds": round(_now() - self.started, 1),
+            "health": health,
+            "tunnel": self.tunnel.status(),
+            "metrics": {
+                "counters": {f"{c['name']}{json.dumps(c['labels'], sort_keys=True) if c['labels'] else ''}": c["value"] for c in metrics["counters"][:80]},
+                "histograms": metrics["histograms"][:20],
+            },
+            "bus": bus_stats,
+            "openTasks": tasks["tasks"][:20],
+            "audit": audit["entries"],
+            "recentJobs": recent,
+            "queue": {
+                "paused": self.queue_paused,
+                "reason": self.queue_paused_reason,
+                "pausedAt": self.queue_paused_at,
+                "depth": health.get("queued"),
+            },
+            "sweeper": {
+                "intervalSeconds": self.sweep_interval,
+                "offlineSeconds": self.sweep_offline_seconds,
+                "lastSweep": self._last_sweep or None,
+                "sweeps": self._sweeps,
+                "tasksReaped": bus_stats.get("tasksReaped"),
+                "agentsReaped": bus_stats.get("agentsReaped"),
+            },
+            "jobLatency": self._job_latency_summary(),
+            "fleet": self.fleet_snapshot(),
+            "mcp": {
+                "protocolVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
+                "modernProtocol": MODERN_PROTOCOL_VERSION,
+                "tasks": len(getattr(self.mcp_dispatcher, "tasks", {}) or {}),
+                "confirmGate": confirm_block,
+                "subscriptions": subscriptions_block,
+                "autoTaskMs": getattr(self.mcp_dispatcher, "auto_task_ms", 0.0),
+                "legacyConfirmWaitSeconds": getattr(self.mcp_dispatcher, "legacy_wait_seconds", 0.0),
+            },
+            "servedAt": _now(),
+        }
+
+    def _job_latency_summary(self, limit: int = 300) -> dict:
+        """p50/p95 wall time per tool over recent completed jobs (no external deps)."""
+        with self.lock:
+            samples = {}
+            for job_id in list(self.history)[-limit:]:
+                job = self.jobs.get(job_id) or {}
+                duration = job.get("duration_ms")
+                if not isinstance(duration, (int, float)) or duration <= 0:
+                    continue
+                samples.setdefault(job.get("type") or "unknown", []).append(float(duration))
+        out = {}
+        for tool, values in samples.items():
+            values.sort()
+            count = len(values)
+            if not count:
+                continue
+            out[tool] = {
+                "count": count,
+                "p50": round(values[min(count - 1, int(0.50 * count))], 1),
+                "p95": round(values[min(count - 1, int(0.95 * count))], 1),
+                "max": round(values[-1], 1),
+                "mean": round(sum(values) / count, 1),
+            }
+        return dict(sorted(out.items(), key=lambda kv: -kv[1]["count"])[:20])
 
 
 def summary(job: dict) -> dict:
@@ -587,6 +1484,8 @@ def summary(job: dict) -> dict:
         "ok": job["ok"],
         "error": job["error"],
         "result": out,
+        "trace": job.get("trace"),
+        "actor": job.get("actor"),
         "duration_ms": job.get("duration_ms"),
         "created": job["created"],
         "finished": job["finished"],
@@ -612,6 +1511,13 @@ def make_http_handler(state: BridgeState):
             if forwarded:
                 return False
             return ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+        def _mcp_headers(self, protocol_version: str = None) -> dict:
+            """`Mcp-Session-Id` is a legacy-era artefact: the 2026-07-28 core
+            removed protocol sessions, so modern answers do not advertise one."""
+            if (protocol_version or "") == MODERN_PROTOCOL_VERSION:
+                return {}
+            return {"Mcp-Session-Id": state.session_id}
 
         def _send(self, code: int, body, ctype: str = "application/json; charset=utf-8", extra_headers: dict = None):
             if isinstance(body, (dict, list)):
@@ -650,17 +1556,98 @@ def make_http_handler(state: BridgeState):
             except Exception:
                 return {"_raw": raw.decode("utf-8", "replace")}
 
-        def _authorized(self, qs: dict) -> bool:
-            if not state.token:
-                return True
+        @staticmethod
+        def _int_qs(qs: dict, key: str, default: int = 0, minimum: int = 0, maximum: int = 10000) -> int:
+            try:
+                value = int((qs.get(key) or [default])[0])
+            except (TypeError, ValueError):
+                return default
+            return max(minimum, min(value, maximum))
+
+        def _supplied_token(self, qs: dict):
             bearer = self.headers.get("Authorization", "")
             bearer_tok = bearer[7:].strip() if bearer.lower().startswith("bearer ") else None
-            supplied = (
+            return (
                 qs.get("token", [None])[0]
                 or self.headers.get("X-Arena-Token")
                 or bearer_tok
             )
-            return supplied == state.token
+
+        def _auth_ctx(self, qs: dict, required: str = "read", allow_loopback: bool = False):
+            """Return (context, error). Auth is a no-op when no token is configured."""
+            supplied = self._supplied_token(qs)
+            ctx, err = state.authenticate(
+                supplied,
+                is_loopback=self._is_loopback(),
+                required=required,
+            )
+            if err and allow_loopback and required == "read" and not supplied and self._is_loopback():
+                # Backwards-compatible convenience for local dashboards/CLIs on
+                # read-only discovery endpoints. Never applied to /mcp or writes.
+                return {"role": "read", "id": "loopback", "label": "loopback"}, None
+            return ctx, err
+
+        def _authorized(self, qs: dict) -> bool:
+            ctx, err = self._auth_ctx(qs, "read")
+            return err is None
+
+        def _require(self, qs: dict, required: str = "read", allow_loopback: bool = False):
+            """Scope check that writes the error response itself. Returns ctx or None."""
+            ctx, err = self._auth_ctx(qs, required, allow_loopback=allow_loopback)
+            if err:
+                headers = None
+                if err.get("code") == 429:
+                    headers = {"Retry-After": str(err.get("retryAfter", 1))}
+                payload = {"error": err.get("error")}
+                if err.get("retryAfter"):
+                    payload["retryAfter"] = err["retryAfter"]
+                self._send(err.get("code", 401), payload, extra_headers=headers)
+                state.telemetry.metrics.inc(
+                    "bridge_auth_rejections_total", 1,
+                    {"code": str(err.get("code")), "path": urlparse(self.path).path},
+                )
+                return None
+            return ctx
+
+        # -- Server-Sent Events -------------------------------------------------
+
+        def _stream_events(self, qs: dict):
+            cursor = self._int_qs(qs, "since", 0) or self._int_qs(qs, "cursor", 0)
+            kinds = (qs.get("kinds") or [None])[0]
+            try:
+                max_seconds = min(float((qs.get("maxSeconds") or ["300"])[0] or 300), 900)
+            except (TypeError, ValueError):
+                max_seconds = 300.0
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            def _write(chunk: str):
+                self.wfile.write(chunk.encode("utf-8"))
+                self.wfile.flush()
+
+            started = time.monotonic()
+            _write(": arena bridge event stream\n\n")
+            try:
+                if cursor == 0:
+                    seed = state.telemetry.events.since(0, 50, kinds)
+                    for event in seed["events"]:
+                        _write(f"id: {event['seq']}\ndata: {json.dumps(event)}\n\n")
+                    cursor = seed["cursor"]
+                while time.monotonic() - started < max_seconds:
+                    batch = state.telemetry.events.tail(cursor, timeout=10.0)
+                    for event in batch["events"]:
+                        _write(f"id: {event['seq']}\ndata: {json.dumps(event)}\n\n")
+                        cursor = event["seq"]
+                    if batch.get("timeout"):
+                        _write(": keepalive\n\n")
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
 
         def do_OPTIONS(self):
             self._send(204, b"")
@@ -722,13 +1709,17 @@ def make_http_handler(state: BridgeState):
                         "bridgeDir": str(HERE) if is_local else "",
                         "mcpServerPath": str(HERE / "mcp_server.py") if is_local else "roblox-bridge/mcp_server.py",
                         "cliPath": str(HERE / "arena_studio.py") if is_local else "roblox-bridge/arena_studio.py",
+                        "version": VERSION,
+                        "toolCount": len(TOOL_SPECS),
+                        "authRoles": ["read", "write", "admin"],
                         "tools": tools_lite,
                     },
                 )
 
             if path == "/mcp":
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "unauthorized"})
+                ctx = self._require(qs, "read")
+                if not ctx:
+                    return
                 return self._send(
                     200,
                     {
@@ -737,24 +1728,29 @@ def make_http_handler(state: BridgeState):
                         "transport": "streamable-http",
                         "tools": len(TOOL_SPECS),
                         "readOnly": state.read_only,
+                        "role": ctx["role"],
                     },
                     extra_headers={"Mcp-Session-Id": state.session_id},
                 )
 
+            # Public, unauthenticated liveness probe used by the tunnel supervisor
+            # and uptime monitors. Contains no place data or secrets.
             if path == "/api/health":
                 return self._send(200, state.direct_dispatch("health", {}))
 
-            if path == "/api/self-test":
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "bad token"})
-                return self._send(200, run_bridge_self_test(state.mcp_client, include_studio_smoke=True, timeout=180))
-
             if path == "/api/state":
+                if not self._require(qs, "read"):
+                    return
                 return self._send(200, state.direct_dispatch("state", {}))
 
+            if path == "/api/self-test":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, run_bridge_self_test(state.mcp_client, include_studio_smoke=True, timeout=180))
+
             if path == "/api/agent-guide":
-                if not self._authorized(qs) and not self._is_loopback():
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read", allow_loopback=True):
+                    return
                 host_hdr = self.headers.get("Host") or "127.0.0.1:8077"
                 proto = "https" if self.headers.get("CF-Connecting-IP") else "http"
                 return self._send(
@@ -763,18 +1759,87 @@ def make_http_handler(state: BridgeState):
                 )
 
             if path == "/api/peers":
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read"):
+                    return
                 return self._send(200, state.direct_dispatch("peers", {}))
 
+            if path == "/api/studios":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, state.fleet_snapshot())
+
+            # --- v5 observability & collaboration --------------------------------
+            if path == "/api/ops":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, state.ops_report())
+
+            if path == "/api/metrics":
+                if not self._require(qs, "read"):
+                    return
+                fmt = (qs.get("format") or ["json"])[0].lower()
+                if fmt in ("prometheus", "prom", "text"):
+                    body = state.telemetry.metrics.prometheus()
+                    return self._send(200, body, "text/plain; version=0.0.4; charset=utf-8")
+                return self._send(200, state.metrics_snapshot())
+
+            if path == "/api/events":
+                if not self._require(qs, "read"):
+                    return
+                if (qs.get("once") or qs.get("snapshot") or ["0"])[0] in ("1", "true", "yes"):
+                    cursor = self._int_qs(qs, "since", 0) or self._int_qs(qs, "cursor", 0)
+                    limit = self._int_qs(qs, "limit", 100, 1, 1000)
+                    return self._send(200, state.telemetry.events.since(cursor, limit, (qs.get("kinds") or [None])[0]))
+                return self._stream_events(qs)
+
+            if path == "/api/audit":
+                if not self._require(qs, "read"):
+                    return
+                if (qs.get("verify") or ["0"])[0] in ("1", "true", "yes"):
+                    return self._send(200, state.telemetry.audit.verify())
+                limit = self._int_qs(qs, "limit", 100, 1, 2000)
+                return self._send(200, state.telemetry.audit.tail(limit, (qs.get("action") or [None])[0]))
+
+            if path == "/api/bus":
+                if not self._require(qs, "read"):
+                    return
+                payload = {k: v[0] for k, v in qs.items() if k != "token"}
+                payload.setdefault("action", "stats")
+                try:
+                    return self._send(200, state.bus.handle(payload))
+                except KeyError as exc:
+                    return self._send(404, {"error": str(exc)})
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+
+            if path == "/api/tunnel":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, state.tunnel.status())
+
+            if path == "/api/confirmations":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, state.confirmations_report({"action": "status"}))
+
+            if path == "/api/subscriptions":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, state.mcp_dispatcher.subscription_status())
+
+            if path == "/api/tokens":
+                if not self._require(qs, "admin"):
+                    return
+                return self._send(200, state.tokens.list())
+
             if path == "/api/snapshots":
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read"):
+                    return
                 return self._send(200, state.handle_snapshots({"action": "list"}))
 
             if path.startswith("/api/snapshots/"):
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read"):
+                    return
                 sid = path.rsplit("/", 1)[-1]
                 try:
                     return self._send(200, state.handle_snapshots({"action": "get", "id": sid}))
@@ -783,15 +1848,15 @@ def make_http_handler(state: BridgeState):
 
             # Studio plugin long-polls here
             if path == "/api/poll":
-                if not self._authorized(qs):
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read"):
+                    return
                 peer_info = state.record_poll(qs)
                 job = state.poll_for_job(peer_info, wait_seconds=8.0)
-                return self._send(200, {"job": job})
+                return self._send(200, {"job": job, "paused": state.queue_paused})
 
             if path.startswith("/api/jobs/"):
-                if not self._authorized(qs) and not self._is_loopback():
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read", allow_loopback=True):
+                    return
                 job_id = path.rsplit("/", 1)[-1]
                 with state.lock:
                     job = state.jobs.get(job_id)
@@ -800,23 +1865,91 @@ def make_http_handler(state: BridgeState):
                 return self._send(200, job)
 
             if path == "/api/jobs":
-                if not self._authorized(qs) and not self._is_loopback():
-                    return self._send(401, {"error": "bad token"})
+                if not self._require(qs, "read", allow_loopback=True):
+                    return
                 with state.lock:
                     return self._send(200, {"jobs": [summary(state.jobs[i]) for i in state.history]})
 
             return self._send(404, {"error": "not found"})
+
+        def _stream_mcp_subscription(self, stream: dict, protocol_version: str = None):
+            """Hold this POST open and forward MCP notifications as SSE frames."""
+            sub_id = stream.get("subscriptionId")
+            max_seconds = stream.get("maxSeconds")
+            poll_seconds = stream.get("pollSeconds") or 0.75
+            try:
+                max_seconds = float(max_seconds) if max_seconds is not None else None
+            except (TypeError, ValueError):
+                max_seconds = None
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            if (protocol_version or "") != MODERN_PROTOCOL_VERSION:
+                self.send_header("Mcp-Session-Id", state.session_id)
+            if sub_id:
+                self.send_header("X-Arena-Subscription", str(sub_id))
+            self.end_headers()
+
+            stop = threading.Event()
+
+            def _write(payload):
+                frame = json.dumps(payload, ensure_ascii=False, default=str)
+                self.wfile.write(f"event: message\ndata: {frame}\n\n".encode("utf-8"))
+                self.wfile.flush()
+
+            try:
+                _write(stream["ack"])
+                state.mcp_dispatcher.pump_subscription(
+                    sub_id, _write, stop_event=stop, max_seconds=max_seconds, poll_seconds=poll_seconds,
+                )
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                stop.set()
+                if sub_id:
+                    state.mcp_dispatcher.drop_subscription(sub_id)
+            except Exception:  # noqa: BLE001 - never leak a traceback into the socket
+                stop.set()
 
         def do_POST(self):
             url = urlparse(self.path)
             qs = parse_qs(url.query)
             path = url.path.rstrip("/") or "/"
 
-            if not self._authorized(qs):
-                return self._send(401, {"error": "bad token"})
+            # Native MCP Streamable HTTP endpoint (JSON-RPC 2.0). The token role
+            # determines whether mutating tools are advertised/callable.
+            if path == "/api/mcp/events":
+                # MCP-side telemetry (confirmations, subscriptions) from a
+                # standalone mcp_server.py attached over HTTP. Needs admin scope:
+                # it writes into the audit chain.
+                if not self._require(qs, "admin"):
+                    return
+                body = self._body()
+                return self._send(200, state.publish_mcp_event(
+                    body.get("kind"), body.get("detail"), body.get("level") or "info"))
 
-            # Native MCP Streamable HTTP endpoint (JSON-RPC 2.0)
+            if path == "/api/confirmations":
+                if not self._require(qs, "write"):
+                    return
+                try:
+                    report = state.confirmations_report(self._body())
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                return self._send(200, report)
+
+            if path == "/api/subscriptions/close":
+                if not self._require(qs, "admin"):
+                    return
+                sub_id = (self._body() or {}).get("subscriptionId")
+                return self._send(200, state.mcp_dispatcher.drop_subscription(sub_id))
+
+
             if path == "/mcp":
+                ctx = self._require(qs, "read")
+                if not ctx:
+                    return
                 raw = self._read_body_raw()
                 try:
                     rpc_in = json.loads(raw.decode("utf-8"))
@@ -824,17 +1957,83 @@ def make_http_handler(state: BridgeState):
                     return self._send(
                         400,
                         {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {exc}"}},
-                        extra_headers={"Mcp-Session-Id": state.session_id},
+                        extra_headers=self._mcp_headers(header_version),
                     )
+                # Dual-era MCP over Streamable HTTP:
+                #  * modern clients send the version in MCP-Protocol-Version (and
+                #    optionally per-request _meta) instead of an initialize handshake
+                #  * Mcp-Method / Mcp-Name must agree with the body (-32020)
+                header_version = (self.headers.get("MCP-Protocol-Version") or "").strip()
+                header_method = (self.headers.get("Mcp-Method") or "").strip()
+                header_name = (self.headers.get("Mcp-Name") or "").strip()
+                if isinstance(rpc_in, dict):
+                    if header_version:
+                        meta = rpc_in.get("_meta")
+                        if not isinstance(meta, dict):
+                            meta = {}
+                            rpc_in["_meta"] = meta
+                        meta.setdefault("io.modelcontextprotocol/protocolVersion", header_version)
+                    body_method = (rpc_in.get("method") or "").strip()
+                    if header_method and body_method and header_method != body_method:
+                        return self._send(400, {
+                            "jsonrpc": "2.0", "id": rpc_in.get("id"),
+                            "error": {"code": -32020, "message": "Mcp-Method header does not match the JSON-RPC method",
+                                      "data": {"header": header_method, "body": body_method}},
+                        }, extra_headers=self._mcp_headers(header_version))
+                    if header_name and body_method in ("tools/call", "resources/read", "prompts/get"):
+                        params = rpc_in.get("params") or {}
+                        body_name = params.get("name") or params.get("uri") or ""
+                        if body_name and header_name != body_name:
+                            return self._send(400, {
+                                "jsonrpc": "2.0", "id": rpc_in.get("id"),
+                                "error": {"code": -32020, "message": "Mcp-Name header does not match the request name",
+                                          "data": {"header": header_name, "body": body_name}},
+                            }, extra_headers=self._mcp_headers(header_version))
+
+                # `_meta` is authoritative in the 2026-07-28 era: a client that
+                # negotiates per request (without an MCP-Protocol-Version header)
+                # still gets era-correct response headers.
+                negotiated_version = header_version
+                if isinstance(rpc_in, dict) and isinstance(rpc_in.get("_meta"), dict):
+                    negotiated_version = (rpc_in["_meta"].get("io.modelcontextprotocol/protocolVersion")
+                                          or header_version)
+
+                # Tell the dispatcher who is calling (scoped-token identity) so a
+                # confirmation can never be replayed by a different principal.
+                if isinstance(rpc_in, dict):
+                    meta = rpc_in.get("_meta")
+                    if not isinstance(meta, dict):
+                        meta = {}
+                        rpc_in["_meta"] = meta
+                    meta.setdefault("x-arena-principal", f"{ctx.get('role','read')}:{ctx.get('label') or ctx.get('id') or 'anon'}")
+
+                rpc_in, scope_error = self._enforce_mcp_scope(rpc_in, ctx)
+                if scope_error is not None:
+                    return self._send(200, scope_error, extra_headers=self._mcp_headers(negotiated_version))
                 rpc_out = state.mcp_dispatcher.handle_payload(rpc_in)
                 if rpc_out is None:
-                    return self._send(202, b"", "text/plain; charset=utf-8", {"Mcp-Session-Id": state.session_id})
-                return self._send(200, rpc_out, extra_headers={"Mcp-Session-Id": state.session_id})
+                    return self._send(202, b"", "text/plain; charset=utf-8",
+                                     self._mcp_headers(negotiated_version))
+
+                # subscriptions/listen answers on a long-lived response stream: the
+                # acknowledgement goes out first, then one SSE frame per notification.
+                stream = state.mcp_dispatcher_take_stream(rpc_out)
+                if stream:
+                    return self._stream_mcp_subscription(stream, negotiated_version)
+                extra = self._mcp_headers(negotiated_version)
+                if stream is None and isinstance(rpc_out, dict) and (rpc_out.get("result") or {}).get("taskId"):
+                    # A task handle is a promise to poll, so tell the client where.
+                    extra["X-Arena-Task"] = str(rpc_out["result"]["taskId"])
+                return self._send(200, rpc_out, extra_headers=extra)
 
             body = self._body()
 
-            # Enqueue job for Studio
+            # Enqueue job for Studio (requires write scope; admin when read-only
+            # inspector mode is active, since that setting is a safety control).
             if path == "/api/jobs":
+                ctx = self._require(qs, "write")
+                if not ctx:
+                    return
                 kind = body.get("type")
                 if not kind:
                     return self._send(400, {"error": "type is required"})
@@ -842,10 +2041,14 @@ def make_http_handler(state: BridgeState):
                     job, evt = state.enqueue_job(
                         kind=kind,
                         payload=body.get("payload"),
-                        note=body.get("note"),
+                        note=body.get("note") or f"api:{ctx['label']}",
                         dm=body.get("dm"),
                         peer_id=body.get("peer_id"),
                         place_id=body.get("place_id"),
+                        idempotency_key=body.get("idempotencyKey") or self.headers.get("Idempotency-Key"),
+                        priority=body.get("priority", 5),
+                        max_retries=body.get("maxRetries", 0),
+                        timeout=body.get("timeout"),
                     )
                 except PermissionError as exc:
                     return self._send(403, {"error": str(exc)})
@@ -855,9 +2058,16 @@ def make_http_handler(state: BridgeState):
                     evt.wait(timeout=min(wait, 120.0))
                     with state.lock:
                         return self._send(200, state.jobs[job["id"]])
-                return self._send(201, {"id": job["id"], "status": job["status"]})
+                return self._send(201, {
+                    "id": job["id"],
+                    "status": job["status"],
+                    "priority": job.get("priority"),
+                    "deduplicated": job.get("deduplicated", 0),
+                })
 
             if path.startswith("/api/jobs/") and path.endswith("/cancel"):
+                if not self._require(qs, "write"):
+                    return
                 parts = path.split("/")
                 job_id = parts[3] if len(parts) >= 5 else ""
                 try:
@@ -866,9 +2076,24 @@ def make_http_handler(state: BridgeState):
                     return self._send(404, {"error": str(exc)})
 
             if path == "/api/queue/clear":
-                return self._send(200, {"cancelled": state.clear_queue()})
+                ctx = self._require(qs, "admin")
+                if not ctx:
+                    return
+                cancelled = state.clear_queue()
+                state.telemetry.audit.append("queue.clear", actor=ctx["label"], detail={"cancelled": cancelled})
+                return self._send(200, {"cancelled": cancelled})
+
+            if path in ("/api/queue/pause", "/api/queue/resume"):
+                ctx = self._require(qs, "admin")
+                if not ctx:
+                    return
+                if path.endswith("pause"):
+                    return self._send(200, state.pause_queue(body.get("reason")))
+                return self._send(200, state.resume_queue())
 
             if path == "/api/snapshots":
+                if not self._require(qs, "write"):
+                    return
                 try:
                     return self._send(200, state.handle_snapshots(body))
                 except KeyError as exc:
@@ -876,13 +2101,147 @@ def make_http_handler(state: BridgeState):
                 except ValueError as exc:
                     return self._send(400, {"error": str(exc)})
 
+            # --- v5 collaboration & ops control ---------------------------------
+            if path == "/api/bus":
+                action = (body.get("action") or "stats")
+                required = "write" if action not in (
+                    "stats", "agents", "list_agents", "inbox", "thread", "tasks",
+                    "list_tasks", "feed", "events", "status",
+                ) else "read"
+                ctx = self._require(qs, required)
+                if not ctx:
+                    return
+                try:
+                    result = state.bus.handle(body)
+                except KeyError as exc:
+                    return self._send(404, {"error": str(exc)})
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                state.telemetry.metrics.inc("bridge_bus_actions_total", 1, {"action": action})
+                return self._send(200, result)
+
+            if path == "/api/studios":
+                action = (body.get("action") or "list").lower()
+                ctx = self._require(qs, "read" if action in ("list", "status") else "write")
+                if not ctx:
+                    return
+                try:
+                    if action == "broadcast":
+                        return self._send(200, state.broadcast(
+                            kind=body.get("type") or body.get("kind") or "ping",
+                            payload=body.get("payload") if body.get("payload") else {"path": body["path"]} if body.get("path") else None,
+                            timeout=float(body.get("timeout") or 20.0),
+                            dm=body.get("dm"),
+                            tool=body.get("tool"),
+                        ))
+                    return self._send(200, state.fleet_action(body))
+                except KeyError as exc:
+                    return self._send(404, {"error": str(exc)})
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+
+            if path == "/api/ops":
+                action = (body.get("action") or "status").lower()
+                required = "read" if action in ("status", "report") else "admin"
+                ctx = self._require(qs, required)
+                if not ctx:
+                    return
+                if action in ("status", "report"):
+                    return self._send(200, state.ops_report())
+                try:
+                    result = state.direct_dispatch(action, body)
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                state.telemetry.audit.append(f"ops.{action}", actor=ctx["label"], outcome="ok")
+                return self._send(200, result)
+
+            if path == "/api/tunnel":
+                action = (body.get("action") or "status").lower()
+                required = "admin" if action in ("start", "stop", "restart") else "read"
+                ctx = self._require(qs, required)
+                if not ctx:
+                    return
+                try:
+                    result = state.tunnel_action(body)
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                if action in ("start", "stop", "restart"):
+                    state.telemetry.audit.append(f"tunnel.{action}", actor=ctx["label"], outcome="ok")
+                    state.telemetry.events.emit("tunnel.action", {"action": action, "actor": ctx["label"]})
+                return self._send(200, result)
+
+            if path == "/api/tokens":
+                ctx = self._require(qs, "admin")
+                if not ctx:
+                    return
+                action = (body.get("action") or "list")
+                try:
+                    result = state.tokens.handle(body)
+                except KeyError as exc:
+                    return self._send(404, {"error": str(exc)})
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                if action in ("create", "revoke"):
+                    state.telemetry.audit.append(
+                        f"token.{action}", actor=ctx["label"],
+                        target=result.get("id") or body.get("id") or "",
+                        detail={"role": result.get("role")} if action == "create" else None,
+                    )
+                return self._send(200, result)
+
             # Studio plugin posts completed job result
             if path == "/api/result":
+                if not self._require(qs, "write"):
+                    return
                 if not state.complete_job(body):
                     return self._send(404, {"error": "no such job"})
                 return self._send(200, {"ack": True})
 
             return self._send(404, {"error": "not found"})
+
+        def _enforce_mcp_scope(self, rpc_in, ctx):
+            """Block mutating MCP tool calls for read-scoped tokens (batch aware)."""
+            if ctx.get("role") == "admin" or ctx.get("id") in ("open", "loopback"):
+                return rpc_in, None
+
+            def blocked(item):
+                if not isinstance(item, dict) or item.get("method") != "tools/call":
+                    return None
+                params = item.get("params") or {}
+                name = params.get("name")
+                args = params.get("arguments") or {}
+                spec = TOOL_MAP.get(name)
+                if not spec:
+                    return None
+                if spec.get("annotations", {}).get("readOnlyHint"):
+                    return None
+                if is_tool_call_read_only(name, args):
+                    return None
+                message = (
+                    f"Blocked by token scope: token '{ctx.get('label')}' has role "
+                    f"'{ctx.get('role')}', which cannot call mutating tool '{name}'. "
+                    "Mint a write-scoped token via POST /api/tokens or use bridge.token."
+                )
+                return {
+                    "jsonrpc": "2.0",
+                    "id": item.get("id"),
+                    "result": {
+                        "isError": True,
+                        "content": [{"type": "text", "text": message}],
+                        "structuredContent": {"ok": False, "reason": "insufficient_scope", "tool": name},
+                    },
+                }
+
+            if isinstance(rpc_in, list):
+                for item in rpc_in:
+                    err = blocked(item)
+                    if err is not None:
+                        return rpc_in, err
+                return rpc_in, None
+            err = blocked(rpc_in)
+            if err is not None:
+                return rpc_in, err
+            return rpc_in, None
 
     return Handler
 
@@ -892,84 +2251,217 @@ def make_http_handler(state: BridgeState):
 # ----------------------------------------------------------------------------
 
 def dashboard_html() -> str:
-    return r"""<!doctype html>
+    html = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>Roblox Studio MCP, 3D Viewport Vision &amp; Open-Source Kit (v4.0)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
- :root{color-scheme:dark;--bg:#0b0f16;--panel:#131922;--panel2:#0e131b;--border:#232c3a;
-       --txt:#e6edf3;--muted:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--amber:#d29922}
+ :root{color-scheme:dark;--bg:#070b12;--bg2:#0a1018;--panel:rgba(19,25,34,.82);--panel2:#0d131c;
+       --border:#22303f;--border2:#2c3f55;--txt:#e8eff7;--muted:#8fa0b4;--accent:#5cc8ff;
+       --accent2:#a78bfa;--green:#45e0a0;--red:#ff6b6b;--amber:#ffc857;--radius:14px;
+       --shadow:0 18px 40px -24px rgba(0,0,0,.9)}
  *{box-sizing:border-box}
+ html{scroll-behavior:smooth}
  body{margin:0;background:var(--bg);color:var(--txt);
-      font:13.5px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+      font:13.5px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+      -webkit-font-smoothing:antialiased;position:relative;min-height:100vh}
+ body::before{content:"";position:fixed;inset:-30% -10% auto -10%;height:75vh;z-index:-1;pointer-events:none;
+      background:
+        radial-gradient(46% 60% at 18% 20%,rgba(92,200,255,.16),transparent 70%),
+        radial-gradient(40% 55% at 78% 10%,rgba(167,139,250,.16),transparent 70%),
+        radial-gradient(52% 60% at 55% 78%,rgba(69,224,160,.09),transparent 72%);
+      filter:blur(6px);animation:aura 22s ease-in-out infinite alternate}
+ body::after{content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;opacity:.35;
+      background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+                       linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+      background-size:46px 46px;
+      -webkit-mask-image:radial-gradient(ellipse at 50% 0%,#000 20%,transparent 78%);
+      mask-image:radial-gradient(ellipse at 50% 0%,#000 20%,transparent 78%)}
+ @keyframes aura{0%{transform:translate3d(-2%,0,0) scale(1)}50%{transform:translate3d(2%,2%,0) scale(1.06)}100%{transform:translate3d(-1%,3%,0) scale(1.02)}}
+ ::selection{background:rgba(92,200,255,.28);color:#fff}
+ *::-webkit-scrollbar{width:10px;height:10px}
+ *::-webkit-scrollbar-track{background:transparent}
+ *::-webkit-scrollbar-thumb{background:#1e2a38;border-radius:99px;border:2px solid transparent;background-clip:content-box}
+ *::-webkit-scrollbar-thumb:hover{background:#2c3f55;background-clip:content-box}
  code,pre,textarea,input,select{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
- header{padding:14px 24px;background:var(--panel);border-bottom:1px solid var(--border);
-        display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:20}
- h1{font-size:16px;font-weight:700;margin:0;letter-spacing:.2px}
+ header{padding:16px 26px;background:linear-gradient(180deg,rgba(12,18,26,.94),rgba(12,18,26,.72));
+        -webkit-backdrop-filter:blur(14px) saturate(140%);backdrop-filter:blur(14px) saturate(140%);
+        border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+        position:sticky;top:0;z-index:30}
+ header::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;
+        background:linear-gradient(90deg,transparent,rgba(92,200,255,.55),rgba(167,139,250,.55),transparent);
+        opacity:.7}
+ h1{font-size:16.5px;font-weight:750;margin:0;letter-spacing:.2px;display:flex;align-items:center;gap:9px}
+ h1 .brand{background:linear-gradient(92deg,#e8eff7 10%,#9ddcff 55%,#c3b3ff 95%);
+        -webkit-background-clip:text;background-clip:text;color:transparent}
+ h1 .logo{width:22px;height:22px;border-radius:7px;flex:0 0 auto;
+        background:conic-gradient(from 210deg,#5cc8ff,#a78bfa,#45e0a0,#5cc8ff);
+        box-shadow:0 0 18px rgba(92,200,255,.42);animation:spin 14s linear infinite}
+ @keyframes spin{to{transform:rotate(360deg)}}
  h2{font-size:15px;font-weight:700;margin:0 0 8px}
- h3{font-size:13.5px;font-weight:700;margin:0 0 6px;color:#c9d1d9}
+ h3{font-size:13.5px;font-weight:700;margin:0 0 6px;color:#d7e3f1}
  .sub{color:var(--muted);font-size:12px}
  .spacer{flex:1}
- .pill{padding:4px 11px;border-radius:999px;font-size:11.5px;font-weight:600;border:1px solid transparent}
- .on{background:#0f2f1b;color:var(--green);border-color:#23562f}
- .off{background:#2d1618;color:var(--red);border-color:#5c2326}
- .ro{background:#2b220c;color:var(--amber);border-color:#5a4414}
- .info-pill{background:#122338;color:var(--accent);border-color:#244870}
- nav{display:flex;gap:6px;padding:10px 24px;background:var(--panel2);border-bottom:1px solid var(--border);
-     overflow-x:auto}
+ .pill{padding:4px 11px;border-radius:999px;font-size:11.5px;font-weight:650;border:1px solid transparent;
+       display:inline-flex;align-items:center;gap:6px;transition:.18s}
+ .on{background:rgba(69,224,160,.12);color:var(--green);border-color:rgba(69,224,160,.4)}
+ .off{background:rgba(255,107,107,.12);color:var(--red);border-color:rgba(255,107,107,.36)}
+ .ro{background:rgba(255,200,87,.12);color:var(--amber);border-color:rgba(255,200,87,.38)}
+ .info-pill{background:rgba(92,200,255,.1);color:var(--accent);border-color:rgba(92,200,255,.34)}
+ .pill.live::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;
+       box-shadow:0 0 0 0 currentColor;animation:pulse 2.1s ease-out infinite}
+ @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(69,224,160,.55)}70%{box-shadow:0 0 0 7px rgba(69,224,160,0)}100%{box-shadow:0 0 0 0 rgba(69,224,160,0)}}
+ nav{display:flex;gap:6px;padding:10px 22px;background:rgba(10,16,24,.72);
+     -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+     border-bottom:1px solid var(--border);overflow-x:auto;position:relative;z-index:25}
  .tab-btn{background:transparent;color:var(--muted);border:1px solid transparent;padding:7px 14px;
-          border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap}
- .tab-btn:hover{color:var(--txt);background:#17202c}
- .tab-btn.active{color:#fff;background:#1b2838;border-color:#2f4663}
- main{padding:20px 24px;max-width:1280px;margin:0 auto}
+          border-radius:10px;cursor:pointer;font-size:12.8px;font-weight:650;white-space:nowrap;
+          position:relative;transition:color .18s,background .18s,transform .18s,box-shadow .18s}
+ .tab-btn:hover{color:var(--txt);background:rgba(255,255,255,.05);transform:translateY(-1px)}
+ .tab-btn.active{color:#fff;background:linear-gradient(180deg,rgba(92,200,255,.2),rgba(92,200,255,.07));
+          border-color:rgba(92,200,255,.38);box-shadow:0 6px 18px -12px rgba(92,200,255,.9),inset 0 1px 0 rgba(255,255,255,.08)}
+ .tab-btn.active::after{content:"";position:absolute;left:14px;right:14px;bottom:-6px;height:2px;border-radius:2px;
+          background:linear-gradient(90deg,transparent,var(--accent),transparent)}
+ main{padding:22px 26px 60px;max-width:1300px;margin:0 auto;animation:fadeUp .4s ease both}
+ @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
  .tab-pane{display:none}
- .tab-pane.active{display:block}
+ .tab-pane.active{display:block;animation:paneIn .3s cubic-bezier(.2,.7,.3,1) both}
+ @keyframes paneIn{from{opacity:0;transform:translateY(10px) scale(.996)}to{opacity:1;transform:none}}
  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px}
- .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px}
- .card .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
- .card .v{font:600 19px/1.25 ui-monospace,monospace;margin-top:5px}
+ .card{background:linear-gradient(180deg,rgba(24,32,44,.9),rgba(15,21,29,.9));border:1px solid var(--border);
+       border-radius:var(--radius);padding:15px;position:relative;overflow:hidden;
+       transition:transform .22s cubic-bezier(.2,.7,.3,1),border-color .22s,box-shadow .22s}
+ .card::before{content:"";position:absolute;inset:0 0 auto 0;height:2px;opacity:0;transition:opacity .25s;
+       background:linear-gradient(90deg,transparent,var(--accent),var(--accent2),transparent)}
+ .card:hover{transform:translateY(-3px);border-color:var(--border2);box-shadow:var(--shadow)}
+ .card:hover::before{opacity:.9}
+ .card .k{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.9px;font-weight:650}
+ .card .v{font:650 20px/1.25 ui-monospace,monospace;margin-top:6px;letter-spacing:-.3px}
  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px;
-          padding:12px;background:var(--panel);border:1px solid var(--border);border-radius:10px}
- button,.btn{background:#1f2937;color:var(--txt);border:1px solid #334155;border-radius:7px;
-             padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer;transition:.12s}
- button:hover{background:#283548;border-color:#4b5f7a}
- button.primary{background:#1f6feb;border-color:#388bfd;color:#fff}
- button.primary:hover{background:#2977f5}
- button.danger{background:#3a181c;border-color:#6e2b31;color:#ff8b85}
- button.sm{padding:4px 9px;font-size:11.5px}
+          padding:12px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+          -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+ button,.btn{background:linear-gradient(180deg,#1e2a38,#1a2330);color:var(--txt);border:1px solid #31465c;
+             border-radius:9px;padding:7px 13px;font-size:12.5px;font-weight:650;cursor:pointer;
+             transition:transform .14s,box-shadow .18s,background .18s,border-color .18s;
+             box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+ button:hover{background:linear-gradient(180deg,#26374b,#1e2a38);border-color:#44618a;transform:translateY(-1px);
+             box-shadow:0 10px 22px -16px rgba(92,200,255,.9)}
+ button:active{transform:translateY(1px) scale(.99)}
+ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{
+             outline:2px solid rgba(92,200,255,.7);outline-offset:2px}
+ button.primary{background:linear-gradient(180deg,#2f86f6,#1f6feb);border-color:#4f9dff;color:#fff}
+ button.primary:hover{background:linear-gradient(180deg,#3d95ff,#2a7bf0);box-shadow:0 12px 26px -16px rgba(56,139,253,1)}
+ button.danger{background:linear-gradient(180deg,#3a181c,#2c1216);border-color:#6e2b31;color:#ff9d97}
+ button.sm{padding:4px 10px;font-size:11.5px;border-radius:8px}
+ button.ghost{background:transparent;border-color:var(--border)}
  input,select,textarea{background:var(--panel2);color:var(--txt);border:1px solid var(--border);
-                       border-radius:7px;padding:7px 10px;font-size:12.5px;width:100%}
- textarea{min-height:110px;resize:vertical;line-height:1.45}
+                       border-radius:9px;padding:8px 11px;font-size:12.5px;width:100%;transition:border-color .18s,box-shadow .18s}
+ input:hover,select:hover,textarea:hover{border-color:var(--border2)}
+ textarea{min-height:110px;resize:vertical;line-height:1.5}
  table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--border);
-       border-radius:10px;overflow:hidden;margin-bottom:18px}
- th{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);
-    text-align:left;padding:10px 12px;background:var(--panel2);border-bottom:1px solid var(--border)}
- td{padding:9px 12px;border-bottom:1px solid #1b222e;vertical-align:top;font-size:12.5px}
+       border-radius:var(--radius);overflow:hidden;margin-bottom:18px}
+ th{font-size:10.5px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);
+    text-align:left;padding:10px 12px;background:rgba(13,19,28,.9);border-bottom:1px solid var(--border);font-weight:650}
+ td{padding:9px 12px;border-bottom:1px solid rgba(27,34,46,.8);vertical-align:top;font-size:12.5px}
+ tbody tr{transition:background .16s}
+ tbody tr:nth-child(even) td{background:rgba(255,255,255,.012)}
  tr:last-child td{border-bottom:none}
- tr.clickable:hover td{background:#17202d;cursor:pointer}
+ tr.clickable:hover td{background:rgba(92,200,255,.06);cursor:pointer}
  .s-done{color:var(--green)}.s-error,.s-cancelled{color:var(--red)}.s-running{color:var(--amber)}
  .s-queued{color:var(--muted)}
- code{background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:1px 6px;font-size:12px}
- pre{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px;
-     overflow:auto;margin:8px 0 0;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+ code{background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:6px;padding:1px 6px;font-size:12px}
+ pre{background:rgba(9,14,21,.9);border:1px solid var(--border);border-radius:11px;padding:12px;
+     overflow:auto;margin:8px 0 0;font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
  .empty{padding:22px;text-align:center;color:var(--muted)}
  .two-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(460px,1fr));gap:14px;margin-bottom:16px}
- .prompt-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:15px;
-              display:flex;flex-direction:column;gap:8px}
+ .prompt-card{background:linear-gradient(180deg,rgba(21,29,40,.92),rgba(14,20,28,.92));
+              border:1px solid var(--border);border-radius:var(--radius);padding:16px;
+              display:flex;flex-direction:column;gap:9px;transition:border-color .2s,box-shadow .2s}
+ .prompt-card:hover{border-color:var(--border2);box-shadow:var(--shadow)}
  .prompt-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
- .cmd-row{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--panel2);
-          border:1px solid var(--border);border-radius:8px;margin-bottom:7px}
+ .cmd-row{display:flex;align-items:center;gap:10px;padding:9px 11px;background:rgba(255,255,255,.03);
+          border:1px solid var(--border);border-radius:10px;margin-bottom:7px;transition:border-color .16s,background .16s}
+ .cmd-row:hover{border-color:var(--border2);background:rgba(92,200,255,.05)}
  .cmd-row code{background:none;border:none;padding:0;flex:1;overflow-x:auto;white-space:nowrap}
  .cmd-desc{color:var(--muted);font-size:11.5px;min-width:190px;text-align:right}
- .toast{position:fixed;bottom:20px;right:20px;background:#1f6feb;color:#fff;padding:9px 16px;
-        border-radius:8px;font-weight:600;font-size:12.5px;opacity:0;pointer-events:none;transition:.2s;z-index:99}
- .toast.show{opacity:1}
- @media(max-width:720px){.two-col{grid-template-columns:1fr}.cmd-desc{display:none}}
+ .toast{position:fixed;bottom:22px;right:22px;background:linear-gradient(180deg,#2f86f6,#1f6feb);color:#fff;
+        padding:10px 17px;border-radius:11px;font-weight:650;font-size:12.5px;opacity:0;pointer-events:none;
+        transform:translateY(14px) scale(.97);transition:opacity .24s,transform .24s;z-index:99;
+        box-shadow:0 18px 40px -18px rgba(31,111,235,.9)}
+ .toast.show{opacity:1;transform:none}
+ /* ---- connection / auth banners ---- */
+ .banner{display:none;gap:11px;align-items:center;flex-wrap:wrap;padding:11px 24px;
+        border-bottom:1px solid rgba(255,200,87,.35);
+        background:linear-gradient(90deg,rgba(255,200,87,.16),rgba(255,107,107,.07));
+        animation:slideDown .28s ease both}
+ .banner.show{display:flex}
+ .banner.bad{border-bottom-color:rgba(255,107,107,.45);
+        background:linear-gradient(90deg,rgba(255,107,107,.16),rgba(167,139,250,.08))}
+ .banner .grow{flex:1;min-width:220px}
+ .banner input{max-width:330px}
+ @keyframes slideDown{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+ /* ---- multi-studio fleet ---- */
+ .fleet-bar{display:flex;align-items:center;gap:10px;padding:9px 24px;background:rgba(10,16,24,.82);
+        border-bottom:1px solid var(--border);overflow-x:auto;position:relative;z-index:22;
+        -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+ .fleet-label{font-size:11px;letter-spacing:.9px;text-transform:uppercase;color:var(--muted);
+        font-weight:700;display:flex;align-items:center;gap:7px;flex:0 0 auto}
+ .dot-live{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 12px rgba(69,224,160,.9);
+        animation:blink 2.4s ease-in-out infinite}
+ .dot-dead{background:var(--red);box-shadow:0 0 10px rgba(255,107,107,.7);animation:none}
+ @keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+ .fleet-chips{display:flex;gap:8px;align-items:center;flex:1;min-width:0}
+ .studio-card{display:flex;align-items:center;gap:9px;padding:7px 11px;border-radius:11px;flex:0 0 auto;
+        background:linear-gradient(180deg,rgba(24,33,45,.95),rgba(14,20,28,.95));
+        border:1px solid var(--border);transition:transform .18s,border-color .18s,box-shadow .18s;
+        animation:chipIn .32s cubic-bezier(.2,.7,.3,1) both}
+ .studio-card:hover{transform:translateY(-2px);border-color:var(--border2);box-shadow:var(--shadow)}
+ .studio-card.pinned{border-color:rgba(92,200,255,.6);
+        box-shadow:0 0 0 1px rgba(92,200,255,.25),0 14px 28px -22px rgba(92,200,255,.9)}
+ .studio-card.active-target{border-color:rgba(69,224,160,.55)}
+ .studio-card .place{font-weight:650;font-size:12.3px;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .studio-card .meta{font-size:10.5px;color:var(--muted);display:flex;gap:6px;align-items:center}
+ .studio-card .pin{background:transparent;border:1px solid var(--border);border-radius:7px;padding:2px 7px;
+        font-size:10.5px;color:var(--muted)}
+ .studio-card .pin:hover{color:var(--accent);border-color:rgba(92,200,255,.55)}
+ @keyframes chipIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+ .badge-dm{font-size:10px;padding:1px 6px;border-radius:999px;border:1px solid var(--border);
+        background:rgba(255,255,255,.04);color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+ #fleet-detail{display:flex;flex-wrap:wrap;gap:10px;min-height:34px}
+ #fleet-detail .studio-card{min-width:240px}
+ @media(prefers-reduced-motion:reduce){
+   *,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+ }
+ @media(max-width:720px){
+   .two-col{grid-template-columns:1fr}
+   .cmd-desc{display:none}
+   .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+   .card .v{font-size:17px;word-break:break-all;overflow-wrap:anywhere}
+   .prompt-card{padding:12px}
+   header{flex-wrap:wrap;gap:6px;padding:12px 14px}
+   nav{padding:8px 12px}
+   .fleet-bar{padding:8px 12px}
+   main{padding:14px 12px 48px}
+   #tok-input{width:130px!important}
+   pre{max-height:190px}
+   .wrap{padding:0 10px}
+   h1{font-size:15px}
+ }
+ @media(max-width:420px){
+   .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+   .card{padding:10px}
+   .card .k{font-size:10px}
+   h1{font-size:14.5px}
+   .studio-card .place{max-width:130px}
+ }
+ html,body{max-width:100%;overflow-x:hidden}
+ img,pre,input,textarea,select{max-width:100%}
 </style></head><body>
 
 <header>
-  <h1>Roblox Studio MCP &amp; Bridge <span class="sub">v4.0</span></h1>
-  <span id="status" class="pill off">checking&hellip;</span>
+  <h1><span class="logo" aria-hidden="true"></span><span class="brand">Roblox Studio MCP &amp; Bridge</span> <span class="sub">v5.3</span></h1>
+  <span id="status" class="pill off live">checking&hellip;</span>
+  <span id="fleet-badge" class="pill info-pill" style="display:none">0 studios</span>
   <span id="ro-badge" class="pill ro" style="display:none">Read-Only Inspector</span>
   <span id="place" class="pill info-pill" style="display:none"></span>
   <button class="sm" onclick="runSelfTest()">Run Self-Test</button>
@@ -979,6 +2471,30 @@ def dashboard_html() -> str:
   <button class="sm" onclick="toggleToken()">Show</button>
 </header>
 
+<div class="fleet-bar" id="fleet-bar">
+  <span class="fleet-label"><span class="dot-live" id="fleet-dot"></span> Studios</span>
+  <div class="fleet-chips" id="fleet-chips"><span class="sub">Looking for connected Studio windows&hellip;</span></div>
+  <button class="sm" onclick="broadcastPing()" title="Ping every online Studio and show per-peer latency">Broadcast ping</button>
+</div>
+
+<div id="auth-banner" class="banner">
+  <div class="grow">
+    <strong id="auth-title">This dashboard needs the bridge token</strong>
+    <div class="sub" id="auth-msg">Every <code>/api</code> call is authenticated. Opening the console from a
+      tunnel or LAN address cannot auto-load it — paste <code>bridge.token</code> (printed by setup.py).</div>
+  </div>
+  <input id="auth-token" type="password" placeholder="paste the token" autocomplete="off">
+  <button class="primary sm" onclick="saveToken()">Use token</button>
+  <button class="sm" onclick="hideAuthBanner()">Dismiss</button>
+</div>
+
+<div id="stale-banner" class="banner bad">
+  <div class="grow"><strong>This tab is from an older bridge version</strong>
+    <div class="sub" id="stale-msg">The bridge restarted with new code; reload to get the current UI.</div>
+  </div>
+  <button class="primary sm" onclick="location.reload()">Reload</button>
+</div>
+
 <nav>
   <button class="tab-btn active" onclick="showTab('monitor', this)">1. Live Monitor</button>
   <button class="tab-btn" onclick="showTab('kit', this)">2. Image Importer &amp; Studio Kit</button>
@@ -986,6 +2502,7 @@ def dashboard_html() -> str:
   <button class="tab-btn" onclick="showTab('commands', this)">4. Commands &amp; MCP Config</button>
   <button class="tab-btn" onclick="showTab('playground', this)">5. Live Tool &amp; Luau Runner</button>
   <button class="tab-btn" onclick="showTab('tips', this)">6. Helpful Tips &amp; Gotchas</button>
+  <button class="tab-btn" onclick="showTab('ops', this)">7. Ops Console &amp; Agent Bus</button>
 </nav>
 
 <main>
@@ -993,7 +2510,7 @@ def dashboard_html() -> str:
   <section id="tab-monitor" class="tab-pane active">
     <div class="grid">
       <div class="card"><div class="k">Studio Peers</div><div class="v" id="c-peers">0 online</div></div>
-      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">68</div></div>
+      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">70</div></div>
       <div class="card"><div class="k">Queued</div><div class="v" id="c-queued">0</div></div>
       <div class="card"><div class="k">Completed</div><div class="v" id="c-done">0</div></div>
       <div class="card"><div class="k">Failed</div><div class="v" id="c-fail">0</div></div>
@@ -1251,7 +2768,7 @@ def dashboard_html() -> str:
 
       <div class="prompt-card">
         <div class="prompt-head">
-          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 68 tools enabled (3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
+          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 70 tools enabled (multi-agent bus + tunnel ops + 3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
           <button class="primary sm" onclick="copyById('cfg-json')">Copy</button>
         </div>
         <pre id="cfg-json"></pre>
@@ -1297,7 +2814,7 @@ def dashboard_html() -> str:
       </div>
 
       <div class="prompt-card">
-        <h3>Invoke Any of the 68 MCP Tools Directly</h3>
+        <h3>Invoke Any of the 70 MCP Tools Directly</h3>
         <div class="sub" id="tool-desc">Select any MCP tool to inspect its fields and call it over <code>POST /mcp</code>.</div>
         <div style="display:flex;gap:8px;align-items:center">
           <select id="tool-select" onchange="onSelectTool()"></select>
@@ -1310,6 +2827,126 @@ def dashboard_html() -> str:
   </section>
 
   <!-- ==================== TAB 5: HELPFUL TIPS & GOTCHAS ==================== -->
+  <!-- ==================== TAB 7: OPS CONSOLE & AGENT BUS ==================== -->
+  <section id="tab-ops" class="tab-pane">
+    <div class="grid">
+      <div class="card"><div class="k">Tunnel</div><div class="v" id="ops-tunnel-state">stopped</div></div>
+      <div class="card"><div class="k">Public URL</div><div class="v" id="ops-tunnel-url" style="font-size:12.5px;word-break:break-all">&mdash;</div></div>
+      <div class="card"><div class="k">Agents Online</div><div class="v" id="ops-agents">0</div></div>
+      <div class="card"><div class="k">Open Tasks</div><div class="v" id="ops-tasks">0</div></div>
+      <div class="card"><div class="k">Queue Depth</div><div class="v" id="ops-queue">0</div></div>
+      <div class="card"><div class="k">Audit Entries</div><div class="v" id="ops-audit-count">0</div></div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-6px 0 14px">
+      <button class="sm" id="queue-toggle" onclick="toggleQueue()">Pause queue</button>
+      <span class="sub" id="queue-state">Queue live</span>
+      <span class="sub" id="sweeper-state"></span>
+    </div>
+
+    <div class="prompt-card" style="margin-bottom:14px">
+      <div class="prompt-head">
+        <div><h3>Studio Fleet</h3>
+          <div class="sub">Every connected Studio window. <b>Pin</b> makes one the default target for
+            untargeted jobs (skipped automatically if that Studio closes); <b>Broadcast</b> runs a read-only
+            ping on all of them and reports per-peer latency. Any MCP tool also takes a <code>peerId</code>.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="sm" onclick="broadcastPing()">Broadcast ping</button>
+          <button class="sm" onclick="unpinStudio()">Clear pin</button>
+        </div>
+      </div>
+      <div id="fleet-detail"><span class="sub">No Studio windows connected yet.</span></div>
+      <div class="sub" id="fleet-note"></div>
+      <pre id="fleet-broadcast" style="max-height:170px;display:none"></pre>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div><h3>Public Tunnel (Supervised)</h3>
+            <div class="sub">Auto-restarts, scrapes the public URL, health-probes <code>/api/health</code>, and reconnects after failures. Works with <code>cloudflared</code> or <code>ngrok</code>.</div>
+          </div>
+          <span class="pill off" id="ops-tunnel-pill">stopped</span>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="primary sm" onclick="tunnelAction('start')">Start Tunnel</button>
+          <button class="sm" onclick="tunnelAction('restart')">Restart</button>
+          <button class="sm danger" onclick="tunnelAction('stop')">Stop</button>
+          <button class="sm" onclick="copyText(document.getElementById('ops-tunnel-url').textContent)">Copy URL</button>
+          <button class="sm" onclick="copyMcpConfig()">Copy MCP config (tunnel)</button>
+        </div>
+        <div class="sub" id="ops-tunnel-meta" style="margin-top:6px">Checking tunnel status&hellip;</div>
+        <div class="sub" id="ops-tunnel-lan" style="margin-top:4px"></div>
+        <pre id="ops-tunnel-log" style="max-height:150px">Tunnel log will appear here.</pre>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head"><div><h3>Join the Agent Bus</h3>
+          <div class="sub">Register this session so other agents (and humans) can see you, message you, and hand work over without collisions.</div></div></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <input id="bus-name" placeholder="Agent name (e.g. Gemini 4 Argon)" style="flex:1;min-width:190px">
+          <input id="bus-role" placeholder="role (builder / qa / reviewer)" style="width:190px">
+          <button class="primary sm" onclick="busRegister()">Register</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+          <input id="bus-to" placeholder="to (blank = broadcast)" style="width:180px">
+          <input id="bus-subject" placeholder="subject" style="width:180px">
+        </div>
+        <textarea id="bus-body" placeholder="Message body&hellip; use this to coordinate edits, hand off work, or report a blocker." style="min-height:64px"></textarea>
+        <div style="display:flex;gap:6px">
+          <button class="sm primary" onclick="busPost()">Post Message</button>
+          <button class="sm" onclick="refreshBus()">Refresh Bus</button>
+          <button class="sm" onclick="busExport()">Export Handoff</button>
+        </div>
+        <pre id="bus-out" style="max-height:110px">Bus output appears here.</pre>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <h3>Roster</h3>
+        <div id="bus-agents" class="sub">No agents registered yet.</div>
+      </div>
+      <div class="prompt-card">
+        <h3>Task Board</h3>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <input id="task-title" placeholder="New task title…" style="flex:1">
+          <select id="task-priority" style="width:110px">
+            <option value="normal">normal</option>
+            <option value="high">high</option>
+            <option value="critical">critical</option>
+            <option value="low">low</option>
+          </select>
+          <button class="primary sm" onclick="createTask()">Add</button>
+          <button class="sm" onclick="sweepAgents()" title="Release tasks held by agents that stopped reporting">Sweep</button>
+        </div>
+        <div id="bus-tasks" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto"></div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <div class="prompt-head"><h3>Live Event Stream</h3>
+          <button class="sm" onclick="toggleEventStream()" id="ev-btn">Connect</button></div>
+        <div class="sub">Server-Sent Events from every agent, job, tunnel action and audit write.</div>
+        <pre id="ev-feed" style="max-height:240px;overflow:auto">Not connected.</pre>
+      </div>
+      <div class="prompt-card">
+        <div class="prompt-head"><h3>Metrics &amp; Audit</h3>
+          <div style="display:flex;gap:6px">
+            <button class="sm" onclick="refreshMetrics()">Metrics</button>
+            <button class="sm" onclick="verifyAudit()">Verify Chain</button>
+          </div>
+        </div>
+        <pre id="ops-metrics" style="max-height:180px;overflow:auto">Metrics not loaded.</pre>
+        <div class="sub" id="ops-latency"></div>
+        <div class="sub" id="ops-audit-note"></div>
+        <pre id="ops-audit" style="max-height:150px;overflow:auto">Audit log not loaded.</pre>
+      </div>
+    </div>
+  </section>
+
   <section id="tab-tips" class="tab-pane">
     <div class="two-col" id="tips-grid"></div>
   </section>
@@ -1347,12 +2984,67 @@ function toggleToken(){
   inp.type = inp.type === 'password' ? 'text' : 'password';
 }
 
-function getToken(){ return document.getElementById('tok-input').value.trim(); }
+const PAGE_VERSION = "__BRIDGE_VERSION__";
+let TOKEN = '';
+function readStoredToken(){ try { return localStorage.getItem('arena_bridge_token') || ''; } catch(_) { return ''; } }
+function getToken(){ return TOKEN || (document.getElementById('tok-input').value || '').trim(); }
+function setToken(t){
+  TOKEN = (t || '').trim();
+  const box = document.getElementById('tok-input');
+  if(box) box.value = TOKEN;
+}
+function storeToken(t){ try { localStorage.setItem('arena_bridge_token', t); } catch(_) {} }
 function authHeaders(){
   const h = {'Content-Type':'application/json'};
   const t = getToken();
   if(t) h['Authorization'] = 'Bearer ' + t;
   return h;
+}
+function showAuthBanner(title, message){
+  const b = document.getElementById('auth-banner');
+  if(!b) return;
+  if(title) document.getElementById('auth-title').textContent = title;
+  if(message) document.getElementById('auth-msg').textContent = message;
+  b.classList.add('show');
+  const st = document.getElementById('status');
+  st.textContent = 'token required';
+  st.className = 'pill ro';
+}
+function hideAuthBanner(){
+  const b = document.getElementById('auth-banner');
+  if(b) b.classList.remove('show');
+}
+function saveToken(){
+  const box = document.getElementById('auth-token');
+  const value = (box && box.value || '').trim();
+  if(!value) return toast('Paste the bridge token first.');
+  storeToken(value); setToken(value); box.value = '';
+  hideAuthBanner();
+  toast('Token saved for this browser — reloading data…');
+  tick(); refreshOps(); refreshFleet(); refreshBus();
+}
+function showStaleBanner(runningVersion){
+  const b = document.getElementById('stale-banner');
+  if(!b) return;
+  document.getElementById('stale-msg').textContent =
+    `This tab is v${PAGE_VERSION}; the bridge is running v${runningVersion}. Reload for the current console.`;
+  b.classList.add('show');
+}
+async function apiFetch(path, opts){
+  let res;
+  try {
+    res = await fetch(path, Object.assign({cache:'no-store', headers:authHeaders()}, opts || {}));
+  } catch(err){
+    const st = document.getElementById('status');
+    st.textContent = 'bridge unreachable'; st.className = 'pill off';
+    throw err;
+  }
+  if(res.status === 401 || res.status === 403){
+    showAuthBanner('This dashboard needs the bridge token',
+      `The bridge rejected the request (HTTP ${res.status}). Paste bridge.token — opening the console from a tunnel or LAN address cannot auto-load it.`);
+    throw new Error('unauthorized');
+  }
+  return res;
 }
 
 async function runSelfTest(){
@@ -1565,7 +3257,7 @@ function renderPrompts(){
       sub: "Best when the next AI agent is in a cloud sandbox without tunnel access and you paste command outputs.",
       body:
 `We are working on a Roblox Studio project (${placeName}${placeId ? ', PlaceId ' + placeId : ''}).
-Roblox Studio MCP Bridge v4.0.0 is already running locally on my machine at ${window.location.origin} (directory: \`${dir}\`).
+Roblox Studio MCP Bridge v5.4.0 is already running locally on my machine at ${window.location.origin} (directory: \`${dir}\`).
 
 Use **HANDS MODE**: give me exact commands to run in PowerShell from \`${dir}\` using \`.\\ab.ps1 <subcommand>\` (or \`python arena_studio.py <subcommand>\`), and I will paste the output back.
 
@@ -1586,7 +3278,7 @@ Start by running a quick recon (\`.\\ab.ps1 state\` and \`.\\ab.ps1 survey\`) so
 `Connect directly to my live Roblox Studio Bridge & MCP Server:
 - Base URL: ${pubUrl}
 - Auth Header: \`Authorization: Bearer ${tok}\` (or \`X-Arena-Token: ${tok}\`)
-- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (68 tools, 16 skills, multimodal 3D viewport vision, 3D physics auditor, runtime mesh capability probe, .rbxlx place export, 14 LiveOps/Monetization systems, 520 3D models, 3,705 raster images + 50 LDR skies (300 cube faces), 45 CC0 WAVs, 4,811 cloud icons)
+- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (70 tools, 16 skills, multimodal 3D viewport vision, 3D physics auditor, runtime mesh capability probe, .rbxlx place export, 14 LiveOps/Monetization systems, 520 3D models, 3,705 raster images + 50 LDR skies (300 cube faces), 45 CC0 WAVs, 4,811 cloud icons)
 - Agent Onboarding & Live State Endpoint: \`GET ${pubUrl}/api/agent-guide\`
 - Built-in Repo Kit: call \`browse_kit\` for 16 skills, 19 modules, 6 templates, 20 prefabs, 3,755 image/sky-face files, 50 LDR sky panoramas, 520 models, and 45 CC0 audio files. Use \`search_assets\` for paginated type/category/source/license/provenance filters; exact Git blob matches and pack-level attestations are distinguished. Send supported images/audio/models into Studio with \`import_image\`, \`import_audio\`, and \`import_rbxmx\`.
 
@@ -1670,7 +3362,7 @@ function renderTips(){
     ["Always Pre-Flight Luau with `luau_check`",
      "In non-strict Luau, deleting a helper function leaves callers compiling cleanly while crashing at runtime with `attempt to call a nil value`. `luau_check` runs both `luau-compile` and `luau-analyze` to catch undefined globals before code ever reaches Studio."],
     ["Open Script Editor Tabs & >200 KB Scripts",
-     "ArenaBridge v4.0.0 uses `ScriptEditorService:GetEditorSource` and `UpdateSourceAsync` with CRLF -> LF normalization instead of raw `.Source` assignment — safely supporting scripts over 200 KB and keeping open Studio tabs synchronized without cursor corruption."],
+     "ArenaBridge v4.1.0 uses `ScriptEditorService:GetEditorSource` and `UpdateSourceAsync` with CRLF -> LF normalization instead of raw `.Source` assignment — safely supporting scripts over 200 KB and keeping open Studio tabs synchronized without cursor corruption."],
     ["Single-Step Undo (`Ctrl+Z`) + Multi-Script Snapshots",
      "Every mutating tool wraps inside a `ChangeHistoryService` recording so one `Ctrl+Z` in Studio undoes an entire build or batch sync. Before sweeping refactors, call `manage_snapshots(action='create')` for instant 1-command rollback."],
     ["Safe Toolbox / Asset Insertion",
@@ -2078,11 +3770,28 @@ async function loadKitGallery(){
 }
 
 async function initBoot(){
+  // Token precedence: ?token= / #token= in the URL, then this browser's saved
+  // token, then the loopback-only /api/local-boot value.
+  try {
+    const url = new URL(location.href);
+    const fromQuery = url.searchParams.get('token') || (url.hash.indexOf('#token=') === 0 ? url.hash.slice(7) : '');
+    if(fromQuery){
+      setToken(fromQuery); storeToken(getToken());
+      url.searchParams.delete('token');
+      history.replaceState({}, '', url.pathname + (url.search || ''));
+    }
+  } catch(_){}
+  if(!getToken()) setToken(readStoredToken());
   try {
     const r = await fetch('/api/local-boot', { cache:'no-store' });
     BOOT = await r.json();
-    if(BOOT.token){
-      document.getElementById('tok-input').value = BOOT.token;
+    if(BOOT.token && !getToken()){
+      setToken(BOOT.token);
+      storeToken(BOOT.token);
+    }
+    if(BOOT.tokenRequired && !getToken() && !BOOT.local){
+      showAuthBanner('Opened from a tunnel or LAN address',
+        'The bridge will not hand out its token over the network. Paste bridge.token (printed by setup.py) — it is remembered in this browser afterwards.');
     }
     const sel = document.getElementById('tool-select');
     sel.innerHTML = BOOT.tools.map(t =>
@@ -2097,8 +3806,12 @@ async function initBoot(){
 
 async function tick(){
   try {
-    const r = await fetch('/api/state', { cache:'no-store' });
+    const r = await apiFetch('/api/state');
+    if(!r.ok) throw new Error('HTTP ' + r.status);
     const s = await r.json();
+    if(s && s.version && PAGE_VERSION && s.version !== PAGE_VERSION){
+      showStaleBanner(s.version);
+    }
     const prevPlace = LAST_STATE.studio && LAST_STATE.studio.place;
     LAST_STATE = s;
 
@@ -2161,8 +3874,385 @@ async function tick(){
   } catch(_){}
 }
 
-initBoot().then(() => { tick(); setInterval(tick, 1500); });
+// ---------------------------- v5 Ops Console ----------------------------
+let EV_SOURCE = null, EV_RETRY = null, EV_DELAY = 1000, EV_WANT = false;
+let QUEUE_PAUSED = false;
+async function opsJson(path, opts){
+  const r = await apiFetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if(!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+  return data;
+}
+const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+function animateValue(el, to){
+  if(!el) return;
+  const target = Number(to);
+  if(!isFinite(target)){ el.textContent = to; return; }
+  if(REDUCED_MOTION || document.hidden){ el.textContent = target; return; }
+  const from = Number(String(el.textContent).replace(/[^0-9.-]/g, '')) || 0;
+  if(from === target){ el.textContent = target; return; }
+  const t0 = performance.now(), dur = 420;
+  const step = (t) => {
+    const p = Math.min(1, (t - t0) / dur);
+    const eased = 1 - Math.pow(1 - p, 3);
+    el.textContent = Math.round(from + (target - from) * eased);
+    if(p < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+let FLEET = {studios: [], count: 0, online: 0, pinned: null, routing: 'auto'};
+function studioCard(s, detailed){
+  const dot = s.online ? 'dot-live' : 'dot-live dot-dead';
+  const cls = 'studio-card' + (s.pinned ? ' pinned' : '') + (s.defaultTarget ? ' active-target' : '');
+  const age = s.online ? (s.ageSeconds < 2 ? 'live' : Math.round(s.ageSeconds) + 's ago') : 'offline';
+  const pin = s.pinned
+    ? `<button class="pin" onclick="unpinStudio()" title="Unpin">pinned</button>`
+    : `<button class="pin" onclick='pinStudio(${esc(JSON.stringify(s.peerId))})' title="Make this the default Studio">pin</button>`;
+  return `<div class="${cls}">
+    <span class="${dot}"></span>
+    <div>
+      <div class="place" title="${esc(s.place)} · ${esc(s.peerId)}">${esc(s.label || s.place)}</div>
+      <div class="meta"><span class="badge-dm">${esc(s.dm)}</span>
+        <span>${esc(age)}</span>
+        ${s.queuedJobs ? `<span>· ${s.queuedJobs} queued</span>` : ''}
+        ${detailed && s.placeId ? `<span>· id ${esc(String(s.placeId))}</span>` : ''}
+        ${s.defaultTarget ? '<span>· default</span>' : ''}
+      </div>
+    </div>
+    ${pin}
+  </div>`;
+}
+function renderFleet(d){
+  FLEET = d || FLEET;
+  const studios = FLEET.studios || [];
+  const chips = document.getElementById('fleet-chips');
+  const detail = document.getElementById('fleet-detail');
+  const badge = document.getElementById('fleet-badge');
+  const dot = document.getElementById('fleet-dot');
+  if(chips){
+    chips.innerHTML = studios.length
+      ? studios.map(s => studioCard(s, false)).join('')
+      : '<span class="sub">No Studio peers yet — open Roblox Studio with the ArenaBridge plugin.</span>';
+  }
+  if(detail){
+    detail.innerHTML = studios.length
+      ? studios.map(s => studioCard(s, true)).join('')
+      : '<span class="sub">No Studio windows connected yet.</span>';
+  }
+  if(badge){
+    badge.style.display = studios.length ? 'inline-flex' : 'none';
+    badge.textContent = `${FLEET.online || 0}/${studios.length} studios`;
+  }
+  if(dot) dot.classList.toggle('dot-dead', !(FLEET.online > 0));
+  const note = document.getElementById('fleet-note');
+  if(note){
+    note.textContent = !studios.length ? '' :
+      (FLEET.pinned
+        ? `Pinned: ${FLEET.pinOnline ? 'routing untargeted jobs to the pinned Studio' : 'pinned Studio is offline — falling back to auto edit-first routing'}`
+        : 'Routing: auto (edit DataModels first). Pin a Studio to make it the default target.');
+  }
+}
+async function refreshFleet(){
+  try { renderFleet(await opsJson('/api/studios')); } catch(_){}
+}
+async function pinStudio(peerId){
+  try {
+    const res = await opsJson('/api/studios', {method:'POST', body:JSON.stringify({action:'set_active', peerId})});
+    toast(`Pinned ${res.place || peerId} as the default Studio.`);
+    refreshFleet(); refreshOps();
+  } catch(err){ toast(err.message); }
+}
+async function unpinStudio(){
+  try {
+    await opsJson('/api/studios', {method:'POST', body:JSON.stringify({action:'clear_active'})});
+    toast('Pin cleared — back to auto routing.');
+    refreshFleet(); refreshOps();
+  } catch(err){ toast(err.message); }
+}
+async function broadcastPing(){
+  const box = document.getElementById('fleet-broadcast');
+  if(box){ box.style.display = 'block'; box.textContent = 'Broadcasting to every online Studio…'; }
+  try {
+    const res = await opsJson('/api/studios', {method:'POST', body:JSON.stringify({action:'broadcast', type:'ping', timeout:12})});
+    const rows = (res.results || []).map(r =>
+      `${r.ok ? '✓' : '✗'} ${r.label || r.peerId} · ${r.status}${r.durationMs != null ? ' · ' + Math.round(r.durationMs) + 'ms' : ''}${r.error ? ' · ' + r.error : ''}`);
+    if(box) box.textContent = `${res.succeeded}/${res.peers} studios responded in ${res.elapsedMs}ms\n` + (rows.join('\n') || res.error || 'no peers');
+    toast(res.peers ? `${res.succeeded}/${res.peers} studios answered the broadcast.` : (res.error || 'No Studio peers.'));
+    refreshFleet();
+  } catch(err){
+    if(box) box.textContent = err.message;
+    toast(err.message);
+  }
+}
+async function refreshOps(){
+  try {
+    const ops = await opsJson('/api/ops');
+    const t = ops.tunnel || {};
+    document.getElementById('ops-tunnel-state').textContent = t.state || 'unknown';
+    document.getElementById('ops-tunnel-url').textContent = t.publicUrl || '—';
+    const pill = document.getElementById('ops-tunnel-pill');
+    pill.textContent = t.state || 'unknown';
+    pill.className = 'pill ' + (t.state === 'online' ? 'on' : (t.state === 'degraded' ? 'ro' : 'off'));
+    document.getElementById('ops-agents').textContent = (ops.bus && ops.bus.agentsOnline) || 0;
+    document.getElementById('ops-tasks').textContent = (ops.openTasks || []).length;
+    animateValue(document.getElementById('ops-queue'), (ops.health && ops.health.queued) || 0);
+    if(ops.fleet) renderFleet(ops.fleet);
+    document.getElementById('ops-audit-count').textContent = (ops.audit || []).length;
+    const health = t.health || {};
+    document.getElementById('ops-tunnel-meta').textContent =
+      `flavor=${t.flavor || '—'} · restarts=${t.restarts || 0} · health=${health.ok === null || health.ok === undefined ? 'n/a' : (health.ok ? 'ok' : 'failing')}` +
+      (health.latencyMs != null ? ` · ${health.latencyMs}ms` : '') + (t.lastError ? ' · ' + t.lastError : '');
+    document.getElementById('ops-tunnel-lan').textContent = (t.lanUrls || []).length ? 'LAN: ' + t.lanUrls.join('  ·  ') : '';
+    document.getElementById('ops-tunnel-log').textContent = (t.logTail || []).join('\n') || 'No tunnel output yet.';
+    if((ops.audit || []).length){
+      document.getElementById('ops-audit').textContent = ops.audit.slice(0,8).map(e => `${e.seq} ${e.action} · ${e.actor} · ${e.outcome}`).join('\n');
+    }
+    renderBus(ops.openTasks || [], null);
+    // Queue pause switch + sweeper status.
+    const queue = ops.queue || {};
+    QUEUE_PAUSED = !!queue.paused;
+    const qBtn = document.getElementById('queue-toggle');
+    if(qBtn) qBtn.textContent = QUEUE_PAUSED ? 'Resume queue' : 'Pause queue';
+    const qState = document.getElementById('queue-state');
+    if(qState) qState.textContent = QUEUE_PAUSED
+      ? `Queue paused${queue.reason ? ' — ' + queue.reason : ''} · ${queue.depth == null ? '?' : queue.depth} held`
+      : `Queue live · ${queue.depth == null ? 0 : queue.depth} queued`;
+    const sweeper = ops.sweeper || {};
+    const sState = document.getElementById('sweeper-state');
+    if(sState) sState.textContent = sweeper.intervalSeconds
+      ? `Sweeper every ${Math.round(sweeper.intervalSeconds)}s (silent > ${Math.round(sweeper.offlineSeconds || 0)}s) · reaped ${sweeper.tasksReaped || 0}`
+      : 'Sweeper disabled';
+    const latency = ops.jobLatency || {};
+    const row = document.getElementById('ops-latency');
+    if(row){
+      const top = Object.entries(latency).slice(0, 4)
+        .map(([tool, d]) => `${tool} p50 ${d.p50}ms / p95 ${d.p95}ms (n=${d.count})`);
+      row.textContent = top.length ? 'Latency: ' + top.join(' · ') : '';
+    }
+  } catch(_){}
+}
+async function tunnelAction(action){
+  try {
+    const r = await fetch('/api/tunnel', {method:'POST', headers:authHeaders(), body:JSON.stringify({action})});
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    toast('Tunnel ' + action + ' → ' + (data.state || 'ok'));
+    refreshOps();
+  } catch(err){ toast('Tunnel ' + action + ' failed: ' + err.message); }
+}
+async function busRegister(){
+  const name = document.getElementById('bus-name').value.trim();
+  const role = document.getElementById('bus-role').value.trim() || 'agent';
+  if(!name) return toast('Enter an agent name.');
+  try {
+    const reg = await opsJson('/api/bus', {method:'POST', body:JSON.stringify({action:'register', name, role})});
+    localStorage.setItem('arena_agent_id', reg.id);
+    localStorage.setItem('arena_agent_name', reg.name);
+    document.getElementById('bus-out').textContent = `Registered ${reg.name} as ${reg.id} (${reg.role})`;
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+function currentAgent(){ return localStorage.getItem('arena_agent_id') || 'web-operator'; }
+async function busPost(){
+  const to = document.getElementById('bus-to').value.trim() || null;
+  const subject = document.getElementById('bus-subject').value.trim();
+  const body = document.getElementById('bus-body').value.trim();
+  if(!subject && !body) return toast('Write a subject or body first.');
+  try {
+    const msg = await opsJson('/api/bus', {method:'POST', body:JSON.stringify({
+      action:'post', agentId: currentAgent(), to, subject, body: body || subject, kind:'note', priority:'normal'
+    })});
+    document.getElementById('bus-out').textContent = 'Posted ' + msg.id;
+    document.getElementById('bus-body').value = '';
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+async function busExport(){
+  try {
+    const r = await opsJson('/api/bus', {method:'POST', body:JSON.stringify({action:'export', agentId:currentAgent()})});
+    const note = document.getElementById('bus-out');
+    note.textContent = r.markdown;
+    copyText(r.markdown);
+    toast('Handoff brief copied to clipboard.');
+  } catch(err){ toast(err.message); }
+}
+function renderBus(tasks, agents){
+  const taskBox = document.getElementById('bus-tasks');
+  if(!tasks.length){
+    taskBox.innerHTML = '<div class="sub">No open tasks. Create one from any agent with <code>agent_bus {action:"task_create"}</code>.</div>';
+  } else {
+    taskBox.innerHTML = tasks.map(t => {
+      const lease = t.leaseRemainingSeconds != null ? Math.max(0, Math.round(t.leaseRemainingSeconds)) + 's lease' : 'unclaimed';
+      return `<div class="cmd-row" style="align-items:flex-start">
+        <div style="flex:1">
+          <div><strong>${esc(t.title)}</strong> <span class="sub">· ${esc(t.priority)} · ${esc(t.status)} · ${lease}</span></div>
+          <div class="sub">${esc(t.assignee || 'unassigned')} ${t.blockedBy && t.blockedBy.length ? '· blocked by ' + esc(t.blockedBy.join(', ')) : ''}</div>
+        </div>
+        <button class="sm" onclick="claimTask('${esc(t.id)}')">Claim</button>
+        <button class="sm" onclick="completeTask('${esc(t.id)}')">Done</button>
+      </div>`;
+    }).join('');
+  }
+  if(agents){
+    const box = document.getElementById('bus-agents');
+    box.innerHTML = agents.length ? agents.map(a =>
+      `<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0">
+         <span><strong>${esc(a.name)}</strong> <span class="sub">${esc(a.role)}</span></span>
+         <span class="sub">${esc(a.status)} · ${a.openTasks} tasks · ${a.inboxUnread} unread</span>
+       </div>`).join('') : 'No agents registered yet.';
+  }
+}
+async function refreshBus(){
+  try {
+    const agents = await opsJson('/api/bus?action=agents');
+    const tasks = await opsJson('/api/bus?action=tasks&includeDone=0');
+    renderBus(tasks.tasks || [], agents.agents || []);
+    document.getElementById('ops-agents').textContent = agents.onlineCount || 0;
+    document.getElementById('ops-tasks').textContent = (tasks.tasks || []).length;
+  } catch(_){}
+}
+async function createTask(){
+  const title = document.getElementById('task-title').value.trim();
+  if(!title) return toast('Enter a task title first.');
+  try {
+    await opsJson('/api/bus', {method:'POST', body:JSON.stringify({
+      action:'task_create', title, priority:document.getElementById('task-priority').value,
+      agentId: currentAgent()
+    })});
+    document.getElementById('task-title').value = '';
+    toast('Task added to the board.');
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+async function toggleQueue(){
+  const wantPause = !QUEUE_PAUSED;
+  try {
+    const res = await opsJson(wantPause ? '/api/queue/pause' : '/api/queue/resume', {
+      method:'POST',
+      body: JSON.stringify(wantPause ? {reason: 'paused from the Ops Console'} : {})
+    });
+    QUEUE_PAUSED = !!res.paused;
+    toast(wantPause ? `Queue paused (${res.queued} job(s) held).` : 'Queue resumed — Studio will pick work up.');
+    refreshOps();
+  } catch(err){ toast(err.message); }
+}
+async function sweepAgents(){
+  try {
+    const res = await opsJson('/api/bus', {method:'POST', body:JSON.stringify({
+      action:'sweep', offlineSeconds:900, agentId: currentAgent()
+    })});
+    toast(res.tasksReaped
+      ? `Released ${res.tasksReaped} task(s) from ${(res.agents || []).join(', ') || 'offline agents'}.`
+      : 'No stale agents — nothing to release.');
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+async function claimTask(id){
+  try {
+    await opsJson('/api/bus', {method:'POST', body:JSON.stringify({action:'task_claim', taskId:id, agentId:currentAgent()})});
+    toast('Task claimed.');
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+async function completeTask(id){
+  try {
+    await opsJson('/api/bus', {method:'POST', body:JSON.stringify({action:'task_complete', taskId:id, agentId:currentAgent(), result:'Completed from the Ops Console'})});
+    toast('Task completed.');
+    refreshBus();
+  } catch(err){ toast(err.message); }
+}
+async function refreshMetrics(){
+  try {
+    const m = await opsJson('/api/metrics');
+    const counters = (m.counters || []).map(c => `${c.name} = ${c.value}${Object.keys(c.labels||{}).length ? ' ' + JSON.stringify(c.labels) : ''}`);
+    const hists = (m.histograms || []).map(h => `${h.name} p50=${h.p50} p95=${h.p95} n=${h.count}`);
+    document.getElementById('ops-metrics').textContent = 'uptime ' + m.uptimeSeconds + 's\n' + counters.concat(hists).join('\n');
+  } catch(err){ document.getElementById('ops-metrics').textContent = err.message; }
+}
+async function verifyAudit(){
+  try {
+    const v = await opsJson('/api/audit?verify=1');
+    document.getElementById('ops-audit-note').textContent = v.ok
+      ? `Chain intact: ${v.checked} entries, head ${String(v.head).slice(0,12)}…`
+      : `CHAIN BROKEN at #${v.brokenAt}: ${v.reason}`;
+    const a = await opsJson('/api/audit?limit=8');
+    document.getElementById('ops-audit').textContent = (a.entries || []).map(e => `${e.seq} ${e.action} · ${e.actor} · ${e.outcome}`).join('\n');
+  } catch(err){ document.getElementById('ops-audit-note').textContent = err.message; }
+}
+function evFeedLine(text){
+  const feed = document.getElementById('ev-feed');
+  feed.textContent += text + '\n';
+  feed.scrollTop = feed.scrollHeight;
+}
+function connectEvents(){
+  const btn = document.getElementById('ev-btn');
+  clearTimeout(EV_RETRY);
+  if(EV_SOURCE){ try { EV_SOURCE.close(); } catch(_){} EV_SOURCE = null; }
+  if(!EV_WANT){ btn.textContent = 'Connect'; return; }
+  const token = getToken();
+  const src = new EventSource('/api/events' + (token ? '?token=' + encodeURIComponent(token) : ''));
+  EV_SOURCE = src;
+  btn.textContent = 'Disconnect';
+  src.onopen = () => {
+    EV_DELAY = 1000;
+    btn.textContent = 'Disconnect';
+    evFeedLine('[stream live]');
+  };
+  src.onmessage = ev => {
+    try {
+      const e = JSON.parse(ev.data);
+      evFeedLine(`${new Date((e.ts||0)*1000).toLocaleTimeString()}  ${e.kind}  ${JSON.stringify(e.data)}`);
+    } catch(_){}
+  };
+  src.onerror = () => {
+    try { src.close(); } catch(_){}
+    if(EV_SOURCE === src) EV_SOURCE = null;
+    if(!EV_WANT){ btn.textContent = 'Connect'; return; }
+    const wait = Math.max(1, Math.min(EV_DELAY, 30000));
+    btn.textContent = `Reconnecting (${Math.round(wait/1000)}s)`;
+    evFeedLine(`[stream error — retrying in ${Math.round(wait/1000)}s]`);
+    EV_DELAY = Math.min(EV_DELAY * 2, 30000);
+    EV_RETRY = setTimeout(connectEvents, wait);
+  };
+}
+function toggleEventStream(){
+  const btn = document.getElementById('ev-btn');
+  if(EV_WANT){
+    EV_WANT = false;
+    clearTimeout(EV_RETRY);
+    if(EV_SOURCE){ try { EV_SOURCE.close(); } catch(_){} EV_SOURCE = null; }
+    btn.textContent = 'Connect';
+    evFeedLine('[disconnected]');
+    return;
+  }
+  EV_WANT = true;
+  EV_DELAY = 1000;
+  connectEvents();
+}
+async function copyMcpConfig(){
+  try {
+    const ops = await opsJson('/api/ops');
+    const url = (ops.tunnel || {}).publicUrl;
+    if(!url) throw new Error('Tunnel is not online yet — start it, then copy the config.');
+    const token = getToken() || '<bridge-token>';
+    const cfg = { mcpServers: { 'roblox-studio': {
+      url: String(url).replace(/\/$/, '') + '/mcp',
+      headers: { Authorization: 'Bearer ' + token }
+    } } };
+    await copyText(JSON.stringify(cfg, null, 2));
+  } catch(err){ toast(err.message || 'Cannot build MCP config'); }
+}
+
+initBoot().then(() => { tick(); refreshOps(); refreshBus(); refreshFleet();
+  setInterval(tick, 1500);
+  setInterval(refreshFleet, 3000);
+  setInterval(() => {
+    const active = document.getElementById('tab-ops').classList.contains('active');
+    if(active){ refreshOps(); refreshBus(); }
+  }, 4000);
+});
 </script></body></html>"""
+    return html.replace("__BRIDGE_VERSION__", VERSION)
 
 
 # ----------------------------------------------------------------------------
@@ -2189,16 +4279,49 @@ def create_http_server(
     token: str = None,
     read_only: bool = False,
     guard_place_id: int = None,
+    state_dir: str = None,
+    auto_tunnel: bool = False,
+    tunnel_flavor: str = "auto",
+    tunnel_token: str = None,
+    tunnel_name: str = None,
+    public_url: str = None,
+    tunnel_binary: str = None,
+    sweep_interval: float = 300.0,
+    sweep_offline_seconds: float = 900.0,
+    require_confirm: str = "off",
+    confirm_ttl_seconds: float = 180.0,
+    confirm_allowance_seconds: float = 600.0,
+    confirm_wait_seconds: float = 45.0,
+    auto_task_ms: float = None,
 ):
     resolved_token = load_token_default(token)
     state = BridgeState(
         token=resolved_token,
         read_only=read_only,
         guard_place_id=guard_place_id,
+        state_dir=state_dir,
+        auto_tunnel=False,  # started after the socket is bound, so the port is known
+        tunnel_flavor=tunnel_flavor,
+        tunnel_token=tunnel_token,
+        tunnel_name=tunnel_name,
+        public_url=public_url,
+        tunnel_binary=tunnel_binary,
+        sweep_interval=sweep_interval,
+        sweep_offline_seconds=sweep_offline_seconds,
+        require_confirm=require_confirm,
+        confirm_ttl_seconds=confirm_ttl_seconds,
+        confirm_allowance_seconds=confirm_allowance_seconds,
+        confirm_wait_seconds=confirm_wait_seconds,
+        auto_task_ms=auto_task_ms,
     )
     httpd = ThreadingHTTPServer((host, port), make_http_handler(state))
     httpd.daemon_threads = True
     httpd.bridge_state = state
+    bound_port = httpd.server_address[1]
+    state.tunnel.port = int(bound_port)
+    state.tunnel.local_url = f"http://127.0.0.1:{bound_port}"
+    if auto_tunnel:
+        state.tunnel_action({"action": "start"})
     return httpd, state
 
 
@@ -2219,6 +4342,44 @@ def main():
         default=int(os.environ["BRIDGE_PLACE_ID"]) if os.environ.get("BRIDGE_PLACE_ID") else None,
         help="Optional PlaceId write guard",
     )
+    ap.add_argument("--tunnel", action="store_true",
+                    help="Supervise a public cloudflared/ngrok tunnel for this bridge (auto-restart, health probes)")
+    ap.add_argument("--tunnel-flavor", default=os.environ.get("BRIDGE_TUNNEL_FLAVOR", "auto"),
+                    choices=["auto", "cloudflared", "ngrok"], help="Tunnel provider")
+    ap.add_argument("--tunnel-token", default=os.environ.get("TUNNEL_TOKEN"),
+                    help="Cloudflare named-tunnel token (https://one.dash.cloudflare.com)")
+    ap.add_argument("--tunnel-name", default=os.environ.get("BRIDGE_TUNNEL_NAME"),
+                    help="Optional hostname label for a named tunnel")
+    ap.add_argument("--public-url", default=os.environ.get("BRIDGE_PUBLIC_URL"),
+                    help="Report a tunnel URL you run yourself (disables supervision)")
+    ap.add_argument("--sweep-interval", type=float,
+                    default=float(os.environ.get("BRIDGE_SWEEP_INTERVAL", "300")),
+                    help="Seconds between automatic stale-agent sweeps (0 disables)")
+    ap.add_argument("--sweep-offline", type=float,
+                    default=float(os.environ.get("BRIDGE_SWEEP_OFFLINE", "900")),
+                    help="An agent must be silent this long before its tasks are released")
+    ap.add_argument("--require-confirm",
+                    default=os.environ.get("BRIDGE_REQUIRE_CONFIRM", "off"),
+                    help="Human-in-the-loop gate for dangerous MCP tool calls: off | destructive | write | all "
+                         "(destructive also accepts 1/true). Modern clients get an input_required round-trip, "
+                         "everyone else waits for an operator answer on /api/confirmations.")
+    ap.add_argument("--confirm-ttl", type=float,
+                    default=float(os.environ.get("BRIDGE_CONFIRM_TTL") or 180),
+                    help="Seconds an unanswered confirmation stays answerable (default 180, max 900)")
+    ap.add_argument("--confirm-allowance", type=float,
+                    default=float(os.environ.get("BRIDGE_CONFIRM_ALLOWANCE") or 600),
+                    help="Seconds a 'remember this' approval lasts for the same tool (default 600, 0 disables)")
+    ap.add_argument("--confirm-wait", type=float,
+                    default=float(os.environ.get("BRIDGE_CONFIRM_WAIT_SECONDS") or 45),
+                    help="How long a legacy-era (pre-2026-07-28) call blocks waiting for an operator "
+                         "before it fails with confirmation_timeout (default 45, max 300)")
+    ap.add_argument("--auto-task-ms", type=float,
+                    default=(float(os.environ["BRIDGE_MCP_AUTO_TASK_MS"])
+                             if os.environ.get("BRIDGE_MCP_AUTO_TASK_MS") else 0.0),
+                    help="Promote a tool call to an MCP task handle when it runs longer than this many "
+                         "milliseconds (0 = never; needs the client to declare the tasks extension)")
+    ap.add_argument("--state-dir", default=os.environ.get("BRIDGE_STATE_DIR"),
+                    help="Directory for bus/token/audit/tunnel state (default: roblox-bridge/bridge_state)")
     args = ap.parse_args()
 
     srv, state = create_http_server(
@@ -2227,17 +4388,40 @@ def main():
         token=args.token,
         read_only=args.read_only,
         guard_place_id=args.place_id,
+        state_dir=args.state_dir,
+        auto_tunnel=args.tunnel,
+        tunnel_flavor=args.tunnel_flavor,
+        tunnel_token=args.tunnel_token,
+        tunnel_name=args.tunnel_name,
+        public_url=args.public_url,
+        sweep_interval=args.sweep_interval,
+        sweep_offline_seconds=args.sweep_offline,
+        require_confirm=args.require_confirm,
+        confirm_ttl_seconds=args.confirm_ttl,
+        confirm_allowance_seconds=args.confirm_allowance,
+        confirm_wait_seconds=args.confirm_wait,
+        auto_task_ms=args.auto_task_ms,
     )
     ro_str = " [READ-ONLY INSPECTOR]" if state.read_only else ""
+    bound_port = srv.server_address[1]
     print(
-        f"[bridge] v{VERSION}{ro_str} listening on {args.host}:{args.port} "
-        f"(token {'set' if state.token else 'disabled'}, Control Center http://127.0.0.1:{args.port}/, MCP http://127.0.0.1:{args.port}/mcp)",
+        f"[bridge] v{VERSION}{ro_str} listening on {args.host}:{bound_port} "
+        f"(token {'set' if state.token else 'disabled'}, Control Center http://127.0.0.1:{bound_port}/, "
+        f"MCP http://127.0.0.1:{bound_port}/mcp, ops http://127.0.0.1:{bound_port}/#ops)",
         flush=True,
     )
+    if args.tunnel:
+        print("[bridge] tunnel supervisor starting (cloudflared/ngrok)…", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        srv.shutdown()
+        pass
+    finally:
+        try:
+            state._reaper_stop.set()
+            state.tunnel.stop()
+        finally:
+            srv.shutdown()
 
 
 if __name__ == "__main__":
