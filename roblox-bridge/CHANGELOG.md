@@ -2,6 +2,93 @@
 
 All notable changes for the Roblox Studio bridge are documented here.
 
+## 5.4.0 — the 2026-07-28 MCP era put to work, an opt-in confirmation gate, and Studio's real playtest APIs
+
+> v5.3 taught the bridge to *speak* the 2026-07-28 protocol. v5.4 uses the parts
+> of it that change who is in charge — `tools/call` can now stop and ask a human
+> (MRTR) instead of either refusing or running unchecked — and ships the three
+> Studio testing APIs that the 2026 ecosystem turns on: VirtualInput, the Device
+> Simulator and `StudioTestService`. Nothing here is on by default except the new
+> tools; the gate needs `--require-confirm`.
+
+### Added
+- **`confirm_gate.py`** — a stdlib-only MRTR gate. `tools/call` on a gated tool
+  answers `resultType: "input_required"` with an `inputRequests.confirm` elicit
+  plus an HMAC-signed, single-use `requestState` that binds the *principal*, the
+  method and a digest of the arguments, with a TTL and a nonce. Four modes
+  (`off`, `destructive`, `write`, `all`), accept-and-remember allowances,
+  `cancelled` / expiry sweeps, counters and a recent-decision ledger. A wrong or
+  spent answer re-prompts (`digest_mismatch`, `replayed`, `principal_mismatch`,
+  `expired`, `unknown_request`) rather than failing the call.
+- **Operator control plane**: `GET|POST /api/confirmations` (status / approve /
+  deny / expire), `GET /api/subscriptions`, `POST /api/subscriptions/close`,
+  `GET|POST /api/mcp/events`; CLI `arena_studio.py confirmations`,
+  `approve <requestId> [--note] [--remember]`, `deny <requestId> [--note]`,
+  `subscriptions [--close <id>]`. An agent may always *read* the queue, but
+  approving its own parked call is refused with `reason: "operator_only"`.
+- **Five launch flags** on `server.py` and `mcp_server.py`:
+  `--require-confirm {off,destructive,write,all}`, `--confirm-ttl` (15–900 s),
+  `--confirm-allowance`, `--confirm-wait` (legacy blocking path),
+  `--auto-task-ms` (promote a slow call to a task handle). Env:
+  `BRIDGE_REQUIRE_CONFIRM`, `BRIDGE_CONFIRM_TTL`, `BRIDGE_CONFIRM_ALLOWANCE`,
+  `BRIDGE_CONFIRM_WAIT_SECONDS`, `BRIDGE_MCP_AUTO_TASK_MS`, and
+  `BRIDGE_CONFIRM_SECRET` (otherwise the bridge signs with its own token).
+- **Four tools (75 registered)** backed by real engine APIs, probed before use:
+  `simulate_input` (keys, typing, mouse, touch, drags and wheel through
+  `UserInputService:CreateVirtualInput()`), `manage_device_simulator`
+  (`StudioDeviceSimulatorService`: presets, orientation, resolution, DPI,
+  scaling, custom `DeviceConfiguration` profiles), `run_studio_tests`
+  (`StudioTestService` run / play / multiplayer 1–8 players with a watchdog and
+  a temporary runner Script that is always destroyed), and `playtest_capabilities`
+  (which of those the connected Studio build actually exposes, with the exact
+  baseline version each needs).
+- **Modern-era protocol behaviour**: per-request `_meta` negotiation
+  (`io.modelcontextprotocol/protocolVersion|clientCapabilities|clientInfo`, which
+  outranks `Mcp-Protocol-Version`), `resultType` on every result, `ttlMs` /
+  `cacheScope` on list and read results, `server/discover` echoing the negotiated
+  version, `subscriptions/listen` streaming `notifications/resources/updated` on
+  the long-lived stdio stream or the SSE `POST /mcp` response, `-32021` when a
+  client uses `tasks/*` without declaring the extension, `_meta` log level →
+  real `notifications/message` (embedded as `io.modelcontextprotocol/logEntries`
+  in single-shot HTTP), OTel `traceparent` / `tracestate` / `baggage` propagated
+  into jobs and the audit chain, and `X-Arena-Task` / `X-Arena-Subscription`
+  response headers.
+
+### Changed
+- `/api/mcp/events`, `POST /api/confirmations` and `/api/subscriptions/close` now
+  live in `do_POST` (they were being looked up by `do_GET`, so POST got a 404),
+  and each route reads its own body.
+- An out-of-band approval may be spent by exactly **one** retry: the nonce is
+  consumed when the retry takes the decision, so a second use reports `replayed`.
+- `bridge_ops` gate/subscription actions are never gated (an approval is itself
+  the authorization step — gating it is circular) and `confirmations` now counts
+  as a read action, so an Inspector-only bridge can still show the queue.
+- `manage_device_simulator` returns camelCase device rows (the engine's
+  `DeviceInfo` is PascalCase), its `action` enum is derived from
+  `DEVICE_SIMULATOR_ACTIONS` so schema and validator cannot drift, and `set` is
+  documented as the one-job-combines-many-overrides action.
+- `simulate_input` refuses instead of pretending: no playtest → per-step
+  `reason: "not_playing"`, `ok: false`, and a hint naming `start_play`; a
+  `target` that is a `Model` projects its `PrimaryPart` (or first Part) rather
+  than erroring; `pinch` explains the one-pointer limit instead of faking it.
+- `MUTATING_JOB_TYPES` covers `virtual_input`, `device_simulator` (except
+  `status` / `list`) and `studio_tests`, so `--read-only` stays a true Inspector.
+- The mock Studio now tracks `playtest_running` (single-world sessions report
+  `isRunning` honestly), and a stopped playtest clears its simulated client peer.
+
+### Verified
+- `python3 -B roblox-bridge/test_bridge_mcp.py` → **Ran 64 tests … OK** (was 43):
+  19 of them in `TestV54ConfirmationGate` (gate modes, signed state, replay,
+  principal binding, task flip, subscriptions, headers, ops surface), plus the
+  per-tool coverage contract — every one of the 75 tools is now called in the
+  end-to-end fixture *and* recorded in the nested self-test's metrics line.
+- `ArenaBridge.lua` v4.1.0 passes `run_luau_check` with no unused locals; the mock
+  and the plugin implement the same four job contracts field for field.
+- The operator loop was run for real: a parked legacy `write_script` + an approve
+  on `POST /api/confirmations` (and via `arena_studio.py approve`, exit code 0)
+  let the blocked call complete, and the second retry of a spent token reported
+  `replayed`.
+
 ## 5.3.1 — make the "frozen console" and "no tunnel" cases explain themselves
 
 > Two support reports drove this patch: a bridge started without `--tunnel`

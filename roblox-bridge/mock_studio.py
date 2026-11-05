@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-mock_studio.py — Stateful Roblox Studio v4.0.0 simulator for testing the bridge,
+mock_studio.py — Stateful Roblox Studio v4.1.0 simulator for testing the bridge,
 CLI, and all 68 registered MCP tools without Roblox Studio open.
 
 Simulates:
@@ -29,7 +29,22 @@ from mcp_core import fnv1a_32, fnv1a_hex, normalize_newlines
 
 BASE = os.environ.get("BRIDGE_URL", "http://127.0.0.1:8077").rstrip("/")
 TOKEN = os.environ.get("BRIDGE_TOKEN", "arena-demo-7f3a")
-PLACE = os.environ.get("MOCK_PLACE", "DemoPlace (simulated Studio v4.0.0)")
+#: The plugin version the mock claims. It must match `local PLUGIN_VERSION` in
+#: ArenaBridge.lua: the mock stands in for that plugin, reports this as its
+#: `pluginVersion` in every info result, and registers it as `pv` like the real
+#: one does — which is what /api/peers and the studio strip display.
+PLUGIN_VERSION = os.environ.get("MOCK_PLUGIN_VERSION", "4.1.0")
+
+PLACE = os.environ.get("MOCK_PLACE", "DemoPlace (simulated Studio v%s)" % PLUGIN_VERSION)
+# The engine build the mock pretends to be, reported by playtest_caps. Real
+# Studio reports `version()`; the mock reports this so capability code paths
+# can be exercised without a Studio install.
+STUDIO_VERSION = os.environ.get("MOCK_STUDIO_VERSION", "0.721.0000-live-e17f (mock)")
+DEVICE_BUILTIN_PREFIX = "builtin:"
+INPUT_ACTIONS_LUA = {
+    "keydown": "SendKey(true)", "keyup": "SendKey(false)", "press": "SendKey(true/false)",
+    "type": "SendTextInput", "move": "SendMousePosition", "wheel": "SendMouseWheel",
+}
 PLACE_ID = int(os.environ.get("MOCK_PLACE_ID", "110457957229133"))
 
 SCRIPT_CLASSES = {"Script", "LocalScript", "ModuleScript"}
@@ -113,6 +128,21 @@ class MockWorld:
         self.redo_stack = []
         self.play_peer_stop = None
         self.play_peer_thread = None
+        #: True between `start_play`/`start_run` and `stop`. The peer thread only
+        #: exists when the mock can open its own poll loop, so this flag is the
+        #: fallback that keeps `isRunning` honest in single-world mode.
+        self.playtest_running = False
+        # StudioDeviceSimulatorService state (Edit mode only, like the real one).
+        self.device_id = "default"
+        self.device_orientation = "LandscapeRight"
+        self.device_resolution = [1920, 1080]
+        self.device_density = 96.0
+        self.device_scaling = "FitToWindow"
+        self.device_profiles = {}
+        # simulate_input receipts, newest first, for assertions and probes.
+        self.input_state = {"delivered": [], "focused": None}
+        self.studio_test_runs = []
+        self.device_catalog = ["iPhone15Pro", "iPhoneSE", "iPadPro12.9", "AndroidPhone", "SurfaceTop"]
 
         # Seed default services & sample content
         ws = self.root.add(MockNode("Workspace", "Workspace", {"Gravity": 196.2, "StreamingEnabled": False}))
@@ -252,7 +282,7 @@ class MockWorld:
                 "placeId": PLACE_ID,
                 "gameId": 987654,
                 "studio": "mock-3.0",
-                "pluginVersion": "4.0.0",
+                "pluginVersion": PLUGIN_VERSION,
                 "dm": effective_dm,
                 "peerId": self.peer_id,
                 "hasClient": self.dm == "server",
@@ -265,12 +295,13 @@ class MockWorld:
             return {
                 "place": {"name": PLACE, "placeId": PLACE_ID, "gameId": 987654},
                 "studio": "mock-3.0",
-                "pluginVersion": "4.0.0",
+                "pluginVersion": PLUGIN_VERSION,
                 "dm": effective_dm,
                 "peerId": self.peer_id,
                 "isEdit": effective_dm == "edit",
-                "isRunning": effective_dm != "edit" or self.play_peer_stop is not None,
-                "playtestActive": self.play_peer_stop is not None,
+                "isRunning": effective_dm != "edit" or self.playtest_running
+                             or self.play_peer_stop is not None,
+                "playtestActive": self.playtest_running or self.play_peer_stop is not None,
                 "players": [{"name": "Player1", "displayName": "Player1", "userId": 1, "hasCharacter": True}] if effective_dm != "edit" else [],
                 "selectionCount": len(self.selection),
                 "canUndo": bool(self.undo_stack),
@@ -324,7 +355,7 @@ class MockWorld:
             return {
                 "place": {"name": PLACE, "placeId": PLACE_ID, "gameId": 987654},
                 "dm": effective_dm,
-                "pluginVersion": "4.0.0",
+                "pluginVersion": PLUGIN_VERSION,
                 "services": [{"name": c.name, "descendants": len(c.descendants()), "children": len(c.children)} for c in self.root.children],
                 "census": census,
                 "scripts": scripts_out,
@@ -939,11 +970,15 @@ class MockWorld:
         if kind == "playtest":
             act = p.get("action", "status")
             if act in ("start_play", "start_run"):
+                self.playtest_running = True
                 if self.play_peer_stop is None and bridge_req_fn is not None:
                     stop_evt = threading.Event()
                     self.play_peer_stop = stop_evt
                     play_world = MockWorld(dm="server", peer_id="server-mockplay")
                     play_world.root = self.snapshot_tree()
+                    # This world *is* the play session, so jobs it claims (a
+                    # `dm="client"` input job, for instance) are live by definition.
+                    play_world.playtest_running = True
 
                     def _run_play_peer():
                         while not stop_evt.is_set():
@@ -956,7 +991,7 @@ class MockWorld:
                                     "dm": "server",
                                     "hasClient": "1" if act == "start_play" else "0",
                                     "players": "1" if act == "start_play" else "0",
-                                    "pv": "3.0",
+                                    "pv": PLUGIN_VERSION,
                                 })
                                 out = bridge_req_fn("GET", f"/api/poll?{qs}", timeout=3.0)
                                 j = out.get("job")
@@ -965,6 +1000,7 @@ class MockWorld:
                                 if j["type"] == "playtest" and j.get("payload", {}).get("action") == "stop":
                                     stop_evt.set()
                                     self.play_peer_stop = None
+                                    self.playtest_running = False
                                     bridge_req_fn("POST", "/api/result", {
                                         "id": j["id"], "ok": True,
                                         "result": {"stopped": True, "detail": "EndTest called", "dm": "server"},
@@ -988,8 +1024,11 @@ class MockWorld:
                 if self.play_peer_stop is not None:
                     self.play_peer_stop.set()
                     self.play_peer_stop = None
+                self.play_peer_thread = None
+                self.playtest_running = False
                 return {"stopped": True, "detail": "EndTest called", "dm": self.dm}
-            return {"dm": self.dm, "isRunning": self.play_peer_stop is not None, "playtestActive": self.play_peer_stop is not None}
+            running = self.playtest_running or self.play_peer_stop is not None
+            return {"dm": self.dm, "isRunning": running, "playtestActive": running}
 
         if kind == "console":
             since = int(p.get("sinceIndex") or 0)
@@ -1016,7 +1055,370 @@ class MockWorld:
                 "dm": effective_dm,
             }
 
+
+
+        # -- v5.4.0 playtest surface: input, device simulation, native tests ----
+
+        if kind == "playtest_caps":
+            return {
+                "studioVersion": STUDIO_VERSION,
+                "dm": effective_dm,
+                "isStudio": True,
+                "virtualInput": {
+                    "available": True, "service": "UserInputService",
+                    "method": "CreateVirtualInput", "context": "client",
+                },
+                "deviceSimulator": {
+                    "available": True, "service": "StudioDeviceSimulatorService",
+                    "method": "GetDeviceListAsync", "context": "edit|playClient",
+                },
+                "studioTestService": {
+                    "available": True, "service": "StudioTestService",
+                    "method": "ExecuteRunModeAsync", "context": "edit",
+                },
+                "multiplayerTest": {
+                    "available": True, "service": "StudioTestService",
+                    "method": "ExecuteMultiplayerTestAsync", "maxPlayers": 8,
+                },
+                "playtest": {
+                    "running": self._playtest_live(),
+                    "editModeActive": self.dm == "edit",
+                    "canLeaveTest": True,
+                },
+                "baselineExpected": p.get("expect") or {},
+            }
+
+        if kind == "virtual_input":
+            return self.job_virtual_input(p, effective_dm)
+
+        if kind == "device_simulator":
+            if effective_dm not in ("edit", "client"):
+                raise RuntimeError(
+                    f"StudioDeviceSimulatorService mutations are blocked in {effective_dm} mode "
+                    "(route this job to the Edit peer)"
+                )
+            return self.job_device_simulator(p)
+
+        if kind == "studio_tests":
+            return self.job_studio_tests(p)
+
         raise RuntimeError(f"unknown job type: {kind}")
+
+    # -- job implementations for the v5.4.0 playtest surface --------------------
+
+    @staticmethod
+    def _model_anchor(node):
+        """Position to project a Model by: its PrimaryPart, else its first Part."""
+        primary = node.props.get("PrimaryPart")
+        named = None
+        if isinstance(primary, str):
+            named = next((c for c in node.children if c.name == primary), None)
+        if named is None:
+            stack = list(node.children)
+            while stack:
+                child = stack.pop(0)
+                if child.class_name.endswith("Part") and isinstance(child.props.get("Position"),
+                                                                    (list, tuple)):
+                    return child.props["Position"]
+                stack.extend(child.children)
+            return None
+        return named.props.get("Position")
+
+    def _screen_point(self, step: dict):
+        """Resolve a step's screen anchor the way the plugin does: explicit pixels
+        win, otherwise project the target instance (GUI centre or 3D viewport)."""
+        if isinstance(step.get("position"), (list, tuple)) and len(step["position"]) == 2:
+            return [float(step["position"][0]), float(step["position"][1])], None
+        target = step.get("target")
+        if not target:
+            # Two-point gestures carry `from`/`to` instead of an anchor.
+            for key in ("from", "to"):
+                edge = step.get(key)
+                if isinstance(edge, (list, tuple)) and len(edge) == 2:
+                    return [float(edge[0]), float(edge[1])], None
+            return None, "no position or target"
+        node = self.resolve(target)
+        if node is None:
+            return None, f"target not found: {target}"
+        if node.class_name in {"TextBox", "TextButton", "TextLabel", "Frame", "ImageLabel",
+                              "ImageButton", "ViewportFrame", "ScrollingFrame"}:
+            size = node.props.get("Size") or [0, 0]
+            return [float(size[0]) / 2.0, float(size[1]) / 2.0], None
+        pos = node.props.get("Position")
+        if not isinstance(pos, (list, tuple)) or len(pos) != 3:
+            # A Model has no Position of its own: project a Part inside it, exactly
+            # as the plugin does (PrimaryPart first, then any descendant Part).
+            pos = self._model_anchor(node)
+        if not isinstance(pos, (list, tuple)) or len(pos) != 3:
+            return None, f"{node.full_name()} has no projected position (class {node.class_name})"
+        cam = self.camera.get("viewportSize", {}).get("v", [1920, 1080])
+        return [float(cam[0]) / 2.0 + float(pos[0]), float(cam[1]) / 2.0 - float(pos[1])], None
+
+    def _playtest_live(self) -> bool:
+        """True while a play session exists: this world started one, or the
+        simulated play-client thread it spawned is still alive."""
+        if self.playtest_running:
+            return True
+        thread = self.play_peer_thread
+        return thread is not None and thread.is_alive()
+
+    def job_virtual_input(self, p: dict, effective_dm: str) -> dict:
+        steps_out = []
+        hold_ms = float(p.get("holdMs") or 60.0)
+        # VirtualInput only exists in a running client: refuse rather than
+        # pretend. The *requested* dm is not evidence a client exists, but a
+        # world that is itself a play client (or has one attached) is.
+        live = self._playtest_live()
+        for index, step in enumerate(p.get("steps") or [], start=1):
+            rec = {"index": index, "action": step.get("action"), "delivered": False}
+            if not live:
+                rec["reason"] = "not_playing"
+                steps_out.append(rec)
+                continue
+            anchor, why = self._screen_point(step)
+            action = step.get("action")
+            if action in INPUT_ACTIONS_LUA:
+                rec["delivered"] = True
+                rec["via"] = INPUT_ACTIONS_LUA[action]
+                if action in ("keydown", "keyup", "press"):
+                    rec["key"] = step.get("key")
+                if action == "type":
+                    rec["chars"] = len(step.get("text") or "")
+                    self.input_state["focused"] = step.get("target") or self.input_state.get("focused")
+            elif action == "wait":
+                rec["delivered"] = True
+                rec["via"] = "task.wait"
+                rec["ms"] = float(step.get("ms") or 100.0)
+            elif action == "pinch":
+                rec["error"] = ("pinch needs two simultaneous pointers; CreateVirtualInput() exposes "
+                                "one, so a pinch is scripted as two drags")
+            elif anchor is None:
+                rec["error"] = why
+            else:
+                rec["delivered"] = True
+                rec["position"] = [round(anchor[0], 1), round(anchor[1], 1)]
+                rec["via"] = "SendPointerAction" if step.get("pointerType") == "touch" else "SendMouseButton"
+                if action == "press":
+                    rec["holdMs"] = hold_ms
+                if action in ("drag", "swipe"):
+                    fr, fr_why = self._screen_point({"position": step.get("from")})
+                    to, to_why = self._screen_point({"position": step.get("to")})
+                    if fr is None or to is None:
+                        rec["delivered"] = False
+                        rec["error"] = fr_why or to_why or "drag endpoints did not resolve"
+                    else:
+                        rec["from"] = [round(fr[0], 1), round(fr[1], 1)]
+                        rec["to"] = [round(to[0], 1), round(to[1], 1)]
+                        rec["pathPoints"] = 8
+                if action == "wait":
+                    rec["via"] = "task.wait"
+                    rec["delivered"] = True
+            steps_out.append(rec)
+        for rec in steps_out:
+            if rec.get("delivered"):
+                self.input_state["delivered"].append(rec)
+                self.logs.append({
+                    "type": "Output",
+                    "message": f"mock: input {rec['action']} via {rec.get('via')} delivered",
+                    "timestamp": time.time(),
+                })
+        return {
+            "steps": steps_out,
+            "dm": effective_dm,
+            "viewport": {"width": self.camera["viewportSize"]["v"][0],
+                         "height": self.camera["viewportSize"]["v"][1]},
+            "focused": self.input_state.get("focused"),
+            "holdMs": hold_ms,
+            "settleMs": float(p.get("settleMs") or 150.0),
+        }
+
+    def _device_snapshot(self) -> dict:
+        return {
+            "deviceId": self.device_id,
+            "orientation": self.device_orientation,
+            "resolution": list(self.device_resolution),
+            "pixelDensity": self.device_density,
+            "scalingMode": self.device_scaling,
+            "simulating": self.device_id != "default",
+        }
+
+    def job_device_simulator(self, p: dict) -> dict:
+        action = p.get("action") or "status"
+        before = self._device_snapshot()
+        out = {"action": action, "before": before, "applied": False}
+        need_device = {"set_orientation", "set_resolution", "set_pixel_density", "set_scaling_mode"}
+        if action in need_device and self.device_id == "default":
+            # The engine raises here; translating it into a structured refusal keeps
+            # the tool callable so the agent can `set_device` and retry.
+            return {
+                "action": action, "before": before, "applied": False, "ok": False,
+                "current": before, "changed": False, "reason": "no_active_device",
+                "error": ("resolution, DPI, orientation and scaling overrides need an active device; "
+                          "call manage_device_simulator(action='set_device') first"),
+            }
+
+        def profile_fields(source: dict):
+            name = str(source.get("Name") or "").strip()
+            if not (1 <= len(name) <= 200):
+                raise ValueError("DeviceConfiguration.Name must be 1-200 characters")
+            if name.lower() == "default":
+                raise ValueError("DeviceConfiguration.Name cannot be 'default'")
+            width = source.get("Width")
+            height = source.get("Height")
+            dpi = source.get("PixelDensity")
+            if not (isinstance(width, (int, float)) and 1 <= width <= 7680):
+                raise ValueError("DeviceConfiguration.Width must be 1-7680")
+            if not (isinstance(height, (int, float)) and 1 <= height <= 4320):
+                raise ValueError("DeviceConfiguration.Height must be 1-4320")
+            if not (isinstance(dpi, (int, float)) and 72 <= dpi <= 10000):
+                raise ValueError("DeviceConfiguration.PixelDensity must be 72-10000")
+            scale = source.get("ResolutionScale", 1.0)
+            if not (isinstance(scale, (int, float)) and 0 < scale <= 10):
+                raise ValueError("DeviceConfiguration.ResolutionScale must be > 0 and <= 10")
+            return {"Name": name, "Width": int(width), "Height": int(height),
+                    "PixelDensity": int(dpi), "ResolutionScale": float(scale),
+                    "DeviceForm": str(source.get("DeviceForm") or "Phone"),
+                    "IsCustom": True, "DeviceId": f"{name.strip().lower().replace(' ', '-')}"}
+
+        if action == "status":
+            out["current"] = before
+            out["applied"] = False
+        elif action == "list":
+            out["devices"] = [{"DeviceId": dev, "Name": dev, "IsCustom": False} for dev in self.device_catalog]
+            out["devices"] += [dict(v, DeviceId=key) for key, v in self.device_profiles.items()]
+            out["currentDeviceId"] = self.device_id
+        elif action in ("set_device", "set"):
+            wanted = p.get("deviceId")
+            if action == "set" and wanted is None:
+                out["applied"] = True
+            elif wanted in (None, "", "default"):
+                self.device_id = "default"
+                out["applied"] = True
+                out["stopped"] = True
+            else:
+                profile = next((d for d in self.device_catalog if d == wanted), None)
+                custom = self.device_profiles.get(wanted)
+                if profile is None and custom is None:
+                    return {
+                        "action": action, "before": before, "applied": False, "ok": False,
+                        "current": before, "changed": False, "reason": "unknown_device",
+                        "error": f"device id '{wanted}' is not in the Device Simulator list",
+                        "knownDevices": list(self.device_catalog) + sorted(self.device_profiles),
+                    }
+                config = custom or {"Width": 1179, "Height": 2556, "PixelDensity": 460}
+                self.device_id = wanted
+                # Switching devices clears session-level overrides, like the engine.
+                self.device_resolution = [config["Width"], config["Height"]]
+                self.device_density = float(config["PixelDensity"])
+                out["applied"] = True
+                out["clearedOverrides"] = True
+        if action == "set_orientation" or (action == "set" and p.get("orientation")):
+            self.device_orientation = p["orientation"]
+            out["applied"] = True
+        if action == "set_resolution" or (action == "set" and p.get("width")):
+            self.device_resolution = [int(p["width"]), int(p["height"])]
+            out["applied"] = True
+        if action == "set_pixel_density" or (action == "set" and p.get("density")):
+            self.device_density = float(p["density"])
+            out["applied"] = True
+        if action == "set_scaling_mode" or (action == "set" and p.get("scalingMode")):
+            self.device_scaling = p["scalingMode"]
+            out["applied"] = True
+        if action == "stop":
+            self.device_id = "default"
+            out["applied"] = True
+            out["stopped"] = True
+        if action == "create_profile":
+            config = profile_fields(p.get("profile") or {})
+            key = config["DeviceId"]
+            if key in self.device_profiles:
+                raise RuntimeError(f"a custom device named {config['Name']} already exists")
+            self.device_profiles[key] = config
+            out["applied"] = True
+            out["profile"] = dict(config, DeviceId=key)
+        if action == "update_profile":
+            key = p.get("deviceId")
+            if key in self.device_catalog:
+                raise RuntimeError("built-in presets are immutable; create a custom profile instead")
+            if key not in self.device_profiles:
+                raise RuntimeError(f"no custom device '{key}' to update")
+            merged = dict(self.device_profiles[key])
+            for name, value in (p.get("profile") or {}).items():
+                merged[name] = value
+            self.device_profiles[key] = profile_fields(merged)
+            out["applied"] = True
+            out["profile"] = self.device_profiles[key]
+        if action == "remove_profile":
+            key = p.get("deviceId")
+            if key in self.device_catalog:
+                raise RuntimeError("built-in presets are immutable; nothing was removed")
+            if key not in self.device_profiles:
+                raise RuntimeError(f"no custom device '{key}' to remove")
+            del self.device_profiles[key]
+            out["applied"] = True
+        out["current"] = self._device_snapshot()
+        out["changed"] = out["current"] != before
+        self.logs.append({
+            "type": "Output",
+            "message": f"mock: device simulator {action} -> {out['current']['deviceId']} "
+                       f"@ {out['current']['resolution'][0]}x{out['current']['resolution'][1]}",
+            "timestamp": time.time(),
+        })
+        return out
+
+    def job_studio_tests(self, p: dict) -> dict:
+        mode = p.get("mode") or "run"
+        module = (p.get("module") or "").strip()
+        players = int(p.get("players") or 2)
+        runner = p.get("runnerName") or "__ArenaTestRunner"
+        out = {
+            "mode": mode, "ok": True, "passed": 0, "failed": 0, "total": 0,
+            "suites": [], "timedOut": False, "runner": runner,
+            "cleanedUp": True, "keepOpen": bool(p.get("keepOpen")),
+            "engineCall": {
+                "run": "StudioTestService:ExecuteRunModeAsync(args)",
+                "play": "StudioTestService:ExecutePlayModeAsync(args)",
+                "multiplayer": f"StudioTestService:ExecuteMultiplayerTestAsync({players}, args)",
+            }.get(mode, "unknown"),
+        }
+        if mode == "multiplayer" and not (1 <= players <= 8):
+            raise RuntimeError("ExecuteMultiplayerTestAsync accepts 1-8 simulated clients")
+        if module:
+            node = self.resolve(module)
+            if node is None:
+                raise RuntimeError(f"test module not found: {module}")
+            if node.class_name not in {"ModuleScript", "Script", "LocalScript"}:
+                raise RuntimeError(f"{module} is a {node.class_name}, not a script that can be required")
+            source = node.source or ""
+            if "EndTest" not in source and "return" not in source:
+                raise RuntimeError(
+                    f"{module} neither returns a report nor calls StudioTestService:EndTest — "
+                    "the session would hang until the watchdog fired"
+                )
+            passed = source.count("expect(")
+            out["suites"] = [{"name": node.full_name(), "passed": max(passed, 1), "failed": 0}]
+            out["passed"] = max(passed, 1)
+            out["total"] = out["passed"]
+        else:
+            # Studio's own discovery: the mock reports the same shape it would get back.
+            out["suites"] = [{"name": "MockPlace", "passed": 3, "failed": 0}]
+            out["passed"], out["total"] = 3, 3
+        if p.get("collectClientLogs") and mode == "multiplayer":
+            out["clientLogs"] = [
+                {"player": f"MockPlayer{i + 1}", "lines": [f"mock client {i + 1}: booted"]}
+                for i in range(players)
+            ]
+        out["durationSec"] = 0.42 if mode != "multiplayer" else round(0.6 + 0.1 * players, 2)
+        out["failed"] = out["total"] - out["passed"]
+        out["ok"] = out["failed"] == 0
+        self.studio_test_runs.append(out)
+        self.logs.append({
+            "type": "Output" if out["ok"] else "Error",
+            "message": f"mock: studio tests ({mode}) {out['passed']}/{out['total']} passed",
+            "timestamp": time.time(),
+        })
+        return out
+
 
 
 def make_http_requester(base_url: str, token: str):
@@ -1045,7 +1447,7 @@ def run_mock_loop(base_url: str = BASE, token: str = TOKEN, stop_event: threadin
         "dm": "edit",
         "hasClient": "0",
         "players": "0",
-        "pv": "3.0",
+        "pv": PLUGIN_VERSION,
         "sv": "mock-3.0",
     })
     while stop_event is None or not stop_event.is_set():
@@ -1083,7 +1485,7 @@ def run_mock_loop(base_url: str = BASE, token: str = TOKEN, stop_event: threadin
 
 
 def main():
-    print(f"mock Studio v4.0.0 -> {BASE} (place: {PLACE})", flush=True)
+    print(f"mock Studio v4.1.0 -> {BASE} (place: {PLACE})", flush=True)
     run_mock_loop(BASE, TOKEN)
 
 

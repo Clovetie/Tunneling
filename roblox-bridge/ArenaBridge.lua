@@ -1,6 +1,6 @@
 --!nonstrict
 --[[
-	ArenaBridge v4.0.0 — Roblox Studio local MCP & bridge plugin
+	ArenaBridge v4.1.0 — Roblox Studio local MCP & bridge plugin
 	Connects your open Studio place (Edit, Server, and Client DataModels) to the
 	bridge & Model Context Protocol (MCP) server running on your machine.
 
@@ -10,6 +10,19 @@
 	     (mcp_server.py auto-starts or attaches to the local bridge automatically).
 	  3. Restart Studio once when installing or rotating tokens.
 	     v2+/v3+ auto-connects on DataModel load — no toolbar click needed.
+
+	Key v4.1.0 upgrades:
+	  - Real playtest surface: simulate_input drives the running client through
+	    UserInputService:CreateVirtualInput() (keys, mouse, touch, drags; CoreGui-aimed
+	    input is reported as `coregui_refused`, exactly as the engine refuses it),
+	    manage_device_simulator drives StudioDeviceSimulatorService, and
+	    run_studio_tests runs Studio's own session (up to 8 simulated clients) with an
+	    injected temporary runner that always cleans itself up.
+	  - playtest_caps probes which of those engine APIs this Studio build actually has
+	    and reports the exact call it attempted; nothing is assumed from a version string.
+	  - MCP 2026-07-28 era on the bridge: per-request `_meta` negotiation, signed
+	    MRTR confirmations (a gated tool returns input_required instead of acting),
+	    the tasks extension, and `subscriptions/listen` for live resource updates.
 
 	Key v4.0.0 upgrades:
 	  - Multi-DataModel context routing: identifies Edit vs Play Server peers cleanly,
@@ -37,7 +50,7 @@ local BRIDGE_URL = "http://127.0.0.1:8077"  -- the bridge on YOUR machine
 local BRIDGE_TOKEN = "arena-demo-7f3a"      -- must match the server's --token
 local POLL_INTERVAL = 0.5                   -- idle pause between long-polls
 local AUTO_CONNECT = true                   -- connect on load if bridge is up
-local PLUGIN_VERSION = "4.0.0"
+local PLUGIN_VERSION = "4.1.0"
 local CLIENT_RPC_NAME = "__ArenaBridgeClientRPC"
 ------------------------------------------------------------------------------
 
@@ -98,7 +111,7 @@ if DM_MODE == "edit" then
 	toolbar = plugin:CreateToolbar("Arena")
 	button = toolbar:CreateButton(
 		"ArenaBridge",
-		"Connect this place to your Arena / MCP agent (v4.0.0)",
+		"Connect this place to your Arena / MCP agent (v4.1.0)",
 		"",
 		"Arena MCP"
 	)
@@ -2433,6 +2446,815 @@ handlers["playtest"] = function(p)
 end
 
 ------------------------------------------------------------------------------
+-- v4.1.0 playtest surface: playtest_caps / virtual_input / device_simulator
+-- / studio_tests
+--
+-- These four talk to engine APIs that only exist on newer Studio builds, so
+-- each one probes the live DataModel first and reports `unsupported` with the
+-- exact call it attempted instead of guessing. Nothing here pretends a step
+-- landed: `steps[].delivered` is set only after the engine call returned
+-- without error.
+------------------------------------------------------------------------------
+
+local function serviceMethod(serviceName: string, methodName: string): (boolean, any, string?)
+	local okSvc, svc = pcall(function()
+		return game:GetService(serviceName)
+	end)
+	if not okSvc or svc == nil then
+		return false, nil, serviceName .. " is not available in this DataModel"
+	end
+	local okType, typeOrErr = pcall(function()
+		return type(svc[methodName])
+	end)
+	if not okType or typeOrErr ~= "function" then
+		return false, svc, serviceName .. ":" .. methodName .. "() is not available in this Studio build"
+	end
+	return true, svc, nil
+end
+
+handlers["playtest_caps"] = function(p)
+	local caps = {}
+	local function probe(key: string, serviceName: string, methodName: string)
+		local available, _, why = serviceMethod(serviceName, methodName)
+		caps[key] = {
+			available = available,
+			service = serviceName,
+			method = methodName,
+			detail = why,
+		}
+	end
+	probe("virtualInput", "UserInputService", "CreateVirtualInput")
+	probe("deviceSimulator", "StudioDeviceSimulatorService", "GetDeviceListAsync")
+	probe("studioTestService", "StudioTestService", "ExecuteRunModeAsync")
+	probe("multiplayerTest", "StudioTestService", "ExecuteMultiplayerTestAsync")
+
+	local studioVersion = "unknown"
+	pcall(function()
+		studioVersion = tostring(version())
+	end)
+	local isStudio = false
+	pcall(function()
+		isStudio = RunService:IsStudio() == true
+	end)
+	local playtest = { running = RunService:IsRunning(), editModeActive = false, canLeaveTest = false }
+	pcall(function()
+		playtest.editModeActive = StudioTestService.EditModeActive == true
+	end)
+	pcall(function()
+		playtest.canLeaveTest = StudioTestService:CanLeaveTest() == true
+	end)
+
+	return {
+		studioVersion = studioVersion,
+		isStudio = isStudio,
+		dm = DM_MODE,
+		playtest = playtest,
+		virtualInput = caps.virtualInput,
+		deviceSimulator = caps.deviceSimulator,
+		studioTestService = caps.studioTestService,
+		multiplayerTest = caps.multiplayerTest,
+		baselineExpected = p.expect or {},
+	}
+end
+
+------------------------------------------------------------------------------
+-- virtual_input: synthetic keyboard / mouse / touch through VirtualInput
+------------------------------------------------------------------------------
+
+local function inputButtonFor(action: string)
+	if action == "rightclick" then
+		return Enum.UserInputType.MouseButton2
+	end
+	if action == "middleclick" then
+		return Enum.UserInputType.MouseButton3
+	end
+	return Enum.UserInputType.MouseButton1
+end
+
+local function vectorFromXY(raw: any): Vector2?
+	if type(raw) == "table" and #raw == 2 then
+		return Vector2.new(tonumber(raw[1]) or 0, tonumber(raw[2]) or 0)
+	end
+	return nil
+end
+
+local function screenPointFor(step: any): (Vector2?, string?)
+	local explicit = vectorFromXY(step.position)
+	if explicit ~= nil then
+		return explicit, nil
+	end
+	local rawPath = step.target
+	if type(rawPath) ~= "string" or rawPath == "" then
+		return nil, "step needs `position` [x, y] or a resolvable `target`"
+	end
+	local node = resolve(rawPath)
+	if node == nil then
+		return nil, "target not found: " .. tostring(rawPath)
+	end
+	local okGui, guiPos, guiSize = pcall(function()
+		return node.AbsolutePosition, node.AbsoluteSize
+	end)
+	if okGui and typeof(guiPos) == "Vector2" and typeof(guiSize) == "Vector2" then
+		return guiPos + Vector2.new(guiSize.X / 2, guiSize.Y / 2), nil
+	end
+	local okWorld, worldPos = pcall(function()
+		return node.Position
+	end)
+	if not okWorld or typeof(worldPos) ~= "Vector3" then
+		-- A Model has no Position of its own: project its PrimaryPart, or any Part
+		-- inside it, so `target: "Workspace.Door"` works the way a click should.
+		local okModel, modelPos = pcall(function()
+			if not node:IsA("Model") then
+				error("not a Model", 0)
+			end
+			local part = node.PrimaryPart
+			if part == nil then
+				part = node:FindFirstChildWhichIsA("BasePart", true)
+			end
+			if part == nil then
+				error("no BasePart inside the Model to project", 0)
+			end
+			return part.Position
+		end)
+		if not okModel or typeof(modelPos) ~= "Vector3" then
+			return nil, fullName(node) .. " cannot be projected to the viewport (class " .. node.ClassName .. ")"
+		end
+		worldPos = modelPos
+	end
+	local okPoint, screenPos = pcall(function()
+		local cam = workspace.CurrentCamera
+		if cam == nil then
+			error("workspace.CurrentCamera is nil; there is no viewport to project into", 0)
+		end
+		local pos = cam:WorldToViewportPoint(worldPos)
+		return Vector2.new(pos.X, pos.Y)
+	end)
+	if not okPoint then
+		return nil, tostring(screenPos)
+	end
+	return screenPos, nil
+end
+
+handlers["virtual_input"] = function(p)
+	-- VirtualInput drives a running Client. In the edit DataModel with no
+	-- playtest, every send would land nowhere, so refuse and say so.
+	local okPlay, playing = pcall(function()
+		return RunService:IsPlaying()
+	end)
+	if DM_MODE ~= "client" and (not okPlay or playing ~= true) then
+		local refused = {}
+		for index, step in ipairs(p.steps or {}) do
+			table.insert(refused, {
+				index = index,
+				action = step.action,
+				delivered = false,
+				reason = "not_playing",
+			})
+		end
+		return {
+			steps = refused,
+			dm = DM_MODE,
+			notPlaying = true,
+		}
+	end
+	local okSvc, UserInputService = pcall(function()
+		return game:GetService("UserInputService")
+	end)
+	if not okSvc or UserInputService == nil then
+		return {
+			unsupported = true,
+			reason = "UserInputService is unavailable here (input must be sent to a play Client DataModel)",
+			steps = {},
+			dm = DM_MODE,
+		}
+	end
+	local okMake, virtualInput = pcall(function()
+		return UserInputService:CreateVirtualInput()
+	end)
+	if not okMake or virtualInput == nil then
+		return {
+			unsupported = true,
+			reason = "UserInputService:CreateVirtualInput() is unavailable in this Studio build (needs 0.720+): "
+				.. tostring(virtualInput),
+			steps = {},
+			dm = DM_MODE,
+		}
+	end
+
+	local viewport = { width = 0, height = 0 }
+	pcall(function()
+		local cam = workspace.CurrentCamera
+		if cam ~= nil then
+			viewport = {
+				width = math.floor(cam.ViewportSize.X),
+				height = math.floor(cam.ViewportSize.Y),
+			}
+		end
+	end)
+
+	local holdSec = math.clamp(tonumber(p.holdMs) or 60, 0, 5000) / 1000
+	local steps = {}
+	local deliveredCount = 0
+
+	for index, step in ipairs(p.steps or {}) do
+		local rec = { index = index, action = step.action, delivered = false }
+		local okStep, stepErr = pcall(function()
+			local action = tostring(step.action)
+			if action == "keydown" or action == "keyup" then
+				virtualInput:SendKey(action == "keydown", Enum.KeyCode[step.key], false)
+				rec.via = "SendKey"
+				rec.key = tostring(step.key)
+			elseif action == "press" then
+				virtualInput:SendKey(true, Enum.KeyCode[step.key], false)
+				task.wait(holdSec)
+				virtualInput:SendKey(false, Enum.KeyCode[step.key], false)
+				rec.via = "SendKey"
+				rec.key = tostring(step.key)
+				rec.holdMs = holdSec * 1000
+			elseif action == "type" then
+				local text = tostring(step.text)
+				virtualInput:SendTextInput(text)
+				rec.via = "SendTextInput"
+				rec.chars = #text
+			elseif action == "move" then
+				local pos, why = screenPointFor(step)
+				if pos == nil then
+					error(tostring(why), 0)
+				end
+				virtualInput:SendMousePosition(pos)
+				rec.via = "SendMousePosition"
+				rec.position = { pos.X, pos.Y }
+			elseif action == "wheel" then
+				if type(virtualInput.SendMouseWheel) ~= "function" then
+					error("this build exposes no wheel method on VirtualInput; script PageUp/PageDown presses instead", 0)
+				end
+				local notches = tonumber(step.amount) or 1
+				virtualInput:SendMouseWheel(notches)
+				rec.via = "SendMouseWheel"
+				rec.amount = notches
+			elseif action == "wait" then
+				local pause = math.clamp(tonumber(step.ms) or 100, 0, 10000) / 1000
+				task.wait(pause)
+				rec.via = "task.wait"
+				rec.ms = pause * 1000
+			elseif action == "pinch" then
+				error("pinch needs two simultaneous pointers and CreateVirtualInput() exposes one; script two drags", 0)
+			else
+				local touch = step.pointerType == "touch" or step.pointerType == "pen"
+				local startPos, endPos = nil, nil
+				if action == "drag" or action == "swipe" then
+					local startWhy, endWhy = nil, nil
+					startPos, startWhy = screenPointFor({ position = step.from, target = step.target })
+					endPos, endWhy = screenPointFor({ position = step.to })
+					if startPos == nil then
+						error(tostring(startWhy), 0)
+					end
+					if endPos == nil then
+						error(tostring(endWhy), 0)
+					end
+				else
+					local why = nil
+					startPos, why = screenPointFor(step)
+					if startPos == nil then
+						error(tostring(why), 0)
+					end
+					endPos = startPos
+				end
+
+				local button = inputButtonFor(action)
+				local function pressAt(at: Vector2, isDown: boolean)
+					if touch then
+						virtualInput:SendPointerAction(at, {
+							userInputType = Enum.UserInputType.Touch,
+							state = isDown and Enum.UserInputState.Begin or Enum.UserInputState.End,
+						})
+					else
+						virtualInput:SendMouseButton(at, button, isDown, 0)
+					end
+				end
+
+				local holdFor = holdSec
+				if action == "longpress" then
+					holdFor = math.clamp(tonumber(step.ms) or 600, 0, 10000) / 1000
+				end
+				pressAt(startPos, true)
+				if endPos ~= startPos then
+					local substeps = 8
+					local travel = math.clamp(tonumber(step.ms) or 250, 16, 10000) / 1000
+					for sub = 1, substeps do
+						local ratio = sub / substeps
+						local at = Vector2.new(
+							startPos.X + (endPos.X - startPos.X) * ratio,
+							startPos.Y + (endPos.Y - startPos.Y) * ratio
+						)
+						if touch then
+							virtualInput:SendPointerAction(at, {
+								userInputType = Enum.UserInputType.Touch,
+								state = Enum.UserInputState.Change,
+							})
+						else
+							virtualInput:SendMousePosition(at)
+						end
+						task.wait(travel / substeps)
+					end
+					rec.pathPoints = substeps
+				end
+				if action == "doubleclick" then
+					task.wait(holdFor)
+					pressAt(startPos, false)
+					task.wait(0.04)
+					pressAt(startPos, true)
+				end
+				task.wait(holdFor)
+				pressAt(startPos, false)
+				rec.via = touch and "SendPointerAction" or "SendMouseButton"
+				rec.position = { startPos.X, startPos.Y }
+				rec.pointerType = touch and tostring(step.pointerType) or "mouse"
+				if action == "drag" or action == "swipe" then
+					rec.to = { endPos.X, endPos.Y }
+				end
+			end
+		end)
+		if okStep then
+			rec.delivered = true
+			deliveredCount = deliveredCount + 1
+		else
+			local message = tostring(stepErr)
+			if string.find(message, "CoreGui", 1, true)
+				or string.find(message, "built-in UI", 1, true)
+				or string.find(message, "cannot be sent to", 1, true) then
+				-- The engine refuses input aimed at its own UI. Report it apart
+				-- from a real failure because the fix is different: aim at the
+				-- game viewport, not at the Roblox chrome.
+				rec.reason = "coregui_refused"
+				rec.detail = message
+			else
+				rec.error = message
+			end
+		end
+		table.insert(steps, rec)
+	end
+
+	local settleSec = math.clamp(tonumber(p.settleMs) or 0, 0, 15000) / 1000
+	if settleSec > 0 then
+		task.wait(settleSec)
+	end
+	local focused = nil
+	pcall(function()
+		local box = UserInputService:GetFocusedTextBox()
+		if box ~= nil then
+			focused = fullName(box)
+		end
+	end)
+	local total = #steps
+	if deliveredCount < total then
+		log("virtual_input: %d/%d step(s) delivered in the %s DataModel", deliveredCount, total, DM_MODE)
+	end
+	return {
+		steps = steps,
+		delivered = deliveredCount,
+		total = total,
+		dm = DM_MODE,
+		viewport = viewport,
+		focused = focused,
+		holdMs = holdSec * 1000,
+		settleMs = settleSec * 1000,
+	}
+end
+
+------------------------------------------------------------------------------
+-- device_simulator: StudioDeviceSimulatorService (Edit mode / Play Client)
+------------------------------------------------------------------------------
+
+handlers["device_simulator"] = function(p)
+	local available, Simulator, why = serviceMethod("StudioDeviceSimulatorService", "GetDeviceListAsync")
+	if not available then
+		return {
+			unsupported = true,
+			applied = false,
+			ok = false,
+			reason = "no_device_simulator_service",
+			error = tostring(why) .. " (needs Studio 0.717+)",
+			dm = DM_MODE,
+		}
+	end
+
+	local function snapshot()
+		local out = { simulating = false }
+		pcall(function()
+			local id = Simulator:GetDeviceAsync()
+			out.deviceId = tostring(id)
+			out.simulating = id ~= "default"
+		end)
+		pcall(function()
+			out.orientation = tostring(Simulator:GetOrientationAsync().Name)
+		end)
+		pcall(function()
+			local res = Simulator:GetResolutionAsync()
+			out.resolution = { math.floor(res.X), math.floor(res.Y) }
+		end)
+		pcall(function()
+			out.pixelDensity = Simulator:GetPixelDensityAsync()
+		end)
+		pcall(function()
+			out.scalingMode = tostring(Simulator:GetScalingModeAsync().Name)
+		end)
+		return out
+	end
+
+	local function deviceConfig(raw: any): any
+		local config = {}
+		for key, value in pairs(raw or {}) do
+			if key == "DeviceForm" and type(value) == "string" then
+				config[key] = Enum.DeviceForm[value]
+			else
+				config[key] = value
+			end
+		end
+		return config
+	end
+
+	local before = snapshot()
+	local action = tostring(p.action or "status")
+	local result = { action = action, before = before, applied = false, ok = true, dm = DM_MODE }
+	local failures = {}
+
+	local function attempt(label: string, fn: () -> any)
+		local okCall, err = pcall(fn)
+		if okCall then
+			result.applied = true
+		else
+			table.insert(failures, label .. ": " .. tostring(err))
+		end
+	end
+
+	if action == "status" then
+		result.current = before
+	elseif action == "list" then
+		local okList, ids = pcall(function()
+			return Simulator:GetDeviceListAsync()
+		end)
+		if okList then
+			local devices = {}
+			for _, id in ipairs(ids) do
+				local info = nil
+				pcall(function()
+					info = Simulator:GetDeviceInfoAsync(id)
+				end)
+				table.insert(devices, {
+					deviceId = id,
+					name = info ~= nil and info.Name or id,
+					isCustom = info ~= nil and info.IsCustom == true,
+					width = info and info.Width,
+					height = info and info.Height,
+					pixelDensity = info and info.PixelDensity,
+					deviceForm = info ~= nil and info.DeviceForm ~= nil and info.DeviceForm.Name or nil,
+				})
+			end
+			result.devices = devices
+			result.count = #devices
+			result.currentDeviceId = before.deviceId
+		else
+			result.ok = false
+			result.reason = "engine_error"
+			result.error = "GetDeviceListAsync: " .. tostring(ids)
+		end
+	elseif action == "set_device" and (p.deviceId == nil or p.deviceId == "") then
+		result.ok = false
+		result.reason = "missing_deviceId"
+		result.error = "set_device needs `deviceId` ('default' stops the simulation)"
+	else
+		-- Engine order matters: switching the device clears the session-level
+		-- resolution / DPI overrides, so it has to happen first.
+		if p.deviceId ~= nil and p.deviceId ~= "" then
+			attempt("SetDeviceAsync", function()
+				Simulator:SetDeviceAsync(tostring(p.deviceId))
+			end)
+		end
+		if action == "stop" then
+			attempt("StopSimulationAsync", function()
+				Simulator:StopSimulationAsync()
+			end)
+			result.stopped = result.applied == true
+		end
+		if p.orientation ~= nil then
+			attempt("SetOrientationAsync", function()
+				Simulator:SetOrientationAsync(Enum.ScreenOrientation[tostring(p.orientation)])
+			end)
+		end
+		if p.width ~= nil and p.height ~= nil then
+			attempt("SetResolutionAsync", function()
+				Simulator:SetResolutionAsync(math.floor(tonumber(p.width) or 0), math.floor(tonumber(p.height) or 0))
+			end)
+		end
+		if p.density ~= nil then
+			attempt("SetPixelDensityAsync", function()
+				Simulator:SetPixelDensityAsync(tonumber(p.density))
+			end)
+		end
+		if p.scalingMode ~= nil then
+			attempt("SetScalingModeAsync", function()
+				Simulator:SetScalingModeAsync(Enum.DeviceSimulatorScalingMode[tostring(p.scalingMode)])
+			end)
+		end
+		if action == "create_profile" then
+			attempt("CreateDeviceAsync", function()
+				result.profileId = Simulator:CreateDeviceAsync(deviceConfig(p.profile))
+			end)
+		end
+		if action == "update_profile" then
+			attempt("UpdateDeviceAsync", function()
+				Simulator:UpdateDeviceAsync(tostring(p.deviceId), deviceConfig(p.profile))
+			end)
+		end
+		if action == "remove_profile" then
+			attempt("RemoveDeviceAsync", function()
+				Simulator:RemoveDeviceAsync(tostring(p.deviceId))
+			end)
+		end
+		if (action == "set_orientation" or action == "set_pixel_density" or action == "set_resolution"
+			or action == "set_scaling_mode") and result.applied == false and #failures == 0 then
+			result.ok = false
+			result.reason = "missing_override"
+			result.error = action .. " needs its value (`orientation`, `density`, `width`+`height` or `scalingMode`)"
+		end
+		result.current = snapshot()
+		result.changed = result.current.deviceId ~= before.deviceId
+			or result.current.orientation ~= before.orientation
+			or result.current.pixelDensity ~= before.pixelDensity
+	end
+
+	if #failures > 0 then
+		-- Keep the engine's own wording: "requires an active device" and
+		-- "built-in presets are immutable" are the two the agent can act on.
+		result.ok = false
+		result.reason = "engine_error"
+		result.failures = failures
+		result.error = table.concat(failures, " | ")
+	end
+	return result
+end
+
+------------------------------------------------------------------------------
+-- studio_tests: run Studio's own test session, with a temporary runner module
+------------------------------------------------------------------------------
+
+local TEST_RUNNER_TEMPLATE = [[
+-- Temporary ArenaBridge test runner. It is destroyed as soon as the session
+-- ends, and never leaves a script behind even if this run is interrupted.
+local HttpService = game:GetService("HttpService")
+local StudioTestService = game:GetService("StudioTestService")
+local LogService = game:GetService("LogService")
+
+local MODULE_PATH = @@MODULE@@
+local ARGS_JSON = @@ARGS@@
+
+local tail = {}
+LogService.Message:Connect(function(text, _)
+	if #tail < 400 then
+		table.insert(tail, tostring(text))
+	end
+end)
+
+local function find(path)
+	local node = game
+	for part in string.gmatch(path, "[^.]+") do
+		if part ~= "game" then
+			if part == "workspace" then
+				part = "Workspace"
+			end
+			node = node:FindFirstChild(part)
+			if node == nil then
+				return nil
+			end
+		end
+	end
+	return node
+end
+
+local args = nil
+if ARGS_JSON ~= nil then
+	args = HttpService:JSONDecode(ARGS_JSON)
+end
+
+local module = find(MODULE_PATH)
+local report = nil
+if module == nil then
+	report = { ok = false, error = "test module not found: " .. MODULE_PATH, logTail = tail }
+else
+	local okReq, loaded = pcall(require, module)
+	if not okReq then
+		report = { ok = false, error = "could not require " .. MODULE_PATH .. ": " .. tostring(loaded), logTail = tail }
+	else
+		local entry = nil
+		if type(loaded) == "table" and type(loaded.run) == "function" then
+			entry = loaded.run
+		elseif type(loaded) == "function" then
+			entry = loaded
+		end
+		if entry == nil then
+			report = { ok = false, error = MODULE_PATH .. " returned neither a run() table nor a function", logTail = tail }
+		else
+			local okRun, value = pcall(entry, {
+				args = args,
+				log = function(...)
+					table.insert(tail, table.concat({ ... }, " "))
+				end,
+			})
+			if not okRun then
+				report = { ok = false, error = tostring(value), logTail = tail }
+			elseif type(value) == "table" then
+				report = value
+			else
+				report = { ok = value ~= false, result = value, logTail = tail }
+			end
+		end
+	end
+end
+
+report = report or { ok = false, error = "the runner produced no report", logTail = tail }
+report.logTail = tail
+StudioTestService:EndTest(report)
+]]
+
+handlers["studio_tests"] = function(p)
+	local mode = tostring(p.mode or "run")
+	local players = math.clamp(math.floor(tonumber(p.players) or 2), 1, 8)
+	local timeoutSec = math.clamp(tonumber(p.timeoutSec) or 120, 5, 900)
+	local runnerName = tostring(p.runnerName or ("__ArenaTestRunner_" .. tostring(os.time())))
+	local startedAt = os.time()
+	local result = {
+		mode = mode,
+		ok = false,
+		passed = 0,
+		failed = 0,
+		total = 0,
+		suites = {},
+		timedOut = false,
+		runner = runnerName,
+		cleanedUp = true,
+		dm = DM_MODE,
+		startedAt = startedAt,
+	}
+	if DM_MODE ~= "edit" then
+		error("run_studio_tests must be sent to the Edit peer (this DataModel is " .. DM_MODE .. ")", 0)
+	end
+
+	local available, TestService, why = serviceMethod("StudioTestService", "ExecuteRunModeAsync")
+	if not available then
+		result.unsupported = true
+		result.error = tostring(why) .. " (needs Studio 0.700+)"
+		return result
+	end
+	result.engineCall = "StudioTestService:ExecuteRunModeAsync(args)"
+	if mode == "play" then
+		result.engineCall = "StudioTestService:ExecutePlayModeAsync(args)"
+	elseif mode == "multiplayer" then
+		result.engineCall = "StudioTestService:ExecuteMultiplayerTestAsync(" .. players .. ", args)"
+		local okMulti, multiType = pcall(function()
+			return type(TestService.ExecuteMultiplayerTestAsync)
+		end)
+		if not okMulti or multiType ~= "function" then
+			result.unsupported = true
+			result.error = "ExecuteMultiplayerTestAsync is not available in this Studio build (needs 0.715+)"
+			return result
+		end
+	end
+
+	local created = {}
+	local sessionFinished = false
+	local sessionError = nil
+	local sessionValue = nil
+
+	local modulePath = tostring(p.module or "")
+	if modulePath ~= "" then
+		local module = resolve(modulePath)
+		if module == nil then
+			error("test module not found: " .. modulePath, 0)
+		end
+		if module.ClassName ~= "ModuleScript" then
+			error(modulePath .. " is a " .. module.ClassName .. "; run_studio_tests requires a ModuleScript", 0)
+		end
+		local argsJson = "nil"
+		if type(p.args) == "table" then
+			local okEncode, encoded = pcall(function()
+				return HttpService:JSONEncode(p.args)
+			end)
+			if okEncode then
+				argsJson = string.format("%q", encoded)
+			else
+				log("warning: test args could not be serialised (%s); the runner will see nil", tostring(encoded))
+			end
+		end
+		local source = string.gsub(
+			string.gsub(TEST_RUNNER_TEMPLATE, "@@MODULE@@", function() return string.format("%q", modulePath) end),
+			"@@ARGS@@",
+			function() return argsJson end
+		)
+		local okParent, ServerScriptService = pcall(function()
+			return game:GetService("ServerScriptService")
+		end)
+		if not okParent or ServerScriptService == nil then
+			error("ServerScriptService is unavailable, so the temporary runner could not be installed", 0)
+		end
+		local runner = Instance.new("Script")
+		runner.Name = runnerName
+		runner.Source = source
+		runner.Archivable = false
+		runner.Parent = ServerScriptService
+		table.insert(created, runner)
+		result.runnerInjected = true
+	end
+
+	local function cleanup()
+		local destroyed = 0
+		for _, inst in ipairs(created) do
+			local okDestroy = pcall(function()
+				inst:Destroy()
+			end)
+			if okDestroy then
+				destroyed = destroyed + 1
+			end
+		end
+		created = {}
+		return destroyed
+	end
+
+	task.spawn(function()
+		local okCall, valueOrErr = pcall(function()
+			local args = p.args
+			if modulePath ~= "" then
+				-- The injected runner ends the session itself; run mode is the only
+				-- session type where server scripts execute without rendering.
+				return TestService:ExecuteRunModeAsync({ arenaRunner = runnerName })
+			end
+			if mode == "play" then
+				return TestService:ExecutePlayModeAsync(args)
+			elseif mode == "multiplayer" then
+				return TestService:ExecuteMultiplayerTestAsync(players, args)
+			end
+			return TestService:ExecuteRunModeAsync(args)
+		end)
+		sessionValue = valueOrErr
+		sessionError = okCall and nil or tostring(valueOrErr)
+		sessionFinished = true
+	end)
+
+	local deadline = os.clock() + timeoutSec
+	while not sessionFinished and os.clock() < deadline do
+		task.wait(0.05)
+	end
+
+	if not sessionFinished then
+		result.timedOut = true
+		pcall(function()
+			if TestService:CanLeaveTest() then
+				TestService:EndTest({ ok = false, error = "arena watchdog: session exceeded " .. timeoutSec .. "s" })
+			else
+				TestService:LeaveTest()
+			end
+		end)
+		local graceDeadline = os.clock() + 5
+		while not sessionFinished and os.clock() < graceDeadline do
+			task.wait(0.05)
+		end
+	end
+
+	if p.keepOpen == true then
+		result.cleanedUp = false
+		result.notes = {"keepOpen: the temporary runner is still installed in ServerScriptService"}
+	else
+		result.runnersDestroyed = cleanup()
+	end
+
+	local report = serializeValue(sessionValue)
+	if type(report) == "table" then
+		result.report = report
+		result.passed = tonumber(report.passed) or 0
+		result.failed = tonumber(report.failed) or 0
+		result.total = tonumber(report.total) or (result.passed + result.failed)
+		result.suites = report.suites or {}
+		result.ok = result.timedOut == false and report.ok ~= false and result.failed == 0
+	else
+		result.report = report
+		result.ok = sessionError == nil and result.timedOut == false
+	end
+	if sessionError ~= nil then
+		result.error = sessionError
+	elseif type(report) == "table" and report.error ~= nil then
+		result.error = tostring(report.error)
+	end
+	result.durationSec = os.time() - startedAt
+
+	if p.collectClientLogs == true and mode == "multiplayer" then
+		-- Client VMs report through their own peers; pointing at them beats
+		-- returning the server tail and calling it complete.
+		result.clientLogs = "read each client with get_console_output(dm='client', peerId=<client peer>)"
+	end
+	return result
+end
+
+------------------------------------------------------------------------------
 -- survey: read the whole place in one job
 ------------------------------------------------------------------------------
 
@@ -2932,6 +3754,7 @@ end
 local READ_ONLY = {
 	ping = true,
 	studio_state = true,
+	playtest_caps = true,
 	inspect = true,
 	search_tree = true,
 	compare_instances = true,
@@ -2969,6 +3792,9 @@ local function isJobReadOnly(job: any): boolean
 		end
 	end
 	if job.type == "open_script" and p.listOnly then
+		return true
+	end
+	if job.type == "device_simulator" and (p.action == "status" or p.action == "list") then
 		return true
 	end
 	if job.type == "find_replace_scripts" and p.dryRun == true then

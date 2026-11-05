@@ -1,6 +1,6 @@
 # v5 Ops Platform — tunnels, multi-agent coordination, telemetry, scoped auth
 
-_Applies to bridge `5.3.1`._
+_Applies to bridge `5.4.0`._
 
 Everything in this document ships in `roblox-bridge/` and is **stdlib-only**
 (no pip installs). It layers on top of the v4 MCP + plugin bridge; nothing in the
@@ -451,8 +451,13 @@ Override with `--state-dir` or `BRIDGE_STATE_DIR`.
 ## 9. Tests
 
 ```bash
-python3 -B roblox-bridge/test_bridge_mcp.py          # 41 tests
+python3 -B roblox-bridge/test_bridge_mcp.py          # 64 tests
+bash roblox-bridge/tools/check_globals.sh roblox-bridge   # undefined Luau globals
+python3 -B tools/verify_licences.py                  # kit asset licence manifest
 ```
+
+`.github/workflows/ci.yml` runs exactly those (plus a stdlib-only import audit and
+a doc/version consistency check) on Python 3.10, 3.12 and 3.13.
 
 v5 / v5.1 / v5.2 / v5.3 coverage: scoped roles over HTTP and MCP, rate-limit 429s, bus presence/
 mailbox/lease expiry/handoff export, stale-agent sweeping, incremental
@@ -470,7 +475,14 @@ fallback when the pin goes offline, persistence across a restart, labels,
 broadcast fan-out with per-peer results, refusal of write kinds), the modern MCP
 era (`server/discover`, `-32022`, `-32020` header mismatch, `resultType`), and the
 task lifecycle (`tools/call` + `task`, `tasks/get`, `tasks/result`, `tasks/list`,
-`tasks/cancel`).
+`tasks/cancel`); v5.4 adds 19 tests for the confirmation gate and subscriptions
+(mode scoping, signed state, digest and single-use enforcement, principal binding,
+deny/expiry accounting, the task flip to `input_required`, `subscriptions/listen`
+on both transports, the CLI/REST approval loop, `X-Arena-Task` and the health /
+ops / metrics surface), the four playtest tools end to end against the mock
+(including "no playtest running" refusals and device-profile application), the
+`--read-only` guard over the new job types, and a coverage contract that fails the
+suite if any registered tool stops being exercised.
 
 ## 10. Live acceptance and drills
 
@@ -596,5 +608,139 @@ python setup.py --dry-run --tunnel
 
 `/api/health` is public on purpose (counts and versions only, no place data), so
 a tunnel or uptime monitor can probe it without credentials.
+
+## 13. Confirmation gate, subscriptions, and the playtest surface (v5.4)
+
+### 13.1 Making a human decide (`--require-confirm`)
+
+The gate implements MCP's MRTR pattern: a gated `tools/call` does not run and does
+not fail — it answers `resultType: "input_required"` with an `inputRequests.confirm`
+question and a signed `requestState`. When somebody approves it, the caller retries
+with that exact `requestState` *and a different JSON-RPC id*, and only then does the
+tool run.
+
+| Mode | Gates | Use it when |
+|---|---|---|
+| `off` (default) | nothing | your agent is the only writer, and Studio is a sandbox |
+| `destructive` | the destructive tools (`delete_instance`, `mass_set_properties`, `undo_redo`, …) | a shared place where deletion is the scary part |
+| `write` | every tool that changes Studio (`annotations`-driven) | a real project you care about — the recommended lockdown |
+| `all` | reads too | incident review / demonstration of the protocol |
+
+```bash
+python3 roblox-bridge/server.py --require-confirm write --confirm-ttl 180 --confirm-allowance 600
+python3 roblox-bridge/mcp_server.py --require-confirm destructive   # stdio, same flags
+```
+
+`BRIDGE_REQUIRE_CONFIRM`, `BRIDGE_CONFIRM_TTL`, `BRIDGE_CONFIRM_ALLOWANCE`,
+`BRIDGE_CONFIRM_WAIT_SECONDS` and `BRIDGE_MCP_AUTO_TASK_MS` are the env
+equivalents; `BRIDGE_CONFIRM_SECRET` overrides the HMAC key (default: the bridge
+token, so a per-process secret is fine but restarts invalidate pending requests).
+
+**Two eras, one queue.** A 2026-07-28 client gets `input_required` immediately and
+holds no connection. A legacy client (no MRTR) is *waited on* for
+`--confirm-wait` seconds (default 45) so older agents still get an answer in-band;
+on timeout the error names the `requestId` and how to approve it. A call promoted
+to a task flips the task to `input_required` and `tasks/update {taskId,
+inputResponses}` is the answer path.
+
+**Who may answer.**
+
+| Path | Notes |
+|---|---|
+| `POST /api/confirmations` `{"action":"approve","requestId":"cfm-…","note":"…","remember":true}` | the operator path; `source` defaults to `operator` |
+| `arena_studio.py confirmations` / `approve <id> [--remember]` / `deny <id> [--note]` | same thing from a terminal (`BRIDGE_URL` + `BRIDGE_TOKEN`) |
+| `bridge_ops` `confirm_approve` / `confirm_deny` | an *agent* may answer another principal's request (audited as `mcp-operator`); approving your own is refused with `reason: "operator_only"` |
+| in-band `inputResponses` | only honoured when the client declared `elicitation`; otherwise the note tells the caller to have an operator answer |
+
+`remember: true` opens an allowance (`--confirm-allowance` seconds) for that
+tool + principal, so a repeated loop does not re-prompt. Read actions and the
+queue itself (`bridge_ops` `confirmations` / `subscriptions`) are never gated —
+gating the answer to an approval is circular.
+
+**Why the state is signed.** `requestState` is attacker-controlled data. It is an
+HMAC over `{v,id,sub,aud,iat,exp,jti,dig}` where `sub` is the calling principal,
+`aud` is `tools/call`, and `dig` is a canonical digest of the arguments. So a
+stolen token cannot be used by another principal (`principal_mismatch`), cannot
+authorize a *different* call (`digest_mismatch`), cannot outlive the TTL
+(`expired`) and cannot be spent twice (`replayed` — the nonce is consumed when the
+decision is taken). Declined and timed-out requests are terminal: retry the tool
+call from scratch.
+
+**What it costs in the open.** `/api/health` carries `confirmGate` counts only —
+never the pending rows, because that endpoint needs no token. The queue with
+argument previews is on `GET /api/confirmations` (control scope) and in
+`/api/ops` → `mcp.confirmGate`.
+
+### 13.2 Subscriptions
+
+`subscriptions/listen {types: [...]}` is accepted for
+`toolsListChanged | resourceSubscriptions` (and reports
+`promptsListChanged`/`resourcesListChanged` as `idleTypes` rather than lying about
+them). Unknown types are refused with `-32602`; a mix answers with
+`unknownTypes`. The transport owns the stream: stdio keeps writing notifications to
+stdout, Streamable HTTP switches that `POST /mcp` response to
+`text/event-stream` (header `X-Arena-Subscription`). Every notification carries
+`_meta["io.modelcontextprotocol/subscriptionId"]`.
+
+`GET /api/subscriptions` lists live ones (`count`, per-sub `types`, `resources`,
+`emitted`, `ageSeconds`); `POST /api/subscriptions/close {"subscriptionId":…}`
+retires one; a `maxSeconds` pump retires itself when it finishes. `prompts/list`
+and `prompts/get` therefore never hold a connection.
+
+### 13.3 Playtest tools, and why they refuse
+
+`simulate_input`, `manage_device_simulator`, `run_studio_tests` and
+`playtest_capabilities` talk to `UserInputService:CreateVirtualInput()`,
+`StudioDeviceSimulatorService` and `StudioTestService`. Baselines are **0.720**
+(VirtualInput), **0.717** (Device Simulator), **0.700** for `StudioTestService`
+and **0.715** for `ExecuteMultiplayerTestAsync`; a build below them gets
+`unsupported: true` plus the exact call the bridge probed, not a fake success.
+Contract rules both peers follow:
+
+* no playtest running → `simulate_input` returns `ok: false`, `delivered: 0` and
+  per-step `reason: "not_playing"` — VirtualInput into the edit DataModel is a
+  no-op, so the bridge refuses rather than reporting a green delivery;
+* anything aimed at built-in CoreGui is refused by the engine → the step is
+  marked `reason: "coregui_refused"`, and `pinch` explains that
+  `CreateVirtualInput()` exposes one pointer (script two drags);
+* resolution / DPI / orientation / scaling overrides need an active device →
+  `reason: "no_active_device"`; `action: "set"` applies device-then-overrides in
+  one job because `SetDeviceAsync` clears the others; device changes stay applied
+  until `stop`;
+* `run_studio_tests` injects a temporary runner Script, always destroys it, and
+  a watchdog ends the session (`EndTest({ok=false,…})` / `LeaveTest()`) so a hung
+  test never leaves Studio in play mode.
+
+Start with `playtest_capabilities` (a read) when you are unsure what the attached
+Studio supports; it reports the probe result per service and the `playtest` state.
+In `--read-only` mode input, device application and test runs are all blocked at
+the queue (device `status` / `list` stay available).
+
+### 13.4 Telemetry to page on
+
+| Signal | Where |
+|---|---|
+| `bridge_confirmations_pending` | gauge — a human is being waited on |
+| `bridge_mcp_subscriptions` | gauge — live `subscriptions/listen` streams |
+| `bridge_mcp_events_total{kind}` | counter, one per `mcp.confirm.*` event |
+| `mcp.confirm.requested / approved / denied / expired / applied` | `GET /api/events` (SSE or `?once=1`) |
+| audit rows `actor="mcp"`, `outcome="denied"` for declines/expiry | `GET /api/audit?verify=1` |
+| `confirmGate` block | `/api/health` (counts), `/api/ops` (full queue) |
+
+`/api/audit?verify=1` covers approvals like everything else, so "who let the agent
+delete that" is answerable from the hash-chained log alone.
+
+### 13.5 When it does not behave
+
+| Symptom | Cause and fix |
+|---|---|
+| `POST /api/confirmations` returns 404 | you are on a pre-5.4 build; those routes live in `do_POST` now |
+| The blocked call never resumes | the retry must echo `requestState` **unchanged** with a new JSON-RPC `id`; check `structuredContent.reason` (`replayed` = you already used it once) |
+| `reason: "digest_mismatch"` | the retried arguments differ from what was approved — re-issue the call and approve the new request |
+| `reason: "confirmation_required"` with no way to answer | the client did not declare `elicitation`; an operator must approve (`arena_studio.py approve <id>`) |
+| `-32021` on `tasks/*` | the client has not declared `extensions["io.modelcontextprotocol/tasks"]` |
+| Every read prompts too | mode is `all`; `write` is the intended lockdown |
+| Nothing is gated | `--require-confirm` was not passed, or the tool's annotations mark it read-only |
+| Log notifications never arrive | the client must send `_meta["io.modelcontextprotocol/logLevel"]`; over single-shot HTTP the entries come back embedded as `io.modelcontextprotocol/logEntries` |
 
 ---

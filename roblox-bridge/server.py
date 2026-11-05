@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-server.py — Multi-Peer HTTP Bridge + Native Streamable HTTP MCP Server (v4.0.0)
+server.py — Multi-Peer HTTP Bridge + Native Streamable HTTP MCP Server (v5.4.0)
 
 Runs locally on your PC (127.0.0.1:8077 by default) with ZERO pip dependencies.
 Simultaneously serves:
@@ -31,8 +31,11 @@ import time
 from urllib.parse import parse_qs, urlparse
 import uuid
 
+from confirm_gate import ConfirmGate, GateError, mode_from_env  # noqa: E402
 from mcp_core import (
+    CONFIRM_GATED_TOOLS,
     BridgeClient,
+    take_subscription_stream,
     MCPDispatcher,
     MODERN_PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -46,7 +49,7 @@ from bus_core import AgentBus
 from telemetry import Telemetry
 from tunnel_manager import TunnelManager
 
-VERSION = "5.3.1"
+VERSION = "5.4.0"
 PEER_ONLINE_WINDOW = 5.0  # play DataModel peers are transient; do not route work to stale peers
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_DIR = HERE / "snapshots"
@@ -147,6 +150,11 @@ class BridgeState:
         tunnel_binary: str = None,
         sweep_interval: float = 300.0,
         sweep_offline_seconds: float = 900.0,
+        require_confirm: str = "off",
+        confirm_ttl_seconds: float = 180.0,
+        confirm_allowance_seconds: float = 600.0,
+        confirm_wait_seconds: float = 45.0,
+        auto_task_ms: float = None,
     ):
         self.token = token or ""
         self.read_only = bool(read_only)
@@ -179,7 +187,24 @@ class BridgeState:
             read_only=self.read_only,
             default_place_id=self.guard_place_id,
         )
-        self.mcp_dispatcher = MCPDispatcher(self.mcp_client)
+        # v5.4.0: the confirmation gate. It lives next to the dispatcher because
+        # `requestState` is signed with this bridge's secret and the pending
+        # registry is what the Ops console reads and answers.
+        self.confirm_mode = str(require_confirm or "off").strip().lower() or "off"
+        self.confirm_gate = ConfirmGate(
+            mode=self.confirm_mode,
+            secret=self.token or None,
+            ttl_seconds=float(confirm_ttl_seconds or 180.0),
+            allowance_seconds=float(confirm_allowance_seconds or 600.0),
+            destructive_tools=CONFIRM_GATED_TOOLS,
+            hook=lambda kind, detail: self.publish_mcp_event(kind, detail),
+        )
+        self.mcp_dispatcher = MCPDispatcher(
+            self.mcp_client,
+            gate=self.confirm_gate,
+            auto_task_ms=auto_task_ms,
+            legacy_wait_seconds=confirm_wait_seconds,
+        )
 
         # --- v5 ops platform -------------------------------------------------
         self.telemetry = Telemetry(self.state_dir)
@@ -281,6 +306,12 @@ class BridgeState:
                     self.auto_sweep()
             except Exception:  # noqa: BLE001 - the sweeper must never kill the reaper
                 continue
+            try:
+                # Unanswered confirmations must not linger: expire them so the
+                # Ops console and /api/confirmations only ever show live ones.
+                self.confirm_gate.expire_stale()
+            except Exception:  # noqa: BLE001
+                continue
 
     def auto_sweep(self) -> dict:
         """Release tasks held by agents that stopped heart-beating.
@@ -370,6 +401,70 @@ class BridgeState:
                                                 detail={"type": job["type"], "peer": owner}, outcome="error")
         self.telemetry.metrics.inc("bridge_jobs_reaped_total", recovered + timed_out)
         return {"recovered": recovered, "timedOut": timed_out}
+
+    # -- MCP observability & confirmations ------------------------------------
+
+    def publish_mcp_event(self, kind: str, detail: dict = None, level: str = "info"):
+        """One place for MCP-side events: dashboard stream + audit chain + counts."""
+        self.telemetry.events.emit(kind, detail or {}, level=level)
+        audit_action = str(kind)
+        if audit_action.startswith("mcp."):
+            outcome = "denied" if ("denied" in audit_action or "expired" in audit_action) else "ok"
+            self.telemetry.audit.append(
+                audit_action, actor="mcp", target=str((detail or {}).get("requestId")
+                                                       or (detail or {}).get("subscriptionId") or ""),
+                detail=detail or {}, outcome=outcome,
+            )
+        self.telemetry.metrics.inc("bridge_mcp_events_total", 1, {"kind": audit_action})
+        return {"ok": True, "kind": kind}
+
+    def mcp_dispatcher_take_stream(self, rpc_out) -> dict:
+        """See `mcp_core.take_subscription_stream` (shared with the stdio transport)."""
+        return take_subscription_stream(rpc_out)
+
+    def confirm_gate_summary(self) -> dict:
+        """Gate posture for the *unauthenticated* health endpoint: numbers only,
+        never the pending rows (they carry argument previews)."""
+        if self.confirm_gate is None:
+            return {"mode": "off", "pendingCount": 0, "counters": {}}
+        status = self.confirm_gate.status()
+        return {
+            "version": status["version"],
+            "mode": status["mode"],
+            "pendingCount": status["pendingCount"],
+            "ttlSeconds": status["ttlSeconds"],
+            "allowanceSeconds": status["allowanceSeconds"],
+            "counters": status["counters"],
+        }
+
+    def confirmations_report(self, body: dict = None) -> dict:
+        """Status plus the MCP-side answers the dispatcher still owes a client."""
+        body = dict(body or {})
+        action = (body.get("action") or "status").strip().lower()
+        if action in ("approve", "deny"):
+            request_id = body.get("requestId") or body.get("id")
+            if not request_id:
+                raise ValueError(f"{action} needs a requestId")
+            responses = {"approve": action == "approve", "note": body.get("note")}
+            if action == "approve" and body.get("remember"):
+                responses["remember"] = True
+            try:
+                decision = self.confirm_gate.resolve(
+                    request_id, responses,
+                    principal=body.get("principal"), source=body.get("source") or "operator",
+                )
+            except GateError as exc:
+                raise ValueError(f"{exc.reason}: {exc.message}") from exc
+            self.publish_mcp_event("mcp.confirm." + ("approved" if decision.get("state") == "approved"
+                                                     else "denied"),
+                                   {**decision, "answeredBy": body.get("answeredBy") or "rest"})
+            return {"ok": True, **decision}
+        if action == "expire":
+            return {"ok": True, "swept": self.confirm_gate.expire_stale()}
+        report = self.confirm_gate.status()
+        report["ok"] = True
+        report["subscriptions"] = self.mcp_dispatcher.subscription_status()
+        return report
 
     # -- multi-studio fleet ---------------------------------------------------
 
@@ -796,6 +891,9 @@ class BridgeState:
         "clone_instance", "reparent_instance", "delete", "attributes",
         "tags", "selection", "camera", "history", "terrain",
         "insert_asset", "import_image", "playtest", "open_script",
+        # v5.4 playtest surface: synthetic input drives the live game and the
+        # native test runner writes a temporary Script, so both are mutations.
+        "virtual_input", "device_simulator", "studio_tests",
     }
 
     def enqueue_job(
@@ -810,6 +908,8 @@ class BridgeState:
         priority: int = 5,
         max_retries: int = 0,
         timeout: float = None,
+        trace: dict = None,
+        actor: dict = None,
     ):
         payload_dict = dict(payload or {}) if isinstance(payload, dict) else {}
 
@@ -824,6 +924,7 @@ class BridgeState:
                 or (kind == "playtest" and payload_dict.get("action") == "status")
                 or (kind == "open_script" and payload_dict.get("listOnly") is True)
                 or (kind == "find_replace_scripts" and payload_dict.get("dryRun") is True)
+                or (kind == "device_simulator" and payload_dict.get("action") in ("status", "list"))
             )
             if not read_sub_ok:
                 raise PermissionError(
@@ -886,6 +987,10 @@ class BridgeState:
                 "timeout": float(timeout) if timeout else None,
                 "idempotencyKey": idempotency_key,
                 "deduplicated": 0,
+                # v5.4.0 provenance: which MCP caller (and which of its spans)
+                # caused this job. Absent for REST/CLI callers.
+                "trace": dict(trace) if isinstance(trace, dict) and trace else None,
+                "actor": dict(actor) if isinstance(actor, dict) and actor else None,
             }
             self.jobs[jid] = job
             self.job_events[jid] = done_evt
@@ -1093,6 +1198,7 @@ class BridgeState:
                     "jobs": len(self.jobs),
                     "uptimeSeconds": round(_now() - self.started, 1),
                     "authMode": "scoped" if self.token else "open",
+                    "confirmGate": self.confirm_gate_summary(),
                     "tunnel": {
                         "state": tunnel_state,
                         "publicUrl": self.tunnel.public_url,
@@ -1166,12 +1272,21 @@ class BridgeState:
                 priority=body.get("priority", 5),
                 max_retries=body.get("maxRetries", body.get("max_retries", 0)),
                 timeout=body.get("timeout"),
+                trace=body.get("trace") if isinstance(body.get("trace"), dict) else None,
+                actor=body.get("actor") if isinstance(body.get("actor"), dict) else None,
             )
             wait = float(body.get("wait") or 0)
             if wait > 0:
                 evt.wait(timeout=min(wait, 120.0))
             with self.lock:
                 return dict(self.jobs[job["id"]])
+        if op == "confirmations":
+            return self.confirmations_report(body)
+        if op == "subscriptions":
+            return self.mcp_dispatcher.subscription_status()
+        if op == "mcp_event":
+            return self.publish_mcp_event(body.get("kind"), body.get("detail"),
+                                          body.get("level") or "info")
         if op == "bus":
             return self.bus.handle(body)
         if op == "fleet":
@@ -1270,6 +1385,24 @@ class BridgeState:
         audit = self.telemetry.audit.tail(10)
         with self.lock:
             recent = [summary(self.jobs[i]) for i in list(self.history)[-12:]][::-1]
+        gate_status = self.confirm_gate.status()
+        confirm_block = {
+            "mode": gate_status["mode"],
+            "enabled": gate_status["mode"] != "off",
+            "ttlSeconds": gate_status["ttlSeconds"],
+            "allowanceSeconds": gate_status["allowanceSeconds"],
+            "pending": gate_status["pending"],
+            "pendingCount": gate_status["pendingCount"],
+            "allowances": gate_status["allowances"],
+            "counters": gate_status["counters"],
+            "recentDecisions": gate_status["recentDecisions"][:10],
+        }
+        try:
+            subscriptions_block = self.mcp_dispatcher.subscription_status()
+        except Exception:  # noqa: BLE001
+            subscriptions_block = {"count": 0, "subscriptions": []}
+        self.telemetry.metrics.gauge("bridge_confirmations_pending", gate_status["pendingCount"])
+        self.telemetry.metrics.gauge("bridge_mcp_subscriptions", subscriptions_block.get("count", 0))
         return {
             "ok": True,
             "version": VERSION,
@@ -1304,6 +1437,10 @@ class BridgeState:
                 "protocolVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
                 "modernProtocol": MODERN_PROTOCOL_VERSION,
                 "tasks": len(getattr(self.mcp_dispatcher, "tasks", {}) or {}),
+                "confirmGate": confirm_block,
+                "subscriptions": subscriptions_block,
+                "autoTaskMs": getattr(self.mcp_dispatcher, "auto_task_ms", 0.0),
+                "legacyConfirmWaitSeconds": getattr(self.mcp_dispatcher, "legacy_wait_seconds", 0.0),
             },
             "servedAt": _now(),
         }
@@ -1347,6 +1484,8 @@ def summary(job: dict) -> dict:
         "ok": job["ok"],
         "error": job["error"],
         "result": out,
+        "trace": job.get("trace"),
+        "actor": job.get("actor"),
         "duration_ms": job.get("duration_ms"),
         "created": job["created"],
         "finished": job["finished"],
@@ -1372,6 +1511,13 @@ def make_http_handler(state: BridgeState):
             if forwarded:
                 return False
             return ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+        def _mcp_headers(self, protocol_version: str = None) -> dict:
+            """`Mcp-Session-Id` is a legacy-era artefact: the 2026-07-28 core
+            removed protocol sessions, so modern answers do not advertise one."""
+            if (protocol_version or "") == MODERN_PROTOCOL_VERSION:
+                return {}
+            return {"Mcp-Session-Id": state.session_id}
 
         def _send(self, code: int, body, ctype: str = "application/json; charset=utf-8", extra_headers: dict = None):
             if isinstance(body, (dict, list)):
@@ -1671,6 +1817,16 @@ def make_http_handler(state: BridgeState):
                     return
                 return self._send(200, state.tunnel.status())
 
+            if path == "/api/confirmations":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, state.confirmations_report({"action": "status"}))
+
+            if path == "/api/subscriptions":
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, state.mcp_dispatcher.subscription_status())
+
             if path == "/api/tokens":
                 if not self._require(qs, "admin"):
                     return
@@ -1716,6 +1872,47 @@ def make_http_handler(state: BridgeState):
 
             return self._send(404, {"error": "not found"})
 
+        def _stream_mcp_subscription(self, stream: dict, protocol_version: str = None):
+            """Hold this POST open and forward MCP notifications as SSE frames."""
+            sub_id = stream.get("subscriptionId")
+            max_seconds = stream.get("maxSeconds")
+            poll_seconds = stream.get("pollSeconds") or 0.75
+            try:
+                max_seconds = float(max_seconds) if max_seconds is not None else None
+            except (TypeError, ValueError):
+                max_seconds = None
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            if (protocol_version or "") != MODERN_PROTOCOL_VERSION:
+                self.send_header("Mcp-Session-Id", state.session_id)
+            if sub_id:
+                self.send_header("X-Arena-Subscription", str(sub_id))
+            self.end_headers()
+
+            stop = threading.Event()
+
+            def _write(payload):
+                frame = json.dumps(payload, ensure_ascii=False, default=str)
+                self.wfile.write(f"event: message\ndata: {frame}\n\n".encode("utf-8"))
+                self.wfile.flush()
+
+            try:
+                _write(stream["ack"])
+                state.mcp_dispatcher.pump_subscription(
+                    sub_id, _write, stop_event=stop, max_seconds=max_seconds, poll_seconds=poll_seconds,
+                )
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                stop.set()
+                if sub_id:
+                    state.mcp_dispatcher.drop_subscription(sub_id)
+            except Exception:  # noqa: BLE001 - never leak a traceback into the socket
+                stop.set()
+
         def do_POST(self):
             url = urlparse(self.path)
             qs = parse_qs(url.query)
@@ -1723,6 +1920,32 @@ def make_http_handler(state: BridgeState):
 
             # Native MCP Streamable HTTP endpoint (JSON-RPC 2.0). The token role
             # determines whether mutating tools are advertised/callable.
+            if path == "/api/mcp/events":
+                # MCP-side telemetry (confirmations, subscriptions) from a
+                # standalone mcp_server.py attached over HTTP. Needs admin scope:
+                # it writes into the audit chain.
+                if not self._require(qs, "admin"):
+                    return
+                body = self._body()
+                return self._send(200, state.publish_mcp_event(
+                    body.get("kind"), body.get("detail"), body.get("level") or "info"))
+
+            if path == "/api/confirmations":
+                if not self._require(qs, "write"):
+                    return
+                try:
+                    report = state.confirmations_report(self._body())
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                return self._send(200, report)
+
+            if path == "/api/subscriptions/close":
+                if not self._require(qs, "admin"):
+                    return
+                sub_id = (self._body() or {}).get("subscriptionId")
+                return self._send(200, state.mcp_dispatcher.drop_subscription(sub_id))
+
+
             if path == "/mcp":
                 ctx = self._require(qs, "read")
                 if not ctx:
@@ -1734,7 +1957,7 @@ def make_http_handler(state: BridgeState):
                     return self._send(
                         400,
                         {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {exc}"}},
-                        extra_headers={"Mcp-Session-Id": state.session_id},
+                        extra_headers=self._mcp_headers(header_version),
                     )
                 # Dual-era MCP over Streamable HTTP:
                 #  * modern clients send the version in MCP-Protocol-Version (and
@@ -1756,7 +1979,7 @@ def make_http_handler(state: BridgeState):
                             "jsonrpc": "2.0", "id": rpc_in.get("id"),
                             "error": {"code": -32020, "message": "Mcp-Method header does not match the JSON-RPC method",
                                       "data": {"header": header_method, "body": body_method}},
-                        }, extra_headers={"Mcp-Session-Id": state.session_id})
+                        }, extra_headers=self._mcp_headers(header_version))
                     if header_name and body_method in ("tools/call", "resources/read", "prompts/get"):
                         params = rpc_in.get("params") or {}
                         body_name = params.get("name") or params.get("uri") or ""
@@ -1765,15 +1988,43 @@ def make_http_handler(state: BridgeState):
                                 "jsonrpc": "2.0", "id": rpc_in.get("id"),
                                 "error": {"code": -32020, "message": "Mcp-Name header does not match the request name",
                                           "data": {"header": header_name, "body": body_name}},
-                            }, extra_headers={"Mcp-Session-Id": state.session_id})
+                            }, extra_headers=self._mcp_headers(header_version))
+
+                # `_meta` is authoritative in the 2026-07-28 era: a client that
+                # negotiates per request (without an MCP-Protocol-Version header)
+                # still gets era-correct response headers.
+                negotiated_version = header_version
+                if isinstance(rpc_in, dict) and isinstance(rpc_in.get("_meta"), dict):
+                    negotiated_version = (rpc_in["_meta"].get("io.modelcontextprotocol/protocolVersion")
+                                          or header_version)
+
+                # Tell the dispatcher who is calling (scoped-token identity) so a
+                # confirmation can never be replayed by a different principal.
+                if isinstance(rpc_in, dict):
+                    meta = rpc_in.get("_meta")
+                    if not isinstance(meta, dict):
+                        meta = {}
+                        rpc_in["_meta"] = meta
+                    meta.setdefault("x-arena-principal", f"{ctx.get('role','read')}:{ctx.get('label') or ctx.get('id') or 'anon'}")
 
                 rpc_in, scope_error = self._enforce_mcp_scope(rpc_in, ctx)
                 if scope_error is not None:
-                    return self._send(200, scope_error, extra_headers={"Mcp-Session-Id": state.session_id})
+                    return self._send(200, scope_error, extra_headers=self._mcp_headers(negotiated_version))
                 rpc_out = state.mcp_dispatcher.handle_payload(rpc_in)
                 if rpc_out is None:
-                    return self._send(202, b"", "text/plain; charset=utf-8", {"Mcp-Session-Id": state.session_id})
-                return self._send(200, rpc_out, extra_headers={"Mcp-Session-Id": state.session_id})
+                    return self._send(202, b"", "text/plain; charset=utf-8",
+                                     self._mcp_headers(negotiated_version))
+
+                # subscriptions/listen answers on a long-lived response stream: the
+                # acknowledgement goes out first, then one SSE frame per notification.
+                stream = state.mcp_dispatcher_take_stream(rpc_out)
+                if stream:
+                    return self._stream_mcp_subscription(stream, negotiated_version)
+                extra = self._mcp_headers(negotiated_version)
+                if stream is None and isinstance(rpc_out, dict) and (rpc_out.get("result") or {}).get("taskId"):
+                    # A task handle is a promise to poll, so tell the client where.
+                    extra["X-Arena-Task"] = str(rpc_out["result"]["taskId"])
+                return self._send(200, rpc_out, extra_headers=extra)
 
             body = self._body()
 
@@ -3006,7 +3257,7 @@ function renderPrompts(){
       sub: "Best when the next AI agent is in a cloud sandbox without tunnel access and you paste command outputs.",
       body:
 `We are working on a Roblox Studio project (${placeName}${placeId ? ', PlaceId ' + placeId : ''}).
-Roblox Studio MCP Bridge v4.0.0 is already running locally on my machine at ${window.location.origin} (directory: \`${dir}\`).
+Roblox Studio MCP Bridge v5.4.0 is already running locally on my machine at ${window.location.origin} (directory: \`${dir}\`).
 
 Use **HANDS MODE**: give me exact commands to run in PowerShell from \`${dir}\` using \`.\\ab.ps1 <subcommand>\` (or \`python arena_studio.py <subcommand>\`), and I will paste the output back.
 
@@ -3111,7 +3362,7 @@ function renderTips(){
     ["Always Pre-Flight Luau with `luau_check`",
      "In non-strict Luau, deleting a helper function leaves callers compiling cleanly while crashing at runtime with `attempt to call a nil value`. `luau_check` runs both `luau-compile` and `luau-analyze` to catch undefined globals before code ever reaches Studio."],
     ["Open Script Editor Tabs & >200 KB Scripts",
-     "ArenaBridge v4.0.0 uses `ScriptEditorService:GetEditorSource` and `UpdateSourceAsync` with CRLF -> LF normalization instead of raw `.Source` assignment — safely supporting scripts over 200 KB and keeping open Studio tabs synchronized without cursor corruption."],
+     "ArenaBridge v4.1.0 uses `ScriptEditorService:GetEditorSource` and `UpdateSourceAsync` with CRLF -> LF normalization instead of raw `.Source` assignment — safely supporting scripts over 200 KB and keeping open Studio tabs synchronized without cursor corruption."],
     ["Single-Step Undo (`Ctrl+Z`) + Multi-Script Snapshots",
      "Every mutating tool wraps inside a `ChangeHistoryService` recording so one `Ctrl+Z` in Studio undoes an entire build or batch sync. Before sweeping refactors, call `manage_snapshots(action='create')` for instant 1-command rollback."],
     ["Safe Toolbox / Asset Insertion",
@@ -4037,6 +4288,11 @@ def create_http_server(
     tunnel_binary: str = None,
     sweep_interval: float = 300.0,
     sweep_offline_seconds: float = 900.0,
+    require_confirm: str = "off",
+    confirm_ttl_seconds: float = 180.0,
+    confirm_allowance_seconds: float = 600.0,
+    confirm_wait_seconds: float = 45.0,
+    auto_task_ms: float = None,
 ):
     resolved_token = load_token_default(token)
     state = BridgeState(
@@ -4052,6 +4308,11 @@ def create_http_server(
         tunnel_binary=tunnel_binary,
         sweep_interval=sweep_interval,
         sweep_offline_seconds=sweep_offline_seconds,
+        require_confirm=require_confirm,
+        confirm_ttl_seconds=confirm_ttl_seconds,
+        confirm_allowance_seconds=confirm_allowance_seconds,
+        confirm_wait_seconds=confirm_wait_seconds,
+        auto_task_ms=auto_task_ms,
     )
     httpd = ThreadingHTTPServer((host, port), make_http_handler(state))
     httpd.daemon_threads = True
@@ -4097,6 +4358,26 @@ def main():
     ap.add_argument("--sweep-offline", type=float,
                     default=float(os.environ.get("BRIDGE_SWEEP_OFFLINE", "900")),
                     help="An agent must be silent this long before its tasks are released")
+    ap.add_argument("--require-confirm",
+                    default=os.environ.get("BRIDGE_REQUIRE_CONFIRM", "off"),
+                    help="Human-in-the-loop gate for dangerous MCP tool calls: off | destructive | write | all "
+                         "(destructive also accepts 1/true). Modern clients get an input_required round-trip, "
+                         "everyone else waits for an operator answer on /api/confirmations.")
+    ap.add_argument("--confirm-ttl", type=float,
+                    default=float(os.environ.get("BRIDGE_CONFIRM_TTL") or 180),
+                    help="Seconds an unanswered confirmation stays answerable (default 180, max 900)")
+    ap.add_argument("--confirm-allowance", type=float,
+                    default=float(os.environ.get("BRIDGE_CONFIRM_ALLOWANCE") or 600),
+                    help="Seconds a 'remember this' approval lasts for the same tool (default 600, 0 disables)")
+    ap.add_argument("--confirm-wait", type=float,
+                    default=float(os.environ.get("BRIDGE_CONFIRM_WAIT_SECONDS") or 45),
+                    help="How long a legacy-era (pre-2026-07-28) call blocks waiting for an operator "
+                         "before it fails with confirmation_timeout (default 45, max 300)")
+    ap.add_argument("--auto-task-ms", type=float,
+                    default=(float(os.environ["BRIDGE_MCP_AUTO_TASK_MS"])
+                             if os.environ.get("BRIDGE_MCP_AUTO_TASK_MS") else 0.0),
+                    help="Promote a tool call to an MCP task handle when it runs longer than this many "
+                         "milliseconds (0 = never; needs the client to declare the tasks extension)")
     ap.add_argument("--state-dir", default=os.environ.get("BRIDGE_STATE_DIR"),
                     help="Directory for bus/token/audit/tunnel state (default: roblox-bridge/bridge_state)")
     args = ap.parse_args()
@@ -4115,6 +4396,11 @@ def main():
         public_url=args.public_url,
         sweep_interval=args.sweep_interval,
         sweep_offline_seconds=args.sweep_offline,
+        require_confirm=args.require_confirm,
+        confirm_ttl_seconds=args.confirm_ttl,
+        confirm_allowance_seconds=args.confirm_allowance,
+        confirm_wait_seconds=args.confirm_wait,
+        auto_task_ms=args.auto_task_ms,
     )
     ro_str = " [READ-ONLY INSPECTOR]" if state.read_only else ""
     bound_port = srv.server_address[1]

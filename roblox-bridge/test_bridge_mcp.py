@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_bridge_mcp.py — Comprehensive automated test suite for the v4.0.0
+test_bridge_mcp.py — Comprehensive automated test suite for the v5.4.0
 Arena <-> Roblox Studio Bridge, CLI, and MCP Server (stdio + Streamable HTTP).
 
 Tests:
@@ -10,7 +10,7 @@ Tests:
   4. Streamable HTTP MCP (`POST /mcp`, `GET /mcp`, `DELETE /mcp`, notifications `202`, batches, auth)
   5. MCP `stdio` subprocess transport (BOTH newline-delimited JSON and LSP `Content-Length` framing,
      auto-attach to running bridge AND standalone embedded bridge mode)
-  6. All 68 MCP tools end-to-end against stateful `MockWorld` v4.0.0:
+  6. All MCP tools end-to-end against stateful `MockWorld` v4.1.0:
      - Session/State (`get_studio_state`, `list_studios`, `ping_studio`)
      - Exploration (`survey_place`, `inspect_instance`, `search_game_tree`, `get_properties`, `compare_instances`)
      - Scripts (`script_read` with line ranges, `read_scripts_batch`, `write_script` with luau_check + expectedHash,
@@ -295,10 +295,28 @@ class TestV5OpsPlatform(unittest.TestCase):
         allowed = self.state.tunnel_action({"action": "start"})
         self.assertNotEqual(allowed["state"], "blocked")
 
+    def test_read_only_bridge_blocks_playtest_mutations_and_keeps_reads(self):
+        ro = BridgeState(token="t", read_only=True, state_dir=tempfile.mkdtemp(prefix="arena-ro-"))
+        # Synthetic input drives the live game and the native test runner writes a
+        # temporary Script, so both are mutations; so is applying a device profile.
+        for kind, payload in (
+            ("virtual_input", {"steps": [{"action": "press", "key": "E"}]}),
+            ("studio_tests", {"mode": "run"}),
+            ("device_simulator", {"action": "set_device", "deviceId": "iPhone15Pro"}),
+        ):
+            with self.assertRaises(PermissionError) as caught:
+                ro.enqueue_job(kind, payload)
+            self.assertIn("--read-only", str(caught.exception))
+        # Reading the simulated device is what an Inspector-only bridge is for.
+        job, _evt = ro.enqueue_job("device_simulator", {"action": "status"})
+        self.assertEqual(job["type"], "device_simulator")
+        self.assertEqual(len(ro.pending), 1)
+        self.assertEqual(len(ro.MUTATING_JOB_TYPES & {"virtual_input", "studio_tests"}), 2)
+
     def test_ops_report_and_public_health_shape(self):
         status, health = self._req("/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "5.3.1")
+        self.assertEqual(health["version"], "5.4.0")
         self.assertIn("tunnel", health)
         self.assertIn("agents", health)
         status, ops = self._req("/api/ops", token=self.admin_token)
@@ -1019,6 +1037,46 @@ class TestHashAndToolchain(unittest.TestCase):
         self.assertEqual(fnv1a_32("hello"), 1335831723)
         self.assertEqual(fnv1a_hex("hello"), "4f9f2cab")
 
+    def test_every_self_stamped_module_agrees_on_the_version(self):
+        """A version string is not feature evidence — but a stale one means two
+        halves of the bridge were released apart. Everything that stamps itself
+        must agree, including the changelog head and the plugin/mock pair."""
+        import auth_core
+        import bus_core
+        import confirm_gate
+        import telemetry
+        import tunnel_manager
+        from mcp_core import MCP_SERVER_VERSION
+        import server as bridge_server
+
+        stamped = {
+            "server.VERSION": bridge_server.VERSION,
+            "mcp_core.MCP_SERVER_VERSION": MCP_SERVER_VERSION,
+            "confirm_gate.GATE_VERSION": confirm_gate.GATE_VERSION,
+            "auth_core.AUTH_VERSION": auth_core.AUTH_VERSION,
+            "bus_core.BUS_VERSION": bus_core.BUS_VERSION,
+            "telemetry.TELEMETRY_VERSION": telemetry.TELEMETRY_VERSION,
+            "tunnel_manager.TUNNEL_VERSION": tunnel_manager.TUNNEL_VERSION,
+        }
+        self.assertEqual(set(stamped.values()), {MCP_SERVER_VERSION}, str(stamped))
+
+        changelog = (HERE / "CHANGELOG.md").read_text(encoding="utf-8")
+        head = re.search(r"^## (\d+\.\d+\.\d+)", changelog, re.M)
+        self.assertTrue(head, "CHANGELOG.md must open with a versioned entry")
+        self.assertEqual(head.group(1), MCP_SERVER_VERSION)
+
+        lua = (HERE / "ArenaBridge.lua").read_text(encoding="utf-8")
+        lua_version = re.search(r'local PLUGIN_VERSION = "([0-9.]+)"', lua).group(1)
+        import mock_studio
+        self.assertEqual(mock_studio.PLUGIN_VERSION, lua_version,
+                         "the mock must claim the plugin version it implements")
+        # The mock registers itself with `pv=<plugin version>` exactly as the
+        # plugin does, so /api/peers and the dashboard tell the same story.
+        self.assertIn('"pv": PLUGIN_VERSION',
+                      (HERE / "mock_studio.py").read_text(encoding="utf-8"))
+        setup_text = (HERE / "setup.py").read_text(encoding="utf-8")
+        self.assertIn(f"v{MCP_SERVER_VERSION}", setup_text)
+
     def test_luau_check_catches_syntax_and_undefined_globals(self):
         good = run_luau_check(code="local x = Vector3.new(1, 2, 3)\nreturn tostring(x)\n")
         self.assertTrue(good["ok"])
@@ -1237,6 +1295,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
                 "params": {"name": name, "arguments": arguments or {}},
             })
             self.assertEqual(status, 200)
+            self.assertIn("result", body, msg=f"{name} -> {json.dumps(body)[:600]}")
             res = body["result"]
             self.assertFalse(res.get("isError"), msg=f"Tool {name} errored: {res}")
             passed = True
@@ -1317,7 +1376,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         done = self.call_tool("agent_bus", {"action": "task_complete", "taskId": task["id"], "agentId": reg["id"], "result": "ok"})
         self.assertEqual(done["status"], "done")
         ops = self.call_tool("bridge_ops", {"action": "status"})
-        self.assertEqual(ops["version"], "5.3.1")
+        self.assertEqual(ops["version"], "5.4.0")
         self.assertIn("tunnel", ops)
         metrics = self.call_tool("bridge_ops", {"action": "metrics"})
         self.assertIn("counters", metrics)
@@ -1336,7 +1395,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         peers = self.call_tool("list_studios")
         self.assertGreaterEqual(peers["onlineCount"], 1)
         ping = self.call_tool("ping_studio")
-        self.assertEqual(ping["pluginVersion"], "4.0.0")
+        self.assertEqual(ping["pluginVersion"], "4.1.0")
 
         # 2. Survey, Inspect, Search, Properties, Compare
         survey = self.call_tool("survey_place", {"includeSource": True})
@@ -1648,6 +1707,92 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         mesh_caps = self.call_tool("mesh_capabilities", {})
         self.assertEqual(mesh_caps["editableMesh"]["status"], "not_probed_by_mock")
         self.assertIn("Mock", mesh_caps["warnings"][0])
+        caps = self.call_tool("playtest_capabilities", {})
+        self.assertTrue(caps["ok"], msg=json.dumps(caps))
+        self.assertTrue(caps["virtualInput"]["available"])
+        self.assertTrue(caps["deviceSimulator"]["available"])
+        self.assertTrue(caps["multiplayerTest"]["available"])
+        self.assertEqual(caps["baselineVersions"]["VirtualInput"], "0.720")
+        self.assertTrue(caps["studioVersion"])
+
+        # Park the play state first: an earlier scenario may have left the
+        # session alive (`keepAlive` defaults to true). With no playtest running,
+        # input has nowhere to land and the bridge says so instead of returning a
+        # green "delivered" it did not earn.
+        self.call_tool("start_stop_play", {"action": "stop"})
+        # `dm="edit"` pins the job to the Studio edit world, so a play peer left
+        # over from an earlier scenario cannot answer it.
+        refused = self.call_tool("simulate_input", {"steps": [{"action": "press", "key": "E"}],
+                                                    "dm": "edit"})
+        self.assertFalse(refused["ok"])
+        self.assertEqual(refused["delivered"], 0)
+        self.assertEqual(refused["steps"][0]["reason"], "not_playing")
+        self.assertTrue(any("playtest" in w for w in refused["warnings"]), msg=json.dumps(refused["warnings"]))
+
+        self.call_tool("start_stop_play", {"action": "start_play"})
+        try:
+            live = self.call_tool("simulate_input", {"steps": [
+                {"action": "press", "key": "W"},
+                {"action": "click", "target": "Workspace.Door"},
+                {"action": "type", "text": "hello"},
+                {"action": "drag", "from": [10, 10], "to": [90, 60]},
+                {"action": "pinch", "from": [10, 10], "to": [90, 60]},
+            ]})
+            self.assertTrue(live["ok"], msg=json.dumps(live))
+            self.assertEqual(live["delivered"], 4, msg=json.dumps(live["steps"]))
+            self.assertEqual(live["errors"], 1, msg=json.dumps(live["steps"]))
+            self.assertIn("pinch", live["steps"][4]["error"])
+            self.assertEqual(live["steps"][1]["via"], "SendMouseButton")
+            self.assertEqual(live["steps"][3]["pathPoints"], 8)
+            self.assertTrue(live["viewport"]["width"])
+        finally:
+            self.call_tool("start_stop_play", {"action": "stop"})
+
+        dev_status = self.call_tool("manage_device_simulator", {"action": "status"})
+        self.assertEqual(dev_status["current"]["deviceId"], "default")
+        self.assertFalse(dev_status["current"]["simulating"])
+        unapplied = self.call_tool("manage_device_simulator", {"action": "set_orientation", "orientation": "Portrait"})
+        self.assertFalse(unapplied["applied"])
+        self.assertEqual(unapplied["reason"], "no_active_device")
+        listed = self.call_tool("manage_device_simulator", {"action": "list"})
+        self.assertIn("iPhone15Pro", [d["deviceId"] for d in listed["devices"]])
+        applied = self.call_tool("manage_device_simulator", {"action": "set_device", "deviceId": "iPhone15Pro"})
+        self.assertTrue(applied["applied"])
+        self.assertEqual(applied["current"]["resolution"], [1179, 2556])
+        self.assertTrue(any("stays applied" in w for w in applied["warnings"]))
+        overridden = self.call_tool("manage_device_simulator", {
+            "action": "set", "orientation": "Portrait", "width": 800, "height": 600,
+            "density": 160, "scalingMode": "ActualResolution",
+        })
+        self.assertEqual(overridden["current"]["orientation"], "Portrait")
+        self.assertEqual(overridden["current"]["pixelDensity"], 160.0)
+        unknown = self.call_tool("manage_device_simulator", {"action": "set_device", "deviceId": "NokiaN99"})
+        self.assertEqual(unknown["reason"], "unknown_device")
+        self.assertIn("iPhone15Pro", unknown["knownDevices"])
+        profile = self.call_tool("manage_device_simulator", {"action": "create_profile", "profile": {
+            "name": "Budget Phone", "width": 720, "height": 360, "pixelDensity": 160, "deviceForm": "Phone",
+        }})
+        self.assertEqual(profile["profile"]["Name"], "Budget Phone")
+        self.assertTrue(profile["profile"]["IsCustom"])
+        stopped = self.call_tool("manage_device_simulator", {"action": "stop"})
+        self.assertTrue(stopped["stopped"])
+        self.assertEqual(stopped["current"]["deviceId"], "default")
+
+        self.call_tool("write_script", {"parent": "ServerStorage", "name": "ShopTests", "className": "ModuleScript",
+                                        "source": "return { run = function(ctx) return { passed = 2, failed = 0 } end }"})
+        scoped = self.call_tool("run_studio_tests", {"mode": "multiplayer", "players": 3,
+                                                    "module": "ServerStorage.ShopTests", "collectClientLogs": True})
+        self.assertTrue(scoped["ok"], msg=json.dumps(scoped))
+        self.assertEqual(scoped["engineCall"], "StudioTestService:ExecuteMultiplayerTestAsync(3, args)")
+        self.assertEqual(len(scoped["clientLogs"]), 3)
+        self.assertGreaterEqual(scoped["passed"], 1)
+        self.call_tool("delete_instance", {"paths": ["ServerStorage.ShopTests"]})
+        bad_run = self.mcp_http({"jsonrpc": "2.0", "id": "tests-missing-module", "method": "tools/call",
+                                 "params": {"name": "run_studio_tests",
+                                            "arguments": {"mode": "run", "module": "ServerStorage.NotATest"}}})
+        self.assertTrue(bad_run[1]["result"]["isError"])
+        self.assertIn("test module not found", json.dumps(bad_run[1]["result"]))
+
         asset_search = self.call_tool("search_assets", {"query": "coin", "assetType": "image", "license": "CC0-1.0", "limit": 5})
         self.assertGreater(asset_search["totalMatches"], 0)
         self.assertTrue(all(item["license"] == "CC0-1.0" for item in asset_search["results"]))
@@ -1921,6 +2066,526 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             self.assertIn("Watcher — Phase · 1", read_back["source"])
         finally:
             os.unlink(tf_path)
+
+
+
+
+class TestV54ConfirmationGate(unittest.TestCase):
+    """v5.4.0: MRTR confirmations, subscription streams and call provenance."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = _free_port()
+        cls.token = "gate-secret-v54"
+        cls.base_url = f"http://127.0.0.1:{cls.port}"
+        cls.state_dir = tempfile.mkdtemp(prefix="arena-v54-state-")
+        cls.httpd, cls.state = create_http_server(
+            host="127.0.0.1", port=cls.port, token=cls.token, state_dir=cls.state_dir,
+            require_confirm="write", confirm_ttl_seconds=120, confirm_wait_seconds=6,
+        )
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.stop_mock = threading.Event()
+        cls.mock_thread = threading.Thread(target=run_mock_loop,
+                                           args=(cls.base_url, cls.token, cls.stop_mock), daemon=True)
+        cls.mock_thread.start()
+        for _ in range(60):
+            if cls.state.direct_dispatch("health", {})["studio_connected"]:
+                break
+            threading.Event().wait(0.05)
+        cls.dispatcher = cls.state.mcp_dispatcher
+        cls.modern = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+        cls.caps = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {
+                        "extensions": {"io.modelcontextprotocol/tasks": {}}, "elicitation": {}}}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.stop_mock.set()
+        cls.state._reaper_stop.set()
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def setUp(self):
+        # Confirmations and "remember this" allowances live on the shared
+        # dispatcher, so each test starts from a clean registry.
+        gate = self.dispatcher.gate
+        with gate._lock:
+            gate._pending.clear()
+            gate._allowances.clear()
+            gate._decisions.clear()
+            gate._consumed.clear()
+        with self.dispatcher._sub_lock:
+            self.dispatcher.subscriptions.clear()
+
+    # -- helpers ---------------------------------------------------------
+
+    def call(self, msg_id, method, params=None, meta=None):
+        msg = {"jsonrpc": "2.0", "id": msg_id, "method": method, "_meta": dict(meta or self.modern)}
+        if params is not None:
+            msg["params"] = params
+        return self.dispatcher.handle_payload(msg)
+
+    def gated_call(self, args=None, extra_params=None, meta=None, principal=None):
+        params = {"name": "delete_instance", "arguments": args or {"paths": ["Workspace.Baseplate"]}}
+        if extra_params:
+            params.update(extra_params)
+        if principal:
+            meta = dict(meta or self.modern)
+            meta["x-arena-principal"] = principal
+        return self.call("gated", "tools/call", params, meta=meta)
+
+    def rest(self, path, method="GET", body=None):
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.token}"}
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(self.base_url + path, data=data, method=method, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return raw
+
+    def answer(self, request_id, action="approve", **extra):
+        body = {"action": action, "requestId": request_id}
+        body.update(extra)
+        return self.rest("/api/confirmations", "POST", body)
+
+    # -- policy ----------------------------------------------------------
+
+    def test_gate_is_off_unless_the_operator_turns_it_on(self):
+        from mcp_core import MCPDispatcher
+        default = MCPDispatcher(self.state.mcp_client)
+        self.assertFalse(default.gate.enabled)
+        listed = default.handle_payload({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        flagged = [t["name"] for t in listed["result"]["tools"]
+                   if (t.get("execution") or {}).get("confirmationRequired")]
+        self.assertEqual(flagged, [])
+        mine = self.dispatcher.handle_payload({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        gated = {t["name"] for t in mine["result"]["tools"]
+                 if (t.get("execution") or {}).get("confirmationRequired")}
+        self.assertIn("delete_instance", gated)
+        self.assertNotIn("get_studio_state", gated)
+
+    def test_reads_stay_free_in_write_mode_even_on_write_capable_tools(self):
+        """Mode `write` gates writes, not tools that happen to be able to write.
+        `manage_device_simulator`/`bridge_ops` are reads when their action is a
+        read; gating those would leave a locked-down bridge blind to its own state
+        (and unable to answer the very queue it is waiting on)."""
+        free = (
+            ("manage_device_simulator", {"action": "status"}),
+            ("bridge_ops", {"action": "status"}),
+            ("playtest_capabilities", {}),
+            ("get_studio_state", {}),
+        )
+        for index, (name, arguments) in enumerate(free, start=1):
+            res = self.call(f"free-{index}", "tools/call", {"name": name, "arguments": arguments})
+            self.assertNotIn("error", res, name)
+            self.assertNotEqual(res["result"].get("resultType"), "input_required", name)
+        # The same tool, asked to mutate, is gated.
+        mutate = self.call("mut", "tools/call", {
+            "name": "manage_device_simulator",
+            "arguments": {"action": "set_device", "deviceId": "iPhone15Pro"},
+        })
+        self.assertEqual(mutate["result"]["resultType"], "input_required")
+        self.assertEqual(mutate["result"]["structuredContent"]["tool"], "manage_device_simulator")
+        self.assertEqual(self.dispatcher.gate.status()["pendingCount"], 1)
+
+    def test_gate_status_reports_the_policy_in_force(self):
+        from confirm_gate import ConfirmGate, GATE_VERSION
+        status = self.dispatcher.gate.status()
+        self.assertEqual(status["mode"], "write")
+        self.assertEqual(status["gateScope"], "every tool that is not annotated readOnlyHint")
+        self.assertEqual(status["gatedTools"], [], "only `destructive` names a fixed list")
+        self.assertGreater(status["destructiveToolCount"], 0)
+        self.assertEqual(status["version"], GATE_VERSION)
+        off = ConfirmGate(mode="off")
+        self.assertEqual(off.status()["gateScope"], "nothing")
+        self.assertFalse(off.enabled)
+
+    def test_write_mode_leaves_reads_free_and_all_mode_gates_everything(self):
+        from confirm_gate import ConfirmGate
+        from mcp_core import MCPDispatcher
+        strict = MCPDispatcher(self.state.mcp_client, gate=ConfirmGate(mode="all"))
+        strict_result = strict.handle_payload({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call", "_meta": dict(self.modern),
+            "params": {"name": "get_studio_state", "arguments": {}}})["result"]
+        self.assertEqual(strict_result["resultType"], "input_required",
+                         "`all` is the lockdown mode: even a read needs a person")
+        for name in ("get_studio_state", "ping_studio", "playtest_capabilities"):
+            res = self.call(name, "tools/call", {"name": name, "arguments": {}})["result"]
+            self.assertNotEqual(res.get("resultType"), "input_required", msg=name)
+            self.assertFalse(res.get("isError"), msg=name)
+        self.assertEqual(self.dispatcher.gate.status()["pending"], [])
+
+    def test_modern_gated_call_answers_input_required_with_a_signed_state(self):
+        res = self.gated_call()["result"]
+        self.assertEqual(res["resultType"], "input_required")
+        self.assertEqual(list(res["inputRequests"]), ["confirm"])
+        elicit = res["inputRequests"]["confirm"]["params"]
+        self.assertEqual(elicit["mode"], "form")
+        self.assertEqual(elicit["requestedSchema"]["required"], ["decision"])
+        self.assertIn("Workspace.Baseplate", elicit["message"])
+        self.assertEqual(res["structuredContent"]["reason"], "confirmation_required")
+        self.assertIn("requestId", res["structuredContent"])
+        self.assertIn("io.modelcontextprotocol/serverInfo", res["_meta"])
+        state = self.dispatcher.gate.parse_state(res["requestState"])
+        self.assertEqual(state["aud"], "tools/call")
+        self.assertAlmostEqual(state["exp"], state["iat"] + 120, places=0)
+        with self.assertRaises(Exception) as ctx:
+            self.dispatcher.gate.parse_state(res["requestState"][:-2] + "aa")
+        self.assertEqual(ctx.exception.reason, "bad_signature")
+
+    def test_an_approval_belongs_to_the_principal_it_was_issued_to(self):
+        res = self.gated_call()["result"]
+        state = res["requestState"]
+        self.answer(res["structuredContent"]["requestId"])
+        # The approval is recorded for `owner`; another caller cannot spend it.
+        other = self.gated_call(principal="other-agent", extra_params={
+            "requestState": state,
+            "inputResponses": {"confirm": {"action": "accept", "content": {"decision": "approve"}}},
+        })
+        self.assertEqual(other["result"]["resultType"], "input_required")
+        self.assertEqual(other["result"]["structuredContent"]["reason"], "principal_mismatch")
+        # It survives for its owner, exactly once.
+        mine = self.gated_call(extra_params={"requestState": state,
+                                            "inputResponses": {"confirm": {"action": "accept"}}})
+        self.assertNotEqual(mine["result"].get("resultType"), "input_required")
+        third = self.gated_call(extra_params={"requestState": state,
+                                             "inputResponses": {"confirm": {"action": "accept"}}})
+        self.assertEqual(third["result"]["structuredContent"]["reason"], "replayed")
+
+    def test_request_state_is_bound_to_arguments_and_single_use(self):
+        first = self.gated_call()["result"]
+        state = first["requestState"]
+        swapped = self.gated_call(args={"paths": ["Workspace.Treasure"]}, extra_params={
+            "requestState": state,
+            "inputResponses": {"confirm": {"action": "accept", "content": {"decision": "approve"}}},
+        })
+        self.assertEqual(swapped["result"]["structuredContent"]["reason"], "digest_mismatch")
+        self.answer(first["structuredContent"]["requestId"])
+        ran = self.gated_call(extra_params={"requestState": state,
+                                            "inputResponses": {"confirm": {"action": "accept"}}})
+        self.assertNotEqual(ran["result"].get("resultType"), "input_required")
+        replay = self.gated_call(extra_params={"requestState": state,
+                                               "inputResponses": {"confirm": {"action": "accept"}}})
+        self.assertEqual(replay["result"]["resultType"], "input_required")
+        self.assertEqual(replay["result"]["structuredContent"]["reason"], "replayed")
+        # The re-prompt is a *new* request: the fresh token is not approved yet.
+        fresh = replay["result"]["structuredContent"]["requestId"]
+        self.assertNotEqual(fresh, first["structuredContent"]["requestId"])
+
+    def test_a_client_that_cannot_ask_a_human_never_self_approves(self):
+        res = self.gated_call()["result"]
+        blind_caps = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                      "io.modelcontextprotocol/clientCapabilities": {}}
+        retry = self.gated_call(meta=blind_caps, extra_params={
+            "requestState": res["requestState"],
+            "inputResponses": {"confirm": {"action": "accept"}},
+        })
+        self.assertEqual(retry["result"]["resultType"], "input_required")
+        self.assertIn("arena_studio.py approve", retry["result"]["structuredContent"]["note"])
+        self.answer(res["structuredContent"]["requestId"], "deny")
+
+    def test_operator_approval_through_the_cli_unblocks_a_legacy_call(self):
+        # Legacy clients have no MRTR, so the bridge waits and a human answers
+        # out-of-band — here through arena_studio.py itself, end to end.
+        outcome = {}
+
+        def run_legacy():
+            meta = {"io.modelcontextprotocol/protocolVersion": "2025-11-25"}
+            outcome["res"] = self.call("legacy", "tools/call", {
+                "name": "write_script",
+                "arguments": {"parent": "ServerStorage", "name": "GatedByOperator",
+                              "className": "ModuleScript", "source": "return 'written under approval'"},
+            }, meta=meta)
+
+        thread = threading.Thread(target=run_legacy)
+        thread.start()
+        request_id = None
+        for _ in range(200):
+            pending = self.dispatcher.gate.status()["pending"]
+            if pending:
+                request_id = pending[0]["requestId"]
+                break
+            time.sleep(0.02)
+        self.assertIsNotNone(request_id, "the call should be parked on a confirmation")
+        proc = subprocess.run(
+            [sys.executable, str(HERE / "arena_studio.py"), "approve", request_id, "--note", "pair-tested"],
+            capture_output=True, text=True, timeout=90, cwd=str(HERE),
+            env={**os.environ, "BRIDGE_URL": self.base_url, "BRIDGE_TOKEN": self.token},
+        )
+        self.assertEqual(proc.returncode, 0, msg=proc.stdout + proc.stderr)
+        self.assertIn("approved", proc.stdout)
+        thread.join(40)
+        self.assertNotIn("error", outcome["res"], msg=json.dumps(outcome["res"]))
+        written = outcome["res"]["result"]["structuredContent"]
+        self.assertTrue(written["ok"], msg=json.dumps(written))
+        read_back = self.call("read", "tools/call", {"name": "script_read", "arguments": {
+            "path": "ServerStorage.GatedByOperator"}})
+        self.assertIn("written under approval", read_back["result"]["structuredContent"]["source"])
+        self.call("cleanup", "tools/call", {"name": "delete_instance",
+                                            "arguments": {"paths": ["ServerStorage.GatedByOperator"]}})
+        for row in self.dispatcher.gate.status()["pending"]:
+            self.answer(row["requestId"])
+        self.assertEqual(self.dispatcher.gate.status()["pending"], [])
+
+    def test_legacy_wait_timeout_names_the_request_id(self):
+        from confirm_gate import ConfirmGate
+        from mcp_core import MCPDispatcher
+        short = MCPDispatcher(self.state.mcp_client, gate=ConfirmGate(mode="all", ttl_seconds=30),
+                              legacy_wait_seconds=0.4)
+        err = short.handle_payload({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                    "params": {"name": "delete_instance",
+                                               "arguments": {"paths": ["Workspace.Baseplate"]}}})
+        self.assertTrue(err["result"]["isError"])
+        detail = err["result"]["structuredContent"]
+        self.assertEqual(detail["reason"], "confirmation_timeout")
+        self.assertIn("requestId", detail)
+        # a dispatcher built outside the server has its own queue, so check it
+        # directly rather than through /api/confirmations.
+        pending = short.gate.status()["pending"]
+        self.assertEqual([r["requestId"] for r in pending], [detail["requestId"]])
+        denied = short.gate.resolve(detail["requestId"], {"approve": False, "note": "no"},
+                                    source="operator")
+        self.assertEqual(denied["state"], "denied")
+
+    def test_deny_is_final_counted_and_audited(self):
+        res = self.gated_call()["result"]
+        request_id = res["structuredContent"]["requestId"]
+        denied = self.answer(request_id, "deny", note="not in this place")
+        self.assertEqual(denied["state"], "denied")
+        retry = self.gated_call(extra_params={"requestState": res["requestState"],
+                                             "inputResponses": {"confirm": {"action": "decline"}}})
+        self.assertEqual(retry["result"]["structuredContent"]["reason"], "declined")
+        counters = self.dispatcher.gate.status()["counters"]
+        self.assertGreaterEqual(counters["denied"], 1)
+        audit = self.rest("/api/audit?limit=60")
+        self.assertIn("mcp.confirm.denied", [e["action"] for e in audit["entries"]])
+        events = self.rest("/api/events?once=1&since=0&limit=200")
+        kinds = [e["kind"] for e in (events.get("events") or [])]
+        self.assertIn("mcp.confirm.denied", kinds)
+
+    def test_gated_task_flips_to_input_required_and_tasks_update_answers_it(self):
+        handle = self.gated_call(extra_params={"task": {"ttl": 60000}}, meta=self.caps)["result"]
+        self.assertEqual(handle["resultType"], "task")
+        self.assertEqual(handle["status"], "working")
+        task_id = handle["taskId"]
+        view = {}
+        for _ in range(200):
+            view = self.call("get", "tasks/get", {"taskId": task_id}, meta=self.caps)["result"]
+            if view["status"] != "working":
+                break
+            time.sleep(0.05)
+        self.assertEqual(view["status"], "input_required", msg=json.dumps(view))
+        self.assertEqual(list(view["inputRequests"]), ["confirm"])
+        blind = self.call("blind-update", "tasks/update",
+                          {"taskId": task_id, "inputResponses": {"confirm": {"action": "accept"}}},
+                          meta={"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                "io.modelcontextprotocol/clientCapabilities": {}})
+        self.assertEqual(blind["error"]["code"], -32021)
+        self.assertEqual(blind["error"]["data"]["requiredCapability"], "elicitation")
+        answered = self.call("update", "tasks/update", {"taskId": task_id, "inputResponses": {
+            "confirm": {"action": "accept", "content": {"decision": "approve", "remember": True}}}}, meta=self.caps)
+        self.assertEqual(answered["result"]["decision"], "approved")
+        for _ in range(200):
+            view = self.call("get2", "tasks/get", {"taskId": task_id}, meta=self.caps)["result"]
+            if view["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.05)
+        self.assertIn(view["status"], ("completed", "failed"), msg=json.dumps(view))
+        self.assertTrue(self.dispatcher.gate.allowance_active("delete_instance", "owner"),
+                        "remember=True must open a documented allowance window")
+        # Inside the allowance the same tool runs without asking again.
+        quiet = self.gated_call(args={"paths": ["ServerStorage.Nonexistent"]})
+        self.assertNotEqual(quiet["result"].get("resultType"), "input_required")
+
+    def test_cancel_and_expiry_leave_the_gate_consistent(self):
+        res = self.gated_call()["result"]
+        request_id = res["structuredContent"]["requestId"]
+        self.assertTrue(self.dispatcher.gate.cancel(request_id, reason="test cancel"))
+        self.assertFalse(self.dispatcher.gate.cancel(request_id, reason="again"))
+        retry = self.gated_call(extra_params={"requestState": res["requestState"],
+                                             "inputResponses": {"confirm": {"action": "accept"}}})
+        # A cancelled request's token is spent, so the caller is re-prompted.
+        self.assertEqual(retry["result"]["resultType"], "input_required")
+        self.assertEqual(retry["result"]["structuredContent"]["reason"], "replayed")
+        pending = self.dispatcher.gate.status()["pending"]
+        self.assertEqual([r["requestId"] for r in pending],
+                         [retry["result"]["structuredContent"]["requestId"]])
+        again = self.gated_call(extra_params={"requestState": retry["result"]["requestState"]})["result"]
+        self.assertEqual(again["resultType"], "input_required")
+        # Nothing is stale yet, so a sweep is a no-op...
+        self.assertEqual(self.rest("/api/confirmations", "POST", {"action": "expire"})["swept"], 0)
+        # ...and the reaper's sweep fires once the window closes (clock forced).
+        rec = self.dispatcher.gate.pending(again["structuredContent"]["requestId"])
+        rec.expires = time.time() - 1
+        self.assertEqual(self.rest("/api/confirmations", "POST", {"action": "expire"})["swept"], 1)
+        self.assertGreaterEqual(self.dispatcher.gate.status()["counters"]["expired"], 1)
+        self.assertEqual(self.dispatcher.gate.status()["pending"], [])
+
+    def test_ops_health_and_metrics_expose_the_gate(self):
+        health = self.rest("/api/health")
+        self.assertEqual(health["confirmGate"]["mode"], "write")
+        self.assertIn("counters", health["confirmGate"])
+        self.assertNotIn("pending", health["confirmGate"],
+                         "the open health endpoint must not leak argument previews")
+        ops = self.rest("/api/ops")
+        gate_ops = ops["mcp"]["confirmGate"]
+        self.assertEqual(gate_ops["mode"], "write")
+        self.assertTrue(gate_ops["enabled"])
+        self.assertIn("pending", gate_ops)
+        self.assertIn("allowances", gate_ops)
+        self.assertIn("subscriptions", ops["mcp"])
+        text = self.rest("/api/metrics?format=prometheus")
+        self.assertIsInstance(text, str)
+        self.assertIn("bridge_confirmations_pending", text)
+        self.assertIn("bridge_mcp_subscriptions", text)
+
+    def test_bridge_ops_reads_the_queue_but_cannot_unblock_itself(self):
+        res = self.gated_call()["result"]
+        request_id = res["structuredContent"]["requestId"]
+        listed = self.call("ops-list", "tools/call", {"name": "bridge_ops", "arguments": {"action": "confirmations"}})
+        pending = listed["result"]["structuredContent"].get("pending") or []
+        self.assertIn(request_id, [row["requestId"] for row in pending])
+        self.assertTrue(listed["result"]["structuredContent"]["ok"])
+        self_answer = self.call("ops-approve", "tools/call", {"name": "bridge_ops", "arguments": {
+            "action": "confirm_approve", "requestId": request_id, "note": "let me in"}})
+        refusal = self_answer["result"]["structuredContent"]
+        self.assertFalse(refusal["ok"])
+        self.assertEqual(refusal["reason"], "operator_only")
+        self.assertTrue(any("arena_studio.py approve" in hint for hint in refusal["howToAnswer"]))
+        # Still pending: the refusal changed nothing.
+        self.assertIn(request_id, [row["requestId"] for row in
+                                  self.dispatcher.gate.status()["pending"]])
+        # A different principal on the same bridge may answer it.
+        other = self.call("ops-approve-other", "tools/call", {"name": "bridge_ops", "arguments": {
+            "action": "confirm_approve", "requestId": request_id, "note": "reviewed"}})
+        # the caller principal comes from the connection, so this client is still
+        # `owner`; the operator path (REST, admin scope) is the one that works.
+        self.assertEqual(other["result"]["structuredContent"]["reason"], "operator_only")
+        self.answer(request_id)
+        ran = self.gated_call(extra_params={"requestState": res["requestState"],
+                                           "inputResponses": {"confirm": {"action": "accept"}}})
+        self.assertNotEqual(ran["result"].get("resultType"), "input_required")
+        subs = self.call("ops-subs", "tools/call", {"name": "bridge_ops", "arguments": {"action": "subscriptions"}})
+        self.assertIn("subscriptions", subs["result"]["structuredContent"])
+
+    def test_subscriptions_listen_pumps_resource_updates(self):
+        from mcp_core import take_subscription_stream
+        self.state.publish_mcp_event("console.output", {"message": "before the subscription"})
+        ack = self.call("sub", "subscriptions/listen", {"types": ["resourceSubscriptions", "toolsListChanged"],
+                                                        "maxSeconds": 0.35, "pollSeconds": 0.05})
+        self.assertNotIn("error", ack)
+        marker = take_subscription_stream(ack)
+        self.assertTrue(marker and marker.get("subscriptionId"))
+        self.assertNotIn("_arenaStream", ack["result"])
+        live = self.rest("/api/subscriptions")
+        self.assertGreaterEqual(live["count"], 1)
+        self.assertEqual(live["subscriptions"][0]["types"], ["toolsListChanged", "resourceSubscriptions"])
+        self.assertIn("studio://state", live["subscriptions"][0]["resources"])
+
+        frames = []
+        report = self.dispatcher.pump_subscription(marker["subscriptionId"], frames.append,
+                                                   max_seconds=0.5, poll_seconds=0.05)
+        self.assertTrue(report["ok"])
+        self.assertGreaterEqual(report["emitted"], 1)
+        tagged = {f["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"] for f in frames}
+        self.assertEqual(tagged, {marker["subscriptionId"]})
+        # a finished `maxSeconds` pump retires the subscription on its own
+        after = self.rest("/api/subscriptions")
+        self.assertEqual(after["count"], 0)
+        closed = self.rest("/api/subscriptions/close", "POST", {"subscriptionId": marker["subscriptionId"]})
+        self.assertFalse(closed["dropped"], "the pump already retired it")
+        self.assertFalse(self.rest("/api/subscriptions/close", "POST",
+                                   {"subscriptionId": "sub-nope"})["dropped"])
+        # an explicit close works on a live one
+        long_lived = self.call("sub2", "subscriptions/listen",
+                               {"types": ["toolsListChanged"], "maxSeconds": 60, "pollSeconds": 5})
+        second = take_subscription_stream(long_lived)
+        self.assertEqual(self.rest("/api/subscriptions")["count"], 1)
+        self.assertTrue(self.rest("/api/subscriptions/close", "POST",
+                                  {"subscriptionId": second["subscriptionId"]})["dropped"])
+        self.assertEqual(self.rest("/api/subscriptions")["count"], 0)
+        bad = self.call("bad-sub", "subscriptions/listen", {"types": ["madeUpThing"]})
+        self.assertEqual(bad["error"]["code"], -32602)
+        unknown = self.call("unk-sub", "subscriptions/listen",
+                            {"types": ["toolsListChanged", "madeUpThing"]})
+        self.assertIn("madeUpThing", unknown["result"]["unknownTypes"])
+
+    def test_streamable_http_subscription_streams_on_the_post_response(self):
+        body = {"jsonrpc": "2.0", "id": "sse", "method": "subscriptions/listen",
+                "params": {"types": ["resourceSubscriptions"], "maxSeconds": 0.4, "pollSeconds": 0.05},
+                "_meta": dict(self.modern)}
+        req = urllib.request.Request(
+            self.base_url + "/mcp", data=json.dumps(body).encode("utf-8"), method="POST",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.token}",
+                     "Mcp-Method": "subscriptions/listen",
+                     "Accept": "application/json, text/event-stream"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.headers.get("Content-Type").split(";")[0], "text/event-stream")
+            self.assertTrue(resp.headers.get("X-Arena-Subscription"))
+            self.assertIsNone(resp.headers.get("Mcp-Session-Id"),
+                              "the 2026-07-28 era removed protocol sessions")
+            resp_sub = resp.headers.get("X-Arena-Subscription")
+            raw = resp.read().decode("utf-8")
+        ack = None
+        notes = []
+        for line in raw.splitlines():
+            if not line.startswith("data: "):
+                continue
+            obj = json.loads(line[len("data: "):])
+            if obj.get("method") is not None:
+                notes.append(obj)
+            else:
+                ack = obj
+        self.assertTrue(ack and ack["id"] == "sse", msg=raw[:400])
+        self.assertNotIn("_arenaStream", ack["result"],
+                         "the transport consumes the marker; the client gets the header")
+        self.assertEqual(resp_sub, ack["result"]["subscriptionId"])
+        self.assertTrue(notes, msg=raw[:400])
+        for note in notes:
+            self.assertTrue(note["method"].startswith("notifications/"))
+            self.assertIn("io.modelcontextprotocol/subscriptionId", note["params"]["_meta"])
+        self.assertEqual(ack["result"]["types"], ["resourceSubscriptions"])
+        self.assertTrue(ack["result"]["resources"])
+
+    def test_modern_and_legacy_http_headers_and_session_id(self):
+        def post(body, headers=None):
+            hdrs = {"Content-Type": "application/json", "Authorization": f"Bearer {self.token}"}
+            hdrs.update(headers or {})
+            req = urllib.request.Request(self.base_url + "/mcp", data=json.dumps(body).encode("utf-8"),
+                                         method="POST", headers=hdrs)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8") or "null"), dict(resp.headers)
+
+        status, discover, hdrs = post({"jsonrpc": "2.0", "id": 1, "method": "server/discover",
+                                       "_meta": dict(self.modern)},
+                                      {"Mcp-Method": "server/discover"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("Mcp-Session-Id", hdrs)
+        self.assertEqual(discover["result"]["protocolVersion"], "2026-07-28")
+        self.assertIn("extensions", discover["result"]["capabilities"])
+        self.assertIn("io.modelcontextprotocol/tasks", discover["result"]["capabilities"]["extensions"])
+        _, legacy, legacy_hdrs = post({"jsonrpc": "2.0", "id": 2, "method": "tools/list",
+                                       "params": {}})
+        self.assertEqual(legacy_hdrs.get("Mcp-Session-Id"), self.state.session_id)
+        self.assertNotIn("resultType", legacy["result"])
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            post({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "_meta": dict(self.modern)},
+                 {"Mcp-Method": "tools/call"})
+        self.assertEqual(json.loads(ctx.exception.read().decode())["error"]["code"], -32020)
+
+    def test_jobs_carry_the_mcp_call_that_queued_them(self):
+        res = self.call("state", "tools/call", {"name": "get_studio_state", "arguments": {}})
+        self.assertFalse(res["result"].get("isError"))
+        rows = self.rest("/api/jobs?limit=8")
+        jobs = rows.get("jobs") or rows.get("recent") or []
+        with_provenance = [row for row in jobs if row.get("actor")]
+        self.assertTrue(with_provenance, msg=json.dumps(rows)[:400])
+        self.assertEqual(with_provenance[0]["actor"].get("principal"), "owner")
 
 
 if __name__ == "__main__":

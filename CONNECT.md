@@ -1,6 +1,11 @@
 # CONNECT — Arena ↔ Roblox Studio bridge, operator's manual
 
-> **v5 note (2026-11-03):** the bridge is now `5.3.1` with a multi-Studio fleet, a supervised tunnel, a
+> **v5.4 note (2026-11-05):** the bridge is now `5.4.0`: MCP 2026-07-28 (per-request `_meta` negotiation,
+> `resultType`, `ttlMs`/`cacheScope`, `subscriptions/listen`, Tasks extension) plus four playtest tools —
+> `simulate_input` (VirtualInput), `manage_device_simulator`, `run_studio_tests` (StudioTestService) and
+> `playtest_capabilities` — and an opt-in MRTR confirmation gate (`--require-confirm`).
+>
+> **v5 note (2026-11-03):** a multi-Studio fleet, a supervised tunnel, a
 > multi-agent bus, scoped tokens, Prometheus metrics and a hash-chained audit log.
 > Full reference: [`roblox-bridge/docs/OPS.md`](roblox-bridge/docs/OPS.md).
 > Operational quickies:
@@ -10,6 +15,8 @@
 > python roblox-bridge/arena_studio.py ops         # peers + queue + tunnel + agents + tasks
 > python roblox-bridge/arena_studio.py tunnel status
 > python roblox-bridge/arena_studio.py bus tasks
+> python roblox-bridge/arena_studio.py confirmations
+> python roblox-bridge/arena_studio.py approve cfm-xxxxxxxxxxxx --remember
 > python roblox-bridge/arena_studio.py metrics --prometheus
 > python roblox-bridge/arena_studio.py audit --verify
 > ```

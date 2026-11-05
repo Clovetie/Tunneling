@@ -83,8 +83,9 @@ def main(argv=None):
         record("bridge-reachable", "fail", f"{base} did not answer /api/health: {exc}")
         return finish(args, base, started, fatal=True)
     record("bridge-reachable", "pass",
-           f"v{health.get('version')} · auth {'on' if health.get('authEnabled') else 'off'} · "
-           f"queued {health.get('queued')} · peers {health.get('peers')}", health)
+           f"v{health.get('version')} · auth {health.get('authMode', 'unknown')} · "
+           f"tools {health.get('mcp_tools')} · queued {health.get('queued')} · "
+           f"peers {len(health.get('peers') or [])}", health)
 
     # 2. Studio is connected through the plugin.
     try:
@@ -94,8 +95,14 @@ def main(argv=None):
         peers = {"peers": []}
     peer_rows = peers.get("peers") or []
     if peer_rows:
+        def label(row):
+            who = str(row.get("peerId") or row.get("peer") or row.get("id") or "?")
+            dm = row.get("dm") or "?"
+            plugin = row.get("pluginVersion")
+            return f"{who}[{dm}]" + (f" plugin v{plugin}" if plugin else "")
+
         record("studio-peer", "pass", f"{len(peer_rows)} peer(s): " +
-               ", ".join(str(p.get('peer') or p.get('id')) for p in peer_rows[:3]), peers)
+               ", ".join(label(row) for row in peer_rows[:4]), peers)
     else:
         record("studio-peer", "fail",
                "no Studio peer: open the place with the ArenaBridge plugin, then re-run")
@@ -129,7 +136,9 @@ def main(argv=None):
     mcp_base = args.public_url.rstrip("/") if args.public_url else (public_url or base)
     try:
         status = mcp_call(mcp_base, token, "bridge_ops", {"action": "status"})
-        connected = bool(status.get("studio_connected") or status.get("studioConnected"))
+        inner = status.get("health") or status
+        connected = bool(inner.get("studio_connected") or status.get("studio_connected")
+                         or status.get("studioConnected"))
         record("mcp-bridge-ops", "pass" if connected else "fail",
                f"studio_connected={connected} via {mcp_base}", status)
     except Exception as exc:  # noqa: BLE001
@@ -139,8 +148,14 @@ def main(argv=None):
     if peer_rows:
         try:
             state = mcp_call(mcp_base, token, "get_studio_state", {})
-            place = state.get("place") or state.get("placeName") or state.get("placeId")
-            record("mcp-studio-read", "pass", f"get_studio_state returned place={place}", {"place": place})
+            studio = state.get("studio") or {}
+            place = studio.get("place") or state.get("place") or {}
+            name = place.get("name") if isinstance(place, dict) else str(place)
+            found = bool(name) or bool(state.get("studioConnected"))
+            record("mcp-studio-read", "pass" if found else "fail",
+                   f"place={name or 'unknown'} · dm={studio.get('dm')} · "
+                   f"isEdit={studio.get('isEdit')} · plugin v{studio.get('pluginVersion')}",
+                   {"place": name, "dm": studio.get("dm")})
         except Exception as exc:  # noqa: BLE001
             record("mcp-studio-read", "fail", str(exc))
 
@@ -155,6 +170,62 @@ def main(argv=None):
             record("self-test", "fail", str(exc))
     else:
         record("self-test", "skipped", "pass --self-test to run every tool through the tunnel")
+
+    # 7b. The v5.4 surface: confirmation gate posture, live subscriptions, and the
+    # playtest APIs *probed* rather than assumed. Nothing here mutates the place, and
+    # nothing is reported as a pass that the connected Studio did not earn.
+    gate = health.get("confirmGate") or {}
+    if gate.get("mode") and gate["mode"] != "off":
+        record("confirmation-gate", "pass",
+               f"mode {gate['mode']} · pending {gate.get('pendingCount')} · "
+               f"ttl {gate.get('ttlSeconds')}s · counters {gate.get('counters')}", gate)
+    else:
+        record("confirmation-gate", "skipped",
+               "gate is off (start the bridge with --require-confirm write to lock writes behind a human)")
+
+    try:
+        subs = http_json(base, "/api/subscriptions", token=token)
+        record("subscriptions-endpoint", "pass",
+               f"{subs.get('count')} live subscription(s)", subs)
+    except Exception as exc:  # noqa: BLE001
+        record("subscriptions-endpoint", "fail", f"/api/subscriptions -> {exc}")
+
+    if not peer_rows:
+        record("playtest-surface", "skipped", "no Studio peer to probe")
+    else:
+        try:
+            caps = mcp_call(mcp_base, token, "playtest_capabilities", {})
+            services = {key: bool((caps.get(key) or {}).get("available"))
+                        for key in ("virtualInput", "deviceSimulator",
+                                    "studioTestService", "multiplayerTest")}
+            running = bool((caps.get("playtest") or {}).get("running"))
+            detail = (f"studio {caps.get('studioVersion')} · "
+                      + " ".join(f"{k}={'yes' if v else 'no'}" for k, v in services.items())
+                      + f" · playtest {'running' if running else 'idle'}")
+            unsupported = [k for k, v in services.items() if not v]
+            record("playtest-surface", "pass" if not unsupported else "skipped",
+                   detail if not unsupported
+                   else detail + " · below baseline: " + ", ".join(unsupported), caps)
+            if services["deviceSimulator"]:
+                status = mcp_call(mcp_base, token, "manage_device_simulator", {"action": "status"})
+                current = status.get("current") or {}
+                record("device-simulator-read", "pass" if current else "fail",
+                       f"device {current.get('deviceId')} · {current.get('orientation')} · "
+                       f"{current.get('resolution')} @ {current.get('pixelDensity')} dpi", status)
+            if services["virtualInput"] and running:
+                # A bare pointer move: it proves the delivery path without touching
+                # anything a player could feel.
+                receipt = mcp_call(mcp_base, token, "simulate_input",
+                                   {"steps": [{"action": "move", "position": [12, 12]}]})
+                ok = bool(receipt.get("delivered"))
+                record("virtual-input", "pass" if ok else "fail",
+                       f"delivered {receipt.get('delivered')}/{receipt.get('total', 1)} "
+                       f"via {receipt.get('steps')}", receipt)
+            else:
+                record("virtual-input", "skipped",
+                       "needs VirtualInput and a running playtest; the bridge refuses to fake a delivery")
+        except Exception as exc:  # noqa: BLE001
+            record("playtest-surface", "fail", str(exc))
 
     # 8. Audit chain stays intact after all of that traffic.
     try:

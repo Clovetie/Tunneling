@@ -348,12 +348,28 @@ def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str 
     }
 
 
+def _resolve_viewport(vp):
+    """Accept a preset name, or a measured `{name,width,height}` from the live
+    Studio Device Simulator, so a real device profile can be audited."""
+    if isinstance(vp, dict):
+        name = str(vp.get("name") or f'{vp.get("width", 0)}x{vp.get("height", 0)}')
+        try:
+            width = float(vp.get("width"))
+            height = float(vp.get("height"))
+        except (TypeError, ValueError):
+            raise ValueError(f"Custom viewport {vp!r} needs numeric width and height")
+        if not (80 <= width <= 8192 and 80 <= height <= 8192):
+            raise ValueError(f"Custom viewport {name!r} is out of range (80-8192 px)")
+        return name, width, height
+    return str(vp), VIEWPORT_PRESETS.get(str(vp), (1920.0, 1080.0))[0], VIEWPORT_PRESETS.get(str(vp), (1920.0, 1080.0))[1]
+
+
 def run_multi_viewport_audit(tree: list, viewports: list = None) -> dict:
     chosen = viewports or ["desktop", "tablet", "mobile"]
     reports = {}
     total_issues = 0
-    for vp in chosen:
-        w, h = VIEWPORT_PRESETS.get(vp, (1920.0, 1080.0))
+    for raw_vp in chosen:
+        vp, w, h = _resolve_viewport(raw_vp)
         rep = audit_tree_on_viewport(tree, w, h, vp)
         reports[vp] = rep
         total_issues += rep["issueCount"]

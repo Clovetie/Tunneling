@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v5.3.1).
+arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v5.4.0).
 
 Supports every MCP tool and bridge operation from your terminal or HANDS MODE (`ab.ps1`),
 with strict UTF-8 handling on Windows, macOS, and Linux.
@@ -25,6 +25,10 @@ v5 ops & multi-agent commands:
     python3 arena_studio.py ops [--json]
     python3 arena_studio.py metrics [--prometheus]
     python3 arena_studio.py audit [--verify] [--limit 20]
+    python3 arena_studio.py confirmations [--json]
+    python3 arena_studio.py approve cfm-91ab3f0c2d11 [--remember] [--note "pair-tested"]
+    python3 arena_studio.py deny cfm-91ab3f0c2d11 --note "wrong place"
+    python3 arena_studio.py subscriptions [--close sub-7c2f]
     python3 arena_studio.py tunnel status|start|stop|restart
     python3 arena_studio.py tokens list|create --label ci --role write --ttl 86400|revoke --id tok-123
     python3 arena_studio.py bus register --name "Gemini 4 Argon" --role partner
@@ -447,6 +451,23 @@ def main() -> int:
     p = sub.add_parser("audit", help="read or verify the tamper-evident audit log")
     p.add_argument("--verify", action="store_true")
     p.add_argument("--limit", type=int, default=20)
+
+    p = sub.add_parser("confirmations", help="list MCP write confirmations waiting on a human")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("approve", help="answer a waiting confirmation with approval")
+    p.add_argument("request_id")
+    p.add_argument("--note", default=None)
+    p.add_argument("--remember", action="store_true",
+                   help="keep approving this tool for this principal for --confirm-allowance seconds")
+
+    p = sub.add_parser("deny", help="answer a waiting confirmation with a refusal")
+    p.add_argument("request_id")
+    p.add_argument("--note", default=None)
+
+    p = sub.add_parser("subscriptions", help="live MCP subscription streams")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--close", default=None, metavar="SUBSCRIPTION_ID")
 
     p = sub.add_parser("studios", help="multi-Studio fleet: list, pin, label, broadcast")
     p.add_argument("action", nargs="?", default="list", choices=["list", "pin", "unpin", "label", "broadcast"])
@@ -1026,6 +1047,65 @@ def main() -> int:
     if args.cmd == "audit":
         path = "/api/audit?verify=1" if args.verify else f"/api/audit?limit={args.limit}"
         print(json.dumps(call("GET", path), indent=2, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "confirmations":
+        data = call("GET", "/api/confirmations")
+        if args.json:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            return 0
+        gate = data.get("mode", "off")
+        print(f"confirmations: mode={gate}  pending={len(data.get('pending') or [])}")
+        counters = data.get("counters") or {}
+        if counters:
+            print("           this process: " + ", ".join(f"{k}={v}" for k, v in counters.items()))
+        for row in data.get("pending") or []:
+            print(f"  {row['requestId']}  {row['tool']:<26} expires in {row.get('secondsRemaining')}s")
+            print(f"    args: {row.get('argumentsPreview') or ''}")
+            print(f"    approve: python3 arena_studio.py approve {row['requestId']}")
+        if not (data.get("pending") or []):
+            print("  (nothing waiting — approve is only needed when the bridge runs with --require-confirm)")
+        return 0
+
+    if args.cmd in ("approve", "deny"):
+        body = {"action": args.cmd, "requestId": args.request_id, "source": "cli"}
+        if args.note:
+            body["note"] = args.note
+        if args.cmd == "approve" and getattr(args, "remember", False):
+            body["remember"] = True
+        try:
+            data = call("POST", "/api/confirmations", body)
+        except SystemExit:
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface the bridge's reason, not a stack
+            print(f"{args.cmd} failed: {exc}", file=sys.stderr)
+            print("the request may already be answered, expired, or belong to another bridge process",
+                  file=sys.stderr)
+            return 2
+        state = data.get("state", "?")
+        verb = "approved" if state == "approved" else ("denied" if state == "denied" else state)
+        print(f"{args.request_id} {verb}"
+              + (f"  (allowance for {data.get('allowanceSeconds')}s)" if data.get("remembered") else ""))
+        if state in ("approved", "denied"):
+            print("the blocked tool call resumes on the client's next retry (or immediately, if it is waiting)")
+        return 0 if state in ("approved", "denied") else 2
+
+    if args.cmd == "subscriptions":
+        if args.close:
+            print(json.dumps(call("POST", "/api/subscriptions/close", {"subscriptionId": args.close}),
+                             indent=2, ensure_ascii=False))
+            return 0
+        data = call("GET", "/api/subscriptions")
+        if args.json:
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+            return 0
+        rows = data.get("subscriptions") or []
+        print(f"subscriptions: {len(rows)} live")
+        for row in rows:
+            print(f"  {row.get('subscriptionId')}  {', '.join(row.get('types') or [])}"
+                  f"  since {row.get('ageSeconds', 0)}s  emitted={row.get('emitted')}")
+        if not rows:
+            print("  (agents stream with subscriptions/listen on the modern MCP era)")
         return 0
 
     if args.cmd == "tunnel":

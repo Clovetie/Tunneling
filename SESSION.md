@@ -259,9 +259,74 @@ typical, worst 10). They need a real playtest to confirm end to end.
 
 ---
 
+## v5.4 playtest surface + MRTR confirmation gate (2026-11-05, branch `arena/f956d2f6-tunneling`)
+
+The bridge is now `5.4.0` (plugin `ArenaBridge.lua` v4.1.0). This round started from
+research — the 2026-07-28 MCP changelog and MRTR/patterns docs, plus Roblox's own
+2026 testing-API announcements and the competing Studio MCP servers — and shipped
+what that research proved out:
+
+- **A human can be put in the loop, opt-in.** `confirm_gate.py` implements
+  `tools/call` → `resultType: "input_required"` → answer → retry, with
+  HMAC-signed single-use `requestState` bound to the caller principal, the method
+  and a digest of the arguments. `--require-confirm write` is the lockdown;
+  `destructive` gates only what is flagged destructive; `all` gates reads too.
+- **Two ways to answer, one queue.** Modern clients get the ask in-band
+  (needs `elicitation` to answer it), legacy clients are waited on for
+  `--confirm-wait` seconds and then told the `requestId` to have approved, parked
+  calls can be answered as a task via `tasks/update`, and operators answer out of
+  band with `GET|POST /api/confirmations` or `arena_studio.py approve|deny|confirmations`.
+  An agent may read the queue and answer *another* principal's request, but
+  approving its own is refused with `operator_only`.
+- **`subscriptions/listen`** now streams `notifications/resources/updated` on the
+  long-lived stdio stream or the SSE `POST /mcp` response
+  (`X-Arena-Subscription`, `_meta["io.modelcontextprotocol/subscriptionId"]`), with
+  `GET /api/subscriptions` + `POST /api/subscriptions/close` and `arena_studio.py
+  subscriptions`. Idle capabilities are reported as `idleTypes`, not faked.
+- **Four new tools (75 total).** `simulate_input` (VirtualInput: keys, typing,
+  mouse, touch, drags, wheel — and an honest `not_playing` refusal when no playtest
+  is running), `manage_device_simulator` (presets, orientation, resolution, DPI,
+  scaling mode, custom `DeviceConfiguration` profiles), `run_studio_tests`
+  (`StudioTestService` run/play/multiplayer 1–8 players, watchdog, temporary
+  runner Script that is always destroyed) and `playtest_capabilities` (what the
+  connected Studio actually exposes, against baselines 0.720/0.717/0.700/0.715).
+- **Protocol polish:** `_meta`-based version negotiation (it outranks
+  `Mcp-Protocol-Version`), `ttlMs`/`cacheScope` on list and read results,
+  `X-Arena-Task` on task handles, `-32021` when `tasks/*` is used without the
+  extension, `_meta` log level → real `notifications/message` (embedded
+  `io.modelcontextprotocol/logEntries` on single-shot HTTP), and OTel
+  `traceparent`/`tracestate`/`baggage` carried into jobs and the audit chain.
+- **Fixed on the way:** `/api/mcp/events`, `POST /api/confirmations` and
+  `/api/subscriptions/close` had been pasted into `do_GET`, so every POST to them
+  404'd; `manage_device_simulator`'s schema enum and its validator had drifted
+  apart (`action: "set"` was rejected); `bridge_ops` reads were not marked
+  read-only, so a locked-down bridge could not even show its own queue; the mock
+  treated a requested `dm="client"` as proof a play client existed.
+- **Verified:** `python3 -B roblox-bridge/test_bridge_mcp.py` → **64 tests, OK**
+  (was 43), including `ArenaBridge.lua` through the bridge's own `luau_check`
+  (clean, no unused locals) and a new test that fails if any module's version
+  string disagrees.
+- **CI:** `.github/workflows/ci.yml` runs the suite on 3.10/3.12/3.13, audits
+  that runtime modules stay stdlib-only (guarded optional imports excepted),
+  scans every `.lua` for undefined globals, re-checks the kit licence manifest
+  and fails if a doc claims a bridge version that is not the one in
+  `server.py`. Each step is a plain local command, so it runs the same way on
+  your machine. **This file is written in the workspace but not in git yet**:
+  pushing a workflow needs the `workflows` permission, which this session's
+  GitHub App does not have. Land it with
+  `git add .github && git commit -m 'ci: run the bridge suite, Luau pre-flight and the stdlib audit' && git push`.
+- **Still needs a live peer:** the four playtest tools are proven against the mock
+  and contract-identical plugin handlers, but a real Studio run is what confirms
+  CoreGui refusal messages, device-override effects on the viewport image, and
+  `StudioTestService` end-to-end. `jobs/live_acceptance.py` is the harness; the
+  capability probe is `playtest_capabilities`.
+
+---
+
 ## v5 ops platform (2026-11-03, branch `arena/706ae6d5-tunneling`)
 
-The bridge is now `5.3.1`. New runtime state lives in **gitignored**
+The bridge was `5.3.1` when this section was written (now `5.4.0` — see above).
+New runtime state lives in **gitignored**
 `roblox-bridge/bridge_state/` (`audit.jsonl`, `tokens.json`, `bus.json`,
 `tunnel.json`). Nothing there is needed to connect Studio.
 
@@ -316,6 +381,6 @@ The bridge is now `5.3.1`. New runtime state lives in **gitignored**
 
 ```
 roblox-bridge/docs/OPS.md        full ops reference
-roblox-bridge/CHANGELOG.md       5.0.0, 5.1.0 and 5.3.1 entries
+roblox-bridge/CHANGELOG.md       5.0.0 through 5.4.0 entries
 handoff/*.pdf                    shareable code + task pack
 ```
