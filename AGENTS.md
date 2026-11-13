@@ -14,12 +14,12 @@ This repository provides a complete, zero-dependency **Model Context Protocol (M
 | `roblox-kit/systems/` | **14 production server+shared+client game systems** (`core/{data [ProfileStore], economy, format, remotes}`, `ui/kit`, `liveops/{badges, codes, group-rewards, playtime-gifts, social-prompts}`, `monetization/{gamepasses, offline-earnings, paid-random-items, receipts}`) installed via `install_dropin_system` |
 | `roblox-kit/templates/` | **6 complete 1-click UI screen & multi-script economy templates** (`full_stud_ui_suite`, `stud_shop_window`, `stud_hud_shell`, `stud_daily_rewards`, `stud_rebirth_window`, `stud_rarity_index`) installed via `install_template` |
 | `roblox-kit/prefabs/` & `models/` | **20 ready-to-spawn JSON prefabs** (`spawn_prefab`) + **20 standalone `.rbxmx` XML models and 500 licensed GLB source models** + full **`.rbxlx` place export/import** (`export_place_rbxlx` / `import_place_rbxlx`) |
-| `.claude/skills/` | **16 specialized Roblox Studio agent skills** (automatically exposed as `skill://<name>` MCP resources) |
+| `.claude/skills/` | **Bundled Roblox Studio agent skills** (automatically exposed as `skill://<name>` MCP resources) |
 | `THIRD_PARTY_LICENSES.md` | Full commercial-safe open-source attributions & license texts (CC0 1.0 Public Domain, MIT, ISC & Apache-2.0) |
 
 ---
 
-## 2. Core Capabilities Available to Agents (70 MCP Tools + CLI)
+## 2. Core Capabilities Available to Agents (MCP Tools + CLI)
 
 1. **Multimodal 3D Place + HUD Viewport Vision & 3D Scene Physics QA (`capture_viewport`, `render_offline`, `screenshot_gui`, `audit_3d_scene`)**:
    - Call **`capture_viewport`** (`perspective`, `iso_ne`, `iso_nw`, `top_blueprint`, `front`) for an `image/png` MCP block. Depending on the selected mode and available peer, it uses guarded native capture or the deterministic software renderer; `render_offline` also accepts an exported tree without a Studio peer.
@@ -36,8 +36,10 @@ This repository provides a complete, zero-dependency **Model Context Protocol (M
 
 ## 3. Golden Engineering Rules for Every Agent Session
 
+Use `diagnose_connection` (or CLI `doctor`) to inspect bridge access and peer registry without submitting a Studio job. Its `connected` status is not proof of runtime capabilities. Use `search_tools` for offline catalog discovery; annotations are hints, not authorization or peer availability. For task-specific guidance, use `search_skills` with relevant keywords, then `apply_skill` with a result’s exact directory name. Read and apply the returned instructions where appropriate; the tool loads guidance into context rather than changing the agent or Studio. Both tools work without a Studio peer. Use `includeReferences=true` when relevant guidance may be in reference Markdown, check the scan completeness report, and use `skill_references` to read matched files; it does not execute them.
+
 1. **Ground truth first**: Call `get_studio_state` and `survey_place(includeSource=false)` before creating or editing instances.
-2. **Pre-flight every script**: Use `luau_check` before Studio writes. Syntax errors block mutation; if optional validation backends are unavailable, proceed only with the explicit fallback warning in the tool result.
+2. **Pre-flight every script**: Use `luau_check` before Studio writes and inspect `checksPerformed` and warnings; it never submits a Studio job. Missing tools mean checks were not performed. Write-capable tools have separate parser fallback behavior; syntax errors block those writes, while unavailable validation can produce a warning.
 3. **Persist edits in `dm="edit"`**: Edits made in `dm="server"` or `dm="client"` during Play Solo are runtime-only and disappear on Stop.
 4. **Bust cached `ModuleScript`s**: Pass `replaceInstance=true` when updating already-required `ModuleScript`s, or test isolated module logic with `require_fresh`.
 5. **Verify in Play Mode**: Run `run_playtest_scenario` and check `get_console_output` before finishing a feature.

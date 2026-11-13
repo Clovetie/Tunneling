@@ -12,3 +12,6 @@ roblox-bridge/tools/luau-compile.exe
 roblox-bridge/tools/luau-analyze.exe
 roblox-bridge/bridge_state/
 nightloop/bridge/bridge_state/
+
+# Generated release artifacts (rebuild with roblox-bridge/tools/build_release.py)
+release-artifacts/

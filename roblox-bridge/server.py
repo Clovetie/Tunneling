@@ -7,7 +7,7 @@ Simultaneously serves:
   1. Roblox Studio local plugin peers (Edit + Play Server + Play Client bridge)
      via fast long-polling (`GET /api/poll`, `POST /api/result`).
   2. Native MCP Streamable HTTP endpoint (`POST /mcp`, `GET /mcp`, `DELETE /mcp`)
-     implementing MCP 2025-06-18 / 2024-11-05 JSON-RPC 2.0 (70 tools, 8 live
+     implementing MCP 2025-06-18 / 2024-11-05 JSON-RPC 2.0 (MCP tools, 8 live
      resources, 2 resource templates, 4 workflow prompts).
   3. REST API for CLI (`arena_studio.py` / `ab.ps1`) & remote cloud agents
      (`GET /api/health`, `GET /api/state`, `GET /api/agent-guide`,
@@ -28,7 +28,7 @@ import os
 from pathlib import Path
 import threading
 import time
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit
 import uuid
 
 from confirm_gate import ConfirmGate, GateError, mode_from_env  # noqa: E402
@@ -41,7 +41,9 @@ from mcp_core import (
     SUPPORTED_PROTOCOL_VERSIONS,
     TOOL_MAP,
     TOOL_SPECS,
+    READ_ONLY_JOB_TYPES,
     is_tool_call_read_only,
+    is_bus_action_read_only,
     run_bridge_self_test,
 )
 from auth_core import ROLE_RANK, TokenStore
@@ -86,7 +88,7 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             "editPeer": "Required for live inspection, writes, import, snapshots and persistent-place edits.",
             "serverPeer": "Required for live server probes, playtest state and server console.",
             "clientPeer": "Required for client-only runtime probes; some server peers can forward when a player client is attached.",
-            "offlineTools": ["browse_kit", "search_assets", "search_cloud_icons", "luau_check (when host binaries are installed)", "render_offline with an exported hierarchy tree"],
+            "offlineTools": ["diagnose_connection (bridge registry only)", "search_tools", "audit_localization", "audit_onboarding_plan", "search_skills", "apply_skill", "skill_references", "browse_kit", "search_assets", "search_cloud_icons", "luau_check (when host binaries are installed)", "render_offline with an exported hierarchy tree"],
             "peerFreshnessSeconds": 5,
         },
         "toolCounts": {
@@ -597,6 +599,8 @@ class BridgeState:
         action = (body.get("action") or "list").lower()
         if action in ("list", "status"):
             return self.fleet_snapshot()
+        if self.read_only:
+            raise PermissionError("Blocked by Read-Only Inspector mode: fleet changes are disabled.")
         if action in ("set_active", "pin", "activate"):
             return self.set_active_peer(body.get("peerId") or body.get("peer_id"),
                                         body.get("placeId") or body.get("place_id"))
@@ -886,7 +890,8 @@ class BridgeState:
     # -- enqueue / complete / cancel -----------------------------------------
 
     MUTATING_JOB_TYPES = {
-        "run_luau", "build", "write_script", "multi_edit",
+        "run_luau", "require_fresh", "build", "write_script", "batch_write", "multi_edit",
+        "scatter_props",
         "find_replace_scripts", "set_properties", "mass_set_properties",
         "clone_instance", "reparent_instance", "delete", "attributes",
         "tags", "selection", "camera", "history", "terrain",
@@ -913,7 +918,7 @@ class BridgeState:
     ):
         payload_dict = dict(payload or {}) if isinstance(payload, dict) else {}
 
-        if self.read_only and kind in self.MUTATING_JOB_TYPES:
+        if self.read_only:
             read_sub_ok = (
                 (kind == "attributes" and payload_dict.get("action") == "get")
                 or (kind == "tags" and payload_dict.get("action") in ("list_all", "find_tagged", "get"))
@@ -926,7 +931,7 @@ class BridgeState:
                 or (kind == "find_replace_scripts" and payload_dict.get("dryRun") is True)
                 or (kind == "device_simulator" and payload_dict.get("action") in ("status", "list"))
             )
-            if not read_sub_ok:
+            if not (isinstance(kind, str) and kind in READ_ONLY_JOB_TYPES) and not read_sub_ok:
                 raise PermissionError(
                     f"Bridge is running in --read-only Inspector mode; job '{kind}' is blocked."
                 )
@@ -1151,6 +1156,8 @@ class BridgeState:
 
     def handle_snapshots(self, payload: dict) -> dict:
         action = payload.get("action", "list")
+        if self.read_only and action == "save":
+            raise PermissionError("Blocked by Read-Only Inspector mode: snapshot saving is disabled.")
         with self.lock:
             if action == "save":
                 snap = {
@@ -1512,6 +1519,33 @@ def make_http_handler(state: BridgeState):
                 return False
             return ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
+        def _is_local_convenience_request(self) -> bool:
+            """Only the local dashboard/CLI gets token bootstrap or anonymous reads.
+
+            Socket loopback alone is insufficient: hostile web pages can request
+            localhost, and reverse proxies may connect from loopback as well.
+            """
+            if not self._is_loopback():
+                return False
+            if self.headers.get("Sec-Fetch-Site", "").lower() not in ("", "none", "same-origin"):
+                return False
+            try:
+                host = urlsplit("http://" + (self.headers.get("Host") or ""))
+                if (host.hostname not in ("localhost", "127.0.0.1", "::1") or
+                    (host.port or 80) != self.server.server_port or host.username is not None or
+                    host.password is not None or host.path or host.query or host.fragment):
+                    return False
+                origin = self.headers.get("Origin")
+                if origin:
+                    parsed = urlsplit(origin)
+                    if (parsed.scheme != "http" or parsed.hostname != host.hostname or
+                        (parsed.port or 80) != (host.port or 80) or parsed.username is not None or
+                        parsed.password is not None or parsed.path or parsed.query or parsed.fragment):
+                        return False
+            except ValueError:
+                return False
+            return True
+
         def _mcp_headers(self, protocol_version: str = None) -> dict:
             """`Mcp-Session-Id` is a legacy-era artefact: the 2026-07-28 core
             removed protocol sessions, so modern answers do not advertise one."""
@@ -1581,7 +1615,7 @@ def make_http_handler(state: BridgeState):
                 is_loopback=self._is_loopback(),
                 required=required,
             )
-            if err and allow_loopback and required == "read" and not supplied and self._is_loopback():
+            if err and allow_loopback and required == "read" and not supplied and self._is_local_convenience_request():
                 # Backwards-compatible convenience for local dashboards/CLIs on
                 # read-only discovery endpoints. Never applied to /mcp or writes.
                 return {"role": "read", "id": "loopback", "label": "loopback"}, None
@@ -1672,7 +1706,7 @@ def make_http_handler(state: BridgeState):
                 rel_img = path[len("/api/kit/image/") :].lstrip("/")
                 images_root = (find_kit_root() / "assets" / "images").resolve()
                 target_img = (images_root / rel_img).resolve()
-                if not str(target_img).startswith(str(images_root)) or not target_img.is_file():
+                if not target_img.is_relative_to(images_root) or not target_img.is_file():
                     return self._send(404, {"error": "image not found"})
                 mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".bmp": "image/bmp"}
                 return self._send(200, target_img.read_bytes(), mime_map.get(target_img.suffix.lower(), "application/octet-stream"))
@@ -1682,14 +1716,14 @@ def make_http_handler(state: BridgeState):
                 rel_aud = path[len("/api/kit/audio/") :].lstrip("/")
                 audio_root = (find_kit_root() / "assets" / "audio").resolve()
                 target_aud = (audio_root / rel_aud).resolve()
-                if not str(target_aud).startswith(str(audio_root)) or not target_aud.is_file():
+                if not target_aud.is_relative_to(audio_root) or not target_aud.is_file():
                     return self._send(404, {"error": "audio not found"})
                 amime = {".wav": "audio/wav", ".ogg": "audio/ogg", ".mp3": "audio/mpeg"}
                 return self._send(200, target_aud.read_bytes(), amime.get(target_aud.suffix.lower(), "application/octet-stream"))
 
             # Loopback-only bootstrap so localhost:8077 auto-fills token, paths & tools safely
             if path == "/api/local-boot":
-                is_local = self._is_loopback()
+                is_local = self._is_local_convenience_request()
                 tools_lite = [
                     {
                         "name": t["name"],
@@ -1744,9 +1778,12 @@ def make_http_handler(state: BridgeState):
                 return self._send(200, state.direct_dispatch("state", {}))
 
             if path == "/api/self-test":
-                if not self._require(qs, "read"):
+                ctx = self._require(qs, "read")
+                if not ctx:
                     return
-                return self._send(200, run_bridge_self_test(state.mcp_client, include_studio_smoke=True, timeout=180))
+                # A read token or Inspector must never initiate the live write/delete cycle.
+                smoke_allowed = not state.read_only and ctx.get("role") in ("write", "admin")
+                return self._send(200, run_bridge_self_test(state.mcp_client, include_studio_smoke=smoke_allowed, timeout=180))
 
             if path == "/api/agent-guide":
                 if not self._require(qs, "read", allow_loopback=True):
@@ -1801,10 +1838,13 @@ def make_http_handler(state: BridgeState):
                 return self._send(200, state.telemetry.audit.tail(limit, (qs.get("action") or [None])[0]))
 
             if path == "/api/bus":
-                if not self._require(qs, "read"):
-                    return
                 payload = {k: v[0] for k, v in qs.items() if k != "token"}
                 payload.setdefault("action", "stats")
+                read_only = is_bus_action_read_only(payload)
+                if not self._require(qs, "read" if read_only else "write"):
+                    return
+                if state.read_only and not read_only:
+                    return self._send(403, {"error": "Blocked by Read-Only Inspector mode"})
                 try:
                     return self._send(200, state.bus.handle(payload))
                 except KeyError as exc:
@@ -1846,9 +1886,9 @@ def make_http_handler(state: BridgeState):
                 except KeyError as exc:
                     return self._send(404, {"error": str(exc)})
 
-            # Studio plugin long-polls here
+            # Poll registers a peer and claims jobs; it is not a passive read.
             if path == "/api/poll":
-                if not self._require(qs, "read"):
+                if not self._require(qs, "write"):
                     return
                 peer_info = state.record_poll(qs)
                 job = state.poll_for_job(peer_info, wait_seconds=8.0)
@@ -1998,14 +2038,19 @@ def make_http_handler(state: BridgeState):
                     negotiated_version = (rpc_in["_meta"].get("io.modelcontextprotocol/protocolVersion")
                                           or header_version)
 
-                # Tell the dispatcher who is calling (scoped-token identity) so a
-                # confirmation can never be replayed by a different principal.
-                if isinstance(rpc_in, dict):
-                    meta = rpc_in.get("_meta")
+                # Authentication, not client-provided metadata or a non-unique
+                # label, determines the caller for every request in a batch.
+                requests = rpc_in if isinstance(rpc_in, list) else [rpc_in]
+                for request in requests:
+                    if not isinstance(request, dict):
+                        continue
+                    meta = request.get("_meta")
                     if not isinstance(meta, dict):
                         meta = {}
-                        rpc_in["_meta"] = meta
-                    meta.setdefault("x-arena-principal", f"{ctx.get('role','read')}:{ctx.get('label') or ctx.get('id') or 'anon'}")
+                        request["_meta"] = meta
+                    meta["x-arena-principal"] = f"token:{ctx.get('id') or 'unknown'}"
+                    if header_version:
+                        meta.setdefault("io.modelcontextprotocol/protocolVersion", header_version)
 
                 rpc_in, scope_error = self._enforce_mcp_scope(rpc_in, ctx)
                 if scope_error is not None:
@@ -2096,6 +2141,8 @@ def make_http_handler(state: BridgeState):
                     return
                 try:
                     return self._send(200, state.handle_snapshots(body))
+                except PermissionError as exc:
+                    return self._send(403, {"error": str(exc)})
                 except KeyError as exc:
                     return self._send(404, {"error": str(exc)})
                 except ValueError as exc:
@@ -2104,13 +2151,12 @@ def make_http_handler(state: BridgeState):
             # --- v5 collaboration & ops control ---------------------------------
             if path == "/api/bus":
                 action = (body.get("action") or "stats")
-                required = "write" if action not in (
-                    "stats", "agents", "list_agents", "inbox", "thread", "tasks",
-                    "list_tasks", "feed", "events", "status",
-                ) else "read"
-                ctx = self._require(qs, required)
+                read_only = is_bus_action_read_only(body)
+                ctx = self._require(qs, "read" if read_only else "write")
                 if not ctx:
                     return
+                if state.read_only and not read_only:
+                    return self._send(403, {"error": "Blocked by Read-Only Inspector mode"})
                 try:
                     result = state.bus.handle(body)
                 except KeyError as exc:
@@ -2135,6 +2181,8 @@ def make_http_handler(state: BridgeState):
                             tool=body.get("tool"),
                         ))
                     return self._send(200, state.fleet_action(body))
+                except PermissionError as exc:
+                    return self._send(403, {"error": str(exc)})
                 except KeyError as exc:
                     return self._send(404, {"error": str(exc)})
                 except ValueError as exc:
@@ -2208,19 +2256,25 @@ def make_http_handler(state: BridgeState):
                 if not isinstance(item, dict) or item.get("method") != "tools/call":
                     return None
                 params = item.get("params") or {}
+                if not isinstance(params, dict):
+                    return None  # Let the dispatcher report malformed requests.
                 name = params.get("name")
                 args = params.get("arguments") or {}
+                if not isinstance(name, str) or not isinstance(args, dict):
+                    return None
                 spec = TOOL_MAP.get(name)
                 if not spec:
                     return None
-                if spec.get("annotations", {}).get("readOnlyHint"):
-                    return None
                 if is_tool_call_read_only(name, args):
                     return None
+                # Operator controls are admin-only on REST and remain so on MCP.
+                if ctx.get("role") == "write" and name != "bridge_ops":
+                    return None
+                required = "admin" if name == "bridge_ops" else "write"
                 message = (
                     f"Blocked by token scope: token '{ctx.get('label')}' has role "
                     f"'{ctx.get('role')}', which cannot call mutating tool '{name}'. "
-                    "Mint a write-scoped token via POST /api/tokens or use bridge.token."
+                    f"Requires {required} scope."
                 )
                 return {
                     "jsonrpc": "2.0",
@@ -2510,7 +2564,7 @@ def dashboard_html() -> str:
   <section id="tab-monitor" class="tab-pane active">
     <div class="grid">
       <div class="card"><div class="k">Studio Peers</div><div class="v" id="c-peers">0 online</div></div>
-      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">70</div></div>
+      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">—</div></div>
       <div class="card"><div class="k">Queued</div><div class="v" id="c-queued">0</div></div>
       <div class="card"><div class="k">Completed</div><div class="v" id="c-done">0</div></div>
       <div class="card"><div class="k">Failed</div><div class="v" id="c-fail">0</div></div>
@@ -2768,7 +2822,7 @@ def dashboard_html() -> str:
 
       <div class="prompt-card">
         <div class="prompt-head">
-          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 70 tools enabled (multi-agent bus + tunnel ops + 3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
+          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">Full tool access (subject to authorization and peer availability) (multi-agent bus + tunnel ops + 3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
           <button class="primary sm" onclick="copyById('cfg-json')">Copy</button>
         </div>
         <pre id="cfg-json"></pre>
@@ -2814,7 +2868,7 @@ def dashboard_html() -> str:
       </div>
 
       <div class="prompt-card">
-        <h3>Invoke Any of the 70 MCP Tools Directly</h3>
+        <h3>Invoke MCP Tools Directly</h3>
         <div class="sub" id="tool-desc">Select any MCP tool to inspect its fields and call it over <code>POST /mcp</code>.</div>
         <div style="display:flex;gap:8px;align-items:center">
           <select id="tool-select" onchange="onSelectTool()"></select>
@@ -3278,9 +3332,9 @@ Start by running a quick recon (\`.\\ab.ps1 state\` and \`.\\ab.ps1 survey\`) so
 `Connect directly to my live Roblox Studio Bridge & MCP Server:
 - Base URL: ${pubUrl}
 - Auth Header: \`Authorization: Bearer ${tok}\` (or \`X-Arena-Token: ${tok}\`)
-- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (70 tools, 16 skills, multimodal 3D viewport vision, 3D physics auditor, runtime mesh capability probe, .rbxlx place export, 14 LiveOps/Monetization systems, 520 3D models, 3,705 raster images + 50 LDR skies (300 cube faces), 45 CC0 WAVs, 4,811 cloud icons)
+- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (MCP tools, bundled skills, multimodal 3D viewport vision, 3D physics auditor, runtime mesh capability probe, .rbxlx place export, 14 LiveOps/Monetization systems, 520 3D models, 3,705 raster images + 50 LDR skies (300 cube faces), 45 CC0 WAVs, 4,811 cloud icons)
 - Agent Onboarding & Live State Endpoint: \`GET ${pubUrl}/api/agent-guide\`
-- Built-in Repo Kit: call \`browse_kit\` for 16 skills, 19 modules, 6 templates, 20 prefabs, 3,755 image/sky-face files, 50 LDR sky panoramas, 520 models, and 45 CC0 audio files. Use \`search_assets\` for paginated type/category/source/license/provenance filters; exact Git blob matches and pack-level attestations are distinguished. Send supported images/audio/models into Studio with \`import_image\`, \`import_audio\`, and \`import_rbxmx\`.
+- Built-in Repo Kit: call \`browse_kit\` for bundled skills, 19 modules, 6 templates, 20 prefabs, 3,755 image/sky-face files, 50 LDR sky panoramas, 520 models, and 45 CC0 audio files. Use \`search_assets\` for paginated type/category/source/license/provenance filters; exact Git blob matches and pack-level attestations are distinguished. Send supported images/audio/models into Studio with \`import_image\`, \`import_audio\`, and \`import_rbxmx\`.
 
 Rules of engagement:
 1. Inspect live ground truth first (\`get_studio_state\`, \`survey_place\` with \`includeSource=false\`, and \`browse_kit\`).
@@ -3832,7 +3886,7 @@ async function tick(){
     const peers = s.peers || [];
     const onlinePeers = peers.filter(p => p.online);
     document.getElementById('c-peers').textContent = onlinePeers.length + ' online';
-    document.getElementById('c-tools').textContent = s.mcp_tools || 37;
+    document.getElementById('c-tools').textContent = s.mcp_tools ?? '—';
     document.getElementById('c-queued').textContent = s.queued || 0;
     document.getElementById('c-snaps').textContent = s.snapshots || 0;
     const rows = s.recent || [];

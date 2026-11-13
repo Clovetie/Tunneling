@@ -67,6 +67,682 @@ import server as bridge_server  # noqa: E402
 import setup as bridge_setup  # noqa: E402
 
 
+class TestSkillDiscovery(unittest.TestCase):
+    def test_offline_search_pagination_and_application(self):
+        from mcp_core import search_skills_helper, apply_skill_helper, read_mcp_resource
+        first = search_skills_helper("", 0, 2)
+        second = search_skills_helper("", first["nextCursor"], 2)
+        self.assertTrue(set(x["name"] for x in first["results"]).isdisjoint(x["name"] for x in second["results"]))
+        self.assertEqual(search_skills_helper("xyzzyunmatchedterm")["total"], 0)
+        self.assertIn("Standalone .rbxlx", next(x for x in search_skills_helper(limit=100)["results"] if x["name"] == "roblox-rbxlx-and-opencloud")["description"])
+        for name, query in (("roblox-cross-platform-accessibility", "accessibility"),
+                            ("roblox-multiplayer-interactions", "multiplayer"),
+                            ("roblox-data-reliability", "persistence")):
+            self.assertIn(name, [item["name"] for item in search_skills_helper(query, limit=100)["results"]])
+            self.assertIn("## Verification", apply_skill_helper(name)["instructions"])
+
+        skill = apply_skill_helper("roblox-stud-ui-design")
+        self.assertEqual(skill["instructions"], read_mcp_resource(None, skill["uri"])["contents"][0]["text"])
+        for name in ("../AGENTS.md", "/tmp", "missing", ""):
+            with self.assertRaises((KeyError, ValueError)):
+                apply_skill_helper(name)
+        for args in (("", -1, 1), ("", 0, 0), ("", 0, 101)):
+            with self.assertRaises(ValueError):
+                search_skills_helper(*args)
+
+    def test_task_search_relevance_and_stability(self):
+        from mcp_core import search_skills_helper, is_tool_call_read_only
+        self.assertTrue(is_tool_call_read_only("search_skills", {}))
+        self.assertEqual(execute_tool(None, "search_skills", {"query": "how do I"})["total"], 0)
+        self.assertEqual(search_skills_helper("how do I fix xyzzyunmatchedterm")["total"], 0)
+        for query, expected in (("how do I handle a failed datastore load", "roblox-data-reliability"),
+                                ("receipts and duplicate purchase rewards", "roblox-monetization"),
+                                ("show me adaptive music", "audio-design"),
+                                ("ROBLOX-STUD-UI-DESIGN", "roblox-stud-ui-design")):
+            results = search_skills_helper(query, limit=100)["results"]
+            self.assertEqual(results[0]["name"], expected, query)
+            self.assertTrue(results[0]["matchedFields"])
+            self.assertNotIn("how", results[0]["matchedTerms"])
+            self.assertEqual(results, search_skills_helper(query, limit=100)["results"])
+        complete = search_skills_helper("gamepad menu", limit=100)["results"]
+        page1 = search_skills_helper("gamepad menu", limit=1)
+        page2 = search_skills_helper("gamepad menu", cursor=page1["nextCursor"], limit=1)
+        self.assertEqual(page1["results"] + page2["results"], complete[:2])
+        self.assertEqual(search_skills_helper("gamepad menu", cursor=100)["results"], [])
+        self.assertGreater(search_skills_helper("  ")["total"], 0)
+        self.assertEqual(search_skills_helper("!!!")["total"], 0)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name, description in (("alpha", "Roblox common uncommon"), ("beta", "Roblox common"), ("gamma", "Roblox common")):
+                directory = root / name
+                directory.mkdir()
+                (directory / "SKILL.md").write_text(f"---\ndescription: {description}\n---\n", encoding="utf-8")
+            with mock.patch("mcp_core._find_skills_dir", return_value=root):
+                results = search_skills_helper("common uncommon", limit=100)["results"]
+                self.assertEqual([item["name"] for item in results], ["alpha", "beta", "gamma"])
+                self.assertGreater(results[0]["score"], results[1]["score"])
+                self.assertEqual(results[1]["score"], results[2]["score"])
+
+
+    def test_search_reference_only_and_limits(self):
+        from mcp_core import search_skills_helper, is_tool_call_read_only
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for name in ("alpha", "beta"):
+                skill = root / name
+                (skill / "references").mkdir(parents=True)
+                (skill / "SKILL.md").write_text("---\ndescription: example\n---\nGeneral advice", encoding="utf-8")
+                (skill / "references" / "guide.md").write_text("Uniquephrase use carefully", encoding="utf-8")
+            (root / "alpha" / "references" / "oversized.md").write_bytes(b"x" * (256 * 1024 + 1))
+            (root / "alpha" / "references" / "invalid.md").write_bytes(b"\xff\xfe")
+            (root / "secret.md").write_text("secretphrase", encoding="utf-8")
+            try:
+                (root / "alpha" / "references" / "link.md").symlink_to(root / "secret.md")
+            except (OSError, NotImplementedError):
+                pass
+            with mock.patch("mcp_core._find_skills_dir", return_value=root):
+                self.assertEqual(search_skills_helper("uniquephrase")["total"], 0)
+                result = execute_tool(None, "search_skills", {"query": "UNIQUEPHRASE", "includeReferences": True, "limit": 1})
+                self.assertTrue(is_tool_call_read_only("search_skills", {"includeReferences": True}))
+                self.assertEqual(result["total"], 2)
+                self.assertEqual(result["results"][0]["name"], "alpha")
+                self.assertEqual(result["results"][0]["matchedFields"], ["references"])
+                self.assertEqual(result["results"][0]["matchedReferences"], [{"path": "references/guide.md", "matchedTerms": ["uniquephrase"]}])
+                self.assertEqual(result["referenceSearch"]["filesSkipped"], 2)
+                self.assertFalse(result["referenceSearch"]["complete"])
+                page = search_skills_helper("uniquephrase", cursor=result["nextCursor"], limit=1, include_references=True)
+                self.assertEqual(page["results"][0]["name"], "beta")
+                self.assertEqual(search_skills_helper("secretphrase", include_references=True)["total"], 0)
+                self.assertFalse(search_skills_helper("", include_references=True)["referenceSearch"]["complete"])
+                with mock.patch("mcp_core.SKILL_SEARCH_MAX_REFERENCE_FILES", 1):
+                    capped = search_skills_helper("uniquephrase", include_references=True)
+                    self.assertFalse(capped["referenceSearch"]["complete"])
+                    self.assertEqual(capped["referenceSearch"]["filesScanned"], 1)
+                with mock.patch("mcp_core.SKILL_SEARCH_MAX_REFERENCE_BYTES", 1):
+                    capped = search_skills_helper("uniquephrase", include_references=True)
+                    self.assertEqual(capped["total"], 0)
+                    self.assertFalse(capped["referenceSearch"]["complete"])
+                with self.assertRaises(ValueError):
+                    search_skills_helper("x", include_references="true")
+
+    def test_reference_listing_read_and_boundaries(self):
+        from mcp_core import skill_references_helper, is_tool_call_read_only, SKILL_REFERENCE_MAX_BYTES
+        self.assertTrue(is_tool_call_read_only("skill_references", {"action": "read"}))
+        self.assertGreater(execute_tool(None, "skill_references", {"name": "roblox-lessons"})["total"], 0)
+        first = skill_references_helper("roblox-lessons", limit=2)
+        second = skill_references_helper("roblox-lessons", cursor=first["nextCursor"], limit=2)
+        self.assertEqual(len(first["items"]), 2)
+        self.assertNotEqual(first["items"][0]["path"], second["items"][0]["path"])
+        data = skill_references_helper("roblox-lessons", "read", "references/ui.md")
+        self.assertIn("TextScaled", data["content"])
+        lines = data["content"].splitlines(keepends=True)
+        excerpt = skill_references_helper("roblox-lessons", "read", "references/ui.md", start_line=2, end_line=4)
+        self.assertEqual(excerpt["content"], "".join(lines[1:4]))
+        self.assertEqual(excerpt["lineRange"], {"start": 2, "end": 4, "total": len(lines)})
+        empty = skill_references_helper("roblox-lessons", "read", "references/ui.md", start_line=len(lines) + 1)
+        self.assertEqual(empty["content"], "")
+        self.assertIsNone(empty["lineRange"]["end"])
+        for kwargs in ({"start_line": 0}, {"start_line": True}, {"start_line": 4, "end_line": 3}):
+            with self.assertRaises(ValueError):
+                skill_references_helper("roblox-lessons", "read", "references/ui.md", **kwargs)
+        with self.assertRaises(ValueError):
+            skill_references_helper("roblox-lessons", start_line=1)
+
+        self.assertEqual(skill_references_helper("roblox-data-reliability")["total"], 0)
+        for path in ("../SKILL.md", "/etc/passwd", "references/../SKILL.md", "references/missing.md", "references\\ui.md"):
+            with self.assertRaises(KeyError):
+                skill_references_helper("roblox-lessons", "read", path)
+        with self.assertRaises(KeyError):
+            skill_references_helper("../roblox-lessons")
+        with self.assertRaises(ValueError):
+            skill_references_helper("roblox-lessons", cursor=-1)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill = root / "sample"
+            refs = skill / "references"
+            refs.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("# Sample", encoding="utf-8")
+            (refs / "large.md").write_bytes(b"x" * (SKILL_REFERENCE_MAX_BYTES + 1))
+            (refs / "binary.png").write_bytes(b"not markdown")
+            (root / "secret.md").write_text("secret", encoding="utf-8")
+            try:
+                (refs / "link.md").symlink_to(root / "secret.md")
+                (refs / "linked-dir").symlink_to(root, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                pass
+            with mock.patch("mcp_core._find_skills_dir", return_value=root):
+                result = skill_references_helper("sample")
+                self.assertEqual([x["path"] for x in result["items"]], ["references/large.md"])
+                self.assertFalse(result["items"][0]["readable"])
+                with self.assertRaises(ValueError):
+                    skill_references_helper("sample", "read", "references/large.md")
+                with self.assertRaises(KeyError):
+                    skill_references_helper("sample", "read", "references/link.md")
+
+
+class TestToolDiscovery(unittest.TestCase):
+    def test_search_catalog_offline_and_read_only_filtering(self):
+        from mcp_core import search_tools_helper, is_tool_call_read_only
+        self.assertTrue(is_tool_call_read_only("search_tools", {}))
+        self.assertEqual(execute_tool(None, "search_tools", {"query": "performance"})["results"][0]["name"], "perf_audit")
+        self.assertEqual(search_tools_helper("WRITE_SCRIPT")["results"][0]["name"], "write_script")
+        self.assertEqual(search_tools_helper("how do I")["total"], 0)
+        full = search_tools_helper(limit=100)
+        first = search_tools_helper(limit=3)
+        second = search_tools_helper(cursor=first["nextCursor"], limit=3)
+        self.assertEqual(first["results"] + second["results"], full["results"][:6])
+        self.assertEqual(search_tools_helper(cursor=999)["results"], [])
+        strict = search_tools_helper(read_only_only=True, limit=100)
+        self.assertTrue(all(x["annotations"]["readOnlyHint"] for x in strict["results"]))
+        self.assertNotIn("manage_attributes", [x["name"] for x in strict["results"]])
+        inspector = execute_tool(BridgeClient(read_only=True), "search_tools", {"limit": 100})
+        names = {x["name"] for x in inspector["results"]}
+        self.assertNotIn("write_script", names)
+        self.assertIn("manage_attributes", names)
+        self.assertFalse(next(x for x in inspector["results"] if x["name"] == "manage_attributes")["annotations"]["readOnlyHint"])
+        for kwargs in ({"cursor": -1}, {"limit": 0}, {"limit": 101}, {"read_only_only": "true"}):
+            with self.assertRaises(ValueError):
+                search_tools_helper(**kwargs)
+
+    def test_onboarding_skill_and_reference_discovery_offline(self):
+        from mcp_core import search_skills_helper, apply_skill_helper, skill_references_helper
+        name = "roblox-onboarding-progression"
+        names = [x["name"] for x in search_skills_helper("first session onboarding progression", limit=100)["results"]]
+        self.assertIn(name, names)
+        text = apply_skill_helper(name)["instructions"]
+        for term in ("server", "rejoin", "permission", "physical devices", "production DataStores"):
+            self.assertIn(term, text)
+        listing = skill_references_helper(name)
+        self.assertIn("references/milestone-matrix.md", [entry["path"] for entry in listing["items"]])
+        content = skill_references_helper(name, "read", "references/milestone-matrix.md")
+        self.assertIn("Server completion evidence", content["content"])
+        self.assertIn("offline/mock", content["content"])
+        client = BridgeClient(read_only=True)
+        result = execute_tool(client, "apply_skill", {"name": name})
+        self.assertIn("does not change", result["instructions"])
+
+    def test_streaming_skill_discovery_and_reference_without_peer(self):
+        from mcp_core import search_skills_helper, apply_skill_helper, skill_references_helper
+        name = "roblox-world-streaming"
+        self.assertIn(name, [x["name"] for x in search_skills_helper("world streaming replication", limit=100)["results"]])
+        instructions = apply_skill_helper(name)["instructions"]
+        for phrase in ("RequestStreamAroundAsync", "server", "unbounded", "physical devices", "permission"):
+            self.assertIn(phrase, instructions)
+        listing = skill_references_helper(name)
+        path = "references/streaming-test-matrix.md"
+        self.assertIn(path, [item["path"] for item in listing["items"]])
+        reference_search = search_skills_helper("resource-constrained", limit=100, include_references=True)
+        match = next(item for item in reference_search["results"] if item["name"] == name)
+        self.assertTrue(reference_search["referenceSearch"]["complete"])
+        self.assertTrue(any(item["path"] == path for item in match["matchedReferences"]))
+        text = skill_references_helper(name, "read", path)["content"]
+        self.assertIn("Two clients", text)
+        self.assertIn("not evidence", text)
+        client = BridgeClient(read_only=True)
+        with mock.patch.object(client, "submit_job") as jobs:
+            self.assertIn("streamed-out", execute_tool(client, "apply_skill", {"name": name})["instructions"])
+            jobs.assert_not_called()
+
+    def test_performance_skill_discovery(self):
+        from mcp_core import search_skills_helper, apply_skill_helper
+        names = [x["name"] for x in search_skills_helper("performance profiling", limit=100)["results"]]
+        self.assertIn("roblox-performance-profiling", names)
+        skill = apply_skill_helper("roblox-performance-profiling")
+        self.assertIn("perf_audit", skill["instructions"])
+        self.assertIn("physical", skill["instructions"])
+
+
+class TestMultiEditValidation(unittest.TestCase):
+    def test_invalid_edits_rejected_before_gate_task_or_job(self):
+        from mcp_core import MCPDispatcher
+        from confirm_gate import ConfirmGate
+        client = BridgeClient()
+        dispatcher = MCPDispatcher(client, gate=ConfirmGate(mode="write"))
+        invalid = [[], ["bad"], [{}], [{"oldText": "a", "newText": 3}],
+                   [{"oldText": "a", "newText": "b", "replaceAll": "false"}],
+                   [{"oldText": "a", "startLine": 1, "endLine": 2, "newText": "b"}],
+                   [{"startLine": 2, "newText": "b"}],
+                   [{"startLine": True, "endLine": 1, "newText": "b"}],
+                   [{"startLine": 3, "endLine": 1, "newText": "b"}],
+                   [{"startLine": 1, "endLine": 1, "newText": "b", "replaceAll": True}]]
+        with mock.patch.object(client, "submit_job") as submit:
+            for edits in invalid:
+                for task in (False, True):
+                    params = {"name": "multi_edit", "arguments": {"path": "game.X", "edits": edits, "createIfMissing": True}}
+                    if task:
+                        params["task"] = {}
+                    result = dispatcher._handle_one({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
+                    self.assertEqual(result["error"]["code"], -32602, edits)
+            submit.assert_not_called()
+        self.assertEqual(dispatcher.gate.status()["pendingCount"], 0)
+        self.assertEqual(dispatcher.tasks, {})
+
+    def test_valid_text_and_line_insertion_shapes(self):
+        from mcp_core import validate_action_arguments
+        for edits in ([{"oldText": "", "newText": "prefix"}],
+                      [{"oldText": "a", "newText": "b", "replaceAll": True}],
+                      [{"startLine": 1, "endLine": 0, "newText": "insert"}],
+                      [{"startLine": 3, "endLine": 4, "newText": "replace"}]):
+            self.assertEqual(validate_action_arguments("multi_edit", {"edits": edits}), "")
+
+
+class TestBatchWriteValidation(unittest.TestCase):
+    def test_invalid_later_entry_never_starts_validation_task_or_job(self):
+        from mcp_core import MCPDispatcher
+        from confirm_gate import ConfirmGate
+        client = BridgeClient()
+        dispatcher = MCPDispatcher(client, gate=ConfirmGate(mode="write"))
+        good = {"parent": "ServerStorage", "name": "A", "source": "return 1"}
+        invalid = [None, {}, {**good, "source": None}, {**good, "name": "  "},
+                   {**good, "className": "Folder"}, {**good, "expectedHash": 10},
+                   {**good, "replaceInstance": "false"}, {**good, "properties": []},
+                   {**good, "attributes": False}, {**good, "tags": ["tag", 1]}]
+        with mock.patch.object(client, "submit_job") as submit, mock.patch("mcp_core._check_with_fallback") as check:
+            for bad in invalid:
+                for task in (False, True):
+                    params = {"name": "batch_write", "arguments": {"files": [good, bad]}}
+                    if task:
+                        params["task"] = {}
+                    response = dispatcher._handle_one({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
+                    self.assertEqual(response["error"]["code"], -32602, bad)
+            submit.assert_not_called()
+            check.assert_not_called()
+        self.assertEqual(dispatcher.gate.status()["pendingCount"], 0)
+        self.assertEqual(dispatcher.tasks, {})
+
+    def test_supported_entries_and_empty_batch(self):
+        from mcp_core import validate_action_arguments
+        self.assertTrue(validate_action_arguments("batch_write", {"files": []}))
+        entry = {"parent": "ServerStorage", "name": "A", "source": "", "className": "ModuleScript", "expectedHash": "", "replaceInstance": False, "attributes": {}, "properties": {}, "tags": ["tag"]}
+        self.assertEqual(validate_action_arguments("batch_write", {"files": [entry]}), "")
+
+
+class TestInstanceActionValidation(unittest.TestCase):
+    def test_invalid_operations_rejected_before_gate_task_or_job(self):
+        from mcp_core import MCPDispatcher
+        from confirm_gate import ConfirmGate
+        client = BridgeClient()
+        dispatcher = MCPDispatcher(client, gate=ConfirmGate(mode="write"))
+        invalid = [("delete_instance", {"paths": []}),
+                   ("delete_instance", {"paths": ["Workspace.Part", None]}),
+                   ("delete_instance", {"paths": ["./"]}),
+                   ("mass_set_properties", {"paths": ["Workspace.Part"]}),
+                   ("mass_set_properties", {"paths": ["Workspace.Part", 42], "properties": {"Name": "A"}}),
+                   ("set_properties", {"path": "", "properties": {"Name": "A"}}),
+                   ("set_properties", {"path": "Workspace.Part", "properties": {}}),
+                   ("reparent_or_rename", {"paths": ["Workspace.Part"]}),
+                   ("reparent_or_rename", {"paths": ["Workspace.A", "Workspace.B"], "newName": "X"}),
+                   ("clone_instance", {"path": "Workspace.Part", "count": 501}),
+                   ("clone_instance", {"path": "Workspace.Part", "offset": [0, True, 1]}),
+                   ("clone_instance", {"path": "Workspace.Part", "offset": [0, 1]}),
+                   ("clone_instance", {"path": "Workspace.Part", "offset": [0, float("inf"), 1]}),
+                   ("clone_instance", {"path": "Workspace.Part", "offset": [0, 10**400, 1]})]
+        with mock.patch.object(client, "submit_job") as submit:
+            for name, args in invalid:
+                for task in (False, True):
+                    params = {"name": name, "arguments": args}
+                    if task:
+                        params["task"] = {}
+                    response = dispatcher._handle_one({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
+                    self.assertEqual(response["error"]["code"], -32602, (name, args))
+            submit.assert_not_called()
+        self.assertEqual(dispatcher.gate.status()["pendingCount"], 0)
+        self.assertEqual(dispatcher.tasks, {})
+
+    def test_supported_action_shapes(self):
+        from mcp_core import validate_action_arguments
+        valid = [("delete_instance", {"paths": ["Workspace.Part", "ServerStorage/Missing"]}),
+                 ("mass_set_properties", {"paths": ["Workspace.Part"], "relative": {"Position": [0, 1, 0]}}),
+                 ("set_properties", {"path": "Workspace.Part", "properties": {"Anchored": False}}),
+                 ("reparent_or_rename", {"paths": ["Workspace.A", "Workspace.B"], "newParent": "Workspace.Folder"}),
+                 ("reparent_or_rename", {"paths": ["Workspace.A"], "newName": "B"}),
+                 ("clone_instance", {"path": "Workspace.Part", "count": 500, "offset": [0, 1.5, -2]})]
+        for name, args in valid:
+            self.assertEqual(validate_action_arguments(name, args), "", (name, args))
+
+
+class TestCameraSafety(unittest.TestCase):
+    def test_default_read_dispatches_explicit_get_through_inspector(self):
+        from mcp_core import MCPDispatcher
+        with tempfile.TemporaryDirectory() as temp:
+            state = BridgeState(read_only=True, state_dir=temp)
+            self.addCleanup(state._reaper_stop.set)
+            self.addCleanup(state.tunnel.stop)
+            client = BridgeClient(read_only=True)
+            dispatcher = MCPDispatcher(client)
+            def submit(kind, payload, **kwargs):
+                state.enqueue_job(kind, payload)
+                return {"status": "done", "result": {"fov": 70}}
+            with mock.patch.object(client, "submit_job", side_effect=submit) as submit_job:
+                for args in ({}, {"action": "get"}):
+                    response = dispatcher._handle_one({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "manage_camera", "arguments": args}})
+                    self.assertFalse(response["result"]["isError"])
+                    self.assertEqual(submit_job.call_args.args[1]["action"], "get")
+                response = dispatcher._handle_one({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "manage_camera", "arguments": {"action": "set", "fov": 80}}})
+                self.assertTrue(response["result"]["isError"])
+                self.assertEqual(submit_job.call_count, 2)
+            with self.assertRaises(PermissionError):
+                state.enqueue_job("camera", {"action": "set", "fov": 80})
+
+    def test_invalid_camera_set_rejected_before_partial_mutation(self):
+        from mcp_core import MCPDispatcher, validate_action_arguments
+        client = BridgeClient()
+        dispatcher = MCPDispatcher(client)
+        invalid = [{"action": "focus"}, {"action": "focus", "path": "Workspace.Part", "distanceMultiplier": -1},
+                   {"action": "set"}, {"action": "set", "lookAt": [0, 1, 2]},
+                   {"action": "set", "fov": 70, "position": [1, 2]},
+                   {"action": "set", "position": [1, True, 3]},
+                   {"action": "set", "position": [1, float("nan"), 3]},
+                   {"action": "set", "fov": 121}]
+        with mock.patch.object(client, "submit_job") as submit:
+            for args in invalid:
+                for task in (False, True):
+                    params = {"name": "manage_camera", "arguments": args}
+                    if task:
+                        params["task"] = {}
+                    response = dispatcher._handle_one({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
+                    self.assertEqual(response["error"]["code"], -32602, args)
+            submit.assert_not_called()
+        self.assertEqual(dispatcher.tasks, {})
+        for args in ({}, {"action": "focus", "path": "Workspace.Part"},
+                     {"action": "set", "position": [0, 1, 2], "lookAt": [0, 0, 0], "fov": 70},
+                     {"action": "set", "fov": 1}):
+            self.assertEqual(validate_action_arguments("manage_camera", args), "")
+
+
+class TestActionSafety(unittest.TestCase):
+    def test_mixed_action_classifications(self):
+        from mcp_core import is_tool_call_read_only, TOOL_MAP, MCPDispatcher
+        writable = [("agent_bus", {"action": "post"}),
+                    ("agent_bus", {"action": "status", "agentId": "a", "status": "idle"}),
+                    ("agent_bus", {"action": "export", "path": "out.md"}),
+                    ("self_test", {}), ("require_fresh", {"path": "game.X"}),
+                    ("open_script_in_editor", {"path": "game.X"}),
+                    ("audit_ui_layout", {"deviceSweep": True}),
+                    ("capture_viewport", {"saveFile": "x.png"}),
+                    ("render_offline", {"saveFile": "x.png"}),
+                    ("screenshot_gui", {"saveFile": "x.png"})]
+        reads = [("agent_bus", {"action": "stats"}), ("agent_bus", {"action": "status"}),
+                 ("agent_bus", {"action": "export"}), ("self_test", {"includeStudioSmoke": False}),
+                 ("open_script_in_editor", {"listOnly": True}), ("audit_ui_layout", {}),
+                 ("capture_viewport", {}), ("render_offline", {}), ("screenshot_gui", {})]
+        for name, args in writable:
+            self.assertFalse(is_tool_call_read_only(name, args), (name, args))
+            self.assertFalse(TOOL_MAP[name]["annotations"]["readOnlyHint"], name)
+        for name, args in reads:
+            self.assertTrue(is_tool_call_read_only(name, args), (name, args))
+        client = BridgeClient(read_only=True)
+        dispatcher = MCPDispatcher(client)
+        for name, args in writable:
+            result = dispatcher._invoke_tool(name, args)
+            self.assertTrue(result["isError"], (name, args))
+        self.assertTrue(dispatcher._invoke_tool("bridge_ops", {"action": "confirm_approve", "requestId": "x"})["isError"])
+        advertised = {x["name"]: x for x in dispatcher.visible_tools()}
+        self.assertFalse(advertised["agent_bus"]["annotations"]["readOnlyHint"])
+        self.assertNotIn("require_fresh", advertised)
+
+    def test_rest_read_only_rejects_fresh_require(self):
+        state = BridgeState(read_only=True, state_dir=tempfile.mkdtemp(prefix="arena-ro-require-"))
+        try:
+            with self.assertRaises(PermissionError):
+                state.enqueue_job("require_fresh", {"path": "game.X"})
+        finally:
+            state._reaper_stop.set()
+            state.tunnel.stop()
+
+
+class TestLuauOfflineSafety(unittest.TestCase):
+    def test_unavailable_toolchain_does_not_dispatch_to_studio(self):
+        from mcp_core import MCPDispatcher
+        client = BridgeClient(read_only=True)
+        dispatcher = MCPDispatcher(client)
+        with mock.patch("mcp_core._find_tool_binary", return_value=None), mock.patch.object(client, "submit_job") as submit:
+            response = dispatcher._handle_one({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "luau_check", "arguments": {"code": "return 1"}}})
+            result = response["result"]["structuredContent"]
+            self.assertFalse(result["ok"])
+            self.assertFalse(result["toolchainAvailable"])
+            self.assertEqual(result["results"][0]["reason"], "toolchain_unavailable")
+            submit.assert_not_called()
+
+    def test_compiler_only_reports_missing_global_analysis(self):
+        from mcp_core import check_luau_source
+        def binary(name):
+            return "/fake/luau-compile" if name == "luau-compile" else None
+        proc = mock.Mock(returncode=0)
+        with mock.patch("mcp_core._find_tool_binary", side_effect=binary), mock.patch("mcp_core.subprocess.run", return_value=proc):
+            result = check_luau_source("return unknownGlobal")
+        self.assertTrue(result["ok"])  # Only available checks passed, not proof of global validity.
+        self.assertEqual(result["checksPerformed"], {"syntax": True, "undefinedGlobals": False, "unusedLocals": False})
+        self.assertIn("analyzer unavailable", result["warnings"][0])
+
+    def test_tool_discovery_skips_incompatible_bundled_binaries(self):
+        from mcp_core import _find_tool_binary
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tools = root / "tools"
+            tools.mkdir()
+            linux = tools / "luau-compile"
+            linux.write_bytes(b"\x7fELF" + b"fake")
+            linux.chmod(0o755)
+            exe = tools / "luau-compile.exe"
+            exe.write_bytes(b"MZfake")
+            exe.chmod(0o755)
+            with mock.patch("mcp_core.__file__", str(root / "mcp_core.py")), mock.patch("shutil.which", return_value=None):
+                with mock.patch("mcp_core.sys.platform", "win32"):
+                    self.assertEqual(_find_tool_binary("luau-compile"), str(exe))
+                with mock.patch("mcp_core.sys.platform", "darwin"):
+                    self.assertIsNone(_find_tool_binary("luau-compile"))
+                with mock.patch("mcp_core.sys.platform", "linux"):
+                    self.assertEqual(_find_tool_binary("luau-compile"), str(linux))
+
+    def test_tool_discovery_never_changes_executable_permissions(self):
+        from mcp_core import _find_tool_binary
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tools").mkdir()
+            binary = root / "tools" / "luau-compile"
+            binary.write_text("not executable")
+            binary.chmod(0o600)
+            with mock.patch("mcp_core.__file__", str(root / "mcp_core.py")), mock.patch("shutil.which", return_value=None), mock.patch("os.chmod") as chmod:
+                self.assertIsNone(_find_tool_binary("luau-compile"))
+                chmod.assert_not_called()
+            self.assertEqual(binary.stat().st_mode & 0o777, 0o600)
+
+
+class TestOnboardingAudit(unittest.TestCase):
+    def test_cycles_duplicates_missing_fields_and_pagination(self):
+        from onboarding_auditor import audit_onboarding_plan
+        items = [
+            {"id": "start", "objective": "Do one action", "completionEvidence": "Server event", "recovery": "Retry", "prerequisites": ["finish", "missing", "missing", "duplicate"]},
+            {"id": "finish", "objective": "Finish", "completionEvidence": "Server state", "recovery": "Resume", "prerequisites": ["start"]},
+            {"id": "self", "objective": "", "completionEvidence": "server", "recovery": "", "prerequisites": ["self"]},
+            {"id": "duplicate", "objective": "A", "completionEvidence": "state", "recovery": "retry"},
+            {"id": "duplicate", "objective": "B", "completionEvidence": "state", "recovery": "retry"},
+        ]
+        whole = audit_onboarding_plan(items, limit=100)
+        self.assertFalse(whole["ok"])
+        self.assertEqual([x["code"] for x in whole["issues"]],
+                         ["unknown_prerequisite", "duplicate_prerequisite", "ambiguous_prerequisite", "missing_field", "missing_field", "duplicate_id", "prerequisite_cycle", "prerequisite_cycle"])
+        self.assertEqual([x["ids"] for x in whole["issues"] if x["code"] == "prerequisite_cycle"], [["start", "finish"], ["self"]])
+        paged, cursor = [], 0
+        while cursor is not None:
+            page = audit_onboarding_plan(items, cursor=cursor, limit=2)
+            paged.extend(page["issues"])
+            cursor = page["nextCursor"]
+        self.assertEqual(paged, whole["issues"])
+        self.assertEqual(audit_onboarding_plan(items, cursor=999)["issues"], [])
+        valid = [{"id": "start", "objective": "Move", "completionEvidence": "Server state", "recovery": "Retry"},
+                 {"id": "next", "objective": "Collect", "completionEvidence": "Server verifies", "recovery": "Rejoin", "prerequisites": ["start"]}]
+        self.assertTrue(audit_onboarding_plan(valid)["ok"])
+        self.assertIn("Structural checks only", audit_onboarding_plan(valid)["warnings"][0])
+
+    def test_bounded_and_malformed_inputs(self):
+        from onboarding_auditor import audit_onboarding_plan
+        for milestones, cursor, limit in (([], 0, 50), ([{}], 0, 50), ([{"id": " a "}], 0, 50),
+                                           ([{"id": "a", "objective": None}], 0, 50),
+                                           ([{"id": "a", "prerequisites": [" x "]}], 0, 50),
+                                           ([{"id": "a", "prerequisites": ["x"] * 21}], 0, 50),
+                                           ([{"id": "a"}] * 101, 0, 50), ([{"id": "a"}], True, 50),
+                                           ([{"id": "a"}], 0, 101)):
+            with self.assertRaises(ValueError):
+                audit_onboarding_plan(milestones, cursor, limit)
+
+    def test_read_only_dispatch_without_peer(self):
+        from mcp_core import MCPDispatcher, is_tool_call_read_only
+        client = BridgeClient(read_only=True)
+        dispatcher = MCPDispatcher(client)
+        args = {"milestones": [{"id": "first", "objective": "Try", "completionEvidence": "Server", "recovery": "Retry"}]}
+        self.assertTrue(is_tool_call_read_only("audit_onboarding_plan", args))
+        with mock.patch.object(client, "submit_job") as jobs:
+            result = dispatcher._handle_one({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "audit_onboarding_plan", "arguments": args}})
+            self.assertTrue(result["result"]["structuredContent"]["ok"])
+            jobs.assert_not_called()
+
+
+class TestLocalizationAudit(unittest.TestCase):
+    def test_offline_checks_and_pagination(self):
+        from mcp_core import is_tool_call_read_only
+        entries = [
+            {"key": "reward", "source": "Earn {amount} for {player} {{literal}}", "translations": {"fr": "{player} gagne {amount} {{littéral}}", "th": "ได้ {amount}"}},
+            {"key": "reward", "source": "Welcome {player}", "translations": {"fr": "Bonjour {other}", "th": "  "}},
+        ]
+        args = {"entries": entries, "locales": ["fr", "th"], "limit": 2}
+        self.assertTrue(is_tool_call_read_only("audit_localization", args))
+        page = execute_tool(None, "audit_localization", args)
+        self.assertFalse(page["ok"])
+        self.assertEqual(page["totalIssues"], 4)
+        self.assertEqual(page["issues"][0]["missing"], ["player"])
+        self.assertEqual(page["issues"][1]["code"], "duplicate_key")
+        next_page = execute_tool(None, "audit_localization", dict(args, cursor=page["nextCursor"]))
+        self.assertEqual(next_page["issues"][0]["missing"], ["player"])
+        self.assertEqual(next_page["issues"][0]["extra"], ["other"])
+        self.assertEqual(next_page["issues"][1]["code"], "missing_translation")
+        self.assertIsNone(next_page["nextCursor"])
+        self.assertEqual(execute_tool(None, "audit_localization", dict(args, cursor=99))["issues"], [])
+        self.assertIn("not validate", page["limitations"][1])
+        valid = execute_tool(None, "audit_localization", {"entries": [entries[0]], "locales": ["fr"]})
+        self.assertTrue(valid["ok"])
+        self.assertEqual(valid["totalIssues"], 0)
+
+    def test_roblox_parameters_and_review_diagnostics(self):
+        from localization_auditor import audit_localization
+        entry = {"key": "race", "source": "{race_time:fixed} seconds and {1:num}; {Place_Name:translate}",
+                 "translations": {"es": "{Place_Name:translate}: {1:num} y {race_time:fixed} segundos"}}
+        self.assertTrue(audit_localization([entry], ["es"])["ok"])
+        changed = dict(entry, translations={"es": "{Place_Name:translate}: {1:int} y {race_time} segundos"})
+        result = audit_localization([changed], ["es"], limit=1)
+        self.assertEqual(result["totalIssues"], 2)
+        self.assertEqual(result["issues"][0]["code"], "format_mismatch")
+        self.assertEqual(result["issues"][0]["parameter"], "1")
+        self.assertEqual(result["issues"][0]["sourceFormats"], ["num"])
+        self.assertEqual(result["issues"][0]["translationFormats"], ["int"])
+        following = audit_localization([changed], ["es"], cursor=result["nextCursor"], limit=1)
+        self.assertEqual(following["issues"][0]["parameter"], "race_time")
+        self.assertEqual(following["issues"][0]["translationFormats"], [""])
+        unsupported = audit_localization([{"key": "x", "source": "{x:unknown}", "translations": {"es": "{x:unknown} and {broken"}}], ["es"])
+        self.assertFalse(unsupported["ok"])
+        self.assertEqual([i["code"] for i in unsupported["issues"]], ["unsupported_placeholder"] * 3)
+        self.assertEqual([i["field"] for i in unsupported["issues"]], ["source", "translation", "translation"])
+        missing = audit_localization([dict(entry, translations={"es": "{1:num} {race_time:fixed}"})], ["es"])
+        self.assertEqual(missing["issues"][0]["missing"], ["Place_Name"])
+        large = audit_localization([{"key": "x", "source": "{" * 3999 + "x", "translations": {"es": "ok"}}], ["es"], cursor=10000)
+        self.assertEqual(large["issues"], [])
+        self.assertFalse(large["ok"])  # The final unmatched brace is reported even off-page.
+        many = audit_localization([{"key": "x", "source": "ok", "translations": {"es": "}a" * 2000}}], ["es"], cursor=1999, limit=2)
+        self.assertEqual(many["totalIssues"], 2000)
+        self.assertEqual(len(many["issues"]), 1)
+        self.assertFalse(many["ok"])
+
+    def test_invalid_and_bounded_inputs(self):
+        from localization_auditor import audit_localization
+        good = {"key": "x", "source": "hi", "translations": {"fr": "salut"}}
+        for entries, locales, cursor, limit in (([], ["fr"], 0, 1), ([good] * 201, ["fr"], 0, 1),
+                ([good], [], 0, 1), ([good], ["fr", "fr"], 0, 1), ([good], ["fr"], -1, 1),
+                ([good], ["fr"], 0, 201), ([{"key": "x", "source": "a", "translations": {"fr": None}}], ["fr"], 0, 1),
+                ([dict(good, source="x" * 4001)], ["fr"], 0, 1)):
+            with self.assertRaises(ValueError):
+                audit_localization(entries, locales, cursor, limit)
+        from mcp_core import search_skills_helper, apply_skill_helper
+        self.assertIn("roblox-localization", [item["name"] for item in search_skills_helper("localization", limit=100)["results"]])
+        self.assertIn("audit_localization", apply_skill_helper("roblox-localization")["instructions"])
+
+
+class TestConnectionDiagnostics(unittest.TestCase):
+    def test_registry_only_reports_versions_and_redacts_untrusted_fields(self):
+        from mcp_core import diagnose_connection_helper, is_tool_call_read_only
+        client = mock.Mock()
+        client.direct_dispatch = None
+        client.read_only = True
+        client.health.return_value = {"ok": True, "version": "5.4.0", "authMode": "scoped", "read_only": False, "queuePaused": True}
+        client.peers.return_value = {"peers": [
+            {"online": True, "dm": "edit", "pluginVersion": "4.1", "peerId": "secret-peer"},
+            {"online": True, "dm": "server", "hasClient": True, "pluginVersion": "2.0"},
+            {"online": True, "dm": "edit", "pluginVersion": "secret-token"},
+            {"online": False, "dm": "server", "pluginVersion": "1.0"},
+        ]}
+        result = diagnose_connection_helper(client)
+        self.assertTrue(is_tool_call_read_only("diagnose_connection", {}))
+        self.assertEqual(result["status"], "connected")
+        self.assertEqual(result["readAccess"], "authorized")
+        self.assertTrue(result["bridge"]["inspectorMode"])
+        self.assertEqual(result["peers"]["online"], 3)
+        self.assertEqual(result["peers"]["stale"], 1)
+        self.assertEqual(result["peers"]["clientAdvertised"], 1)
+        self.assertEqual(result["pluginVersions"]["unknownOnline"], 1)
+        codes = {check["code"] for check in result["checks"]}
+        self.assertTrue({"older_plugin_reported", "unknown_plugin_version", "queue_paused"} <= codes)
+        self.assertNotIn("secret", json.dumps(result))
+        client.submit_job.assert_not_called()
+        client.peers.return_value = {"peers": [{"online": True, "dm": "edit", "pluginVersion": "4.1"}]}
+        self.assertNotIn("older_plugin_reported", [x["code"] for x in diagnose_connection_helper(client)["checks"]])
+        client.health.return_value["authMode"] = "open"
+        self.assertEqual(diagnose_connection_helper(client)["readAccess"], "open")
+        client.peers.return_value = {"peers": [{"dm": "edit"}]}
+        invalid = diagnose_connection_helper(client)
+        self.assertEqual(invalid["status"], "bridge_error")
+        self.assertEqual(invalid["peers"]["status"], "unknown")
+
+    def test_http_auth_offline_no_peer_and_cli_without_secrets(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        port = _free_port()
+        httpd, state = create_http_server(host="127.0.0.1", port=port, token="correct-secret", state_dir=temp.name)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        def stop():
+            state._reaper_stop.set()
+            state.tunnel.stop()
+            httpd.shutdown()
+            httpd.server_close()
+        self.addCleanup(stop)
+        base = f"http://127.0.0.1:{port}"
+        good = execute_tool(BridgeClient(base_url=base, token="correct-secret"), "diagnose_connection", {})
+        self.assertEqual(good["status"], "no_peer")
+        self.assertEqual(good["readAccess"], "authorized")
+        wrong = execute_tool(BridgeClient(base_url=base, token="wrong-secret"), "diagnose_connection", {})
+        self.assertEqual(wrong["status"], "auth_error")
+        self.assertEqual(wrong["readAccess"], "denied")
+        self.assertNotIn("wrong-secret", json.dumps(wrong))
+        self.assertNotIn("correct-secret", json.dumps(good))
+        env = dict(os.environ, BRIDGE_URL=base, BRIDGE_TOKEN="wrong-secret")
+        result = subprocess.run([sys.executable, str(HERE / "arena_studio.py"), "doctor"], env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout)["status"], "auth_error")
+        self.assertNotIn("wrong-secret", result.stdout + result.stderr)
+        unreachable = execute_tool(BridgeClient(base_url=f"http://127.0.0.1:{_free_port()}", token="unique-private-token"), "diagnose_connection", {})
+        self.assertEqual(unreachable["status"], "bridge_unreachable")
+        self.assertNotIn("unique-private-token", json.dumps(unreachable))
+
+    def test_error_details_are_not_echoed(self):
+        from mcp_core import diagnose_connection_helper
+        client = mock.Mock()
+        client.health.side_effect = RuntimeError("secret-token https://bad.example/?token=secret-token")
+        report = diagnose_connection_helper(client)
+        self.assertEqual(report["status"], "bridge_error")
+        self.assertNotIn("secret-token", json.dumps(report))
+        client.peers.assert_not_called()
+
+
 class TestV5OpsPlatform(unittest.TestCase):
     """v5: scoped tokens, rate limits, multi-agent bus, resilient jobs, audit chain, tunnel."""
 
@@ -144,6 +820,193 @@ class TestV5OpsPlatform(unittest.TestCase):
         self.assertEqual(status, 429)
         self.assertIn("rate limit", body["error"])
         self.assertGreaterEqual(body["retryAfter"], 1)
+
+    def test_mixed_actions_respect_read_scope_across_mcp_and_rest(self):
+        reader = self.state.tokens.create("reader", role="read", rate_limit=100, burst=100)["token"]
+        writer = self.state.tokens.create("writer", role="write", rate_limit=100, burst=100)["token"]
+        target = os.path.join(self.tmp, "should-not-write.png")
+        for name, args in (("agent_bus", {"action": "post", "body": "denied"}),
+                           ("agent_bus", {"action": "status", "agentId": "a", "status": "idle"}),
+                           ("agent_bus", {"action": "export", "path": target}),
+                           ("self_test", {}), ("require_fresh", {"path": "game.X"}),
+                           ("render_offline", {"tree": {"name": "Workspace"}, "saveFile": target}),
+                           ("audit_ui_layout", {"prefab": "hud_modern_shell", "deviceSweep": True})):
+            rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}}
+            _, body = self._req("/mcp", method="POST", body=rpc, token=reader)
+            self.assertEqual(body["result"]["structuredContent"]["reason"], "insufficient_scope", (name, body))
+        self.assertFalse(os.path.exists(target))
+        malformed = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "agent_bus", "arguments": ["bad"]}}
+        code, reply = self._req("/mcp", method="POST", body=malformed, token=reader)
+        self.assertEqual(code, 200)
+        self.assertEqual(reply["error"]["code"], -32602)
+        for route, method, body in (("/api/bus?action=register&name=reader", "GET", None),
+                                    ("/api/bus?action=status&agentId=x&status=idle", "GET", None),
+                                    ("/api/bus", "POST", {"action": "status", "agentId": "x", "status": "idle"}),
+                                    ("/api/bus", "POST", {"action": "export", "path": target})):
+            self.assertEqual(self._req(route, method=method, body=body, token=reader)[0], 403, route)
+        self.assertEqual(self._req("/api/bus?action=stats", token=reader)[0], 200)
+        rpc = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "agent_bus", "arguments": {"action": "register", "name": "writer"}}}
+        _, body = self._req("/mcp", method="POST", body=rpc, token=writer)
+        self.assertFalse(body["result"]["isError"])
+        op_rpc = {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "bridge_ops", "arguments": {"action": "queue_pause"}}}
+        _, op_body = self._req("/mcp", method="POST", body=op_rpc, token=writer)
+        self.assertEqual(op_body["result"]["structuredContent"]["reason"], "insufficient_scope")
+        self.assertFalse(self.state.queue_paused)
+        with mock.patch("server.run_bridge_self_test", return_value={"ok": True}) as test_run:
+            self.assertEqual(self._req("/api/self-test", token=reader)[0], 200)
+            self.assertFalse(test_run.call_args.kwargs["include_studio_smoke"])
+            self.assertEqual(self._req("/api/self-test", token=self.admin_token)[0], 200)
+            self.assertTrue(test_run.call_args.kwargs["include_studio_smoke"])
+            self.state.read_only = True
+            try:
+                self.assertEqual(self._req("/api/self-test", token=self.admin_token)[0], 200)
+                self.assertFalse(test_run.call_args.kwargs["include_studio_smoke"])
+                self.assertEqual(self._req("/api/bus", method="POST", body={"action": "register", "name": "admin"}, token=self.admin_token)[0], 403)
+            finally:
+                self.state.read_only = False
+
+    def test_poll_requires_write_and_does_not_claim_with_read_token(self):
+        reader = self.state.tokens.create("reader", role="read", rate_limit=100, burst=100)["token"]
+        writer = self.state.tokens.create("plugin", role="write", rate_limit=100, burst=100)["token"]
+        job, _ = self.state.enqueue_job("ping")
+        code, _ = self._req("/api/poll?peerId=test-peer&dm=edit", token=reader)
+        self.assertEqual(code, 403)
+        self.assertEqual(self.state.jobs[job["id"]]["status"], "queued")
+        self.assertNotIn("test-peer", self.state.peers)
+        code, result = self._req("/api/poll?peerId=test-peer&dm=edit", token=writer)
+        self.assertEqual(code, 200)
+        self.assertEqual(result["job"]["id"], job["id"])
+
+    def test_tasks_are_bound_to_authenticated_token_even_in_batches(self):
+        a = self.state.tokens.create("same-label", role="read", rate_limit=100, burst=100)
+        b = self.state.tokens.create("same-label", role="read", rate_limit=100, burst=100)
+        request = {"jsonrpc": "2.0", "id": 10, "method": "tools/call", "_meta": {"x-arena-principal": "spoof"},
+                   "params": {"name": "search_tools", "arguments": {"query": "performance"}, "task": {}}}
+        _, body = self._req("/mcp", method="POST", body=[request], token=a["token"])
+        task_id = body[0]["result"]["taskId"]
+        for method in ("tasks/get", "tasks/result", "tasks/update", "tasks/cancel"):
+            call = {"jsonrpc": "2.0", "id": method, "method": method,
+                    "_meta": {"x-arena-principal": "token:" + a["id"]},
+                    "params": {"taskId": task_id, "timeoutMs": 10, "_meta": {"x-arena-principal": "token:" + a["id"]}}}
+            _, denied = self._req("/mcp", method="POST", body=call, token=b["token"])
+            self.assertEqual(denied["error"]["message"], "Unknown task", method)
+        _, listed = self._req("/mcp", method="POST", body={"jsonrpc": "2.0", "id": 2, "method": "tasks/list"}, token=b["token"])
+        self.assertEqual(listed["result"]["tasks"], [])
+        _, owner_list = self._req("/mcp", method="POST", body={"jsonrpc": "2.0", "id": 3, "method": "tasks/list"}, token=a["token"])
+        self.assertEqual(owner_list["result"]["tasks"][0]["taskId"], task_id)
+        _, owner_get = self._req("/mcp", method="POST", body={"jsonrpc": "2.0", "id": 4, "method": "tasks/get", "params": {"taskId": task_id}}, token=a["token"])
+        self.assertEqual(owner_get["result"]["taskId"], task_id)
+
+    def test_confirmation_identity_cannot_be_spoofed(self):
+        from confirm_gate import ConfirmGate
+        a = self.state.tokens.create("same-label", role="write", rate_limit=100, burst=100)
+        b = self.state.tokens.create("same-label", role="write", rate_limit=100, burst=100)
+        gate = ConfirmGate(mode="write")
+        previous = self.state.mcp_dispatcher.gate
+        self.state.mcp_dispatcher.gate = gate
+        self.addCleanup(setattr, self.state.mcp_dispatcher, "gate", previous)
+        meta = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {"elicitation": {}}, "x-arena-principal": "spoof"}
+        params = {"name": "delete_instance", "arguments": {"paths": ["Workspace.Baseplate"]}}
+        request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "_meta": meta, "params": params}
+        _, response = self._req("/mcp", method="POST", body=[request], token=a["token"])
+        first = response[0]["result"]
+        self.assertEqual(first["resultType"], "input_required")
+        first_id = first["structuredContent"]["requestId"]
+        self.assertEqual(gate.pending(first_id).principal, "token:" + a["id"])
+        retry = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "_meta": dict(meta, **{"x-arena-principal": "token:" + a["id"]}),
+                 "params": {**params, "requestState": first["requestState"], "inputResponses": {"confirm": {"action": "accept"}}}}
+        _, rejected = self._req("/mcp", method="POST", body=retry, token=b["token"])
+        self.assertEqual(rejected["result"]["structuredContent"]["reason"], "principal_mismatch")
+        self.assertIsNotNone(gate.pending(first_id))
+        self.assertEqual(len(self.state.jobs), 0)
+        for pending in list(gate.status()["pending"]):
+            gate.cancel(pending["requestId"])
+
+    def test_read_scoped_camera_default_in_inspector(self):
+        reader = self.state.tokens.create("camera-reader", role="read", rate_limit=100, burst=100)["token"]
+        self.state.read_only = True
+        self.state.mcp_client.read_only = True
+        def submit(kind, payload, **kwargs):
+            self.state.enqueue_job(kind, payload)
+            return {"status": "done", "result": {"fov": 70}}
+        with mock.patch.object(self.state.mcp_client, "submit_job", side_effect=submit) as jobs:
+            def call(args):
+                return self._req("/mcp", method="POST", token=reader, body={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "manage_camera", "arguments": args}})[1]
+            self.assertFalse(call({})["result"]["isError"])
+            self.assertEqual(jobs.call_args.args[1]["action"], "get")
+            blocked = call({"action": "set", "fov": 80})
+            self.assertTrue(blocked["result"]["isError"])
+            self.assertEqual(blocked["result"]["structuredContent"]["reason"], "insufficient_scope")
+            self.assertEqual(jobs.call_count, 1)
+
+    def test_local_convenience_rejects_cross_origin_and_untrusted_host(self):
+        job, _ = self.state.enqueue_job("ping")
+        def request(path, headers):
+            req = urllib.request.Request(self.base + path, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    return resp.status, json.load(resp)
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read())
+        cases = [{"Origin": "https://attacker.example"},
+                 {"Origin": "null"},
+                 {"Sec-Fetch-Site": "cross-site"},
+                 {"Host": f"attacker.example:{self.port}"},
+                 {"X-Forwarded-For": "203.0.113.7"}]
+        for headers in cases:
+            code, boot = request("/api/local-boot", headers)
+            self.assertEqual(code, 200)
+            self.assertFalse(boot["local"], headers)
+            self.assertEqual(boot["token"], "")
+            self.assertEqual(boot["bridgeDir"], "")
+            for path in ("/api/agent-guide", "/api/jobs/" + job["id"]):
+                self.assertEqual(request(path, headers)[0], 401, (headers, path))
+        for headers in ({}, {"Origin": self.base, "Sec-Fetch-Site": "same-origin"}):
+            self.assertEqual(request("/api/local-boot", headers)[1]["token"], self.admin_token)
+            self.assertEqual(request("/api/agent-guide", headers)[0], 200)
+
+    def test_kit_assets_cannot_escape_to_sibling_prefix_directory(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("image_pipeline.find_kit_root", return_value=Path(tmp)):
+            root = Path(tmp) / "assets"
+            for folder in ("images", "audio", "images-secret", "audio-secret"):
+                (root / folder).mkdir(parents=True)
+            (root / "images" / "ok.png").write_bytes(b"image")
+            (root / "audio" / "ok.wav").write_bytes(b"audio")
+            (root / "images-secret" / "secret.png").write_bytes(b"private")
+            (root / "audio-secret" / "secret.wav").write_bytes(b"private")
+            (root / "images" / "link.png").symlink_to(root / "images-secret" / "secret.png")
+            (root / "audio" / "link.wav").symlink_to(root / "audio-secret" / "secret.wav")
+            for kind, good, bad in (("image", "ok.png", "../images-secret/secret.png"),
+                                     ("audio", "ok.wav", "../audio-secret/secret.wav")):
+                self.assertEqual(self._req(f"/api/kit/{kind}/{good}")[0], 200)
+                self.assertEqual(self._req(f"/api/kit/{kind}/{bad}")[0], 404)
+                link = "link.png" if kind == "image" else "link.wav"
+                self.assertEqual(self._req(f"/api/kit/{kind}/{link}")[0], 404)
+
+    def test_read_scoped_luau_check_never_falls_back_to_studio(self):
+        reader = self.state.tokens.create("source-reader", role="read", rate_limit=100, burst=100)["token"]
+        request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "luau_check", "arguments": {"code": "return 1"}}}
+        with mock.patch("mcp_core._find_tool_binary", return_value=None), mock.patch.object(self.state.mcp_client, "submit_job") as jobs:
+            code, response = self._req("/mcp", method="POST", token=reader, body=request)
+            self.assertEqual(code, 200)
+            result = response["result"]["structuredContent"]
+            self.assertFalse(result["toolchainAvailable"])
+            self.assertFalse(result["ok"])
+            jobs.assert_not_called()
+        self.assertEqual(len(self.state.jobs), 0)
+
+    def test_read_scoped_onboarding_audit_without_studio(self):
+        reader = self.state.tokens.create("plan-reader", role="read", rate_limit=100, burst=100)["token"]
+        args = {"milestones": [{"id": "start", "prerequisites": ["missing"]}]}
+        code, response = self._req("/mcp", method="POST", token=reader, body={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "audit_onboarding_plan", "arguments": args}})
+        self.assertEqual(code, 200)
+        self.assertFalse(response["result"]["isError"])
+        result = response["result"]["structuredContent"]
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["totalIssues"], 4)
+        self.assertEqual(len(self.state.jobs), 0)
 
     # -- multi-agent bus ----------------------------------------------------
 
@@ -294,6 +1157,54 @@ class TestV5OpsPlatform(unittest.TestCase):
         # so the supervisor reports unavailable rather than blocked).
         allowed = self.state.tunnel_action({"action": "start"})
         self.assertNotEqual(allowed["state"], "blocked")
+
+    def test_inspector_rest_blocks_snapshot_and_fleet_writes(self):
+        with mock.patch.object(self.state, "_persist_snapshot"):
+            saved = self.state.handle_snapshots({"action": "save", "label": "existing", "scripts": []})
+        count = len(self.state.snapshots)
+        self.state.read_only = True
+        for action in ({"action": "save", "label": "blocked", "scripts": []},):
+            code, _ = self._req("/api/snapshots", method="POST", token=self.admin_token, body=action)
+            self.assertEqual(code, 403)
+        self.assertEqual(len(self.state.snapshots), count)
+        self.assertEqual(self._req("/api/snapshots", token=self.admin_token)[1]["count"], count)
+        self.assertEqual(self._req("/api/snapshots/" + saved["id"], token=self.admin_token)[0], 200)
+        for action in ({"action": "label", "peerId": "any", "label": "blocked"},
+                       {"action": "clear_active"}, {"action": "set_active", "peerId": "any"}):
+            code, _ = self._req("/api/studios", method="POST", token=self.admin_token, body=action)
+            self.assertEqual(code, 403)
+        self.assertEqual(self.state.peer_labels, {})
+        self.assertIsNone(self.state.studio_pin)
+        self.assertEqual(self._req("/api/studios", token=self.admin_token)[0], 200)
+        with self.assertRaises(PermissionError):
+            self.state.handle_snapshots({"action": "save"})
+        with self.assertRaises(PermissionError):
+            self.state.fleet_action({"action": "clear_active"})
+
+    def test_inspector_jobs_fail_closed_on_unclassified_and_new_writes(self):
+        self.state.read_only = True
+        before = len(self.state.jobs)
+        denied = [("batch_write", {"files": [{"parent": "ServerStorage", "name": "A", "source": "return 1"}]}),
+                  ("scatter_props", {"sourcePath": "Workspace.Part", "points": [[0, 0, 0, 0]]}),
+                  ("future_job", {}), ("require_fresh", {"path": "game.X"}),
+                  ("camera", {"action": "set"}), ("find_replace_scripts", {"dryRun": False})]
+        for kind, payload in denied:
+            code, body = self._req("/api/jobs", method="POST", token=self.admin_token,
+                                   body={"type": kind, "payload": payload})
+            self.assertEqual(code, 403, (kind, body))
+        self.assertEqual(len(self.state.jobs), before)
+        allowed = [("ping", {}), ("mesh_capabilities", {}), ("camera", {"action": "get"}),
+                   ("terrain", {"action": "materials"}), ("find_replace_scripts", {"dryRun": True}),
+                   ("device_simulator", {"action": "status"})]
+        for kind, payload in allowed:
+            code, body = self._req("/api/jobs", method="POST", token=self.admin_token,
+                                   body={"type": kind, "payload": payload})
+            self.assertEqual(code, 201, (kind, body))
+        self.assertEqual(len(self.state.jobs), before + len(allowed))
+        self.state.read_only = False
+        code, _ = self._req("/api/jobs", method="POST", token=self.admin_token,
+                            body={"type": "future_job", "payload": {}})
+        self.assertEqual(code, 201)  # Non-Inspector extensions keep their previous behavior.
 
     def test_read_only_bridge_blocks_playtest_mutations_and_keeps_reads(self):
         ro = BridgeState(token="t", read_only=True, state_dir=tempfile.mkdtemp(prefix="arena-ro-"))
@@ -1637,6 +2548,47 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             self.assertGreaterEqual(len(guide_data["keyTips"]), 5)
 
         # 8. Direct Image/Audio Import, expanded asset catalog, 3D tools and bounded kit browsing
+        diagnostics = self.call_tool("diagnose_connection", {})
+        self.assertEqual(diagnostics["status"], "connected")
+        self.assertGreater(diagnostics["peers"]["online"], 0)
+        self.assertNotIn(self.token, json.dumps(diagnostics))
+        doctor = subprocess.run([sys.executable, str(HERE / "arena_studio.py"), "doctor"], env=dict(os.environ, BRIDGE_URL=self.base_url, BRIDGE_TOKEN=self.token), capture_output=True, text=True, timeout=10)
+        self.assertEqual(doctor.returncode, 0)
+        self.assertEqual(json.loads(doctor.stdout)["status"], "connected")
+        self.assertNotIn(self.token, doctor.stdout + doctor.stderr)
+        catalog = self.call_tool("search_tools", {"query": "performance", "readOnlyOnly": True})
+        self.assertEqual(catalog["results"][0]["name"], "perf_audit")
+        ranged = self.call_tool("skill_references", {"name": "roblox-lessons", "action": "read", "path": "references/ui.md", "startLine": 1, "endLine": 2})
+        self.assertEqual(ranged["lineRange"]["end"], 2)
+        onboarding = self.call_tool("audit_onboarding_plan", {"milestones": [{"id": "first", "objective": "Try", "completionEvidence": "Server", "recovery": "Retry"}]})
+        self.assertTrue(onboarding["ok"])
+        localization = self.call_tool("audit_localization", {"entries": [{"key": "welcome", "source": "Hello {player}", "translations": {"fr": "Salut {player}"}}], "locales": ["fr"]})
+        self.assertTrue(localization["ok"])
+        self.assertEqual(localization["entriesChecked"], 1)
+        formatted = self.call_tool("audit_localization", {"entries": [{"key": "score", "source": "{1:num}", "translations": {"fr": "{1:int}"}}], "locales": ["fr"]})
+        self.assertEqual(formatted["issues"][0]["code"], "format_mismatch")
+        _, invalid_localization, _ = self.mcp_http({"jsonrpc": "2.0", "id": "invalid-localization", "method": "tools/call", "params": {"name": "audit_localization", "arguments": {"entries": [{"key": "bad", "source": "Hello", "translations": {"fr": 42}}], "locales": ["fr"]}}})
+        self.assertTrue(invalid_localization["result"].get("isError"))
+        skills = self.call_tool("search_skills", {"query": "stud ui", "limit": 2})
+        ref_search = self.call_tool("search_skills", {"query": "TextScaled", "includeReferences": True, "limit": 100})
+        lessons = next(item for item in ref_search["results"] if item["name"] == "roblox-lessons")
+        self.assertTrue(any(item["path"] == "references/ui.md" for item in lessons["matchedReferences"]))
+        self.assertTrue(ref_search["referenceSearch"]["complete"])
+        self.assertEqual(skills["results"][0]["name"], "roblox-stud-ui-design")
+        self.assertIsNotNone(skills["nextCursor"])
+        natural = self.call_tool("search_skills", {"query": "how do I handle a failed datastore load"})
+        self.assertEqual(natural["results"][0]["name"], "roblox-data-reliability")
+        self.assertNotIn("how", natural["results"][0]["matchedTerms"])
+
+        loaded = self.call_tool("apply_skill", {"name": skills["results"][0]["name"]})
+        self.assertIn("StudUI", loaded["instructions"])
+        self.assertIn("No persistent", loaded["application"])
+        refs = self.call_tool("skill_references", {"name": "roblox-stud-ui-design", "limit": 2})
+        self.assertTrue(refs["items"])
+        ref = self.call_tool("skill_references", {"name": "roblox-stud-ui-design", "action": "read", "path": refs["items"][0]["path"]})
+        self.assertTrue(ref["content"])
+
+
         kit_summary = self.call_tool("browse_kit", {})
         self.assertEqual(kit_summary["format"], "summary")
         self.assertNotIn("images", kit_summary)
@@ -1972,6 +2924,13 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
                 {"jsonrpc": "2.0", "id": 10, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
                 {"jsonrpc": "2.0", "method": "notifications/initialized"},
                 {"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "ping_studio", "arguments": {}}},
+                {"jsonrpc": "2.0", "id": 17, "method": "tools/call", "params": {"name": "diagnose_connection", "arguments": {}}},
+                {"jsonrpc": "2.0", "id": 18, "method": "tools/call", "params": {"name": "audit_onboarding_plan", "arguments": {"milestones": [{"id": "first", "objective": "Try", "completionEvidence": "server", "recovery": "retry"}]}}},
+                {"jsonrpc": "2.0", "id": 19, "method": "tools/call", "params": {"name": "skill_references", "arguments": {"name": "roblox-world-streaming", "action": "read", "path": "references/streaming-test-matrix.md"}}},
+                {"jsonrpc": "2.0", "id": 16, "method": "tools/call", "params": {"name": "search_tools", "arguments": {"query": "write_script"}}},
+                {"jsonrpc": "2.0", "id": 15, "method": "tools/call", "params": {"name": "audit_localization", "arguments": {"entries": [{"key": "hello", "source": "{1:num}", "translations": {"fr": "{1:int}"}}], "locales": ["fr"]}}},
+                {"jsonrpc": "2.0", "id": 14, "method": "tools/call", "params": {"name": "search_skills", "arguments": {"query": "failed datastore load", "includeReferences": True}}},
+                {"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "skill_references", "arguments": {"name": "roblox-lessons", "action": "read", "path": "references/ui.md"}}},
                 {"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {
                     "name": "manage_attributes",
                     "arguments": {"action": "set", "paths": ["Workspace.Door"], "attributes": {"Hack": 1}},
@@ -1982,13 +2941,26 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             proc.stdin.flush()
 
             responses = {}
-            for _ in range(3):
+            for _ in range(10):
                 line = proc.stdout.readline().decode("utf-8").strip()
                 msg = json.loads(line)
                 responses[msg["id"]] = msg
 
             self.assertIn("Read-Only Inspector", responses[10]["result"]["instructions"])
             self.assertFalse(responses[11]["result"]["isError"])
+            self.assertFalse(responses[13]["result"]["isError"])
+            self.assertFalse(responses[14]["result"]["isError"])
+            self.assertFalse(responses[15]["result"]["isError"])
+            self.assertFalse(responses[16]["result"]["isError"])
+            self.assertFalse(responses[17]["result"]["isError"])
+            self.assertTrue(responses[18]["result"]["structuredContent"]["ok"])
+            self.assertIn("Two clients", responses[19]["result"]["structuredContent"]["content"])
+            self.assertTrue(responses[17]["result"]["structuredContent"]["bridge"]["inspectorMode"])
+            self.assertNotIn("write_script", [x["name"] for x in responses[16]["result"]["structuredContent"]["results"]])
+            self.assertEqual(responses[15]["result"]["structuredContent"]["issues"][0]["code"], "format_mismatch")
+            self.assertIn("roblox-data-reliability", [item["name"] for item in responses[14]["result"]["structuredContent"]["results"]])
+            self.assertTrue(responses[14]["result"]["structuredContent"]["referenceSearch"]["complete"])
+            self.assertIn("TextScaled", responses[13]["result"]["structuredContent"]["content"])
             self.assertTrue(responses[12]["result"]["isError"])
             self.assertIn("Blocked by Read-Only Inspector", responses[12]["result"]["content"][0]["text"])
 
@@ -2190,6 +3162,18 @@ class TestV54ConfirmationGate(unittest.TestCase):
         self.assertEqual(mutate["result"]["resultType"], "input_required")
         self.assertEqual(mutate["result"]["structuredContent"]["tool"], "manage_device_simulator")
         self.assertEqual(self.dispatcher.gate.status()["pendingCount"], 1)
+
+    def test_mixed_mutations_require_confirmation(self):
+        for i, (name, arguments) in enumerate((
+                ("agent_bus", {"action": "post", "body": "hello"}),
+                ("agent_bus", {"action": "export", "path": "output.md"}),
+                ("self_test", {}), ("require_fresh", {"path": "game.X"}),
+                ("render_offline", {"tree": {}, "saveFile": "output.png"}),
+                ("audit_ui_layout", {"deviceSweep": True}))):
+            result = self.call(f"mixed-{i}", "tools/call", {"name": name, "arguments": arguments})["result"]
+            self.assertEqual(result.get("resultType"), "input_required", name)
+        read = self.call("bus-read", "tools/call", {"name": "agent_bus", "arguments": {"action": "stats"}})["result"]
+        self.assertNotEqual(read.get("resultType"), "input_required")
 
     def test_gate_status_reports_the_policy_in_force(self):
         from confirm_gate import ConfirmGate, GATE_VERSION

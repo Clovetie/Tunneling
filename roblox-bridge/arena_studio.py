@@ -6,7 +6,7 @@ Supports every MCP tool and bridge operation from your terminal or HANDS MODE (`
 with strict UTF-8 handling on Windows, macOS, and Linux.
 
 Core commands:
-    python3 arena_studio.py health | peers | state | ping | watch
+    python3 arena_studio.py health | doctor | peers | state | ping | watch
     python3 arena_studio.py survey [--out survey.json]
     python3 arena_studio.py inspect [Workspace] [--depth 2] [--summary]
     python3 arena_studio.py search [query] [--root game] [--is-a BasePart] [--tag Spot]
@@ -181,6 +181,7 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("health")
+    sub.add_parser("doctor", help="diagnose bridge access and peer registry without sending Studio jobs or showing credentials")
     sub.add_parser("peers")
     sub.add_parser("state")
     sub.add_parser("ping")
@@ -558,6 +559,11 @@ def main() -> int:
         res = run_luau_check(path=args.target)
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return 0 if res["ok"] else 1
+
+    if args.cmd == "doctor":
+        result = execute_tool(client, "diagnose_connection", {})
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result["status"] == "connected" else 1
 
     if args.cmd == "health":
         print(json.dumps(call("GET", "/api/health"), indent=2, ensure_ascii=False))

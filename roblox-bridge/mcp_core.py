@@ -13,7 +13,7 @@ Supports:
     legacy tasks/result · tasks/list pair for 2025-11-25 clients)
   - subscriptions/listen: one opt-in stream for resource-update notifications
   - Transports: stdio (via mcp_server.py) and Streamable HTTP /mcp (via server.py)
-  - 75 curated, annotated Roblox Studio & Luau engineering tools
+  - Curated, annotated Roblox Studio & Luau engineering tools
   - Live MCP Resources + Resource Templates + Workflow Prompts
   - Exact 53-bit-safe 32-bit FNV-1a hashing matching ArenaBridge.lua bit-for-bit
   - Local pre-flight Luau syntax + undefined-global static analysis (luau_check)
@@ -30,6 +30,7 @@ import re
 import threading
 import uuid
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -165,7 +166,7 @@ KNOWN_ROBLOX_GLOBALS = {
 READ_ONLY_JOB_TYPES = {
     "ping", "studio_state", "inspect", "search_tree", "compare_instances",
     "get_properties", "read_script", "read_scripts", "hash_scripts",
-    "script_search", "script_grep", "survey", "console", "require_fresh",
+    "script_search", "script_grep", "survey", "console", "mesh_capabilities",
     "playtest_caps",
 }
 
@@ -200,27 +201,29 @@ def fnv1a_hex(data) -> str:
 
 def _find_tool_binary(name: str):
     here = Path(__file__).resolve().parent
-    candidates = [
-        here / "tools" / name,
-        here / "tools" / f"{name}.exe",
-        here.parent / "tools" / name,
-        here.parent / "tools" / f"{name}.exe",
-        here.parent / "roblox-bridge" / "tools" / name,
-        here.parent / "roblox-bridge" / "tools" / f"{name}.exe",
-        here.parent.parent / "roblox-bridge" / "tools" / name,
-        here.parent.parent / "roblox-bridge" / "tools" / f"{name}.exe",
-        here.parent / "nightloop" / ".tools" / "bin" / name,
-        here.parent / ".tools" / "bin" / name,
+    directories = [
+        here / "tools", here.parent / "tools", here.parent / "roblox-bridge" / "tools",
+        here.parent.parent / "roblox-bridge" / "tools", here.parent / "nightloop" / ".tools" / "bin",
+        here.parent / ".tools" / "bin",
     ]
-    for path in candidates:
-        if path.is_file():
-            if not os.access(path, os.X_OK):
-                try:
-                    os.chmod(path, path.stat().st_mode | 0o111)
-                except OSError:
-                    pass
-            if os.access(path, os.X_OK):
-                return str(path)
+    # Bundled Unix binaries are ELF/Linux; do not mistake them for native
+    # Windows/macOS executables when a separately installed tool is available.
+    names = (f"{name}.exe", name) if sys.platform == "win32" else (name, f"{name}.exe")
+    for directory in directories:
+        for candidate in names:
+            path = directory / candidate
+            if not path.is_file() or not os.access(path, os.X_OK):
+                continue
+            try:
+                with path.open("rb") as stream:
+                    magic = stream.read(4)
+            except OSError:
+                continue
+            if magic == b"\x7fELF" and not sys.platform.startswith("linux"):
+                continue
+            if magic[:2] == b"MZ" and sys.platform != "win32":
+                continue
+            return str(path)
     from shutil import which
     return which(name)
 
@@ -242,6 +245,8 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
         "hash": fnv1a_hex(normalize_newlines(source)),
     }
 
+    syntax_checked = False
+    globals_checked = False
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".lua", encoding="utf-8", delete=False
     ) as tmp:
@@ -261,11 +266,15 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
                 compiler = None
                 result["toolchainError"] = f"luau-compile unavailable: {exc}"
                 proc = None
+            if proc is not None:
+                syntax_checked = True
             if proc is not None and proc.returncode != 0:
                 err_txt = proc.stderr.decode("utf-8", "replace").strip()
                 err_txt = err_txt.replace(tmp_path, filename)
                 result["syntaxOk"] = False
                 result["ok"] = False
+                result["checksPerformed"] = {"syntax": True, "undefinedGlobals": False, "unusedLocals": False}
+                result["warnings"] = ["Global and unused-local analysis did not run after the compiler error."]
                 result["compileErrors"] = [
                     ln for ln in err_txt.splitlines() if ln.strip()
                 ]
@@ -280,6 +289,8 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
                     timeout=15,
                 )
                 output = proc.stdout.decode("utf-8", "replace").replace(tmp_path, filename)
+                syntax_checked = True
+                globals_checked = True
             except (OSError, subprocess.SubprocessError) as exc:
                 result["toolchainError"] = f"luau-analyze unavailable: {exc}"
                 analyzer = None
@@ -302,6 +313,7 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
             pass
 
     result["toolchainAvailable"] = bool(compiler or analyzer)
+    result["checksPerformed"] = {"syntax": syntax_checked, "undefinedGlobals": globals_checked, "unusedLocals": globals_checked}
     result["ok"] = result["syntaxOk"] and len(result["undefinedGlobals"]) == 0
     if not result["toolchainAvailable"]:
         result["backend"] = "unavailable"
@@ -309,7 +321,7 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
         result["reason"] = "toolchain_unavailable"
         result["warnings"] = ["No executable Luau compiler/analyzer is available on the bridge host."]
     else:
-        result["warnings"] = []
+        result["warnings"] = [] if globals_checked else ["Luau analyzer unavailable; undefined-global and unused-local checks did not run."]
     return result
 
 
@@ -910,6 +922,12 @@ TOOL_SPECS = [
         "annotations": _ann("Get Studio State", read_only=True, idempotent=True),
     },
     {
+        "name": "diagnose_connection",
+        "description": "Read-only bridge health and authenticated peer registry diagnostics; no Studio jobs are sent. Reports reachability, read access, online peer counts and reported plugin versions without exposing credentials. Registry presence is not a runtime capability probe.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "annotations": _ann("Diagnose Bridge Connection", read_only=True, idempotent=True),
+    },
+    {
         "name": "list_studios",
         "description": "List all Roblox Studio instances and DataModel peers currently connected to the bridge (including Edit mode and running Play Server / Client peers).",
         "inputSchema": {"type": "object", "properties": {}},
@@ -1045,7 +1063,7 @@ TOOL_SPECS = [
     },
     {
         "name": "write_script",
-        "description": "Create or overwrite a Script, LocalScript, or ModuleScript using ScriptEditorService:UpdateSourceAsync (safe past 200 KB and live open editor tabs). Runs local luau_check pre-validation by default, supports expectedHash optimistic locking, and supports replaceInstance=true to bust Studio's ModuleScript require() cache.",
+        "description": "Create or overwrite a script using ScriptEditorService:UpdateSourceAsync. A same-named non-script is destroyed; expectedHash checks an existing script only, not absence or a non-script collision. Syntax validation may fall back or be unavailable. replaceInstance=true recreates the script to bust the require() cache.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1053,7 +1071,7 @@ TOOL_SPECS = [
                 "name": {"type": "string", "description": "Script instance name without extension."},
                 "className": {"type": "string", "enum": ["Script", "LocalScript", "ModuleScript"], "default": "ModuleScript"},
                 "source": {"type": "string", "description": "Complete Luau source code."},
-                "expectedHash": {"type": "string", "description": "Optional 8-char FNV-1a hex hash from script_read to prevent stale overwrites."},
+                "expectedHash": {"type": "string", "description": "Optional FNV-1a hash checked only against an existing script; does not guard missing targets or non-script collisions."},
                 "replaceInstance": {"type": "boolean", "default": False, "description": "Destroy & recreate the script instance so Studio's ModuleScript require() cache refreshes."},
                 "validateSyntax": {"type": "boolean", "default": True, "description": "Pre-check syntax & undefined globals via luau_check before writing."},
                 "dm": DM_PROP,
@@ -1065,7 +1083,7 @@ TOOL_SPECS = [
     },
     {
         "name": "multi_edit",
-        "description": "Apply multiple ordered edits atomically to a script in one undo step. Each edit specifies either {oldText, newText, replaceAll?} OR {startLine, endLine, newText}. Validates ambiguity & hashes up front so partial broken edits never happen.",
+        "description": "Apply ordered edits to a script in one undo step. Each edit specifies either {oldText, newText, replaceAll?} OR {startLine, endLine, newText}. Hash and match checks precede the source write; syntax checking, when enabled, occurs after it. Creating a missing script can itself change the place before later checks fail.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1161,11 +1179,11 @@ TOOL_SPECS = [
                 "peerId": PEER_PROP,
             },
         },
-        "annotations": _ann("Open or List Script Editor Tabs", read_only=True, idempotent=True),
+        "annotations": _ann("Open or List Script Editor Tabs", read_only=False, idempotent=True),
     },
     {
         "name": "require_fresh",
-        "description": "Clone a ModuleScript (and its enclosing package tree so relative sibling requires resolve cleanly too) into an unarchivable sandbox, require() the fresh copy bypassing Studio's stale ModuleScript cache, optionally run a probe function(MODULE, MODULE_INSTANCE, PACKAGE_ROOT), return the serialized result, and clean up automatically.",
+        "description": "Clone a ModuleScript and its package into a temporary sandbox and require it fresh; optionally run a probe. Module initialization and probe code can have side effects outside the clone. Requires write access and may need confirmation.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1177,7 +1195,7 @@ TOOL_SPECS = [
             },
             "required": ["path"],
         },
-        "annotations": _ann("Require Fresh Module (Bypass Cache)", read_only=True, idempotent=True),
+        "annotations": _ann("Require Fresh Module (Bypass Cache)", read_only=False, destructive=True, idempotent=False),
     },
 
     # --- Group D: Luau Execution & Playtest Automation ---
@@ -1309,7 +1327,7 @@ TOOL_SPECS = [
     },
     {
         "name": "mass_set_properties",
-        "description": "Set properties and/or apply relative deltas (e.g. relative={'Position':[0,10,0]}) across many Instances in one single Ctrl+Z undo step.",
+        "description": "Set properties and/or relative deltas across many Instances. Reports per-path and property failures; successful updates may remain when others fail. An Edit-mode undo recording is attempted but is not guaranteed.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1344,7 +1362,7 @@ TOOL_SPECS = [
     },
     {
         "name": "reparent_or_rename",
-        "description": "Move one or more Instances to a new parent cleanly without destroying/recreating them, optionally preserving world Pivot CFrame and/or renaming.",
+        "description": "Move instances or rename a single instance, optionally preserving world Pivot CFrame. A later failure may leave earlier changes if an Edit-mode recording is unavailable; verify results and retain a backup.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1361,7 +1379,7 @@ TOOL_SPECS = [
     },
     {
         "name": "delete_instance",
-        "description": "Destroy one or more Instances atomically in a single Ctrl+Z undo step.",
+        "description": "Destroy resolved Instances and report missing or failed paths. Some targets may be deleted even when others fail; an Edit-mode undo recording is attempted but is not guaranteed.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1502,7 +1520,7 @@ TOOL_SPECS = [
     # --- Group H: Local Luau Toolchain, Drift Audit, Package Sync & Snapshots ---
     {
         "name": "luau_check",
-        "description": "Offline local pre-push verifier: compiles Luau code via luau-compile AND detects genuine undefined globals (filtering standard Roblox API globals) + unused locals via luau-analyze. Works on inline 'code' or a local file/directory 'path' without needing Studio open.",
+        "description": "Offline local pre-push verifier using available luau-compile and luau-analyze binaries. Reports missing toolchains; does not submit a Studio job. Analysis coverage depends on installed binaries and does not prove runtime correctness.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1618,6 +1636,77 @@ TOOL_SPECS = [
             "required": ["preset"],
         },
         "annotations": _ann("Generate Procedural UI/VFX/Surface PNG", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "search_tools",
+        "description": "Search the visible MCP tool catalog offline by name, title and description. Annotations are hints, not authorization or guarantees of peer availability. Use tools/list for full schemas.",
+        "inputSchema": {"type": "object", "properties": {
+            "query": {"type": "string", "default": "", "description": "Task keywords; empty lists tools."},
+            "readOnlyOnly": {"type": "boolean", "default": False, "description": "Only tools whose original annotation declares read-only; excludes mixed-action tools."},
+            "cursor": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}
+        }},
+        "annotations": _ann("Search MCP Tools", read_only=True, idempotent=True),
+    },
+    {
+        "name": "search_skills",
+        "description": "Search bundled Roblox Studio agent skills by task keywords, downweighting common terms and ignoring common English filler. Offline, read-only; use apply_skill to load the full guidance.",
+        "inputSchema": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Keywords describing the task; empty lists all skills."},
+            "includeReferences": {"type": "boolean", "default": False, "description": "Also search bounded bundled reference Markdown; partial scans are reported."},
+            "cursor": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}
+        }},
+        "annotations": _ann("Search Roblox Studio Skills", read_only=True, idempotent=True),
+    },
+    {
+        "name": "apply_skill",
+        "description": "Load a bundled skill's complete instructions into the calling agent's context for it to apply to its current task. This does not modify the agent, persist activation, or change Studio.",
+        "inputSchema": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "Exact skill directory name from search_skills."}
+        }, "required": ["name"]},
+        "annotations": _ann("Load Skill Instructions", read_only=True, idempotent=True),
+    },
+    {
+        "name": "audit_localization",
+        "description": "Offline, read-only audit of caller-supplied translation entries for duplicate keys, missing locale text and mismatched named/positional parameters, format differences and unrecognized brace syntax. Does not inspect Studio or validate translation quality, complete formatting syntax or layout.",
+        "inputSchema": {"type": "object", "properties": {
+            "entries": {"type": "array", "minItems": 1, "maxItems": 200, "items": {"type": "object", "properties": {
+                "key": {"type": "string"}, "source": {"type": "string"},
+                "translations": {"type": "object", "additionalProperties": {"type": "string"}}
+            }, "required": ["key", "source", "translations"]}},
+            "locales": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "string"}, "description": "Exact locale keys to check (no fallback inferred)."},
+            "cursor": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}
+        }, "required": ["entries", "locales"]},
+        "annotations": _ann("Audit Supplied Localization Entries", read_only=True, idempotent=True),
+    },
+    {
+        "name": "audit_onboarding_plan",
+        "description": "Offline structural audit of supplied onboarding milestones: missing objective, completion evidence or recovery, duplicate IDs, missing/ambiguous prerequisites and dependency cycles. Does not inspect Studio or prove player comprehension, authority, persistence or runtime behavior.",
+        "inputSchema": {"type": "object", "properties": {
+            "milestones": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"type": "object", "properties": {
+                "id": {"type": "string"}, "objective": {"type": "string"}, "completionEvidence": {"type": "string"},
+                "recovery": {"type": "string"}, "prerequisites": {"type": "array", "maxItems": 20, "items": {"type": "string"}}
+            }, "required": ["id"]}},
+            "cursor": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}
+        }, "required": ["milestones"]},
+        "annotations": _ann("Audit Onboarding Milestone Plan", read_only=True, idempotent=True),
+    },
+    {
+        "name": "skill_references",
+        "description": "List or read bundled Markdown reference files for an exact skill. Offline, read-only; references are guidance, not executed instructions. Only files under the skill's references directory are exposed.",
+        "inputSchema": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "Exact skill directory name from search_skills."},
+            "action": {"type": "string", "enum": ["list", "read"], "default": "list"},
+            "path": {"type": "string", "description": "For read, exact relative path returned by list, e.g. references/ui.md."},
+            "startLine": {"type": "integer", "minimum": 1, "description": "Optional 1-based first line for read."},
+            "endLine": {"type": "integer", "minimum": 1, "description": "Optional inclusive last line for read."},
+            "cursor": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}
+        }, "required": ["name"]},
+        "annotations": _ann("List or Read Skill References", read_only=True, idempotent=True),
     },
     {
         "name": "browse_kit",
@@ -1790,7 +1879,7 @@ TOOL_SPECS = [
                 "peerId": PEER_PROP,
             },
         },
-        "annotations": _ann("Audit Multi-Device Responsive UI Layout & Bounds", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Audit Multi-Device Responsive UI Layout & Bounds", read_only=False, destructive=False, idempotent=True),
     },
     {
         "name": "install_dropin_system",
@@ -1833,7 +1922,7 @@ TOOL_SPECS = [
                 "peerId": PEER_PROP,
             },
         },
-        "annotations": _ann("Capture Visual 3D Viewport + HUD PNG", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Capture Visual 3D Viewport + HUD PNG", read_only=False, destructive=False, idempotent=True),
     },
     {
         "name": "export_geometry",
@@ -1845,13 +1934,13 @@ TOOL_SPECS = [
         "name": "render_offline",
         "description": "Render live Workspace geometry or a previously exported hierarchy tree into a deterministic PNG. Supply tree/lighting/gui for offline no-peer rendering; supports explicit camera, orthographic projection and HUD toggle.",
         "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "default": "Workspace"}, "tree": {"type": "object", "description": "Previously exported hierarchy tree; when supplied, no Studio peer is required."}, "lighting": {"type": "object"}, "gui": {"type": "array", "items": {"type": "object"}}, "width": {"type": "integer", "default": 800, "minimum": 240, "maximum": 1280}, "height": {"type": "integer", "default": 450, "minimum": 160, "maximum": 800}, "camera": {"type": "object"}, "includeHud": {"type": "boolean", "default": False}, "saveFile": {"type": "string"}, "dm": DM_PROP, "peerId": PEER_PROP}},
-        "annotations": _ann("Render Offline Scene PNG", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Render Offline Scene PNG", read_only=False, destructive=False, idempotent=True),
     },
     {
         "name": "screenshot_gui",
         "description": "Render a ScreenGui hierarchy into an inline PNG. Use dm='client', path='PlayerGui' for live client absolute measurements; edit-mode StarterGui previews report derived measurements.",
         "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "Defaults to StarterGui in edit or PlayerGui in a client DataModel."}, "width": {"type": "integer", "default": 800, "minimum": 240, "maximum": 1280}, "height": {"type": "integer", "default": 450, "minimum": 160, "maximum": 800}, "dm": DM_PROP, "saveFile": {"type": "string"}, "peerId": PEER_PROP}},
-        "annotations": _ann("Screenshot GUI to PNG", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Screenshot GUI to PNG", read_only=False, destructive=False, idempotent=True),
     },
     {
         "name": "mesh_capabilities",
@@ -1867,9 +1956,9 @@ TOOL_SPECS = [
     },
     {
         "name": "batch_write",
-        "description": "Validate and write multiple scripts in a single Studio job/ChangeHistory recording. Any validation or write failure cancels the single transaction.",
-        "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "minItems": 1, "items": {"type": "object"}}, "validateSyntax": {"type": "boolean", "default": True}, "peerId": PEER_PROP}, "required": ["files"]},
-        "annotations": _ann("Atomically Write a Script Batch", read_only=False, destructive=False, idempotent=False),
+        "description": "Validate and write multiple scripts in one Studio job. Edit-mode ChangeHistory recording is attempted, but rollback is not guaranteed if recording is unavailable or the operation has side effects outside it. Use a backup and verify results.",
+        "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"parent": {"type": "string"}, "name": {"type": "string"}, "source": {"type": "string"}, "className": {"type": "string", "enum": ["Script", "LocalScript", "ModuleScript"]}, "expectedHash": {"type": "string"}, "replaceInstance": {"type": "boolean"}, "properties": {"type": "object"}, "attributes": {"type": "object"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["parent", "name", "source"]}}, "validateSyntax": {"type": "boolean", "default": True}, "peerId": PEER_PROP}, "required": ["files"]},
+        "annotations": _ann("Write a Script Batch", read_only=False, destructive=False, idempotent=False),
     },
     {
         "name": "build_biome",
@@ -1905,7 +1994,7 @@ TOOL_SPECS = [
         "name": "self_test",
         "description": "Run the local test suite, syntax/toolchain checks, kit/asset integrity checks, and a Studio scratch write-read-delete smoke test when a live edit peer is available. Returns a per-tool pass/fail/call-count/timing matrix plus a human-readable summary.",
         "inputSchema": {"type": "object", "properties": {"includeStudioSmoke": {"type": "boolean", "default": True}, "timeout": {"type": "integer", "default": 180, "minimum": 10, "maximum": 600}}},
-        "annotations": _ann("Run Bridge Self Test", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Run Bridge Self Test", read_only=False, destructive=False, idempotent=True),
     },
     {
         "name": "audit_3d_scene",
@@ -2028,7 +2117,7 @@ TOOL_SPECS = [
                 "includeDone": {"type": "boolean", "description": "Include finished tasks in `tasks` / `export`."},
             },
         },
-        "annotations": _ann("Multi-Agent Coordination Bus", read_only=True, destructive=False, idempotent=False),
+        "annotations": _ann("Multi-Agent Coordination Bus", read_only=False, destructive=False, idempotent=False),
     },
     {
         "name": "bridge_ops",
@@ -2278,11 +2367,30 @@ TOOL_SPECS = [
 ]
 
 TOOL_MAP = {t["name"]: t for t in TOOL_SPECS}
+# Inspector exposes these mixed tools for their read-only actions only.
+INSPECTOR_MIXED_TOOLS = frozenset((
+    "manage_attributes", "manage_tags", "manage_selection", "manage_camera",
+    "undo_redo", "edit_terrain", "start_stop_play", "drift_and_sync", "manage_snapshots",
+    "open_script_in_editor", "audit_ui_layout", "capture_viewport", "render_offline", "screenshot_gui",
+    "self_test", "agent_bus", "manage_device_simulator", "audit_3d_scene", "bridge_ops",
+    "find_and_replace_scripts", "open_cloud_action",
+))
 
 
 # ---------------------------------------------------------------------------
 # Read-only classification per tool invocation
 # ---------------------------------------------------------------------------
+
+def is_bus_action_read_only(args: dict) -> bool:
+    action = args.get("action") or "stats"
+    if action in ("stats", "agents", "list_agents", "inbox", "tasks", "list_tasks", "thread", "feed", "events"):
+        return True
+    if action == "status":
+        return not (args.get("agentId") and args.get("status"))
+    if action in ("export", "handoff"):
+        return not args.get("path")
+    return False
+
 
 def is_tool_call_read_only(name: str, args: dict) -> bool:
     spec = TOOL_MAP.get(name)
@@ -2290,6 +2398,16 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
         return True
     if spec["annotations"].get("readOnlyHint"):
         return True
+    if name == "agent_bus":
+        return is_bus_action_read_only(args)
+    if name == "self_test":
+        return args.get("includeStudioSmoke", True) is False
+    if name == "open_script_in_editor":
+        return args.get("listOnly") is True
+    if name == "audit_ui_layout":
+        return not args.get("deviceSweep", False)
+    if name in ("capture_viewport", "render_offline", "screenshot_gui"):
+        return not args.get("saveFile")
     if name == "find_and_replace_scripts" and args.get("dryRun") is True:
         return True
     if name == "manage_attributes" and args.get("action", "get") == "get":
@@ -2315,10 +2433,6 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
     if name == "open_cloud_action" and args.get("action") in ("datastore_list", "datastore_get"):
         return True
     if name == "manage_device_simulator" and args.get("action", "status") in ("status", "list"):
-        return True
-    if name == "agent_bus" and args.get("action", "stats") in (
-        "stats", "agents", "inbox", "tasks", "thread", "feed", "status",
-    ):
         return True
     if name == "bridge_ops" and args.get("action", "status") in (
         "status", "metrics", "audit", "audit_verify", "events", "tunnel", "subscriptions",
@@ -2363,6 +2477,124 @@ def validate_arguments(schema: dict, args: dict) -> str:
     return ""
 
 
+def validate_action_arguments(name: str, args: dict) -> str:
+    """Validate compatibility-sensitive action semantics before gating or dispatch.
+
+    This is deliberately targeted, not a complete JSON Schema implementation.
+    """
+    if name in ("delete_instance", "mass_set_properties", "reparent_or_rename"):
+        paths = args.get("paths")
+        if not isinstance(paths, list) or not paths:
+            return "Parameter 'paths' must contain at least one path."
+        for index, path in enumerate(paths, 1):
+            if not isinstance(path, str) or not path.strip(" ./\t\r\n"):
+                return f"Path #{index} must be a non-empty instance path."
+        if name == "mass_set_properties" and not (args.get("properties") or args.get("relative")):
+            return "Provide non-empty properties or relative deltas."
+        if name == "reparent_or_rename":
+            if not args.get("newParent") and not args.get("newName"):
+                return "Provide newParent or newName."
+            if args.get("newName") and len(paths) != 1:
+                return "newName requires exactly one path."
+    if name == "set_properties":
+        if not args.get("path", "").strip(" ./\t\r\n"):
+            return "Parameter 'path' must be a non-empty instance path."
+        if not args.get("properties"):
+            return "Parameter 'properties' must not be empty."
+    if name == "manage_camera":
+        action = args.get("action", "get")
+        if action == "focus":
+            if not (args.get("path") or "").strip(" ./\t\r\n"):
+                return "Camera focus requires a non-empty path."
+            distance = args.get("distanceMultiplier")
+            if distance is not None and (distance <= 0 or distance > 1e308 or
+                                         (isinstance(distance, float) and not math.isfinite(distance))):
+                return "distanceMultiplier must be finite and positive."
+        if action == "set":
+            if not any(args.get(key) is not None for key in ("position", "fov")):
+                return "Camera set requires position or fov."
+            if args.get("lookAt") is not None and args.get("position") is None:
+                return "Camera lookAt requires position."
+            for key in ("position", "lookAt"):
+                value = args.get(key)
+                if value is not None and (len(value) != 3 or any(
+                    isinstance(v, bool) or not isinstance(v, (int, float)) or
+                    (isinstance(v, float) and not math.isfinite(v)) or abs(v) > 1e308
+                    for v in value)):
+                    return f"Camera {key} must contain three finite numbers."
+            fov = args.get("fov")
+            if fov is not None and (not 1 <= fov <= 120 or
+                                    (isinstance(fov, float) and not math.isfinite(fov))):
+                return "Camera fov must be between 1 and 120."
+    if name == "clone_instance":
+        if not args.get("path", "").strip(" ./\t\r\n"):
+            return "Parameter 'path' must be a non-empty instance path."
+        count = args.get("count", 1)
+        if count is not None and not 1 <= count <= 500:
+            return "Parameter 'count' must be between 1 and 500."
+        offset = args.get("offset")
+        if offset is not None and (len(offset) != 3 or any(
+                isinstance(v, bool) or not isinstance(v, (int, float)) or
+                (isinstance(v, float) and not math.isfinite(v)) or abs(v) > 1e308
+                for v in offset)):
+            return "Parameter 'offset' must contain three finite numbers."
+    if name == "batch_write":
+        files = args.get("files")
+        if not isinstance(files, list) or not files:
+            return "Parameter 'files' must contain at least one script."
+        for index, entry in enumerate(files, 1):
+            prefix = f"File #{index}"
+            if not isinstance(entry, dict):
+                return f"{prefix} must be an object."
+            for key in ("parent", "name", "source"):
+                if not isinstance(entry.get(key), str):
+                    return f"{prefix} requires a string {key}."
+            if not entry["parent"].strip() or not entry["name"].strip():
+                return f"{prefix} parent and name must not be empty."
+            if "className" in entry and entry["className"] not in ("Script", "LocalScript", "ModuleScript"):
+                return f"{prefix} className must be Script, LocalScript, or ModuleScript."
+            if "expectedHash" in entry and not isinstance(entry["expectedHash"], str):
+                return f"{prefix} expectedHash must be a string."
+            if "replaceInstance" in entry and not isinstance(entry["replaceInstance"], bool):
+                return f"{prefix} replaceInstance must be a boolean."
+            for key in ("properties", "attributes"):
+                if key in entry and not isinstance(entry[key], dict):
+                    return f"{prefix} {key} must be an object."
+            if "tags" in entry and (not isinstance(entry["tags"], list) or
+                                    any(not isinstance(tag, str) for tag in entry["tags"])):
+                return f"{prefix} tags must be an array of strings."
+        return ""
+    if name != "multi_edit":
+        return ""
+    edits = args.get("edits")
+    if not isinstance(edits, list) or not edits:
+        return "Parameter 'edits' must contain at least one edit."
+    for index, edit in enumerate(edits, 1):
+        prefix = f"Edit #{index}"
+        if not isinstance(edit, dict):
+            return f"{prefix} must be an object."
+        if not isinstance(edit.get("newText"), str):
+            return f"{prefix} requires a string newText."
+        has_old = "oldText" in edit
+        has_start = "startLine" in edit
+        has_end = "endLine" in edit
+        if has_old and (has_start or has_end):
+            return f"{prefix} must not combine oldText with line coordinates."
+        if has_old:
+            if not isinstance(edit["oldText"], str):
+                return f"{prefix} oldText must be a string."
+            if "replaceAll" in edit and not isinstance(edit["replaceAll"], bool):
+                return f"{prefix} replaceAll must be a boolean."
+        else:
+            start, end = edit.get("startLine"), edit.get("endLine")
+            if (isinstance(start, bool) or not isinstance(start, int) or start < 1 or
+                    isinstance(end, bool) or not isinstance(end, int) or end < start - 1):
+                return f"{prefix} requires integer startLine >= 1 and endLine >= startLine - 1."
+            if "replaceAll" in edit:
+                return f"{prefix} replaceAll is only valid with oldText."
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Tool Execution Engine
 # ---------------------------------------------------------------------------
@@ -2385,6 +2617,95 @@ def _unwrap_job(job: dict) -> dict:
         f"Studio did not complete job {job.get('id')} in time (status={status}). "
         "Verify Roblox Studio is open and connected."
     )
+
+
+def _reported_version(value):
+    # Registry fields are peer supplied. Do not echo arbitrary text, URLs or tokens.
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,4}(?:\.[0-9]{1,4}){1,3}", value):
+        return value
+    return None
+
+
+def _diagnostic_error(exc):
+    cause = exc.__cause__ or exc
+    if isinstance(cause, urllib.error.HTTPError):
+        if cause.code in (401, 403):
+            return "auth_error"
+        return "bridge_error"
+    if isinstance(cause, (urllib.error.URLError, TimeoutError, OSError)):
+        return "bridge_unreachable"
+    return "bridge_error"
+
+
+def diagnose_connection_helper(client):
+    """Inspect registry only; never submit jobs, inspect tokens, or echo transport errors."""
+    report = {"status": "unknown", "bridge": {"status": "unknown"},
+              "readAccess": "unknown", "peers": {"status": "unknown"},
+              "checks": [], "limitations": [
+                  "Registry information is self-reported and may be stale; no Studio job or runtime capability test was performed.",
+                  "This check does not inspect installed plugins, expose credentials, or verify client RPC or feature support."]}
+    try:
+        health = client.health()
+        if not isinstance(health, dict) or health.get("ok") is not True:
+            raise ValueError("invalid bridge health")
+    except Exception as exc:
+        status = _diagnostic_error(exc)
+        report["status"] = status
+        report["bridge"]["status"] = status
+        report["checks"].append({"code": status, "severity": "error",
+                                  "nextStep": "Check the bridge is running and the configured connection is correct; inspect local logs without sharing secrets."})
+        return report
+    report["bridge"] = {"status": "reachable", "version": _reported_version(health.get("version")),
+                        "readOnly": health.get("read_only") if isinstance(health.get("read_only"), bool) else None,
+                        "inspectorMode": bool(client.read_only),
+                        "queuePaused": health.get("queuePaused") if isinstance(health.get("queuePaused"), bool) else None}
+    try:
+        response = client.peers()
+        if not isinstance(response, dict) or not isinstance(response.get("peers"), list) or not all(isinstance(p, dict) and isinstance(p.get("online"), bool) for p in response["peers"]):
+            raise ValueError("invalid peer registry")
+    except Exception as exc:
+        status = _diagnostic_error(exc)
+        report["status"] = status
+        report["readAccess"] = "denied" if status == "auth_error" else "unknown"
+        report["checks"].append({"code": status, "severity": "error",
+                                  "nextStep": "Check the bridge connection and read authorization; do not paste credentials into chat or logs."})
+        return report
+    report["readAccess"] = ("direct_dispatch" if client.direct_dispatch else
+                            "open" if health.get("authMode") == "open" else
+                            "authorized" if health.get("authMode") == "scoped" else "unknown")
+    peers = response["peers"]
+    online = [p for p in peers if p.get("online") is True]
+    report["peers"] = {"status": "online" if online else "none_online",
+                       "online": len(online), "stale": len(peers) - len(online),
+                       "edit": sum(p.get("dm") == "edit" for p in online),
+                       "server": sum(p.get("dm") == "server" for p in online),
+                       "clientAdvertised": sum(p.get("dm") == "client" or p.get("hasClient") is True for p in online)}
+    if not online:
+        report["status"] = "no_peer"
+        report["checks"].append({"code": "no_peer", "severity": "warning", "nextStep": "Open Studio, load and connect the plugin, then check its bridge address and authorization locally."})
+    else:
+        report["status"] = "connected"
+    if report["readAccess"] == "open":
+        report["checks"].append({"code": "open_auth", "severity": "warning", "nextStep": "Review bridge authentication and exposure before allowing remote access."})
+    if report["bridge"]["queuePaused"] is True:
+        report["checks"].append({"code": "queue_paused", "severity": "warning", "nextStep": "Ask the operator to review the paused queue before sending Studio jobs."})
+    try:
+        plugin_source = (Path(__file__).resolve().parent / "ArenaBridge.lua").read_text(encoding="utf-8")
+        match = re.search(r'^local PLUGIN_VERSION = "([0-9.]+)"', plugin_source, re.MULTILINE)
+        bundled = _reported_version(match.group(1)) if match else None
+    except (OSError, UnicodeError):
+        bundled = None
+    versions = sorted({_reported_version(p.get("pluginVersion")) for p in online} - {None})
+    unknown = sum(_reported_version(p.get("pluginVersion")) is None for p in online)
+    report["pluginVersions"] = {"bundled": bundled, "reportedOnline": versions, "unknownOnline": unknown}
+    def version_tuple(v):
+        parts = tuple(map(int, v.split(".")))
+        return parts + (0,) * (4 - len(parts))
+    if bundled and any(version_tuple(v) < version_tuple(bundled) for v in versions):
+        report["checks"].append({"code": "older_plugin_reported", "severity": "warning", "nextStep": "Review the installed plugin version and update it through the setup workflow if appropriate; probe required features separately."})
+    if unknown:
+        report["checks"].append({"code": "unknown_plugin_version", "severity": "warning", "nextStep": "Check the connected plugin version locally; do not infer compatibility from an unknown version."})
+    return report
 
 
 def create_snapshot_helper(client: BridgeClient, root: str = "game", label: str = None, peer_id: str = None, paths_filter: list = None) -> dict:
@@ -2512,20 +2833,12 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
         return run_bridge_self_test(client, include_studio_smoke=args.get("includeStudioSmoke", True), timeout=args.get("timeout", 180))
 
     if name == "luau_check":
-        result = run_luau_check(code=args.get("code"), path=args.get("path"))
-        if result.get("ok") or result.get("toolchainAvailable"):
-            return result
-        if args.get("code") is not None:
-            checked = _studio_luau_check(client, args["code"], "inline.lua", dm=dm if dm != "auto" else "edit", peer_id=peer_id)
-            return {"ok": checked["ok"], "backend": checked["backend"], "filesChecked": 1, "filesFailed": 0 if checked["ok"] else 1, "results": [checked], "warnings": checked.get("warnings", [])}
-        target = Path(args["path"]).expanduser().resolve()
-        files = [target] if target.is_file() else sorted(p for p in target.rglob("*") if p.is_file() and p.suffix.lower() in (".lua", ".luau"))
-        checked_files = []
-        for file in files:
-            chk = _studio_luau_check(client, file.read_text(encoding="utf-8"), str(file), dm=dm if dm != "auto" else "edit", peer_id=peer_id)
-            checked_files.append(chk)
-        failed = sum(not x.get("ok") for x in checked_files)
-        return {"ok": failed == 0, "backend": "studio-loadstring", "filesChecked": len(checked_files), "filesFailed": failed, "results": checked_files, "warnings": [] if checked_files else ["No .lua or .luau files found."]}
+        # This tool is advertised as offline/read-only. Never submit a
+        # run_luau job as a fallback, even if a Studio peer is available.
+        return run_luau_check(code=args.get("code"), path=args.get("path"))
+
+    if name == "diagnose_connection":
+        return diagnose_connection_helper(client)
 
     if name == "list_studios":
         return client.peers()
@@ -3079,9 +3392,9 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
         }, wait=20.0, dm="edit", peer_id=peer_id))
 
     if name == "manage_camera":
-        return _unwrap_job(client.submit_job("camera", {
-            k: args[k] for k in ("action", "path", "position", "lookAt", "fov", "distanceMultiplier") if k in args
-        }, wait=20.0, dm=dm, peer_id=peer_id))
+        camera_args = {k: args[k] for k in ("path", "position", "lookAt", "fov", "distanceMultiplier") if k in args}
+        camera_args["action"] = args.get("action", "get")
+        return _unwrap_job(client.submit_job("camera", camera_args, wait=20.0, dm=dm, peer_id=peer_id))
 
     if name == "undo_redo":
         return _unwrap_job(client.submit_job("history", {
@@ -3160,6 +3473,31 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
                 }, wait=30.0, dm="edit", peer_id=peer_id))
                 restored.append(entry["path"])
             return {"restoredSnapshot": args["snapshotId"], "restoredCount": len(restored), "paths": restored}
+
+    if name == "search_tools":
+        return search_tools_helper(args.get("query", ""), args.get("readOnlyOnly", False),
+                                   args.get("cursor", 0), args.get("limit", 20),
+                                   read_only=bool(client and client.read_only))
+
+    if name == "search_skills":
+        return search_skills_helper(args.get("query", ""), args.get("cursor", 0), args.get("limit", 20), args.get("includeReferences", False))
+
+    if name == "apply_skill":
+        return apply_skill_helper(args.get("name"))
+
+    if name == "audit_onboarding_plan":
+        from onboarding_auditor import audit_onboarding_plan
+        return audit_onboarding_plan(args.get("milestones"), cursor=args.get("cursor", 0), limit=args.get("limit", 50))
+
+    if name == "audit_localization":
+        from localization_auditor import audit_localization
+        return audit_localization(args.get("entries"), args.get("locales"),
+                                  args.get("cursor", 0), args.get("limit", 50))
+
+    if name == "skill_references":
+        return skill_references_helper(args.get("name"), args.get("action", "list"),
+                                       args.get("path"), args.get("cursor", 0), args.get("limit", 20),
+                                       start_line=args.get("startLine"), end_line=args.get("endLine"))
 
     if name == "browse_kit":
         return browse_kit_helper(category=args.get("category", "all"), item=args.get("item"),
@@ -3612,8 +3950,8 @@ def read_mcp_resource(client: BridgeClient, uri: str) -> dict:
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
     if uri.startswith("skill://"):
         skill_name = uri[len("skill://") :].strip("/")
-        data = browse_kit_helper(category="skills", item=skill_name)
-        return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": data.get("content", "")}]}
+        data = apply_skill_helper(skill_name)
+        return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": data["instructions"]}]}
     raise KeyError(f"Unknown resource URI: {uri}")
 
 
@@ -3627,6 +3965,291 @@ def _find_skills_dir() -> Path:
         if cand.is_dir():
             return cand
     return here.parent / ".claude" / "skills"
+
+
+def _skill_files():
+    """Only expose direct, real skill directories contained in the skills root."""
+    root = _find_skills_dir().resolve()
+    if not root.is_dir():
+        return []
+    return [(d.name, d / "SKILL.md") for d in sorted(root.iterdir())
+            if not d.is_symlink() and d.is_dir() and (d / "SKILL.md").is_file()
+            and not (d / "SKILL.md").is_symlink()]
+
+
+def _skill_description(content):
+    # Handle the simple scalar and folded/literal block metadata used by the
+    # bundled skills without requiring a YAML dependency.
+    if not content.startswith("---\n"):
+        return ""
+    front = content.split("\n---", 1)[0]
+    lines = front.splitlines()
+    for i, line in enumerate(lines):
+        match = re.match(r"^description:\s*(.*)$", line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value in (">", ">-", ">+", "|", "|-", "|+"):
+            parts = []
+            for following in lines[i + 1:]:
+                if following and not following[0].isspace():
+                    break
+                parts.append(following.strip())
+            return " ".join(part for part in parts if part)
+        return value.strip('"')
+    return ""
+
+
+# Small, explicit English filler list. Do not remove Roblox/domain terms: a
+# short query such as "ui" or "security" must remain useful.
+_SKILL_SEARCH_STOP_WORDS = frozenset("""
+a an and are as at be been but by can could do does for from had has have how
+I if in into is it its me my of on or our please should so that the their them
+there these they this to us was we what when where which who why will with would
+you your make create build add want need help use using fix show
+""".casefold().split())
+
+
+def _skill_search_words(text):
+    return set(re.findall(r"[^\W_]+", text.casefold(), re.UNICODE))
+
+
+def search_tools_helper(query="", read_only_only=False, cursor=0, limit=20, read_only=False):
+    if not isinstance(query, str):
+        raise ValueError("query must be a string")
+    if not isinstance(read_only_only, bool):
+        raise ValueError("readOnlyOnly must be a boolean")
+    if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+        raise ValueError("cursor must be a non-negative integer")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be an integer between 1 and 100")
+    terms = _skill_search_words(query) - _SKILL_SEARCH_STOP_WORDS
+    results = []
+    for spec in TOOL_SPECS:
+        annotations = spec["annotations"]
+        if read_only and not (annotations.get("readOnlyHint") or spec["name"] in INSPECTOR_MIXED_TOOLS):
+            continue
+        if read_only_only and not annotations.get("readOnlyHint"):
+            continue
+        fields = {"name": _skill_search_words(spec["name"]),
+                  "title": _skill_search_words(annotations.get("title", "")),
+                  "description": _skill_search_words(spec.get("description", ""))}
+        matched = {t for t in terms if any(t in words for words in fields.values())}
+        if query.strip() and not matched:
+            continue
+        score = sum(5 * (t in fields["name"]) + 3 * (t in fields["title"]) +
+                    (t in fields["description"]) for t in matched)
+        if query.strip().casefold() == spec["name"].casefold():
+            score += 10
+        results.append({"name": spec["name"], "title": annotations.get("title", ""),
+                        "description": spec.get("description", ""),
+                        "annotations": dict(annotations), "score": score,
+                        "matchedTerms": sorted(matched),
+                        "matchedFields": [field for field, words in fields.items() if matched & words]})
+    results.sort(key=lambda item: (-item["score"], item["name"]))
+    return {"query": query, "total": len(results), "results": results[cursor:cursor + limit],
+            "nextCursor": cursor + limit if cursor + limit < len(results) else None,
+            "note": "Catalog hints do not authorize calls or guarantee a connected Studio peer. Mixed-action tools may be restricted by Inspector mode."}
+
+
+def search_skills_helper(query="", cursor=0, limit=20, include_references=False):
+    if not isinstance(query, str):
+        raise ValueError("query must be a string")
+    if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+        raise ValueError("cursor must be a non-negative integer")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be an integer between 1 and 100")
+    if not isinstance(include_references, bool):
+        raise ValueError("includeReferences must be a boolean")
+    terms = _skill_search_words(query) - _SKILL_SEARCH_STOP_WORDS
+    # Empty query explicitly means list all. A filler-only query must not
+    # silently list everything or produce spurious recommendations.
+    list_all = not query.strip()
+    documents = []
+    for name, path in _skill_files():
+        content = path.read_text(encoding="utf-8")
+        description = _skill_description(content)
+        fields = {"name": _skill_search_words(name),
+                  "description": _skill_search_words(description),
+                  "instructions": _skill_search_words(content)}
+        documents.append((name, description, fields))
+    reference_matches = {}
+    reference_info = None
+    if include_references:
+        reference_matches, reference_info = _search_skill_references(documents, terms)
+        for name, _, fields in documents:
+            fields["references"] = set().union(*(set(item["matchedTerms"]) for item in reference_matches.get(name, [])))
+    frequencies = {term: sum(any(term in words for words in fields.values())
+                             for _, _, fields in documents) for term in terms}
+    results = []
+    for name, description, fields in documents:
+        matched = {term for term in terms if any(term in words for words in fields.values())}
+        if not list_all and not matched:
+            continue
+        # Inverse document frequency rewards informative task words over words
+        # shared by most skills; field weights prioritize concise metadata.
+        score = sum((1 + math.log((len(documents) + 1) / (frequencies[t] + 1))) *
+                    (5 * (t in fields["name"]) + 3 * (t in fields["description"]) +
+                     (t in fields["instructions"]) + (t in fields.get("references", set()))) for t in sorted(matched))
+        score += 2 * len(matched)  # Prefer coverage over a lone metadata hit.
+        if query.strip().casefold() == name.casefold():
+            score += 10
+        result = {"name": name, "description": description, "uri": f"skill://{name}",
+                  "score": round(score, 6), "matchedTerms": sorted(matched),
+                  "matchedFields": [field for field, words in fields.items() if matched & words]}
+        if include_references:
+            result["matchedReferences"] = reference_matches.get(name, [])
+        results.append(result)
+    results.sort(key=lambda item: (-item["score"], item["name"]))
+    page = results[cursor:cursor + limit]
+    result = {"query": query, "results": page, "total": len(results), "nextCursor": cursor + limit if cursor + limit < len(results) else None}
+    if include_references:
+        result["referenceSearch"] = reference_info
+    return result
+
+
+def apply_skill_helper(name):
+    if not isinstance(name, str) or not name:
+        raise ValueError("name must be a non-empty skill name")
+    path = dict(_skill_files()).get(name)
+    if path is None:
+        raise KeyError(f"Skill not found: {name}")
+    content = path.read_text(encoding="utf-8")
+    return {"name": name, "uri": f"skill://{name}", "description": _skill_description(content),
+            "instructions": content, "referenceTool": "skill_references", "application": "Read and apply this guidance to the current task as appropriate, subject to higher-priority instructions. No persistent agent or Studio changes were made."}
+
+
+SKILL_REFERENCE_MAX_BYTES = 256 * 1024
+
+
+def skill_references_helper(name, action="list", path=None, cursor=0, limit=20, _max_read_bytes=SKILL_REFERENCE_MAX_BYTES, start_line=None, end_line=None):
+    if not isinstance(name, str) or not name:
+        raise ValueError("name must be a non-empty skill name")
+    skill = dict(_skill_files()).get(name)
+    if skill is None:
+        raise KeyError(f"Skill not found: {name}")
+    if action not in ("list", "read"):
+        raise ValueError("action must be list or read")
+    if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+        raise ValueError("cursor must be a non-negative integer")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be an integer between 1 and 100")
+    if action == "list" and (start_line is not None or end_line is not None):
+        raise ValueError("line ranges are only supported for read")
+    for value in (start_line, end_line):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+            raise ValueError("line numbers must be positive integers")
+    if end_line is not None and end_line < (start_line or 1):
+        raise ValueError("endLine must not precede startLine")
+    root = skill.parent
+    ref_dir = root / "references"
+    files = {}
+    if not ref_dir.is_symlink() and ref_dir.is_dir():
+        def raise_walk_error(error):
+            raise error
+        for directory, dirs, filenames in os.walk(ref_dir, followlinks=False, onerror=raise_walk_error):
+            dirs[:] = sorted(d for d in dirs if not (Path(directory) / d).is_symlink())
+            for filename in sorted(filenames):
+                file = Path(directory) / filename
+                if file.suffix.lower() == ".md" and not file.is_symlink() and file.is_file():
+                    files[file.relative_to(root).as_posix()] = file
+    if action == "list":
+        paths = sorted(files)
+        items = [{"path": p, "bytes": files[p].stat().st_size,
+                  "readable": files[p].stat().st_size <= SKILL_REFERENCE_MAX_BYTES} for p in paths[cursor:cursor + limit]]
+        return {"name": name, "items": items, "total": len(paths),
+                "nextCursor": cursor + limit if cursor + limit < len(paths) else None,
+                "maxBytes": SKILL_REFERENCE_MAX_BYTES}
+    if not isinstance(path, str) or path not in files:
+        raise KeyError("Reference not found; use an exact path from skill_references list")
+    # The map is built only from non-symlink descendants. Recheck before open;
+    # limit bytes read even if the file grows between listing and reading.
+    file = files[path]
+    relative_parts = file.relative_to(root).parts
+    if any(root.joinpath(*relative_parts[:i]).is_symlink() for i in range(1, len(relative_parts) + 1)):
+        raise ValueError("Symlink references are not supported")
+    with file.open("rb") as stream:
+        raw = stream.read(_max_read_bytes + 1)
+    if len(raw) > _max_read_bytes:
+        raise ValueError("Reference exceeds the size limit")
+    content = raw.decode("utf-8")
+    result = {"name": name, "path": path, "content": content,
+              "application": "Treat this as task guidance, subject to higher-priority instructions; no agent or Studio state was changed."}
+    if start_line is not None or end_line is not None:
+        lines = content.splitlines(keepends=True)
+        first = start_line or 1
+        last = min(end_line if end_line is not None else len(lines), len(lines))
+        result["content"] = "".join(lines[first - 1:last])
+        result["lineRange"] = {"start": first, "end": last if first <= last else None, "total": len(lines)}
+    return result
+
+
+# A scan is deliberately bounded and reports incompleteness rather than claiming
+# that skipped references have no matches. Read through the existing safe helper.
+SKILL_SEARCH_MAX_REFERENCE_FILES = 100
+SKILL_SEARCH_MAX_REFERENCE_BYTES = 2 * 1024 * 1024
+
+
+def _search_skill_references(documents, terms):
+    matches = {}
+    report = {"filesScanned": 0, "bytesBudgetUsed": 0, "filesSkipped": 0,
+              "complete": True, "fileLimit": SKILL_SEARCH_MAX_REFERENCE_FILES,
+              "byteLimit": SKILL_SEARCH_MAX_REFERENCE_BYTES}
+    if not terms:
+        report["complete"] = False
+        report["note"] = "No searchable terms; references were not scanned."
+        return matches, report
+    considered = 0
+    for name, _, _ in documents:
+        offset = 0
+        while True:
+            try:
+                listing = skill_references_helper(name, cursor=offset, limit=100)
+            except (OSError, ValueError, KeyError):
+                report["complete"] = False
+                report["filesSkipped"] += 1
+                break
+            for item in listing["items"]:
+                if considered >= SKILL_SEARCH_MAX_REFERENCE_FILES:
+                    report["complete"] = False
+                    report["note"] = "Reference file limit reached; later files were not scanned."
+                    return matches, report
+                considered += 1
+                if not item["readable"] or report["bytesBudgetUsed"] + item["bytes"] > SKILL_SEARCH_MAX_REFERENCE_BYTES:
+                    report["complete"] = False
+                    report["filesSkipped"] += 1
+                    continue
+                remaining = SKILL_SEARCH_MAX_REFERENCE_BYTES - report["bytesBudgetUsed"]
+                try:
+                    content = skill_references_helper(name, action="read", path=item["path"],
+                                                      _max_read_bytes=min(SKILL_REFERENCE_MAX_BYTES, remaining))["content"]
+                    size = len(content.encode("utf-8"))
+                except UnicodeError:
+                    report["bytesBudgetUsed"] += item["bytes"]
+                    report["complete"] = False
+                    report["filesSkipped"] += 1
+                    continue
+                except ValueError:
+                    # A file may have grown beyond the remaining budget; stop
+                    # reading further content rather than trusting the old stat.
+                    report["bytesBudgetUsed"] = SKILL_SEARCH_MAX_REFERENCE_BYTES
+                    report["complete"] = False
+                    report["filesSkipped"] += 1
+                    continue
+                except (OSError, KeyError):
+                    report["bytesBudgetUsed"] += item["bytes"]
+                    report["complete"] = False
+                    report["filesSkipped"] += 1
+                    continue
+                report["bytesBudgetUsed"] += size
+                report["filesScanned"] += 1
+                matched = terms & _skill_search_words(content)
+                if matched:
+                    matches.setdefault(name, []).append({"path": item["path"], "matchedTerms": sorted(matched)})
+            if listing["nextCursor"] is None:
+                break
+            offset = listing["nextCursor"]
+    return matches, report
 
 
 _CLOUD_ICONS_CACHE = None
@@ -4024,8 +4647,8 @@ def browse_kit_helper(category: str = "all", item: str = None, output_format: st
     if item:
         target = item.strip()
         # Check skill
-        s_file = skills_dir / target / "SKILL.md"
-        if category in ("all", "skills") and s_file.is_file():
+        s_file = dict(_skill_files()).get(target)
+        if category in ("all", "skills") and s_file is not None:
             return {"type": "skill", "name": target, "path": str(s_file), "content": s_file.read_text(encoding="utf-8")}
         # Check Luau module
         m_stem = target[:-4] if target.endswith(".lua") else target
@@ -6011,17 +6634,13 @@ class MCPDispatcher:
     def visible_tools(self) -> list:
         if not self.client.read_only:
             return TOOL_SPECS
-        # In read-only Inspector mode, advertise only tools that are read-only
-        # or have read-only query sub-actions, marking them clearly.
+        # In Inspector mode advertise read-only tools and mixed tools with safe
+        # actions, preserving their original (conservative) annotations.
         allowed = []
         for t in TOOL_SPECS:
-            if t["annotations"].get("readOnlyHint") or t["name"] in (
-                "manage_attributes", "manage_tags", "manage_selection",
-                "manage_camera", "undo_redo", "edit_terrain",
-                "start_stop_play", "drift_and_sync", "manage_snapshots",
-            ):
+            if t["annotations"].get("readOnlyHint") or t["name"] in INSPECTOR_MIXED_TOOLS:
                 copy_t = dict(t)
-                copy_t["annotations"] = dict(t["annotations"], readOnlyHint=True, destructiveHint=False)
+                copy_t["annotations"] = dict(t["annotations"])
                 allowed.append(copy_t)
         return allowed
 
@@ -6328,9 +6947,11 @@ class MCPDispatcher:
                     }
             return view
 
-    def _task_list(self) -> list:
+    def _task_list(self, principal=None) -> list:
         with self._task_lock:
-            items = sorted(self.tasks.values(), key=lambda t: t["createdAt"], reverse=True)
+            items = sorted((t for t in self.tasks.values() if principal is None or
+                            self.gate.same_principal(t.get("principal"), principal)),
+                           key=lambda t: t["createdAt"], reverse=True)
         return [
             {
                 "taskId": t["taskId"],
@@ -6390,6 +7011,17 @@ class MCPDispatcher:
                          "'result' field."),
             })
 
+        # A task may contain source, results and confirmation state. Only its
+        # originating principal can inspect, update or cancel it. Avoid
+        # disclosing whether another principal's task ID exists.
+        if method != "tasks/list":
+            task_id = (params or {}).get("taskId")
+            with self._task_lock:
+                task = self.tasks.get(task_id) if isinstance(task_id, str) else None
+                owns_task = bool(task and self.gate.same_principal(task.get("principal"), ctx.get("principal")))
+            if not owns_task:
+                return self._err(msg_id, -32602, "Unknown task")
+
         if method == "tasks/get":
             view = self._task_view((params or {}).get("taskId"), modern=modern)
             if view is None:
@@ -6405,7 +7037,7 @@ class MCPDispatcher:
             return self._ok(msg_id, payload)
 
         if method == "tasks/list":
-            return self._ok(msg_id, {"tasks": self._task_list()})
+            return self._ok(msg_id, {"tasks": self._task_list(ctx.get("principal"))})
 
         if method == "tasks/cancel":
             tid = (params or {}).get("taskId")
@@ -7180,20 +7812,17 @@ class MCPDispatcher:
 
     def _invoke_tool(self, tname: str, targs: dict) -> dict:
         """Run one tool call and return the MCP CallToolResult payload."""
+        if self.client.read_only and not is_tool_call_read_only(tname, targs):
+            return {
+                "isError": True,
+                "content": [{"type": "text", "text": f"Blocked by Read-Only Inspector mode: tool '{tname}' may change state."}],
+            }
         local = self._local_ops(tname, targs)
         if local is not None:
             return {
                 "isError": False,
                 "content": [{"type": "text", "text": json.dumps(local, indent=2)}],
                 "structuredContent": local,
-            }
-        if self.client.read_only and not is_tool_call_read_only(tname, targs):
-            return {
-                "isError": True,
-                "content": [{
-                    "type": "text",
-                    "text": f"Blocked by Read-Only Inspector mode: tool '{tname}' with arguments {json.dumps(targs)} mutates Studio state.",
-                }],
             }
         try:
             data = execute_tool(self.client, tname, targs)
@@ -7280,6 +7909,8 @@ class MCPDispatcher:
                     return self._err(msg_id, -32602, f"Unknown tool: {tname!r}")
 
                 validation_err = validate_arguments(TOOL_MAP[tname]["inputSchema"], targs)
+                if not validation_err:
+                    validation_err = validate_action_arguments(tname, targs)
                 if validation_err:
                     return self._err(msg_id, -32602, validation_err)
 
