@@ -259,9 +259,27 @@ typical, worst 10). They need a real playtest to confirm end to end.
 
 ---
 
+## v6.0 Studio Plugin v6, Bulletproof Playtest Stop & 90 MCP Tools (2026-11-13)
+
+The bridge and Studio plugin (`ArenaBridge.lua`) are now `6.0.0`:
+- **Studio Plugin `v6.0.0` (`ArenaBridge.lua`)**: built-in `ArenaBridgeDashboardV6` `DockWidgetPluginGui` + `Arena v6 UI` toolbar toggle, `plugin_info` telemetry handler, `EndTest` + `LeaveTest` fallback with idempotent already-stopped handling, automatic `__ArenaTestRunner_*` purge, and `/api/poll?goodbye=1` instant playtest peer eviction.
+- **90 MCP Tools & Expanded Kit (`28` modules, `22` systems, `30` prefabs)**: added `manage_plugin_and_playtest`, `audit_network_security`, `build_cutscene_sequence`, `generate_ui_theme_pack`, `CutsceneDirector.lua`, `NetworkGuard.lua`, `DialogueSystem.lua`, and Control Center Tab 8 (`Studio Plugin & Playtest v6`).
+
+---
+
+## v5.5 discovery, tunnel transport resilience & HTTP security hardening (2026-11-13)
+
+The bridge was `5.5.0` when this section was written (now `6.0.0` — see above):
+- **`.well-known` discovery & RFC 9728:** unauthenticated `GET /.well-known/mcp/server-card.json` & `/.well-known/mcp.json` (plus `mcp://server-card.json` resource) and `GET /.well-known/oauth-protected-resource[/mcp]` with `WWW-Authenticate` challenges on `401`/`403`.
+- **MCP 2026-07-28 & SEP-2243:** `completion/complete` (`completions` capability), cursor pagination on list endpoints, `resource_link` content items, human-readable `title` fields, Base64 `=?base64?...?=` `Mcp-Method`/`Mcp-Name` decoding + `-32020` mismatch checks, HTTP `400` on `-32022`, and `405` on `DELETE /mcp` & `GET /mcp` SSE in `2026-07-28`.
+- **Cloudflare Tunnel & SSE hardening:** `--tunnel-protocol auto|http2|quic` with automatic QUIC→`http2` fallback, named-tunnel edge detection, strict HTTP 200 JSON `/api/health` probes + `tunnel probe`, non-leaking `lastKnownUrl` when stopped, and immediate `: connected` + 15s `: keepalive` SSE flushes.
+- **Security & repo polish:** browser `Origin` validation, `BRIDGE_MAX_BODY_BYTES` enforcement (`400`/`413`), `0o600` permissions on `bridge.token`, fixed `jobs/drill_studio_kill.py` & `jobs/measure_tunnel_latency.py` (`--transport mcp`), completed `nightloop/tools/lib/`, and removed scratch files in `roblox-bridge/`.
+
+---
+
 ## v5.4 playtest surface + MRTR confirmation gate (2026-11-05, branch `arena/f956d2f6-tunneling`)
 
-The bridge is now `5.4.0` (plugin `ArenaBridge.lua` v4.1.0). This round started from
+The bridge was `5.4.0` when this section was written (now `5.5.0` — see above). This round started from
 research — the 2026-07-28 MCP changelog and MRTR/patterns docs, plus Roblox's own
 2026 testing-API announcements and the competing Studio MCP servers — and shipped
 what that research proved out:
@@ -328,7 +346,7 @@ what that research proved out:
 
 ## v5 ops platform (2026-11-03, branch `arena/706ae6d5-tunneling`)
 
-The bridge was `5.3.1` when this section was written (now `5.4.0` — see above).
+The bridge was `5.3.1` when this section was written (now `5.5.0` — see above).
 New runtime state lives in **gitignored**
 `roblox-bridge/bridge_state/` (`audit.jsonl`, `tokens.json`, `bus.json`,
 `tunnel.json`). Nothing there is needed to connect Studio.
@@ -384,6 +402,6 @@ New runtime state lives in **gitignored**
 
 ```
 roblox-bridge/docs/OPS.md        full ops reference
-roblox-bridge/CHANGELOG.md       5.0.0 through 5.4.0 entries
+roblox-bridge/CHANGELOG.md       5.0.0 through 5.5.0 entries
 handoff/*.pdf                    shareable code + task pack
 ```

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-mock_studio.py — Stateful Roblox Studio v4.1.0 simulator for testing the bridge,
-CLI, and all 68 registered MCP tools without Roblox Studio open.
+mock_studio.py — Stateful Roblox Studio v6.0.0 simulator for testing the bridge,
+CLI, and all registered MCP tools without Roblox Studio open.
 
 Simulates:
   - Full DataModel hierarchy (Services, Parts, Models, Folders, Scripts, Remotes, GUI)
@@ -33,7 +33,7 @@ TOKEN = os.environ.get("BRIDGE_TOKEN", "arena-demo-7f3a")
 #: ArenaBridge.lua: the mock stands in for that plugin, reports this as its
 #: `pluginVersion` in every info result, and registers it as `pv` like the real
 #: one does — which is what /api/peers and the studio strip display.
-PLUGIN_VERSION = os.environ.get("MOCK_PLUGIN_VERSION", "4.1.0")
+PLUGIN_VERSION = os.environ.get("MOCK_PLUGIN_VERSION", "6.0.0")
 
 PLACE = os.environ.get("MOCK_PLACE", "DemoPlace (simulated Studio v%s)" % PLUGIN_VERSION)
 # The engine build the mock pretends to be, reported by playtest_caps. Real
@@ -997,13 +997,13 @@ class MockWorld:
                                 j = out.get("job")
                                 if not j:
                                     continue
-                                if j["type"] == "playtest" and j.get("payload", {}).get("action") == "stop":
+                                if j["type"] == "playtest" and j.get("payload", {}).get("action") in ("stop", "force_stop", "cleanup"):
                                     stop_evt.set()
                                     self.play_peer_stop = None
                                     self.playtest_running = False
                                     bridge_req_fn("POST", "/api/result", {
                                         "id": j["id"], "ok": True,
-                                        "result": {"stopped": True, "detail": "EndTest called", "dm": "server"},
+                                        "result": {"stopped": True, "endTestCalled": True, "detail": "EndTest called", "dm": "server"},
                                         "peerId": play_world.peer_id, "dm": "server",
                                     })
                                     break
@@ -1015,20 +1015,66 @@ class MockWorld:
                                 })
                             except Exception:
                                 time.sleep(0.1)
+                        try:
+                            bridge_req_fn("GET", f"/api/poll?goodbye=1&peer={play_world.peer_id}&dm=server", timeout=2.0)
+                        except Exception:
+                            pass
 
                     t = threading.Thread(target=_run_play_peer, daemon=True)
                     t.start()
                     self.play_peer_thread = t
                 return {"started": True, "mode": "play" if act == "start_play" else "run", "dm": self.dm}
-            if act == "stop":
+            if act in ("stop", "force_stop", "cleanup"):
+                was_running = self._playtest_live()
                 if self.play_peer_stop is not None:
                     self.play_peer_stop.set()
                     self.play_peer_stop = None
                 self.play_peer_thread = None
                 self.playtest_running = False
-                return {"stopped": True, "detail": "EndTest called", "dm": self.dm}
+                return {
+                    "stopped": True,
+                    "endTestCalled": was_running,
+                    "leaveTestCalled": act == "force_stop",
+                    "alreadyStopped": not was_running,
+                    "cleanedRunners": 0,
+                    "detail": "EndTest called" if was_running else "No active test session (already stopped)",
+                    "dm": self.dm,
+                }
             running = self.playtest_running or self.play_peer_stop is not None
-            return {"dm": self.dm, "isRunning": running, "playtestActive": running}
+            return {
+                "dm": self.dm,
+                "pluginVersion": PLUGIN_VERSION,
+                "isRunning": running,
+                "playtestActive": running,
+                "editModeActive": self.dm == "edit",
+                "canLeaveTest": running,
+            }
+
+        if kind == "plugin_info":
+            return {
+                "pluginVersion": PLUGIN_VERSION,
+                "studioVersion": STUDIO_VERSION,
+                "dm": effective_dm,
+                "peerId": self.peer_id,
+                "bridgeUrl": BASE,
+                "running": True,
+                "jobsProcessed": 12,
+                "jobsFailed": 0,
+                "lastJobType": "plugin_info",
+                "lastJobAt": int(time.time()),
+                "lastJobDurationMs": 2,
+                "playtestActive": self._playtest_live(),
+                "isRunning": self._playtest_live(),
+                "dockWidgetAvailable": True,
+                "capabilities": {
+                    "virtualInput": True,
+                    "deviceSimulator": True,
+                    "studioTestService": True,
+                    "structuredDescendants": True,
+                    "playtestForceStop": True,
+                    "dockWidgetDashboard": True,
+                },
+            }
 
         if kind == "console":
             since = int(p.get("sinceIndex") or 0)
@@ -1485,7 +1531,7 @@ def run_mock_loop(base_url: str = BASE, token: str = TOKEN, stop_event: threadin
 
 
 def main():
-    print(f"mock Studio v4.1.0 -> {BASE} (place: {PLACE})", flush=True)
+    print(f"mock Studio v6.0.0 -> {BASE} (place: {PLACE})", flush=True)
     run_mock_loop(BASE, TOKEN)
 
 

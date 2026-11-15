@@ -1,6 +1,6 @@
 --!nonstrict
 --[[
-	ArenaBridge v4.1.0 — Roblox Studio local MCP & bridge plugin
+	ArenaBridge v6.0.0 — Roblox Studio local MCP & bridge plugin
 	Connects your open Studio place (Edit, Server, and Client DataModels) to the
 	bridge & Model Context Protocol (MCP) server running on your machine.
 
@@ -9,7 +9,21 @@
 	  2. Or start the MCP server via Claude Code / Cursor / Claude Desktop / Codex
 	     (mcp_server.py auto-starts or attaches to the local bridge automatically).
 	  3. Restart Studio once when installing or rotating tokens.
-	     v2+/v3+ auto-connects on DataModel load — no toolbar click needed.
+	     v2+/v3+/v6+ auto-connects on DataModel load — no toolbar click needed.
+
+	Key v6.0.0 upgrades:
+	  - Built-in Studio DockWidgetPluginGui Dashboard (`ArenaBridgeDashboardV6`):
+	    live connection badge, Peer ID, job counter, last job latency, playtest state,
+	    and one-click Connect/Pause, Force-Stop Playtest, and Temp Runner Cleanup.
+	  - Bulletproof Playtest Lifecycle & Teardown (`handlers["playtest"]`):
+	    combines `StudioTestService:EndTest()` + `StudioTestService:LeaveTest()` fallback,
+	    idempotent already-stopped detection (never fails when a session already ended),
+	    self-healing stale playtest lock recovery, automatic `__ArenaTestRunner_*` purge,
+	    and an immediate `/api/poll?goodbye=1` beacon on `plugin.Unloading` so ghost
+	    Play Server/Client peers never linger after a test closes.
+	  - `plugin_info` telemetry handler for the Control Center Plugin & Fleet Dashboard.
+	  - Automatic `structuredProperties` extraction on bounded `inspect` subtrees for
+	    accurate 3D Viewport Z-buffer rasterization and 3D Scene Auditing.
 
 	Key v4.1.0 upgrades:
 	  - Real playtest surface: simulate_input drives the running client through
@@ -23,24 +37,6 @@
 	  - MCP 2026-07-28 era on the bridge: per-request `_meta` negotiation, signed
 	    MRTR confirmations (a gated tool returns input_required instead of acting),
 	    the tasks extension, and `subscriptions/listen` for live resource updates.
-
-	Key v4.0.0 upgrades:
-	  - Multi-DataModel context routing: identifies Edit vs Play Server peers cleanly,
-	    eliminating Edit/Server race conditions during playtests.
-	  - Silent Client-Peer RPC bridge (__ArenaBridgeClientRPC): Client DataModels no
-	    longer fail with HTTP errors during Play Solo; client-side Luau, GUI, camera,
-	    and console inspections proxy transparently through the Server peer.
-	  - Editor-safe script reads & writes via ScriptEditorService:GetEditorSource() and
-	    ScriptEditorService:UpdateSourceAsync() with CRLF normalization (>200 KB safe,
-	    preserves open Script Editor tabs), optimistic FNV-1a hash locks, atomic
-	    multi_edit, and replaceInstance / require_fresh cache busting.
-	  - Rich MCP tool handlers: search_tree, compare_instances, script_search,
-	    script_grep, find_replace_scripts, get_properties, mass_set_properties,
-	    clone_instance, reparent_instance, attributes, tags, camera, history (undo/redo),
-	    terrain, insert_asset (with backdoor script scan/strip), and StudioTestService
-	    non-blocking playtest control.
-	  - Every Edit-mode mutation is wrapped in a single ChangeHistoryService recording
-	    so one Ctrl+Z undoes the entire operation.
 ]]
 
 ------------------------------------------------------------------------------
@@ -50,7 +46,7 @@ local BRIDGE_URL = "http://127.0.0.1:8077"  -- the bridge on YOUR machine
 local BRIDGE_TOKEN = "arena-demo-7f3a"      -- must match the server's --token
 local POLL_INTERVAL = 0.5                   -- idle pause between long-polls
 local AUTO_CONNECT = true                   -- connect on load if bridge is up
-local PLUGIN_VERSION = "4.1.0"
+local PLUGIN_VERSION = "6.0.0"
 local CLIENT_RPC_NAME = "__ArenaBridgeClientRPC"
 ------------------------------------------------------------------------------
 
@@ -107,23 +103,41 @@ BRIDGE_TOKEN = plugin:GetSetting("ArenaBridgeToken") or BRIDGE_TOKEN
 
 local toolbar = nil
 local button = nil
+local dashButton = nil
 if DM_MODE == "edit" then
 	toolbar = plugin:CreateToolbar("Arena")
 	button = toolbar:CreateButton(
 		"ArenaBridge",
-		"Connect this place to your Arena / MCP agent (v4.1.0)",
+		"Connect this place to your Arena / MCP agent (v6.0.0)",
 		"",
 		"Arena MCP"
 	)
 	button.ClickableWhenViewportHidden = true
+	pcall(function()
+		dashButton = toolbar:CreateButton(
+			"ArenaDashboard",
+			"Open Arena MCP v6.0 Studio Dashboard & Playtest Controller",
+			"",
+			"Arena v6 UI"
+		)
+		dashButton.ClickableWhenViewportHidden = true
+	end)
 end
 
 local running = false
 local logs: { string } = {}
 local activePlaytestRunning = false
+local playtestStartedAt = 0
 local lastPlaytestResult: any = nil
 local playtestDiedReason: string? = nil
 local clientRpc: RemoteFunction? = nil
+local jobsProcessed = 0
+local jobsFailed = 0
+local lastJobType = "none"
+local lastJobAt = 0
+local lastJobDurationMs = 0
+local dockWidgetAvailable = false
+local refreshDashboardUI: (() -> ())? = nil
 
 local function log(fmt: string, ...: any)
 	local msg = select("#", ...) > 0 and string.format(fmt, ...) or fmt
@@ -1665,12 +1679,14 @@ end
 
 handlers["inspect"] = function(p)
 	local inst = mustResolve(p.path or "game")
+	local wantStructured = p.includeStructured ~= false and p.includeProperties ~= false
+	local wantStructuredDesc = (p.includeStructuredDescendants == true) or (p.includeStructuredDescendants ~= false and wantStructured)
 	local out = describe(
 		inst,
 		tonumber(p.depth) or 2,
 		tonumber(p.maxChildren) or 100,
-		p.includeStructured ~= false,
-		p.includeStructuredDescendants == true
+		wantStructured,
+		wantStructuredDesc
 	)
 	if p.descendantSummary then
 		local classCounts: { [string]: number } = {}
@@ -2385,28 +2401,116 @@ handlers["insert_asset"] = function(p)
 	}
 end
 
+local function cleanupTempRunners(): number
+	local cleaned = 0
+	pcall(function()
+		local sss = game:GetService("ServerScriptService")
+		if sss then
+			for _, child in ipairs(sss:GetChildren()) do
+				if string.sub(child.Name, 1, 17) == "__ArenaTestRunner" then
+					child:Destroy()
+					cleaned += 1
+				end
+			end
+		end
+	end)
+	if DM_MODE == "edit" then
+		pcall(function()
+			local existingRpc = ReplicatedStorage:FindFirstChild(CLIENT_RPC_NAME)
+			if existingRpc then
+				existingRpc:Destroy()
+				cleaned += 1
+			end
+		end)
+	end
+	return cleaned
+end
+
 handlers["playtest"] = function(p)
+	local action = (p and p.action) or "status"
+	if action == "cleanup" then
+		activePlaytestRunning = false
+		playtestStartedAt = 0
+		local cleaned = cleanupTempRunners()
+		if refreshDashboardUI then
+			pcall(refreshDashboardUI)
+		end
+		return {
+			stopped = true,
+			cleanedRunners = cleaned,
+			playtestActive = false,
+			dm = DM_MODE,
+		}
+	end
 	if not okSTS or not StudioTestService then
+		if action == "stop" or action == "force_stop" then
+			activePlaytestRunning = false
+			playtestStartedAt = 0
+			local cleaned = cleanupTempRunners()
+			return {
+				stopped = true,
+				alreadyStopped = true,
+				cleanedRunners = cleaned,
+				detail = "StudioTestService unavailable; cleared local state",
+				dm = DM_MODE,
+			}
+		end
 		error("StudioTestService is unavailable in this Studio build", 0)
 	end
-	local action = p.action or "status"
 	if action == "status" then
+		local editActive = false
+		local canLeave = false
+		pcall(function()
+			editActive = StudioTestService.EditModeActive == true
+		end)
+		pcall(function()
+			canLeave = StudioTestService:CanLeaveTest() == true
+		end)
 		return {
 			dm = DM_MODE,
+			pluginVersion = PLUGIN_VERSION,
 			isRunning = RunService:IsRunning(),
 			playtestActive = activePlaytestRunning,
+			editModeActive = editActive,
+			canLeaveTest = canLeave,
 			diedReason = playtestDiedReason,
 			lastResult = lastPlaytestResult,
 		}
-	elseif action == "stop" then
+	elseif action == "stop" or action == "force_stop" then
 		local okEnd, endErr = pcall(function()
 			StudioTestService:EndTest(p.reason or "stopped_by_mcp")
 		end)
+		local okLeave = false
+		if not okEnd or action == "force_stop" then
+			okLeave = pcall(function()
+				StudioTestService:LeaveTest()
+			end)
+		end
+		local cleaned = cleanupTempRunners()
 		activePlaytestRunning = false
-			if not okEnd then playtestDiedReason = tostring(endErr) end
+		playtestStartedAt = 0
+		local errStr = tostring(endErr or "")
+		local errLower = string.lower(errStr)
+		local alreadyIdle = (not okEnd) and (
+			(DM_MODE == "edit" and not RunService:IsRunning())
+			or string.find(errLower, "running") ~= nil
+			or string.find(errLower, "no test") ~= nil
+			or string.find(errLower, "can only be called") ~= nil
+		)
+		local stoppedOk = okEnd or okLeave or alreadyIdle
+		if not stoppedOk then
+			playtestDiedReason = errStr
+		end
+		if refreshDashboardUI then
+			pcall(refreshDashboardUI)
+		end
 		return {
-			stopped = okEnd,
-			detail = okEnd and "EndTest called" or tostring(endErr),
+			stopped = stoppedOk,
+			endTestCalled = okEnd,
+			leaveTestCalled = okLeave,
+			alreadyStopped = alreadyIdle,
+			cleanedRunners = cleaned,
+			detail = if okEnd then "EndTest called" elseif okLeave then "LeaveTest called" elseif alreadyIdle then "No active test session (already stopped)" else errStr,
 			dm = DM_MODE,
 		}
 	elseif action == "start_play" or action == "start_run" then
@@ -2414,11 +2518,29 @@ handlers["playtest"] = function(p)
 			return { started = false, alreadyRunning = true, dm = DM_MODE }
 		end
 		if activePlaytestRunning then
-			return { started = false, alreadyRunning = true, dm = DM_MODE }
+			-- Self-heal if a previous playtest was closed manually in Studio
+			local canLeave = false
+			local editActive = true
+			pcall(function()
+				canLeave = StudioTestService:CanLeaveTest() == true
+			end)
+			pcall(function()
+				editActive = StudioTestService.EditModeActive == true
+			end)
+			if not canLeave and editActive and (os.time() - playtestStartedAt) >= 3 then
+				activePlaytestRunning = false
+			else
+				return { started = false, alreadyRunning = true, dm = DM_MODE }
+			end
 		end
+		cleanupTempRunners()
 		activePlaytestRunning = true
+		playtestStartedAt = os.time()
 		lastPlaytestResult = nil
 		playtestDiedReason = nil
+		if refreshDashboardUI then
+			pcall(refreshDashboardUI)
+		end
 		local testArgs = p.args or { source = "ArenaBridgeMCP", startedAt = os.time() }
 		task.spawn(function()
 			local okRun, res = pcall(function()
@@ -2429,12 +2551,16 @@ handlers["playtest"] = function(p)
 				end
 			end)
 			activePlaytestRunning = false
+			playtestStartedAt = 0
 			if not okRun then playtestDiedReason = tostring(res) end
 			lastPlaytestResult = {
 				ok = okRun,
 				result = serializeValue(res),
 				finishedAt = os.time(),
 			}
+			if refreshDashboardUI then
+				pcall(refreshDashboardUI)
+			end
 		end)
 		return {
 			started = true,
@@ -2443,6 +2569,37 @@ handlers["playtest"] = function(p)
 		}
 	end
 	error("unknown playtest action: " .. tostring(action), 0)
+end
+
+handlers["plugin_info"] = function(_p)
+	local studioVer = "unknown"
+	pcall(function()
+		studioVer = version()
+	end)
+	return {
+		pluginVersion = PLUGIN_VERSION,
+		studioVersion = studioVer,
+		dm = DM_MODE,
+		peerId = PEER_ID,
+		bridgeUrl = BRIDGE_URL,
+		running = running,
+		jobsProcessed = jobsProcessed,
+		jobsFailed = jobsFailed,
+		lastJobType = lastJobType,
+		lastJobAt = lastJobAt,
+		lastJobDurationMs = lastJobDurationMs,
+		playtestActive = activePlaytestRunning,
+		isRunning = RunService:IsRunning(),
+		dockWidgetAvailable = dockWidgetAvailable,
+		capabilities = {
+			virtualInput = true,
+			deviceSimulator = true,
+			studioTestService = okSTS,
+			structuredDescendants = true,
+			playtestForceStop = true,
+			dockWidgetDashboard = dockWidgetAvailable,
+		},
+	}
 end
 
 ------------------------------------------------------------------------------
@@ -3996,11 +4153,20 @@ local function pollOnce()
 	local job = decoded.job
 	logs = {}
 	log("job %s (%s) [%s]", job.id, job.type, DM_MODE)
+	local jobStartClock = os.clock()
 	local success, result, err = runJob(job)
+	lastJobDurationMs = math.floor((os.clock() - jobStartClock) * 1000 + 0.5)
+	lastJobType = tostring(job.type)
+	lastJobAt = os.time()
 	if success then
-		log("job %s ok", job.id)
+		jobsProcessed += 1
+		log("job %s ok (%dms)", job.id, lastJobDurationMs)
 	else
+		jobsFailed += 1
 		log("job %s failed: %s", job.id, tostring(err))
+	end
+	if refreshDashboardUI then
+		pcall(refreshDashboardUI)
 	end
 	postResult(job, success, result, err)
 end
@@ -4026,6 +4192,9 @@ local function setRunning(state: boolean)
 			if button then
 				button:SetActive(false)
 			end
+			if refreshDashboardUI then
+				pcall(refreshDashboardUI)
+			end
 			return
 		end
 		log("connected to %s (%s peer %s, plugin v%s)", BRIDGE_URL, DM_MODE, PEER_ID, PLUGIN_VERSION)
@@ -4033,11 +4202,133 @@ local function setRunning(state: boolean)
 	else
 		log("disconnected (%s)", DM_MODE)
 	end
+	if refreshDashboardUI then
+		pcall(refreshDashboardUI)
+	end
 end
 
 if button then
 	button.Click:Connect(function()
 		setRunning(not running)
+	end)
+end
+
+------------------------------------------------------------------------------
+-- v6.0.0 In-Studio DockWidgetPluginGui Dashboard & Playtest Controller
+------------------------------------------------------------------------------
+
+if DM_MODE == "edit" then
+	pcall(function()
+		local info = DockWidgetPluginGuiInfo.new(
+			Enum.InitialDockState.Float,
+			false,
+			false,
+			340,
+			360,
+			260,
+			260
+		)
+		local widget = plugin:CreateDockWidgetPluginGui("ArenaBridgeDashboardV6", info)
+		widget.Title = "Arena MCP Bridge v" .. PLUGIN_VERSION
+		dockWidgetAvailable = true
+
+		local root = Instance.new("Frame")
+		root.Name = "Root"
+		root.Size = UDim2.fromScale(1, 1)
+		root.BackgroundColor3 = Color3.fromRGB(13, 18, 30)
+		root.BorderSizePixel = 0
+		root.Parent = widget
+
+		local headerLabel = Instance.new("TextLabel")
+		headerLabel.Size = UDim2.new(1, -24, 0, 28)
+		headerLabel.Position = UDim2.fromOffset(12, 10)
+		headerLabel.BackgroundTransparency = 1
+		headerLabel.Font = Enum.Font.GothamBold
+		headerLabel.TextSize = 14
+		headerLabel.TextXAlignment = Enum.TextXAlignment.Left
+		headerLabel.TextColor3 = Color3.fromRGB(99, 179, 237)
+		headerLabel.Text = "ARENA MCP STUDIO · v" .. PLUGIN_VERSION
+		headerLabel.Parent = root
+
+		local statusLabel = Instance.new("TextLabel")
+		statusLabel.Size = UDim2.new(1, -24, 0, 128)
+		statusLabel.Position = UDim2.fromOffset(12, 42)
+		statusLabel.BackgroundColor3 = Color3.fromRGB(20, 27, 45)
+		statusLabel.BorderSizePixel = 0
+		statusLabel.Font = Enum.Font.Code
+		statusLabel.TextSize = 12
+		statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+		statusLabel.TextYAlignment = Enum.TextYAlignment.Top
+		statusLabel.TextWrapped = true
+		statusLabel.TextColor3 = Color3.fromRGB(226, 232, 240)
+		statusLabel.Parent = root
+
+		local function makeBtn(text: string, yOffset: number, bg: Color3): TextButton
+			local btn = Instance.new("TextButton")
+			btn.Size = UDim2.new(1, -24, 0, 32)
+			btn.Position = UDim2.fromOffset(12, yOffset)
+			btn.BackgroundColor3 = bg
+			btn.BorderSizePixel = 0
+			btn.Font = Enum.Font.GothamBold
+			btn.TextSize = 12
+			btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+			btn.Text = text
+			btn.Parent = root
+			return btn
+		end
+
+		local toggleBtn = makeBtn("Connect / Pause Bridge", 182, Color3.fromRGB(37, 99, 235))
+		local stopPlayBtn = makeBtn("Force Stop Playtest (EndTest + LeaveTest)", 222, Color3.fromRGB(185, 28, 28))
+		local cleanBtn = makeBtn("Clean Temp Test Runners", 262, Color3.fromRGB(51, 65, 85))
+
+		refreshDashboardUI = function()
+			local stText = if running then "ONLINE" else "PAUSED"
+			local ptText = if activePlaytestRunning or RunService:IsRunning() then "ACTIVE (RUNNING)" else "IDLE"
+			statusLabel.Text = table.concat({
+				"  State:     " .. stText .. " (" .. string.upper(DM_MODE) .. ")",
+				"  Peer ID:   " .. PEER_ID,
+				"  Bridge:    " .. BRIDGE_URL,
+				"  Jobs OK:   " .. tostring(jobsProcessed) .. "  |  Err: " .. tostring(jobsFailed),
+				"  Last Job:  " .. lastJobType .. " (" .. tostring(lastJobDurationMs) .. "ms)",
+				"  Playtest:  " .. ptText,
+			}, "\n")
+			toggleBtn.Text = if running then "Pause Bridge Polling" else "Connect Bridge Polling"
+			toggleBtn.BackgroundColor3 = if running then Color3.fromRGB(16, 185, 129) else Color3.fromRGB(37, 99, 235)
+		end
+
+		toggleBtn.MouseButton1Click:Connect(function()
+			setRunning(not running)
+		end)
+
+		stopPlayBtn.MouseButton1Click:Connect(function()
+			pcall(function()
+				handlers["playtest"]({ action = "force_stop", reason = "studio_dashboard_button" })
+			end)
+			if refreshDashboardUI then
+				pcall(refreshDashboardUI)
+			end
+		end)
+
+		cleanBtn.MouseButton1Click:Connect(function()
+			local n = cleanupTempRunners()
+			log("cleaned %d temporary test runner instance(s)", n)
+			if refreshDashboardUI then
+				pcall(refreshDashboardUI)
+			end
+		end)
+
+		if dashButton then
+			dashButton.Click:Connect(function()
+				widget.Enabled = not widget.Enabled
+				if refreshDashboardUI then
+					pcall(refreshDashboardUI)
+				end
+			end)
+		end
+
+		if refreshDashboardUI then
+			pcall(refreshDashboardUI)
+		end
 	end)
 end
 
@@ -4048,6 +4339,15 @@ plugin.Unloading:Connect(function()
 			clientRpc:Destroy()
 		end)
 		clientRpc = nil
+	end
+	if DM_MODE ~= "client" and BRIDGE_URL ~= "" then
+		pcall(function()
+			local extra = "goodbye=1&peer=" .. HttpService:UrlEncode(PEER_ID) .. "&dm=" .. DM_MODE
+			HttpService:RequestAsync({
+				Url = endpoint("/api/poll", extra),
+				Method = "GET",
+			})
+		end)
 	end
 end)
 

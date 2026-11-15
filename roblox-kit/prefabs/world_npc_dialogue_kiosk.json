@@ -1,0 +1,49 @@
+{
+  "name": "world_npc_dialogue_kiosk",
+  "category": "world",
+  "description": "Interactive NPC / Lore Terminal kiosk with glowing holo-screen, proximity prompt, and beacon.",
+  "defaultParent": "Workspace",
+  "tree": [
+    {
+      "name": "NPCDialogueKiosk",
+      "className": "Model",
+      "children": [
+        {
+          "name": "KioskBase",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Size": {"__t": "Vector3", "v": [3.6, 5.2, 2.4]},
+            "Position": {"__t": "Vector3", "v": [0, 2.6, 0]},
+            "Color": {"__t": "Color3", "v": [0.16, 0.2, 0.28]},
+            "Material": {"__t": "Enum", "v": "Material.Metal"}
+          },
+          "children": [
+            {
+              "name": "TalkPrompt",
+              "className": "ProximityPrompt",
+              "properties": {
+                "ActionText": "Inspect Terminal",
+                "ObjectText": "Lore & Mission Kiosk",
+                "HoldDuration": 0.25,
+                "MaxActivationDistance": 12
+              }
+            }
+          ]
+        },
+        {
+          "name": "HoloScreen",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": false,
+            "Size": {"__t": "Vector3", "v": [3.0, 2.0, 0.2]},
+            "Position": {"__t": "Vector3", "v": [0, 4.2, 1.25]},
+            "Color": {"__t": "Color3", "v": [0.22, 0.78, 0.98]},
+            "Material": {"__t": "Enum", "v": "Material.Neon"}
+          }
+        }
+      ]
+    }
+  ]
+}

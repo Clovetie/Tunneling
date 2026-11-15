@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v5.4.0).
+arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v6.0.0).
 
 Supports every MCP tool and bridge operation from your terminal or HANDS MODE (`ab.ps1`),
 with strict UTF-8 handling on Windows, macOS, and Linux.
@@ -29,7 +29,7 @@ v5 ops & multi-agent commands:
     python3 arena_studio.py approve cfm-91ab3f0c2d11 [--remember] [--note "pair-tested"]
     python3 arena_studio.py deny cfm-91ab3f0c2d11 --note "wrong place"
     python3 arena_studio.py subscriptions [--close sub-7c2f]
-    python3 arena_studio.py tunnel status|start|stop|restart
+    python3 arena_studio.py tunnel status|probe|start|stop|restart [--protocol auto|http2|quic]
     python3 arena_studio.py tokens list|create --label ci --role write --ttl 86400|revoke --id tok-123
     python3 arena_studio.py bus register --name "Gemini 4 Argon" --role partner
     python3 arena_studio.py bus agents|tasks|feed|export
@@ -487,7 +487,9 @@ def main() -> int:
     p.add_argument("--reason", default=None, help="Why the queue is paused (recorded in the audit log)")
 
     p = sub.add_parser("tunnel", help="supervised public tunnel (cloudflared/ngrok)")
-    p.add_argument("action", nargs="?", default="status", choices=["status", "start", "stop", "restart"])
+    p.add_argument("action", nargs="?", default="status", choices=["status", "probe", "start", "stop", "restart"])
+    p.add_argument("--protocol", default=None, choices=["auto", "http2", "quic"],
+                   help="Cloudflare tunnel edge transport (auto falls back to http2 when UDP is blocked)")
 
     p = sub.add_parser("tokens", help="scoped access tokens (read/write/admin) & rate limits")
     p.add_argument("action", nargs="?", default="list", choices=["list", "create", "revoke", "roles"])
@@ -1118,7 +1120,10 @@ def main() -> int:
         if args.action == "status":
             print(json.dumps(call("GET", "/api/tunnel"), indent=2, ensure_ascii=False))
         else:
-            print(json.dumps(call("POST", "/api/tunnel", {"action": args.action}, timeout=120), indent=2, ensure_ascii=False))
+            payload = {"action": args.action}
+            if args.protocol:
+                payload["protocol"] = args.protocol
+            print(json.dumps(call("POST", "/api/tunnel", payload, timeout=120), indent=2, ensure_ascii=False))
         return 0
 
     if args.cmd == "tokens":

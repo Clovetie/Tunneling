@@ -26,7 +26,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-BUS_VERSION = "5.4.0"
+BUS_VERSION = "6.0.0"
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "bridge_state"
 
 AGENT_STATUSES = ("online", "busy", "idle", "offline")

@@ -1,0 +1,72 @@
+{
+  "name": "horror_task_generator_machine",
+  "category": "mechanics",
+  "description": "Co-op survival extraction generator with engine housing, status beacon, progress attributes, and hold-to-repair ProximityPrompt.",
+  "defaultParent": "Workspace",
+  "tree": [
+    {
+      "name": "TaskGeneratorMachine",
+      "className": "Model",
+      "tags": ["TaskGenerator", "InteractiveObjective"],
+      "attributes": { "Progress": 0, "RequiredProgress": 100, "Repaired": false },
+      "children": [
+        {
+          "name": "BaseFrame",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [5.0, 1.0, 3.4] },
+            "Position": { "__t": "Vector3", "v": [0, 0.5, 0] },
+            "Material": { "__t": "Enum", "v": "Material.DiamondPlate" },
+            "Color": { "__t": "Color3", "v": [0.18, 0.2, 0.24] },
+            "Anchored": true
+          }
+        },
+        {
+          "name": "EngineBlock",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [4.2, 3.2, 2.6] },
+            "Position": { "__t": "Vector3", "v": [0, 2.6, 0] },
+            "Material": { "__t": "Enum", "v": "Material.CorrodedMetal" },
+            "Color": { "__t": "Color3", "v": [0.68, 0.24, 0.22] },
+            "Anchored": true
+          },
+          "children": [
+            {
+              "name": "GeneratorPrompt",
+              "className": "ProximityPrompt",
+              "properties": {
+                "ActionText": "Repair Generator",
+                "ObjectText": "Emergency Power Unit",
+                "HoldDuration": 2.5,
+                "MaxActivationDistance": 10
+              }
+            }
+          ]
+        },
+        {
+          "name": "BeaconMast",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [0.6, 2.4, 0.6] },
+            "Position": { "__t": "Vector3", "v": [1.5, 5.4, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Neon" },
+            "Color": { "__t": "Color3", "v": [1.0, 0.78, 0.34] },
+            "Anchored": true
+          },
+          "children": [
+            {
+              "name": "GeneratorGlow",
+              "className": "PointLight",
+              "properties": {
+                "Brightness": 2.2,
+                "Range": 18,
+                "Color": { "__t": "Color3", "v": [1.0, 0.78, 0.34] }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

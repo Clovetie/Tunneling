@@ -30,6 +30,14 @@ def _vec3(val, default=(0.0, 0.0, 0.0)) -> Tuple[float, float, float]:
             return float(val.get("x", 0)), float(val.get("y", 0)), float(val.get("z", 0))
     if isinstance(val, (list, tuple)) and len(val) >= 3:
         return float(val[0]), float(val[1]), float(val[2])
+    if isinstance(val, str):
+        cleaned = val.strip().translate(str.maketrans("{}[]()", "      "))
+        parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+        if len(parts) >= 3:
+            try:
+                return float(parts[0]), float(parts[1]), float(parts[2])
+            except (TypeError, ValueError):
+                pass
     return default
 
 
@@ -39,6 +47,10 @@ def _pos_from_props(props: dict, size: Tuple[float, float, float]) -> Tuple[floa
         v = cf.get("v") if isinstance(cf, dict) else cf
         if isinstance(v, (list, tuple)) and len(v) >= 3:
             return float(v[0]), float(v[1]), float(v[2])
+        if isinstance(v, str):
+            parsed = _vec3(v, None)
+            if parsed is not None:
+                return parsed
     if "Position" in props:
         return _vec3(props["Position"], (0.0, size[1] * 0.5, 0.0))
     return (0.0, size[1] * 0.5, 0.0)
@@ -47,8 +59,12 @@ def _pos_from_props(props: dict, size: Tuple[float, float, float]) -> Tuple[floa
 def _color_key(props: dict) -> str:
     c = props.get("Color")
     if isinstance(c, dict) and isinstance(c.get("v"), list) and len(c["v"]) >= 3:
-        return f"{c['v'][0]:.3f},{c['v'][1]:.3f},{c['v'][2]:.3f}"
-    return str(c or "default")
+        return f"{float(c['v'][0]):.3f},{float(c['v'][1]):.3f},{float(c['v'][2]):.3f}"
+    if isinstance(c, str):
+        parsed = _vec3(c, None)
+        if parsed is not None:
+            return f"{parsed[0]:.3f},{parsed[1]:.3f},{parsed[2]:.3f}"
+    return str(c or props.get("BrickColor") or "default")
 
 
 def _extract_audit_parts(node: dict, inside_character: bool = False, out: Optional[list] = None) -> list:

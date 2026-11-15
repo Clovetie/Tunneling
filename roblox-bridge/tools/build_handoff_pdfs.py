@@ -66,7 +66,7 @@ ROOT = BRIDGE.parent
 OUT_DIR = ROOT / "handoff"
 
 BRANCH = "arena/706ae6d5-tunneling"
-VERSION = "5.4.0"
+VERSION = "6.0.0"
 TODAY = datetime.date.today().isoformat()
 
 # GitHub-flavoured palette

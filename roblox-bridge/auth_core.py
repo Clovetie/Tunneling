@@ -25,7 +25,7 @@ import threading
 import time
 from pathlib import Path
 
-AUTH_VERSION = "5.4.0"
+AUTH_VERSION = "6.0.0"
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "bridge_state"
 
 ROLE_RANK = {"read": 1, "write": 2, "admin": 3}
@@ -39,6 +39,7 @@ ROLE_DESCRIPTIONS = {
 READ_ONLY_PATHS = {
     "/api/health", "/api/state", "/api/peers", "/api/jobs", "/api/agent-guide",
     "/api/metrics", "/api/audit", "/api/events", "/api/ops", "/api/self-test",
+    "/api/plugin-status", "/api/plugin/download",
 }
 ADMIN_PATHS = {"/api/tokens", "/api/audit/verify"}
 

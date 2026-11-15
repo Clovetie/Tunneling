@@ -1,0 +1,60 @@
+{
+  "name": "world_safe_room_shelter",
+  "category": "world",
+  "description": "Reinforced horror safe-room shelter booth with warm interior sanctuary light, heavy frame, and HideSpot tag.",
+  "defaultParent": "Workspace",
+  "tree": [
+    {
+      "name": "SafeRoomShelter",
+      "className": "Model",
+      "tags": ["SafeRoom", "HideSpot"],
+      "attributes": { "ProtectsFromStalker": true },
+      "children": [
+        {
+          "name": "ShelterFloor",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [8, 1, 8] },
+            "Position": { "__t": "Vector3", "v": [0, 0.5, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Concrete" },
+            "Color": { "__t": "Color3", "v": [0.24, 0.26, 0.3] },
+            "Anchored": true
+          }
+        },
+        {
+          "name": "BackWall",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [8, 9, 1] },
+            "Position": { "__t": "Vector3", "v": [0, 5.5, -3.5] },
+            "Material": { "__t": "Enum", "v": "Material.Metal" },
+            "Color": { "__t": "Color3", "v": [0.2, 0.23, 0.28] },
+            "Anchored": true
+          }
+        },
+        {
+          "name": "ShelterRoof",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [8, 1, 8] },
+            "Position": { "__t": "Vector3", "v": [0, 10.5, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Metal" },
+            "Color": { "__t": "Color3", "v": [0.18, 0.2, 0.24] },
+            "Anchored": true
+          },
+          "children": [
+            {
+              "name": "SanctuaryWarmLight",
+              "className": "PointLight",
+              "properties": {
+                "Brightness": 2.4,
+                "Range": 20,
+                "Color": { "__t": "Color3", "v": [1.0, 0.88, 0.68] }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

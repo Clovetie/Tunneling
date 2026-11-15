@@ -421,6 +421,122 @@ PROCEDURAL_PRESETS: Dict[str, Tuple[str, str, int]] = {
     "scifi_panel_tile": ("#243040", "#3BC9DB", 128),
 }
 
+EXTRA_PROCEDURAL_PRESETS: Dict[str, Tuple[str, str, int]] = {
+    # Horror & Gameplay UI Icons
+    "icon_key": ("#FFD43B", "#D9480F", 64),
+    "icon_skull": ("#F8F9FA", "#868E96", 64),
+    "icon_battery": ("#69DB7C", "#2B8A3E", 64),
+    "icon_eye": ("#FF8787", "#C92A2A", 64),
+    "icon_potion": ("#DA77F2", "#862E9C", 64),
+    "icon_compass": ("#74C0FC", "#1C7ED6", 64),
+    # Horror & Gameplay VFX Sprites
+    "particle_blood_mist": ("#E03131", "#5C0A0A", 64),
+    "particle_frost_crystal": ("#A5D8FF", "#1971C2", 64),
+    "particle_glitch_scanline": ("#63E6BE", "#0CA678", 64),
+    # Horror & Dungeon Surface Textures
+    "horror_rust_grid": ("#492C22", "#A64B2A", 128),
+    "dungeon_stone_tile": ("#343A40", "#212529", 128),
+    "neon_circuit_tile": ("#0B132B", "#00F5D4", 128),
+}
+
+ALL_PROCEDURAL_PRESETS: Dict[str, Tuple[str, str, int]] = {
+    **PROCEDURAL_PRESETS,
+    **EXTRA_PROCEDURAL_PRESETS,
+}
+
+AUDIO_SYNTH_PRESETS: Dict[str, Dict[str, object]] = {
+    "horror_heartbeat": {"category": "horror", "durationMs": 720, "baseHz": 58.0, "description": "Low-frequency double-thump horror heartbeat pulse"},
+    "horror_clock_tick": {"category": "horror", "durationMs": 220, "baseHz": 1480.0, "description": "Crisp mechanical pocketwatch escapement tick"},
+    "horror_whisper_drone": {"category": "horror", "durationMs": 1100, "baseHz": 165.0, "description": "Eerie modulated breathy spectral drone"},
+    "horror_jumpscare_stinger": {"category": "horror", "durationMs": 680, "baseHz": 440.0, "description": "Dissonant metallic shriek stinger with sub impact"},
+    "horror_breaker_trip": {"category": "horror", "durationMs": 520, "baseHz": 120.0, "description": "Heavy electrical fuse arc + power-down drop"},
+    "flash_camera_strobe": {"category": "gameplay", "durationMs": 380, "baseHz": 2200.0, "description": "Camera capacitor pop + high-pitch recharge whine"},
+    "ui_click_crisp": {"category": "ui", "durationMs": 95, "baseHz": 1850.0, "description": "Tactile modern HUD button click"},
+    "ui_quest_complete": {"category": "ui", "durationMs": 640, "baseHz": 523.25, "description": "Bright ascending 3-note major triad fanfare"},
+    "loot_chest_legendary": {"category": "gameplay", "durationMs": 820, "baseHz": 659.25, "description": "Shimmering harmonic arpeggio for rare loot drops"},
+    "combat_hit_impact": {"category": "combat", "durationMs": 240, "baseHz": 135.0, "description": "Punchy transient melee/projectile impact thud"},
+    "combat_shield_break": {"category": "combat", "durationMs": 480, "baseHz": 880.0, "description": "Crystalline energy barrier shatter burst"},
+    "ambient_ Geiger_click": {"category": "horror", "durationMs": 180, "baseHz": 3100.0, "description": "Sharp radiation/anomaly detector crackle"},
+}
+
+
+def synthesize_wav_bytes(
+    preset: str = "horror_heartbeat",
+    duration_ms: Optional[int] = None,
+    base_hz: Optional[float] = None,
+    volume: float = 0.8,
+    sample_rate: int = 22050,
+) -> bytes:
+    """Synthesize a zero-dependency 16-bit mono PCM WAV file in memory."""
+    spec = AUDIO_SYNTH_PRESETS.get(preset, AUDIO_SYNTH_PRESETS["horror_heartbeat"])
+    dur_ms = max(40, min(int(duration_ms or spec["durationMs"]), 4000))
+    freq = max(30.0, min(float(base_hz or spec["baseHz"]), 8000.0))
+    vol = max(0.05, min(float(volume), 1.0))
+    n_samples = max(1, int(sample_rate * (dur_ms / 1000.0)))
+
+    pcm = bytearray(n_samples * 2)
+    for i in range(n_samples):
+        t = i / float(sample_rate)
+        progress = i / float(n_samples)
+        env = math.sin(math.pi * min(1.0, progress / 0.08)) if progress < 0.08 else math.exp(-3.2 * (progress - 0.08))
+        sample = 0.0
+
+        if preset == "horror_heartbeat":
+            # Two low-frequency thumps at t=0.05 and t=0.28
+            e1 = math.exp(-((t - 0.08) ** 2) / 0.0022)
+            e2 = 0.78 * math.exp(-((t - 0.30) ** 2) / 0.0028)
+            sample = (e1 + e2) * math.sin(2.0 * math.pi * freq * t)
+            env = 1.0
+        elif preset == "horror_clock_tick":
+            env = math.exp(-28.0 * t)
+            sample = 0.7 * math.sin(2.0 * math.pi * freq * t) + 0.3 * math.sin(2.0 * math.pi * (freq * 2.4) * t)
+        elif preset == "horror_jumpscare_stinger":
+            sample = (
+                0.40 * math.sin(2.0 * math.pi * freq * t)
+                + 0.35 * math.sin(2.0 * math.pi * (freq * 1.414) * t)
+                + 0.25 * math.sin(2.0 * math.pi * (freq * 0.5) * t)
+            )
+        elif preset == "horror_breaker_trip":
+            sweep_f = freq * (1.0 - 0.65 * progress)
+            buzz = math.sin(2.0 * math.pi * 60.0 * t)
+            sample = 0.65 * math.sin(2.0 * math.pi * sweep_f * t) + 0.35 * buzz
+        elif preset == "flash_camera_strobe":
+            pop = math.exp(-45.0 * t) * math.sin(2.0 * math.pi * 920.0 * t)
+            whine_f = 900.0 + 1800.0 * progress
+            whine = 0.45 * (1.0 - math.exp(-6.0 * t)) * math.sin(2.0 * math.pi * whine_f * t)
+            sample = pop + whine
+            env = 1.0 - 0.3 * progress
+        elif preset in ("ui_quest_complete", "loot_chest_legendary"):
+            step = int(progress * 3.0)
+            ratios = (1.0, 1.25, 1.5, 2.0)
+            note_f = freq * ratios[min(step, len(ratios) - 1)]
+            sample = 0.75 * math.sin(2.0 * math.pi * note_f * t) + 0.25 * math.sin(4.0 * math.pi * note_f * t)
+        else:
+            sample = 0.75 * math.sin(2.0 * math.pi * freq * t) + 0.25 * math.sin(2.0 * math.pi * (freq * 1.5) * t)
+
+        val = int(max(-1.0, min(1.0, sample * env * vol)) * 32767.0)
+        struct.pack_into("<h", pcm, i * 2, val)
+
+    data_size = len(pcm)
+    byte_rate = sample_rate * 2
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + data_size,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        1,
+        sample_rate,
+        byte_rate,
+        2,
+        16,
+        b"data",
+        data_size,
+    )
+    return header + bytes(pcm)
+
 
 def generate_procedural_rgba(
     preset: str,
@@ -430,7 +546,7 @@ def generate_procedural_rgba(
     secondary_hex: Optional[str] = None,
 ) -> Tuple[int, int, bytes]:
     """Synthesize an anti-aliased RGBA image for any built-in Studio preset."""
-    def_p, def_s, def_sz = PROCEDURAL_PRESETS.get(preset, ("#58A6FF", "#1F6FEB", 64))
+    def_p, def_s, def_sz = ALL_PROCEDURAL_PRESETS.get(preset, ("#58A6FF", "#1F6FEB", 64))
     w = max(8, min(width or def_sz, 512))
     h = max(8, min(height or def_sz, 512))
     c1 = _parse_hex_color(primary_hex or def_p)
@@ -678,6 +794,37 @@ def generate_procedural_rgba(
                     r, g, b = c1[0] * 0.55, c1[1] * 0.55, c1[2] * 0.55
                 else:
                     r, g, b = c1
+                a = 255.0
+
+            elif preset in ("icon_key", "icon_battery", "icon_eye", "icon_skull", "icon_potion", "icon_compass"):
+                ring = _smoothstep(0.84 + aa, 0.84 - aa, dist)
+                core = _smoothstep(0.46 + aa, 0.46 - aa, dist)
+                cross = 1.0 if (abs(cx) < 0.14 or abs(cy) < 0.14) and dist < 0.72 else 0.0
+                mix = _clamp01(core * 0.75 + cross * 0.45)
+                r = c2[0] + (c1[0] - c2[0]) * mix
+                g = c2[1] + (c1[1] - c2[1]) * mix
+                b = c2[2] + (c1[2] - c2[2]) * mix
+                a = ring * 255.0
+
+            elif preset in ("particle_blood_mist", "particle_frost_crystal", "particle_glitch_scanline"):
+                n = _fbm(nx * 6.0, ny * 6.0, octaves=3)
+                falloff = _clamp01(1.0 - dist) ** 1.6
+                scan = 0.75 if (preset == "particle_glitch_scanline" and (py % 4 == 0)) else 1.0
+                r = (c2[0] + (c1[0] - c2[0]) * n) * scan
+                g = (c2[1] + (c1[1] - c2[1]) * n) * scan
+                b = (c2[2] + (c1[2] - c2[2]) * n) * scan
+                a = _clamp01(falloff * (0.55 + 0.65 * n)) * 255.0
+
+            elif preset in ("horror_rust_grid", "dungeon_stone_tile", "neon_circuit_tile"):
+                cell_w = max(w // 8, 8)
+                border = (px % cell_w < 2) or (py % cell_w < 2)
+                n = _fbm(nx * 8.0, ny * 8.0, octaves=3)
+                if border:
+                    r, g, b = c2
+                else:
+                    r = c1[0] * (0.75 + 0.45 * n)
+                    g = c1[1] * (0.75 + 0.45 * n)
+                    b = c1[2] * (0.75 + 0.45 * n)
                 a = 255.0
 
             else:

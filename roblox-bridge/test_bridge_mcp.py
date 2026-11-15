@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_bridge_mcp.py — Comprehensive automated test suite for the v5.4.0
+test_bridge_mcp.py — Comprehensive automated test suite for the v6.0.0
 Arena <-> Roblox Studio Bridge, CLI, and MCP Server (stdio + Streamable HTTP).
 
 Tests:
@@ -673,7 +673,7 @@ class TestConnectionDiagnostics(unittest.TestCase):
         client = mock.Mock()
         client.direct_dispatch = None
         client.read_only = True
-        client.health.return_value = {"ok": True, "version": "5.4.0", "authMode": "scoped", "read_only": False, "queuePaused": True}
+        client.health.return_value = {"ok": True, "version": "6.0.0", "authMode": "scoped", "read_only": False, "queuePaused": True}
         client.peers.return_value = {"peers": [
             {"online": True, "dm": "edit", "pluginVersion": "4.1", "peerId": "secret-peer"},
             {"online": True, "dm": "server", "hasClient": True, "pluginVersion": "2.0"},
@@ -693,7 +693,7 @@ class TestConnectionDiagnostics(unittest.TestCase):
         self.assertTrue({"older_plugin_reported", "unknown_plugin_version", "queue_paused"} <= codes)
         self.assertNotIn("secret", json.dumps(result))
         client.submit_job.assert_not_called()
-        client.peers.return_value = {"peers": [{"online": True, "dm": "edit", "pluginVersion": "4.1"}]}
+        client.peers.return_value = {"peers": [{"online": True, "dm": "edit", "pluginVersion": "6.0.0"}]}
         self.assertNotIn("older_plugin_reported", [x["code"] for x in diagnose_connection_helper(client)["checks"]])
         client.health.return_value["authMode"] = "open"
         self.assertEqual(diagnose_connection_helper(client)["readAccess"], "open")
@@ -1227,7 +1227,7 @@ class TestV5OpsPlatform(unittest.TestCase):
     def test_ops_report_and_public_health_shape(self):
         status, health = self._req("/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "5.4.0")
+        self.assertEqual(health["version"], "6.0.0")
         self.assertIn("tunnel", health)
         self.assertIn("agents", health)
         status, ops = self._req("/api/ops", token=self.admin_token)
@@ -1505,7 +1505,8 @@ class TestV5OpsPlatform(unittest.TestCase):
     def test_bridge_ops_control_actions_and_ops_resources(self):
         from mcp_core import MCPDispatcher, RESOURCES
         uris = [r["uri"] for r in RESOURCES]
-        self.assertEqual(len(uris), 11)
+        self.assertEqual(len(uris), 12)
+        self.assertIn("mcp://server-card.json", uris)
         self.assertIn("studio://jobs", uris)
         self.assertIn("studio://handoff", uris)
 
@@ -1864,6 +1865,41 @@ class TestV5OpsPlatform(unittest.TestCase):
         with urllib.request.urlopen(authed, timeout=15) as resp:
             self.assertEqual(resp.status, 200)
 
+    def test_dashboard_asset_library_and_kit_endpoints(self):
+        html = bridge_server.dashboard_html()
+        self.assertIn("/api/kit/catalog?category=all&format=full", html)
+        self.assertIn("format: 'full'", html)
+        self.assertIn("previewDungeonLayout", html)
+        self.assertIn("runMechanicBuilder", html)
+
+        st_cat, cat = self._req("/api/kit/catalog?category=all&format=full")
+        self.assertEqual(st_cat, 200)
+        self.assertGreaterEqual(len(cat.get("images") or []), 3700)
+        self.assertGreaterEqual(len(cat.get("models") or []), 520)
+        self.assertGreaterEqual(len(cat.get("audio") or []), 45)
+        self.assertGreaterEqual(len(cat.get("modules") or []), 25)
+        self.assertGreaterEqual(len(cat.get("systems") or []), 20)
+        self.assertGreaterEqual(len(cat.get("prefabs") or []), 26)
+        self.assertEqual(len(cat.get("proceduralPresets") or []), 38)
+        self.assertEqual(len(cat.get("audioSynthSpecs") or []), 12)
+
+        st_ci, ci = self._req("/api/kit/cloud-icons?query=shield&limit=10")
+        self.assertEqual(st_ci, 200)
+        self.assertEqual(ci.get("totalCatalogIcons"), 4811)
+        self.assertGreaterEqual(len(ci.get("icons") or []), 1)
+
+        with urllib.request.urlopen(self.base + "/api/kit/procedural/icon_key.png", timeout=15) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.read(8), b"\x89PNG\r\n\x1a\n")
+
+        with urllib.request.urlopen(self.base + "/api/kit/synth-audio/horror_heartbeat.wav", timeout=15) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.read(4), b"RIFF")
+
+        with urllib.request.urlopen(self.base + "/api/kit/thumbnail/audio/click_001.png", timeout=15) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.read(8), b"\x89PNG\r\n\x1a\n")
+
     def test_setup_dry_run_explains_the_tunnel_plan(self):
         import setup as bridge_setup
         cmd = ["python", "server.py", "--port", "8077"]
@@ -2180,7 +2216,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         cls.stop_mock.set()
         cls.httpd.shutdown()
 
-    def mcp_http(self, rpc_body, auth_mode="bearer"):
+    def mcp_http(self, rpc_body, auth_mode="bearer", timeout: float = 30.0):
         data = json.dumps(rpc_body).encode("utf-8")
         url = f"{self.base_url}/mcp"
         headers = {"Content-Type": "application/json"}
@@ -2191,20 +2227,21 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         elif auth_mode == "query":
             url += f"?token={self.token}"
         req = urllib.request.Request(url, data=data, method="POST", headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
             return resp.status, json.loads(raw) if raw else None, dict(resp.headers)
 
     def call_tool(self, name: str, arguments: dict = None) -> dict:
         started = time.monotonic()
         passed = False
+        req_timeout = max(30.0, float((arguments or {}).get("timeout") or 30.0) + 30.0)
         try:
             status, body, _ = self.mcp_http({
                 "jsonrpc": "2.0",
                 "id": f"call-{name}",
                 "method": "tools/call",
                 "params": {"name": name, "arguments": arguments or {}},
-            })
+            }, timeout=req_timeout)
             self.assertEqual(status, 200)
             self.assertIn("result", body, msg=f"{name} -> {json.dumps(body)[:600]}")
             res = body["result"]
@@ -2271,7 +2308,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         ], auth_mode="query")
         self.assertEqual(st_b, 200)
         self.assertEqual(len(batch_resp), 3)
-        self.assertEqual(len(batch_resp[1]["result"]["resources"]), 11)
+        self.assertEqual(len(batch_resp[1]["result"]["resources"]), 12)
         self.assertEqual(len(batch_resp[2]["result"]["prompts"]), 7)
 
     def test_02_all_core_studio_tools_end_to_end(self):
@@ -2287,7 +2324,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         done = self.call_tool("agent_bus", {"action": "task_complete", "taskId": task["id"], "agentId": reg["id"], "result": "ok"})
         self.assertEqual(done["status"], "done")
         ops = self.call_tool("bridge_ops", {"action": "status"})
-        self.assertEqual(ops["version"], "5.4.0")
+        self.assertEqual(ops["version"], "6.0.0")
         self.assertIn("tunnel", ops)
         metrics = self.call_tool("bridge_ops", {"action": "metrics"})
         self.assertIn("counters", metrics)
@@ -2306,7 +2343,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         peers = self.call_tool("list_studios")
         self.assertGreaterEqual(peers["onlineCount"], 1)
         ping = self.call_tool("ping_studio")
-        self.assertEqual(ping["pluginVersion"], "4.1.0")
+        self.assertEqual(ping["pluginVersion"], "6.0.0")
 
         # 2. Survey, Inspect, Search, Properties, Compare
         survey = self.call_tool("survey_place", {"includeSource": True})
@@ -2786,6 +2823,51 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         self.assertTrue(stopped_scenario["ok"])
         self.assertTrue(stopped_scenario["sessionStopped"])
         self.assertFalse(stopped_scenario["sessionSurvived"])
+
+        dungeon_res = self.call_tool("generate_dungeon_layout", {"seed": 2026, "roomCount": 7, "theme": "horror_mansion", "buildInStudio": False})
+        self.assertTrue(dungeon_res["ok"])
+        self.assertEqual(dungeon_res["roomCount"], 7)
+        self.assertTrue(dungeon_res["allRoomsReachable"])
+
+        mechanic_res = self.call_tool("build_gameplay_mechanic", {"mechanic": "horror-director", "installInStudio": False})
+        self.assertTrue(mechanic_res["ok"])
+        self.assertGreaterEqual(mechanic_res["scriptCount"], 3)
+
+        atmo_res = self.call_tool("configure_atmosphere_fx", {"preset": "BloodMoon", "intensity": 1.15, "applyToStudio": False})
+        self.assertTrue(atmo_res["ok"])
+        self.assertEqual(atmo_res["preset"], "BloodMoon")
+
+        synth_res = self.call_tool("synthesize_sound_effect", {"preset": "horror_heartbeat", "saveToRepo": False})
+        self.assertTrue(synth_res["ok"])
+        self.assertGreater(synth_res["bytes"], 1000)
+
+        plg_res = self.call_tool("manage_plugin_and_playtest", {"action": "status"})
+        self.assertTrue(plg_res["ok"])
+        self.assertEqual(plg_res["bundledPluginVersion"], "6.0.0")
+        self.assertTrue(plg_res["allPeersUpToDate"])
+        self.assertIsNotNone(plg_res["livePluginTelemetry"])
+        self.assertEqual(plg_res["livePluginTelemetry"]["pluginVersion"], "6.0.0")
+
+        net_res = self.call_tool("audit_network_security", {
+            "scripts": [{
+                "path": "ServerScriptService.ShopServer",
+                "source": "BuyRemote.OnServerEvent:Connect(function(player, itemId, price)\n\tplayer.Leaderstats.Gold.Value -= price\nend)\n",
+            }],
+            "includeStudio": False,
+        })
+        self.assertTrue(net_res["ok"])
+        self.assertGreaterEqual(net_res["errorCount"], 1)
+        self.assertLess(net_res["securityScore"], 100)
+
+        cut_res = self.call_tool("build_cutscene_sequence", {"preset": "boss_awakening", "buildInStudio": True})
+        self.assertTrue(cut_res["ok"])
+        self.assertEqual(cut_res["keyframeCount"], 3)
+        self.assertTrue(cut_res["builtInStudio"])
+
+        theme_res = self.call_tool("generate_ui_theme_pack", {"theme": "HorrorBloodMoon", "installInStudio": True})
+        self.assertTrue(theme_res["ok"])
+        self.assertTrue(theme_res["installedInStudio"])
+
         cloud_started = time.monotonic()
         cloud_passed = False
         try:
@@ -3570,6 +3652,603 @@ class TestV54ConfirmationGate(unittest.TestCase):
         with_provenance = [row for row in jobs if row.get("actor")]
         self.assertTrue(with_provenance, msg=json.dumps(rows)[:400])
         self.assertEqual(with_provenance[0]["actor"].get("principal"), "owner")
+
+
+class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
+    """v5.5.0: .well-known Server Cards & RFC 9728, SEP-2243 Base64 headers,
+    completions, pagination, resource_link, Origin & body-size guards, and
+    Cloudflare QUIC->HTTP/2 tunnel resilience."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="arena-v55-")
+        self.token = "v55-owner-secret"
+        self.httpd, self.state = create_http_server(
+            host="127.0.0.1",
+            port=0,
+            token=self.token,
+            state_dir=self.tmp,
+            allowed_origins=["https://allowed.example"],
+            max_body_bytes=8192,
+        )
+        self.port = self.httpd.server_address[1]
+        self.base_url = f"http://127.0.0.1:{self.port}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        read_mint = self.state.tokens.create("reader", role="read")
+        self.read_token = read_mint["token"]
+
+    def tearDown(self):
+        try:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+        except Exception:
+            pass
+        self.state.tunnel.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _raw_http(self, path, method="GET", body=None, headers=None):
+        hdrs = dict(headers or {})
+        data = body if isinstance(body, (bytes, type(None))) else body.encode("utf-8")
+        req = urllib.request.Request(self.base_url + path, data=data, method=method, headers=hdrs)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.status, resp.read().decode("utf-8", "replace"), dict(resp.headers)
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8", "replace"), dict(exc.headers)
+
+    def test_well_known_server_card_and_oauth_protected_resource_metadata(self):
+        for card_path in ("/.well-known/mcp/server-card.json", "/.well-known/mcp.json"):
+            st, raw, hdrs = self._raw_http(card_path)
+            self.assertEqual(st, 200)
+            self.assertEqual(hdrs.get("X-Content-Type-Options"), "nosniff")
+            self.assertEqual(hdrs.get("Access-Control-Allow-Origin"), "*")
+            card = json.loads(raw)
+            self.assertEqual(card["serverInfo"]["version"], "6.0.0")
+            self.assertIn("2026-07-28", card["supportedVersions"])
+            self.assertTrue(card["authentication"]["required"])
+            self.assertTrue(card["endpoints"]["streamableHttp"].endswith("/mcp"))
+
+        st_oa, raw_oa, _ = self._raw_http("/.well-known/oauth-protected-resource/mcp")
+        self.assertEqual(st_oa, 200)
+        oa = json.loads(raw_oa)
+        self.assertEqual(oa["resource"], f"{self.base_url}/mcp")
+        self.assertIn("mcp:read", oa["scopes_supported"])
+        self.assertEqual(oa["bearer_methods_supported"], ["header"])
+
+        # Unauthenticated /mcp emits RFC 9728 WWW-Authenticate challenge
+        st_401, _, hdrs_401 = self._raw_http("/mcp")
+        self.assertEqual(st_401, 401)
+        self.assertIn("resource_metadata=", hdrs_401.get("WWW-Authenticate", ""))
+
+        # Insufficient scope on admin endpoint emits 403 insufficient_scope challenge
+        st_403, _, hdrs_403 = self._raw_http(
+            "/api/tokens",
+            headers={"Authorization": f"Bearer {self.read_token}"},
+        )
+        self.assertEqual(st_403, 403)
+        self.assertIn('error="insufficient_scope"', hdrs_403.get("WWW-Authenticate", ""))
+
+    def test_origin_guard_body_limits_and_parse_error_regression(self):
+        # Cross-origin browser request to /mcp is rejected (DNS-rebinding defense)
+        st_bad, _, _ = self._raw_http(
+            "/mcp",
+            method="POST",
+            body=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.token}",
+                "Origin": "https://evil.attacker.example",
+            },
+        )
+        self.assertEqual(st_bad, 403)
+
+        # Explicitly allowlisted Origin succeeds and reflects CORS Origin
+        st_ok, raw_ok, hdrs_ok = self._raw_http(
+            "/mcp",
+            method="POST",
+            body=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.token}",
+                "Origin": "https://allowed.example",
+            },
+        )
+        self.assertEqual(st_ok, 200)
+        self.assertEqual(hdrs_ok.get("Access-Control-Allow-Origin"), "https://allowed.example")
+        self.assertIn("WWW-Authenticate", hdrs_ok.get("Access-Control-Expose-Headers", ""))
+        self.assertIn("result", json.loads(raw_ok))
+
+        # Regression test: malformed JSON on POST /mcp returns 400 + -32700 (no UnboundLocalError)
+        st_parse, raw_parse, hdrs_parse = self._raw_http(
+            "/mcp",
+            method="POST",
+            body=b"{not-valid-json",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.token}",
+                "MCP-Protocol-Version": "2026-07-28",
+            },
+        )
+        self.assertEqual(st_parse, 400)
+        self.assertEqual(hdrs_parse.get("MCP-Protocol-Version"), "2026-07-28")
+        self.assertEqual(json.loads(raw_parse)["error"]["code"], -32700)
+
+        # Oversized body triggers HTTP 413
+        oversized = json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping", "pad": "x" * 9000})
+        st_413, _, _ = self._raw_http(
+            "/mcp",
+            method="POST",
+            body=oversized,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(st_413, 413)
+
+    def test_sep2243_base64_headers_stateless_405_and_version_errors(self):
+        from mcp_core import decode_mcp_header_value, encode_mcp_header_value
+
+        non_ascii = "studio://scripts/Café"
+        encoded = encode_mcp_header_value(non_ascii)
+        self.assertTrue(encoded.startswith("=?base64?"))
+        self.assertEqual(decode_mcp_header_value(encoded), non_ascii)
+        self.assertEqual(encode_mcp_header_value("mcp://server-card.json"), "mcp://server-card.json")
+
+        # Valid SEP-2243 headers on resources/read for mcp://server-card.json
+        st_card, raw_card, _ = self._raw_http(
+            "/mcp",
+            method="POST",
+            body=json.dumps({
+                "jsonrpc": "2.0",
+                "id": 10,
+                "method": "resources/read",
+                "params": {"uri": "mcp://server-card.json"},
+            }),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.token}",
+                "MCP-Protocol-Version": "2026-07-28",
+                "Mcp-Method": "resources/read",
+                "Mcp-Name": "mcp://server-card.json",
+            },
+        )
+        self.assertEqual(st_card, 200)
+        card_body = json.loads(json.loads(raw_card)["result"]["contents"][0]["text"])
+        self.assertEqual(card_body["serverInfo"]["version"], "6.0.0")
+
+        # Malformed =?base64?...?= sentinel -> 400 + -32020
+        st_bad_b64, raw_bad_b64, _ = self._raw_http(
+            "/mcp",
+            method="POST",
+            body=json.dumps({"jsonrpc": "2.0", "id": 11, "method": "ping"}),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.token}",
+                "Mcp-Name": "=?base64?%%%not-base64%%%?=",
+            },
+        )
+        self.assertEqual(st_bad_b64, 400)
+        self.assertEqual(json.loads(raw_bad_b64)["error"]["code"], -32020)
+
+        # Header MCP-Protocol-Version vs _meta protocolVersion mismatch -> 400 + -32020
+        st_ver_mis, raw_ver_mis, _ = self._raw_http(
+            "/mcp",
+            method="POST",
+            body=json.dumps({
+                "jsonrpc": "2.0",
+                "id": 12,
+                "method": "tools/list",
+                "_meta": {"io.modelcontextprotocol/protocolVersion": "2025-06-18"},
+            }),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.token}",
+                "MCP-Protocol-Version": "2026-07-28",
+            },
+        )
+        self.assertEqual(st_ver_mis, 400)
+        self.assertEqual(json.loads(raw_ver_mis)["error"]["code"], -32020)
+
+        # Unsupported protocol version -> HTTP 400 + -32022 with requested & supported
+        st_unsup, raw_unsup, _ = self._raw_http(
+            "/mcp",
+            method="POST",
+            body=json.dumps({"jsonrpc": "2.0", "id": 13, "method": "tools/list"}),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.token}",
+                "MCP-Protocol-Version": "2099-01-01",
+            },
+        )
+        self.assertEqual(st_unsup, 400)
+        err_unsup = json.loads(raw_unsup)["error"]
+        self.assertEqual(err_unsup["code"], -32022)
+        self.assertEqual(err_unsup["data"]["requested"], "2099-01-01")
+        self.assertIn("2026-07-28", err_unsup["data"]["supported"])
+
+        # DELETE /mcp and GET /mcp SSE return 405 in 2026-07-28, while legacy GET /mcp SSE flushes : connected
+        st_del, _, _ = self._raw_http("/mcp", method="DELETE", headers={"MCP-Protocol-Version": "2026-07-28"})
+        self.assertEqual(st_del, 405)
+        st_sse_mod, _, _ = self._raw_http(
+            "/mcp",
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "MCP-Protocol-Version": "2026-07-28",
+                "Accept": "text/event-stream",
+            },
+        )
+        self.assertEqual(st_sse_mod, 405)
+        st_sse_leg, raw_sse_leg, _ = self._raw_http(
+            "/mcp?maxSeconds=0.2",
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "text/event-stream",
+            },
+        )
+        self.assertEqual(st_sse_leg, 200)
+        self.assertIn(": connected", raw_sse_leg)
+
+    def test_completions_cursor_pagination_titles_and_resource_links(self):
+        # Seed a bus agent so completion/complete returns live values
+        self.state.bus.handle({"action": "register", "name": "CompAgent", "role": "qa"})
+
+        def rpc(method, params=None):
+            st, raw, _ = self._raw_http(
+                "/mcp",
+                method="POST",
+                body=json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.token}",
+                    "MCP-Protocol-Version": "2026-07-28",
+                },
+            )
+            self.assertEqual(st, 200, raw)
+            return json.loads(raw)
+
+        comp_agent = rpc("completion/complete", {
+            "ref": {"type": "ref/prompt", "name": "multi_agent_handoff"},
+            "argument": {"name": "agentName", "value": "Comp"},
+        })
+        self.assertEqual(comp_agent["result"]["resultType"], "complete")
+        self.assertIn("CompAgent", comp_agent["result"]["completion"]["values"])
+
+        comp_goal = rpc("completion/complete", {
+            "ref": {"type": "ref/prompt", "name": "safe_module_edit"},
+            "argument": {"name": "goal", "value": "strict"},
+        })
+        self.assertTrue(any("strict" in v for v in comp_goal["result"]["completion"]["values"]))
+
+        comp_skill = rpc("completion/complete", {
+            "ref": {"type": "ref/resource", "uri": "skill://{name}"},
+            "argument": {"name": "name", "value": "roblox-stud"},
+        })
+        self.assertIn("roblox-stud-ui-design", comp_skill["result"]["completion"]["values"])
+
+        bad_comp = rpc("completion/complete", {
+            "ref": {"type": "ref/prompt", "name": "no_such_prompt"},
+            "argument": {"name": "x", "value": ""},
+        })
+        self.assertEqual(bad_comp["error"]["code"], -32602)
+
+        # Pagination + titles on resources/list
+        page1 = rpc("resources/list", {"limit": 5})["result"]
+        self.assertEqual(len(page1["resources"]), 5)
+        self.assertTrue(all(r.get("title") for r in page1["resources"]))
+        self.assertIn("nextCursor", page1)
+        page2 = rpc("resources/list", {"limit": 5, "cursor": page1["nextCursor"]})["result"]
+        self.assertEqual(len(page2["resources"]), 5)
+        self.assertTrue({r["uri"] for r in page1["resources"]}.isdisjoint({r["uri"] for r in page2["resources"]}))
+
+        # apply_skill appends resource_link after content[0]
+        applied = rpc("tools/call", {"name": "apply_skill", "arguments": {"name": "roblox-stud-ui-design"}})["result"]
+        self.assertGreaterEqual(len(applied["content"]), 2)
+        self.assertEqual(applied["content"][0]["type"], "text")
+        self.assertEqual(applied["content"][1]["type"], "resource_link")
+        self.assertEqual(applied["content"][1]["uri"], "skill://roblox-stud-ui-design")
+
+    def test_tunnel_quic_to_http2_fallback_named_edge_and_strict_probe(self):
+        from tunnel_manager import TunnelManager
+
+        # 1. Stopped tunnel keeps lastKnownUrl separate from publicUrl
+        state_dir = Path(self.tmp) / "tun-state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "tunnel.json").write_text(json.dumps({
+            "lastPublicUrl": "https://old-dead-url.trycloudflare.com",
+            "flavor": "cloudflared",
+        }), encoding="utf-8")
+        mgr = TunnelManager(port=self.port, state_dir=state_dir)
+        initial = mgr.status()
+        self.assertIsNone(initial["publicUrl"])
+        self.assertEqual(initial["lastKnownUrl"], "https://old-dead-url.trycloudflare.com")
+        self.assertIsNone(initial["mcpUrl"])
+
+        # 2. Automatic QUIC -> http2 fallback when UDP is blocked
+        args_log = state_dir / "cf-args.log"
+        fake_cf = state_dir / "fake-cf"
+        fake_cf.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys, time\n"
+            f"open({str(args_log)!r}, 'a', encoding='utf-8').write(' '.join(sys.argv[1:]) + '\\n')\n"
+            "if 'http2' not in sys.argv:\n"
+            "    print('ERR failed to dial to edge with quic: timeout: no recent network activity', flush=True)\n"
+            "    sys.exit(1)\n"
+            f"print('INF |  http://127.0.0.1:{self.port}  |', flush=True)\n"
+            "print('INF |  https://fallback-http2-test.trycloudflare.com  |', flush=True)\n"
+            "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+        os.chmod(fake_cf, 0o755)
+
+        mgr_fb = TunnelManager(port=self.port, binary=str(fake_cf), flavor="cloudflared", protocol="auto", state_dir=state_dir)
+        try:
+            mgr_fb.start()
+            deadline = time.time() + 8.0
+            while time.time() < deadline and mgr_fb.public_url != "https://fallback-http2-test.trycloudflare.com":
+                time.sleep(0.1)
+            st_fb = mgr_fb.status()
+            self.assertEqual(st_fb["state"], "online")
+            self.assertEqual(st_fb["activeProtocol"], "http2")
+            self.assertEqual(st_fb["wellKnownMcp"], "https://fallback-http2-test.trycloudflare.com/.well-known/mcp/server-card.json")
+            recorded = args_log.read_text(encoding="utf-8").splitlines()
+            self.assertGreaterEqual(len(recorded), 2)
+            self.assertNotIn("--protocol http2", recorded[0])
+            self.assertIn("--protocol http2", recorded[-1])
+        finally:
+            mgr_fb.stop()
+            self.assertIsNone(mgr_fb.status()["publicUrl"])
+            self.assertEqual(mgr_fb.status()["lastKnownUrl"], "https://fallback-http2-test.trycloudflare.com")
+
+        # 3. Strict JSON health probe rejects HTML 200 error pages & accepts real bridge /api/health
+        mgr_probe = TunnelManager(port=self.port, public_url=self.base_url, state_dir=state_dir)
+        good_probe = mgr_probe.probe()
+        self.assertTrue(good_probe["ok"])
+        self.assertEqual(good_probe["bridgeVersion"], "6.0.0")
+
+    def test_setup_token_chmod_http_mcp_config_and_operator_scripts(self):
+        import setup as bridge_setup
+        import importlib.util
+
+        # Verify 0o600 permissions on recovered bridge.token and HTTP .mcp.json writer
+        sub_tmp = Path(self.tmp) / "setup-check"
+        plugins = sub_tmp / "Plugins"
+        tok_file = sub_tmp / "bridge.token"
+        orig_tok = bridge_setup.TOKEN_FILE
+        try:
+            bridge_setup.TOKEN_FILE = tok_file
+            bridge_setup.install_plugin("chmodsecret112233", 8077, explicit_dir=plugins)
+            recovered = bridge_setup.get_token(rotate=False, explicit_dir=plugins)
+            self.assertEqual(recovered, "chmodsecret112233")
+            if os.name != "nt":
+                mode = tok_file.stat().st_mode & 0o777
+                self.assertEqual(mode, 0o600)
+            mcp_http_file = bridge_setup.write_mcp_config(
+                sub_tmp,
+                port=self.port,
+                read_only=False,
+                transport="http",
+                public_url="https://mcp.example.com",
+                token="chmodsecret112233",
+            )
+            cfg = json.loads(mcp_http_file.read_text(encoding="utf-8"))
+            self.assertEqual(cfg["mcpServers"]["roblox-studio"]["type"], "http")
+            self.assertEqual(cfg["mcpServers"]["roblox-studio"]["url"], "https://mcp.example.com/mcp")
+            self.assertEqual(
+                cfg["mcpServers"]["roblox-studio"]["headers"]["Authorization"],
+                "Bearer chmodsecret112233",
+            )
+        finally:
+            bridge_setup.TOKEN_FILE = orig_tok
+
+        # Verify drill_studio_kill.reaped_total handles list-typed /api/metrics counters
+        self.state.telemetry.metrics.inc("bridge_jobs_reaped_total", 3)
+        drill_path = HERE.parent / "jobs" / "drill_studio_kill.py"
+        spec = importlib.util.spec_from_file_location("drill_studio_kill", drill_path)
+        drill_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(drill_mod)
+        self.assertEqual(drill_mod.reaped_total(self.base_url, self.token), 3)
+
+        # Verify measure_tunnel_latency.py --transport mcp benchmarks real /mcp calls
+        lat_script = HERE.parent / "jobs" / "measure_tunnel_latency.py"
+        lat_run = subprocess.run(
+            [
+                sys.executable,
+                str(lat_script),
+                "--url",
+                f"local={self.base_url}",
+                "--token",
+                self.token,
+                "--transport",
+                "mcp",
+                "--tools",
+                "get_studio_state",
+                "--runs",
+                "2",
+                "--warmup",
+                "0",
+                "--markdown",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(lat_run.returncode, 0, lat_run.stderr)
+        self.assertIn("get_studio_state", lat_run.stdout)
+
+    def test_viewport_3d_string_properties_zbuffer_and_preview_endpoint(self):
+        from image_pipeline import decode_any_to_rgba
+        from scene_auditor import audit_3d_hierarchy
+        from viewport_renderer import _compute_auto_camera, collect_parts_from_tree, render_scene_png
+
+        # 1. String-only properties (as emitted by ArenaBridge.lua descendants without structuredProperties)
+        string_tree = {
+            "name": "Workspace",
+            "className": "Workspace",
+            "children": [
+                {
+                    "name": "Baseplate",
+                    "className": "Part",
+                    "properties": {
+                        "Size": "2048, 16, 2048",
+                        "Position": "0, -8, 0",
+                        "CFrame": "0, -8, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1",
+                        "Color": "0.22, 0.25, 0.30",
+                        "Anchored": "true",
+                    },
+                },
+                {
+                    "name": "RedBarn",
+                    "className": "Model",
+                    "children": [
+                        {
+                            "name": "BarnWall",
+                            "className": "Part",
+                            "properties": {
+                                "Size": "18, 12, 18",
+                                "Position": "-6, 6, -8",
+                                "CFrame": "-6, 6, -8, 1, 0, 0, 0, 1, 0, 0, 0, 1",
+                                "Color": "0.92, 0.16, 0.14",
+                                "Anchored": "true",
+                            },
+                        },
+                        {
+                            "name": "BarnRoof",
+                            "className": "WedgePart",
+                            "properties": {
+                                "Size": "20, 6, 20",
+                                "Position": "-6, 15, -8",
+                                "Orientation": "0, 90, 0",
+                                "BrickColor": "Bright yellow",
+                                "Anchored": "true",
+                            },
+                        },
+                    ],
+                },
+                {
+                    "name": "ArchivedPalette",
+                    "className": "Part",
+                    "properties": {
+                        "Size": "10, 2, 10",
+                        "Position": "1600, -400, 1600",
+                        "Color": "0.5, 0.5, 0.5",
+                        "Anchored": "false",
+                    },
+                },
+            ],
+        }
+        parts = collect_parts_from_tree(string_tree)
+        self.assertEqual(len(parts), 4)
+        barn = next(p for p in parts if p["name"] == "BarnWall")
+        self.assertEqual(barn["size"], (18.0, 12.0, 18.0))
+        self.assertEqual(barn["pos"], (-6.0, 6.0, -8.0))
+        self.assertGreater(barn["color"][0], 200)
+        self.assertEqual(barn["modelName"], "RedBarn")
+
+        # 2. Outlier-resistant auto camera frames main build instead of 1600-stud ArchivedPalette
+        for extra_i in range(5):
+            parts.append({
+                "name": f"Plot{extra_i}",
+                "path": f"Workspace.Plot{extra_i}",
+                "className": "Part",
+                "modelName": None,
+                "pos": (float(extra_i * 6), 1.0, 4.0),
+                "size": (5.0, 1.0, 5.0),
+                "axes": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+                "color": (90, 180, 90),
+                "transparency": 0.0,
+                "neon": False,
+                "shape": "Block",
+                "isGround": False,
+            })
+        _, look_at, _ = _compute_auto_camera(parts, "perspective")
+        self.assertLess(abs(look_at[0]), 60.0)
+        self.assertLess(abs(look_at[2]), 60.0)
+
+        # 3. Z-buffer ensures giant Baseplate never paints over the RedBarn standing on top of it
+        png_bytes, meta = render_scene_png(string_tree, width=480, height=270, include_hud=False, show_grid=True)
+        w, h, rgba = decode_any_to_rgba(png_bytes)
+        self.assertEqual((w, h), (480, 270))
+        red_pixels = sum(
+            1 for i in range(0, len(rgba), 4)
+            if rgba[i] > 150 and rgba[i + 1] < 80 and rgba[i + 2] < 80
+        )
+        self.assertGreater(red_pixels, 150, "RedBarn must not be occluded by giant Baseplate")
+
+        # 4. 3D scene auditor parses string properties accurately
+        audit_rep = audit_3d_hierarchy(string_tree)
+        self.assertEqual(audit_rep["totalPartsAudited"], 4)
+        self.assertTrue(any(iss["code"] == "UNANCHORED_PART" for iss in audit_rep["issues"]))
+
+        # 5. Dashboard /api/kit/viewport-preview endpoint serves live & showcase 3D viewports
+        for src in ("studio:Workspace", "showcase:starter_village", "showcase:horror_nightloop", "dungeon:seeded", "prefab:world_safe_room_shelter"):
+            code, raw_body, _ = self._raw_http(f"/api/kit/viewport-preview?source={src}&preset=iso_ne&width=360&height=220")
+            body = json.loads(raw_body)
+            self.assertEqual(code, 200, src)
+            self.assertTrue(body["ok"], src)
+            self.assertTrue(body["imageBase64"], src)
+            self.assertGreater(body["meta"]["partsRendered"], 0, src)
+            self.assertIn("audit", body, src)
+
+    def test_v6_plugin_dashboard_and_playtest_stop_reliability(self):
+        # 1. Verify /api/plugin/download serves pre-baked ArenaBridge.lua v6.0.0 with token & DockWidget UI
+        st_dl, raw_dl, hdrs_dl = self._raw_http(
+            "/api/plugin/download",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(st_dl, 200)
+        self.assertIn("ArenaBridge.lua", hdrs_dl.get("Content-Disposition", ""))
+        self.assertIn('local PLUGIN_VERSION = "6.0.0"', raw_dl)
+        self.assertIn("ArenaBridgeDashboardV6", raw_dl)
+        self.assertIn(self.token, raw_dl)
+
+        # 2. Simulate an outdated v4.0.0 edit peer + a live server play peer, verify /api/plugin-status detects it
+        self._raw_http(
+            "/api/poll?peer=edit-legacy-peer&dm=edit&place=TestPlace&placeId=99&pv=4.0.0&wait=0",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self._raw_http(
+            "/api/poll?peer=srv-ghost-peer&dm=server&place=TestPlace&placeId=99&pv=6.0.0&hasClient=1&players=1&wait=0",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        st_ps, raw_ps, _ = self._raw_http(
+            "/api/plugin-status",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(st_ps, 200)
+        ps = json.loads(raw_ps)
+        self.assertTrue(ps["ok"])
+        self.assertEqual(ps["bundledPluginVersion"], "6.0.0")
+        self.assertGreaterEqual(ps["outdatedPeerCount"], 1)
+        self.assertTrue(ps["playtestState"]["playtestActive"])
+
+        # 3. Verify /api/poll?goodbye=1 immediately evicts a unloading playtest peer
+        st_gb, raw_gb, _ = self._raw_http(
+            "/api/poll?peer=srv-ghost-peer&dm=server&place=TestPlace&placeId=99&pv=6.0.0&goodbye=1",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(st_gb, 200)
+        self.assertTrue(json.loads(raw_gb)["goodbye"])
+
+        st_peers, raw_peers, _ = self._raw_http(
+            "/api/peers",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        peers_after_gb = json.loads(raw_peers)["peers"]
+        srv_row = next(p for p in peers_after_gb if p["peerId"] == "srv-ghost-peer")
+        self.assertFalse(srv_row["online"], "goodbye=1 must immediately mark runtime peer offline")
+
+        # 4. Verify POST /api/playtest/force-stop evicts any remaining runtime peers & cancels queued server jobs
+        self._raw_http(
+            "/api/poll?peer=srv-stuck-peer&dm=server&place=TestPlace&placeId=99&pv=6.0.0&wait=0",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        st_fs, raw_fs, _ = self._raw_http(
+            "/api/playtest/force-stop",
+            method="POST",
+            body=json.dumps({"action": "evict_only", "reason": "unit_test_force_stop"}),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(st_fs, 200)
+        fs_body = json.loads(raw_fs)
+        self.assertTrue(fs_body["ok"])
+        self.assertGreaterEqual(fs_body["evictedPeers"], 1)
 
 
 if __name__ == "__main__":

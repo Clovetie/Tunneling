@@ -31,6 +31,7 @@ local Signal = require(package.Signal)
 local Registry = require(package.Registry)
 local Net = require(package.Net)
 local Flash = require(package.Flash)
+local NightModifiers = require(package.NightModifiers)
 
 local Director = {}
 
@@ -49,6 +50,9 @@ local state = {
 	mode = Config.Mode,
 	strikes = 0,
 	lastStrike = 0,
+	maxStrikes = Config.Survival.MaxStrikes,
+	modifiers = {},
+	modifierTitles = {},
 }
 
 local registry = Registry.new(Config, package.Entities)
@@ -110,7 +114,9 @@ function Director:GetState()
 		remaining = math.max(0, state.duration - state.elapsed),
 		duration = state.duration,
 		strikes = state.strikes or 0,
-		maxStrikes = Config.Survival.MaxStrikes,
+		maxStrikes = state.maxStrikes or Config.Survival.MaxStrikes,
+		modifiers = state.modifiers or {},
+		modifierTitles = state.modifierTitles or {},
 		hud = {
 			showClock = Config.Hud.ShowClock,
 			showPhase = Config.Hud.ShowPhase,
@@ -193,16 +199,28 @@ function Director:StartNight(opts)
 	state.strikes = 0
 	state.lastStrike = 0
 
+	local modNames = opts.modifiers or Config.Modifiers or {}
+	local resolvedMods = NightModifiers.Resolve(modNames, Config)
+	state.modifiers = resolvedMods.names
+	state.modifierTitles = resolvedMods.titles
+	state.maxStrikes = resolvedMods.maxStrikes or Config.Survival.MaxStrikes
+
 	if state.mode == "Endless" then
-		state.intensityBonus = (state.night - 1) * Config.EndlessIntensityStep
+		state.intensityBonus = (state.night - 1) * Config.EndlessIntensityStep + resolvedMods.intensityBonus
 	else
-		state.intensityBonus = opts.intensityBonus or 0
+		state.intensityBonus = (opts.intensityBonus or 0) + resolvedMods.intensityBonus
 	end
 
 	ctx = buildContext()
+	ctx.Modifiers = resolvedMods
 	refreshContext()
 
 	local loaded = registry:Load(ctx)
+	for _, entity in ipairs(loaded) do
+		if resolvedMods.forceEarly[entity.Name] then
+			entity.FirstPhase = 1
+		end
+	end
 	if #loaded == 0 then
 		warn("[NightLoop] no entities active — check Config.Entities")
 	end
@@ -275,14 +293,15 @@ function Director:AddStrike(source, detail)
 	state.lastStrike = now
 	state.strikes += 1
 
-	local remaining = math.max(0, Config.Survival.MaxStrikes - state.strikes)
+	local maxStrikes = state.maxStrikes or Config.Survival.MaxStrikes
+	local remaining = math.max(0, maxStrikes - state.strikes)
 	Director.StrikeAdded:Fire(source, state.strikes, remaining)
 
 	Net.BroadcastCue({
 		kind = "strike",
 		source = source,
 		strikes = state.strikes,
-		maxStrikes = Config.Survival.MaxStrikes,
+		maxStrikes = maxStrikes,
 		remaining = remaining,
 		detail = detail,
 	})
@@ -290,17 +309,21 @@ function Director:AddStrike(source, detail)
 
 	if Config.Debug then
 		print(("[NightLoop] strike %d/%d from %s")
-			:format(state.strikes, Config.Survival.MaxStrikes, tostring(source)))
+			:format(state.strikes, maxStrikes, tostring(source)))
 	end
 
-	if state.strikes >= Config.Survival.MaxStrikes then
+	if state.strikes >= maxStrikes then
 		stopInternal("failed", { reason = source, strikes = state.strikes })
 	end
 	return true
 end
 
 function Director:GetStrikes()
-	return state.strikes, Config.Survival.MaxStrikes
+	return state.strikes, state.maxStrikes or Config.Survival.MaxStrikes
+end
+
+function Director:GetModifiers()
+	return state.modifiers, state.modifierTitles
 end
 
 function Director:StopNight(reason)

@@ -1,0 +1,93 @@
+{
+  "name": "ui_horror_sanity_vitals_hud",
+  "category": "ui-hud",
+  "description": "Responsive Horror Vitals HUD with Oxygen bar, Sanity pulse meter, Flash Charge pips, and active Night Modifier badge.",
+  "defaultParent": "StarterGui",
+  "tree": [
+    {
+      "name": "HorrorVitalsHudGui",
+      "className": "ScreenGui",
+      "replaceExisting": true,
+      "properties": {
+        "ResetOnSpawn": false,
+        "IgnoreGuiInset": false
+      },
+      "children": [
+        {
+          "name": "ResponsiveScale",
+          "className": "UIScale",
+          "properties": { "Scale": 1 }
+        },
+        {
+          "name": "VitalsPanel",
+          "className": "Frame",
+          "properties": {
+            "AnchorPoint": { "__t": "Vector2", "v": [0, 1] },
+            "Position": { "__t": "UDim2", "v": [0, 18, 1, -18] },
+            "Size": { "__t": "UDim2", "v": [0, 260, 0, 88] },
+            "BackgroundColor3": { "__t": "Color3", "v": [0.06, 0.08, 0.12] },
+            "BackgroundTransparency": 0.18
+          },
+          "children": [
+            {
+              "name": "Corner",
+              "className": "UICorner",
+              "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 10] } }
+            },
+            {
+              "name": "Stroke",
+              "className": "UIStroke",
+              "properties": {
+                "Color": { "__t": "Color3", "v": [0.78, 0.24, 0.28] },
+                "Thickness": 1.5
+              }
+            },
+            {
+              "name": "PhaseHeader",
+              "className": "TextLabel",
+              "properties": {
+                "Position": { "__t": "UDim2", "v": [0, 12, 0, 8] },
+                "Size": { "__t": "UDim2", "v": [1, -24, 0, 22] },
+                "BackgroundTransparency": 1,
+                "Text": "PHASE 4 · OVERLOAD [BLOOD MOON]",
+                "TextScaled": true,
+                "TextColor3": { "__t": "Color3", "v": [0.96, 0.84, 0.84] }
+              }
+            },
+            {
+              "name": "OxygenBarBg",
+              "className": "Frame",
+              "properties": {
+                "Position": { "__t": "UDim2", "v": [0, 12, 0, 38] },
+                "Size": { "__t": "UDim2", "v": [1, -24, 0, 14] },
+                "BackgroundColor3": { "__t": "Color3", "v": [0.14, 0.2, 0.28] }
+              },
+              "children": [
+                {
+                  "name": "OxygenFill",
+                  "className": "Frame",
+                  "properties": {
+                    "Size": { "__t": "UDim2", "v": [0.82, 0, 1, 0] },
+                    "BackgroundColor3": { "__t": "Color3", "v": [0.36, 0.78, 1.0] }
+                  }
+                }
+              ]
+            },
+            {
+              "name": "FlashChargesLabel",
+              "className": "TextLabel",
+              "properties": {
+                "Position": { "__t": "UDim2", "v": [0, 12, 0, 58] },
+                "Size": { "__t": "UDim2", "v": [1, -24, 0, 20] },
+                "BackgroundTransparency": 1,
+                "Text": "FLASH CHARGES: [■] [■] [■]  ·  STRIKES: 0/3",
+                "TextScaled": true,
+                "TextColor3": { "__t": "Color3", "v": [0.92, 0.86, 0.68] }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

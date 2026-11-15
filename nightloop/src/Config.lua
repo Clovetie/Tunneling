@@ -194,9 +194,57 @@ Config.Entities = {
 		FleeSpeed = 48,
 		RangeTolerance = 1.1,
 	},
-	Breathless  = { Enabled = false, FirstPhase = 4 },
-	TickingMan  = { Enabled = false, FirstPhase = 5 },
+	Breathless = {
+		Enabled = true,
+		FirstPhase = 4,
+		IntervalEasy = 52,
+		IntervalHard = 22,
+		Radius = 18,
+		ZoneDuration = 14,
+		SuffocateTimeEasy = 7.5,
+		SuffocateTimeHard = 3.8,
+		RecoveryRate = 0.45,
+		FlashDisperses = true,
+	},
+	TickingMan = {
+		Enabled = true,
+		FirstPhase = 5,
+		IntervalEasy = 58,
+		IntervalHard = 24,
+		SpawnDistance = 18,
+		WindupTicks = 4,
+		TickInterval = 0.65,
+		FreezeDurationEasy = 2.0,
+		FreezeDurationHard = 2.8,
+		MoveThreshold = 3.2,
+	},
+	Mimic = {
+		Enabled = true,
+		FirstPhase = 2,
+		IntervalEasy = 48,
+		IntervalHard = 18,
+		SpawnDistance = 22,
+		DecoyDuration = 4.5,
+		StalkSpeedEasy = 7.0,
+		StalkSpeedHard = 13.0,
+		StrikeDistance = 5.5,
+		MaxStalkTime = 12.0,
+	},
+	FuseBox = {
+		Enabled = true,
+		FirstPhase = 2,
+		BoxName = "FuseBox",
+		IntervalEasy = 75,
+		IntervalHard = 32,
+		BlackoutGraceEasy = 28,
+		BlackoutGraceHard = 14,
+		FlashRestoreRange = 26,
+	},
 }
+
+-- ======== MODIFIERS ========
+-- Optional run mutators (e.g. { "BloodMoon", "Overcharged" }) for replayability.
+Config.Modifiers = {}
 
 -- ======== HUD ========
 Config.Hud = {

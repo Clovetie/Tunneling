@@ -1,0 +1,61 @@
+{
+  "name": "horror_security_camera_rig",
+  "category": "horror",
+  "description": "Wall-mounted surveillance camera rig with panning housing, red IR recording LED, and SpotLight cone.",
+  "defaultParent": "Workspace",
+  "tree": [
+    {
+      "name": "SecurityCameraRig",
+      "className": "Model",
+      "children": [
+        {
+          "name": "WallBracket",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Size": {"__t": "Vector3", "v": [1.2, 1.6, 0.8]},
+            "Position": {"__t": "Vector3", "v": [0, 9.0, 0]},
+            "Color": {"__t": "Color3", "v": [0.18, 0.2, 0.24]},
+            "Material": {"__t": "Enum", "v": "Material.Metal"}
+          }
+        },
+        {
+          "name": "CameraHousing",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Size": {"__t": "Vector3", "v": [1.0, 0.9, 2.2]},
+            "Position": {"__t": "Vector3", "v": [0, 9.2, 1.2]},
+            "Color": {"__t": "Color3", "v": [0.24, 0.27, 0.32]},
+            "Material": {"__t": "Enum", "v": "Material.DiamondPlate"}
+          }
+        },
+        {
+          "name": "RecordLED",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": false,
+            "Shape": {"__t": "Enum", "v": "PartType.Ball"},
+            "Size": {"__t": "Vector3", "v": [0.35, 0.35, 0.35]},
+            "Position": {"__t": "Vector3", "v": [0.3, 9.5, 2.3]},
+            "Color": {"__t": "Color3", "v": [0.95, 0.18, 0.22]},
+            "Material": {"__t": "Enum", "v": "Material.Neon"}
+          },
+          "children": [
+            {
+              "name": "IRSpotLight",
+              "className": "SpotLight",
+              "properties": {
+                "Brightness": 2.2,
+                "Range": 36,
+                "Angle": 55,
+                "Color": {"__t": "Color3", "v": [0.95, 0.25, 0.28]}
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

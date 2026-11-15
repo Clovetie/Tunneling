@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
 mcp_core.py — Zero-dependency Model Context Protocol (MCP) engine & Roblox Studio
-tool suite for Arena <-> Roblox Studio (v5.4.0).
+tool suite for Arena <-> Roblox Studio (v6.0.0).
 
 Supports:
   - Dual-era MCP: 2026-07-28 (stateless, server/discover, resultType, MRTR,
-    subscriptions/listen, tasks extension) and the legacy 2025-11-25 /
-    2025-06-18 / 2025-03-26 / 2024-11-05 handshake eras
+    subscriptions/listen, SEP-2243 Base64 header sentinels, tasks extension) and
+    the legacy 2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05 handshake eras
+  - Argument autocompletion (`completion/complete` for `ref/prompt` & `ref/resource`)
+  - MCP Server Card discovery (`mcp://server-card.json` + HTTP `/.well-known/mcp.json`)
   - Multi Round-Trip Requests: destructive calls can answer with
     resultType "input_required" + a signed requestState (human-in-the-loop)
   - Task-augmented tool calls (tasks/get · tasks/update · tasks/cancel, plus the
@@ -14,7 +16,7 @@ Supports:
   - subscriptions/listen: one opt-in stream for resource-update notifications
   - Transports: stdio (via mcp_server.py) and Streamable HTTP /mcp (via server.py)
   - Curated, annotated Roblox Studio & Luau engineering tools
-  - Live MCP Resources + Resource Templates + Workflow Prompts
+  - Live MCP Resources + Resource Templates + Workflow Prompts + cursor pagination
   - Exact 53-bit-safe 32-bit FNV-1a hashing matching ArenaBridge.lua bit-for-bit
   - Local pre-flight Luau syntax + undefined-global static analysis (luau_check)
   - Repo <-> Studio drift detection, atomic cache-busting sync, & snapshots
@@ -22,6 +24,7 @@ Supports:
   - Transparent fallback to run_luau if an older v2.0 Studio plugin is still loaded
 """
 
+import base64
 import json
 import math
 import os
@@ -45,7 +48,7 @@ from confirm_gate import (  # noqa: E402  (v5.4.0 human-in-the-loop gate)
 )
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "5.4.0"
+MCP_SERVER_VERSION = "6.0.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2026-07-28",   # stateless era: server/discover, per-request _meta, resultType
     "2025-11-25",   # final legacy era: tasks, elicitation, structured output
@@ -74,6 +77,95 @@ META_RELATED_TASK = "io.modelcontextprotocol/related-task"
 TASKS_EXTENSION_KEY = "io.modelcontextprotocol/tasks"
 #: Trace-context keys (SEP-414): forward the caller's spans into the audit chain.
 TRACE_META_KEYS = ("traceparent", "tracestate", "baggage")
+
+_B64_SENTINEL_RE = re.compile(r"^=\?base64\?([A-Za-z0-9+/_-]*={0,2})\?=$")
+
+
+def encode_mcp_header_value(value: str) -> str:
+    """Encode an `Mcp-Name` / `Mcp-Param-*` HTTP header per SEP-2243.
+
+    Plain visible ASCII (0x21..0x7E) without `=?base64?` ambiguity travels raw;
+    anything containing whitespace, control bytes, non-ASCII UTF-8, or a literal
+    `=?` prefix is wrapped in a `=?base64?<urlsafe-b64>?=` sentinel.
+    """
+    text = str(value if value is not None else "")
+    if not text:
+        return ""
+    needs_b64 = text.startswith("=?") or any(ord(ch) <= 0x20 or ord(ch) >= 0x7F for ch in text)
+    if not needs_b64:
+        return text
+    token = base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"=?base64?{token}?="
+
+
+def decode_mcp_header_value(raw: str) -> str:
+    """Decode a SEP-2243 HTTP header value, unwrapping `=?base64?...?=` sentinels.
+
+    Raises `ValueError` on malformed sentinels or non-UTF-8 payloads so the HTTP
+    transport can answer with `400 Bad Request` + JSON-RPC `-32020` (`HeaderMismatch`).
+    """
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if not text.startswith("=?"):
+        return text
+    match = _B64_SENTINEL_RE.match(text)
+    if not match:
+        raise ValueError(f"Malformed Base64 MCP header sentinel: {text[:80]!r}")
+    b64 = match.group(1).replace("-", "+").replace("_", "/")
+    rem = len(b64) % 4
+    if rem == 1:
+        raise ValueError("Invalid Base64 length in MCP header sentinel")
+    if rem:
+        b64 += "=" * (4 - rem)
+    try:
+        decoded = base64.b64decode(b64, validate=True)
+        return decoded.decode("utf-8", errors="strict")
+    except Exception as exc:
+        raise ValueError(f"Invalid Base64/UTF-8 MCP header payload: {exc}") from exc
+
+
+def paginate_mcp_items(items: list, params: dict = None) -> tuple:
+    """Cursor pagination helper for `tools/list`, `resources/list`, etc.
+
+    When neither `cursor` nor `pageSize` is supplied, returns `(items, None)` so
+    non-paginating clients receive the complete catalog in one call. Invalid
+    cursors raise `ValueError` (mapped to JSON-RPC `-32602`).
+    """
+    params = params if isinstance(params, dict) else {}
+    raw_cursor = params.get("cursor")
+    raw_size = params.get("pageSize") if params.get("pageSize") is not None else params.get("limit")
+    if raw_cursor is None and raw_size is None:
+        return list(items), None
+    offset = 0
+    if raw_cursor is not None:
+        if not isinstance(raw_cursor, str) or not raw_cursor.strip():
+            raise ValueError(f"Invalid pagination cursor: {raw_cursor!r}")
+        token = raw_cursor.strip()
+        if token.isdigit():
+            offset = int(token)
+        else:
+            try:
+                padded = token + "=" * ((4 - len(token) % 4) % 4)
+                parsed = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+                offset = int(parsed.get("o"))
+            except Exception as exc:
+                raise ValueError(f"Invalid pagination cursor: {raw_cursor!r}") from exc
+        if offset < 0 or offset > len(items):
+            raise ValueError(f"Pagination cursor out of range: {raw_cursor!r}")
+    page_size = 50
+    if raw_size is not None:
+        if isinstance(raw_size, bool) or not isinstance(raw_size, int) or raw_size < 1 or raw_size > 500:
+            raise ValueError("pageSize must be an integer between 1 and 500")
+        page_size = raw_size
+    sliced = list(items[offset : offset + page_size])
+    next_offset = offset + len(sliced)
+    next_cursor = None
+    if next_offset < len(items):
+        next_cursor = base64.urlsafe_b64encode(
+            json.dumps({"o": next_offset}, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+    return sliced, next_cursor
 
 #: What `subscriptions/listen` can actually deliver from this bridge.
 SUBSCRIPTION_TYPES = (
@@ -167,7 +259,7 @@ READ_ONLY_JOB_TYPES = {
     "ping", "studio_state", "inspect", "search_tree", "compare_instances",
     "get_properties", "read_script", "read_scripts", "hash_scripts",
     "script_search", "script_grep", "survey", "console", "mesh_capabilities",
-    "playtest_caps",
+    "playtest_caps", "plugin_info",
 }
 
 
@@ -548,9 +640,10 @@ class BridgeClient:
 
     def _http_request(self, method: str, path: str, payload=None, timeout: float = 125.0):
         url = f"{self.base_url}{path}"
-        headers = {}
+        headers = {"User-Agent": f"ArenaRobloxMCPClient/{MCP_SERVER_VERSION}"}
         if self.token:
             headers["X-Arena-Token"] = self.token
+            headers["Authorization"] = f"Bearer {self.token}"
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         if data is not None:
             headers["Content-Type"] = "application/json"
@@ -599,6 +692,14 @@ class BridgeClient:
             return self._http_request("GET", "/api/studios", timeout=15.0)
         return self._http_request("POST", "/api/studios", payload, timeout=30.0)
 
+    def evict_playtest_peers(self, reason: str = "playtest_stopped") -> dict:
+        try:
+            if self.direct_dispatch:
+                return self.direct_dispatch("evict_playtest", {"reason": reason})
+            return self._http_request("POST", "/api/playtest/force-stop", {"action": "evict_only", "reason": reason}, timeout=10.0)
+        except Exception:
+            return {"ok": True, "evictedPeers": 0}
+
     def broadcast(self, kind: str = "ping", payload: dict = None, timeout: float = 20.0,
                   dm: str = None) -> dict:
         body = {"action": "broadcast", "type": kind, "payload": payload or {},
@@ -618,9 +719,10 @@ class BridgeClient:
                 "audit_verify": ("audit", {"verify": True}),
                 "events": ("events", {"cursor": p.get("cursor", 0), "limit": p.get("limit", 50)}),
                 "tunnel": ("tunnel", {"action": "status"}),
-                "tunnel_start": ("tunnel", {"action": "start"}),
+                "tunnel_probe": ("tunnel", {"action": "probe"}),
+                "tunnel_start": ("tunnel", {"action": "start", "protocol": p.get("protocol")}),
                 "tunnel_stop": ("tunnel", {"action": "stop"}),
-                "tunnel_restart": ("tunnel", {"action": "restart"}),
+                "tunnel_restart": ("tunnel", {"action": "restart", "protocol": p.get("protocol")}),
                 "queue_clear": ("queue_clear", {}),
                 "queue_pause": ("queue_pause", {"reason": p.get("reason")}),
                 "queue_resume": ("queue_resume", {}),
@@ -657,11 +759,20 @@ class BridgeClient:
             return self._http_request(
                 "GET", f"/api/events?once=1&since={int(p.get('cursor') or 0)}&limit={int(p.get('limit') or 50)}", timeout=20.0
             )
-        if action in ("tunnel", "tunnel_start", "tunnel_stop", "tunnel_restart"):
-            sub = {"tunnel": "status", "tunnel_start": "start", "tunnel_stop": "stop", "tunnel_restart": "restart"}[action]
+        if action in ("tunnel", "tunnel_probe", "tunnel_start", "tunnel_stop", "tunnel_restart"):
+            sub = {
+                "tunnel": "status",
+                "tunnel_probe": "probe",
+                "tunnel_start": "start",
+                "tunnel_stop": "stop",
+                "tunnel_restart": "restart",
+            }[action]
             if sub == "status":
                 return self._http_request("GET", "/api/tunnel", timeout=15.0)
-            return self._http_request("POST", "/api/tunnel", {"action": sub}, timeout=90.0)
+            body = {"action": sub}
+            if p.get("protocol"):
+                body["protocol"] = p.get("protocol")
+            return self._http_request("POST", "/api/tunnel", body, timeout=90.0)
         if action == "queue_pause":
             return self._http_request("POST", "/api/queue/pause", {"reason": p.get("reason")}, timeout=20.0)
         if action == "queue_resume":
@@ -1218,17 +1329,27 @@ TOOL_SPECS = [
     },
     {
         "name": "start_stop_play",
-        "description": "Start a non-blocking Studio playtest ('play' = Play Solo F5 with client character, 'run' = Server Simulation F8), 'stop' an active session cleanly via StudioTestService:EndTest, or query 'status'.",
+        "description": (
+            "Start a non-blocking Studio playtest ('start_play' = Play Solo F5 with client character, "
+            "'start_run' = Server Simulation F8), 'stop' or 'force_stop' an active session cleanly via "
+            "StudioTestService:EndTest + LeaveTest fallback (plus automatic temporary test runner cleanup and "
+            "immediate ghost play-peer eviction), 'cleanup' leftover test runners, or query 'status'."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["start_play", "start_run", "stop", "status"], "default": "status"},
+                "action": {
+                    "type": "string",
+                    "enum": ["start_play", "start_run", "stop", "force_stop", "cleanup", "status"],
+                    "default": "status",
+                },
+                "reason": {"type": "string", "description": "Optional reason string logged when stopping a playtest."},
                 "waitForPeer": {"type": "boolean", "default": True, "description": "Wait briefly for the Play Server peer to connect on start."},
                 "peerId": PEER_PROP,
             },
             "required": ["action"],
         },
-        "annotations": _ann("Start or Stop Playtest", read_only=False, destructive=False, idempotent=False),
+        "annotations": _ann("Start, Stop, or Force-Close Playtest", read_only=False, destructive=False, idempotent=False),
     },
     {
         "name": "run_playtest_scenario",
@@ -1909,9 +2030,13 @@ TOOL_SPECS = [
                     "default": "perspective",
                     "description": "Camera angle preset ('top_blueprint' renders an orthographic architectural floorplan).",
                 },
+                "path": {"type": "string", "default": "Workspace", "description": "Root DataModel path to render (defaults to 'Workspace')."},
                 "includeHud": {"type": "boolean", "default": False, "description": "Composite active StarterGui ScreenGuis on top of the 3D frame. Defaults off for a deterministic world-only render."},
                 "showLabels": {"type": "boolean", "default": True, "description": "Draw crisp callout labels on foreground 3D parts."},
                 "camera": {"type": "object", "description": "Optional deterministic camera {position:[x,y,z], target:[x,y,z], fov:number, ortho:boolean}."},
+                "yaw": {"type": "number", "default": 0, "description": "Optional horizontal camera orbit offset in degrees."},
+                "pitch": {"type": "number", "default": 0, "description": "Optional vertical camera pitch offset in degrees."},
+                "zoom": {"type": "number", "default": 1.0, "description": "Optional camera distance multiplier (0.25..3.5; <1 zooms in)."},
                 "size": {"type": "object", "description": "Optional output dimensions {w:240..1280,h:160..800}; width/height remain supported."},
                 "overlays": {"type": "object", "description": "Optional overlay flags {bounds,labels,grid}. Unknown keys are rejected."},
                 "returnInline": {"type": "boolean", "default": True, "description": "Include the PNG as a native MCP image block."},
@@ -2137,11 +2262,16 @@ TOOL_SPECS = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "metrics", "audit", "audit_verify", "events", "tunnel", "tunnel_start",
-                             "tunnel_stop", "tunnel_restart", "queue_pause", "queue_resume",
+                    "enum": ["status", "metrics", "audit", "audit_verify", "events", "tunnel", "tunnel_probe",
+                             "tunnel_start", "tunnel_stop", "tunnel_restart", "queue_pause", "queue_resume",
                              "queue_clear", "sweep", "reap",
                              "confirmations", "confirm_approve", "confirm_deny", "subscriptions"],
                     "default": "status",
+                },
+                "protocol": {
+                    "type": "string",
+                    "enum": ["auto", "http2", "quic"],
+                    "description": "Cloudflare tunnel edge transport for tunnel_start/tunnel_restart (use http2 behind UDP-blocking firewalls).",
                 },
                 "requestId": {"type": "string", "description": "Confirmation requestId for confirm_approve/confirm_deny."},
                 "remember": {"type": "boolean", "description": "confirm_approve only: skip the gate for this tool for a bounded window."},
@@ -2364,6 +2494,257 @@ TOOL_SPECS = [
         },
         "annotations": _ann("Probe Playtest API Capabilities", read_only=True, destructive=False, idempotent=True),
     },
+    # --- Group I: Procedural Gameplay, Dungeon, Atmosphere & Synth Audio ----
+    {
+        "name": "generate_dungeon_layout",
+        "description": (
+            "Generate a deterministic seeded 3D dungeon or horror mansion room & corridor layout using "
+            "discrete grid separation, Prim's Minimum Spanning Tree (MST), and extra escape loops. "
+            "Assigns gameplay roles (`spawn`, `normal`, `treasure`, `puzzle`, `saferoom`, `boss`), verifies "
+            "100% room reachability, returns the full room/corridor graph + ready-to-build Instance tree, "
+            "and optionally materializes the 3D dungeon in Studio when `buildInStudio=True`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "seed": {"type": "integer", "default": 1337, "description": "Deterministic PRNG seed."},
+                "roomCount": {"type": "integer", "minimum": 3, "maximum": 28, "default": 8, "description": "Number of rooms to generate (3-28)."},
+                "gridStep": {"type": "number", "minimum": 24, "maximum": 96, "default": 36, "description": "Stud spacing between room grid centers."},
+                "roomHeight": {"type": "number", "minimum": 8, "maximum": 36, "default": 14, "description": "Wall height in studs."},
+                "theme": {
+                    "type": "string",
+                    "enum": ["horror_mansion", "crypt_catacombs", "scifi_facility", "ancient_ruins"],
+                    "default": "horror_mansion",
+                    "description": "Visual material & color theme for generated rooms and corridors.",
+                },
+                "buildInStudio": {"type": "boolean", "default": False, "description": "When true, build the generated 3D dungeon Model in Studio."},
+                "parent": {"type": "string", "default": "Workspace", "description": "Target Studio parent when buildInStudio=true."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Generate Procedural 3D Dungeon / Mansion Layout", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "build_gameplay_mechanic",
+        "description": (
+            "Bundle or install a complete drop-in Roblox gameplay mechanic (`horror-director`, `round-survival`, "
+            "`stamina-movement`, `inventory-loot`, `combat-abilities`, `weather-cycle`, `fuse-breaker`, "
+            "`task-generator`, `loot-chest`, `safe-room`) including Server/Client/Shared Luau scripts, "
+            "supporting reusable kit modules (`StateMachine`, `CooldownManager`, `LootTable`, `QuestTracker`, "
+            "`CombatPipeline`, `DungeonGenerator`), and interactive 3D/HUD prefabs. Works offline (`installInStudio=False`) "
+            "or injects directly into live Studio (`installInStudio=True`)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mechanic": {
+                    "type": "string",
+                    "enum": [
+                        "horror-director", "round-survival", "stamina-movement",
+                        "inventory-loot", "combat-abilities", "weather-cycle",
+                        "cutscene-camera", "dialogue-npc",
+                        "fuse-breaker", "task-generator", "loot-chest", "safe-room",
+                    ],
+                    "default": "horror-director",
+                    "description": "Gameplay mechanic system or interactive objective to assemble.",
+                },
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, install scripts/prefabs directly into the connected Studio session."},
+                "position": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Optional [x, y, z] world offset when spawning an interactive 3D mechanic prefab.",
+                },
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Assemble or Install Drop-In Gameplay Mechanic", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "configure_atmosphere_fx",
+        "description": (
+            "Configure or preview a multi-layer Roblox `Lighting` + post-processing atmosphere preset "
+            "(`BloodMoon`, `DenseFog`, `CyberpunkRain`, `Thunderstorm`, `GoldenHour`, `DeepAbyss`, "
+            "`Blizzard`, `SolarEclipse`) with calibrated `Atmosphere`, `ColorCorrectionEffect`, `BloomEffect`, "
+            "and `DepthOfFieldEffect` instances. Set `applyToStudio=True` to apply directly to `Lighting`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "BloodMoon", "DenseFog", "CyberpunkRain", "Thunderstorm",
+                        "GoldenHour", "DeepAbyss", "Blizzard", "SolarEclipse",
+                    ],
+                    "default": "BloodMoon",
+                    "description": "Named lighting & post-FX atmosphere preset.",
+                },
+                "intensity": {"type": "number", "minimum": 0.1, "maximum": 2.0, "default": 1.0, "description": "Scalar multiplier for haze, bloom, and contrast."},
+                "applyToStudio": {"type": "boolean", "default": False, "description": "When true, apply properties and post-FX children to Studio Lighting."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Configure Lighting, Weather & Post-Processing FX", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "synthesize_sound_effect",
+        "description": (
+            "Synthesize a zero-dependency 16-bit mono PCM `.wav` gameplay or horror sound effect "
+            "(`horror_heartbeat`, `horror_clock_tick`, `horror_whisper_drone`, `horror_jumpscare_stinger`, "
+            "`horror_breaker_trip`, `flash_camera_strobe`, `ui_click_crisp`, `ui_quest_complete`, "
+            "`loot_chest_legendary`, `combat_hit_impact`, `combat_shield_break`, `ambient_Geiger_click`), "
+            "install it into local Roblox Studio `content/arena_assets/audio/<name>.wav` (`rbxasset://arena_assets/audio/<name>.wav`), "
+            "and optionally create a `Sound` instance in Studio."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "horror_heartbeat", "horror_clock_tick", "horror_whisper_drone",
+                        "horror_jumpscare_stinger", "horror_breaker_trip", "flash_camera_strobe",
+                        "ui_click_crisp", "ui_quest_complete", "loot_chest_legendary",
+                        "combat_hit_impact", "combat_shield_break", "ambient_Geiger_click",
+                    ],
+                    "default": "horror_heartbeat",
+                    "description": "Procedural audio synthesis preset.",
+                },
+                "name": {"type": "string", "description": "Optional filename stem (defaults to preset name)."},
+                "durationMs": {"type": "integer", "minimum": 40, "maximum": 4000, "description": "Optional override duration in milliseconds."},
+                "baseHz": {"type": "number", "minimum": 30, "maximum": 8000, "description": "Optional override fundamental frequency in Hz."},
+                "volume": {"type": "number", "minimum": 0.05, "maximum": 1.0, "default": 0.8},
+                "installLocalStudio": {"type": "boolean", "default": True, "description": "Install into local Studio `content/arena_assets/audio/`."},
+                "saveToRepo": {"type": "boolean", "default": False, "description": "Save into `roblox-kit/assets/audio/` (default false to keep licensed registry immutable)."},
+                "targetPath": {"type": "string", "description": "Optional Studio parent path to spawn a Sound instance."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Synthesize Procedural Gameplay / Horror WAV Sound Effect", read_only=False, destructive=False, idempotent=True),
+    },
+    # =========================================================================
+    # GROUP J: V6 Plugin & Playtest Controller, Network Security Auditor,
+    #          Cutscene Sequencer, and UI Theme Pack Generator (4 Tools)
+    # =========================================================================
+    {
+        "name": "manage_plugin_and_playtest",
+        "description": (
+            "Inspect Studio plugin version compatibility (`v6.0.0` vs older `v4.0.0`/`v4.1.0` peers), query live "
+            "in-Studio `ArenaBridge` plugin telemetry (`plugin_info`: jobs processed, DockWidget dashboard status, "
+            "capabilities), install/update `ArenaBridge.lua` v6.0.0 into local Studio Plugins, or run "
+            "`force_stop_playtest` / `evict_stale_peers` to cleanly close stuck playtests and purge ghost runtime peers."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "status",
+                        "version_matrix",
+                        "force_stop_playtest",
+                        "evict_stale_peers",
+                        "install_local",
+                    ],
+                    "default": "status",
+                    "description": "Plugin or playtest lifecycle operation.",
+                },
+                "reason": {"type": "string", "description": "Optional reason when stopping playtest or evicting peers."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Manage Studio Plugin Version & Playtest Lifecycle", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "audit_network_security",
+        "description": (
+            "Audit Roblox `RemoteEvent`, `RemoteFunction`, and `UnreliableRemoteEvent` network security across live "
+            "Studio (`ServerScriptService`, `ReplicatedStorage`, `Workspace`), a local Luau directory (`localDir`), "
+            "or inline `scripts`. Detects unvalidated `.OnServerEvent` / `.OnServerInvoke` parameters, client-trusted "
+            "currency/damage/price/admin arguments, missing rate-limiting/debounces, and NaN/Vector3 injection risks, "
+            "returning a 0-100 `securityScore` and `NetworkGuard` remediation snippets."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "localDir": {"type": "string", "description": "Optional local Luau directory to scan offline."},
+                "scripts": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Optional array of `{path, source}` script objects for offline security auditing.",
+                },
+                "includeStudio": {"type": "boolean", "default": True, "description": "Also scan connected Studio server scripts and remotes when online."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Audit RemoteEvent / Network Exploit Security", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "build_cutscene_sequence",
+        "description": (
+            "Generate a keyframed 3D camera cutscene track (`boss_awakening`, `safe_room_unlock`, "
+            "`horror_corridor_reveal`, `victory_dawn_flyover`, `arena_overview`, or custom `keyframes`) with "
+            "3D frustum waypoint markers (`CutsceneCameraTrack_<name>`) and a `CutsceneDirector`-compatible Luau "
+            "ModuleScript (`CutsceneSequence_<name>`). Set `buildInStudio=True` to inject directly into Studio."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "boss_awakening",
+                        "safe_room_unlock",
+                        "horror_corridor_reveal",
+                        "victory_dawn_flyover",
+                        "arena_overview",
+                    ],
+                    "default": "boss_awakening",
+                    "description": "Cinematic camera track preset.",
+                },
+                "name": {"type": "string", "description": "Optional custom sequence identifier."},
+                "origin": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Optional [x, y, z] focal point in world space (default [0, 4, 0]).",
+                },
+                "letterbox": {"type": "boolean", "default": True, "description": "Include cinematic 2.35:1 letterbox bars."},
+                "skippable": {"type": "boolean", "default": True, "description": "Allow players to skip the cutscene."},
+                "buildInStudio": {"type": "boolean", "default": False, "description": "When true, build the 3D camera rig and ModuleScript in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Build Keyframed 3D Cutscene Camera Sequence", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "generate_ui_theme_pack",
+        "description": (
+            "Generate a cohesive, multi-device responsive Roblox `ScreenGui` theme pack (`HorrorBloodMoon`, "
+            "`CyberpunkNeon`, `FantasyGold`, `MinimalDark`, `StudRetro`) with a `UIThemeTokens` Luau style module "
+            "and a complete `StarterGui` component hierarchy (top status bar, interaction prompt pill, notification "
+            "toast, and modal dialog card) using `UDim2` scale, `UICorner`, and `UIStroke`. Set `installInStudio=True` "
+            "to inject directly into `StarterGui` and `ReplicatedStorage.Shared`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "theme": {
+                    "type": "string",
+                    "enum": ["HorrorBloodMoon", "CyberpunkNeon", "FantasyGold", "MinimalDark", "StudRetro"],
+                    "default": "HorrorBloodMoon",
+                    "description": "Visual UI design theme preset.",
+                },
+                "guiName": {"type": "string", "description": "Optional ScreenGui name override."},
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, build ScreenGui in StarterGui and UIThemeTokens in ReplicatedStorage.Shared."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Generate Cohesive Multi-Device UI Theme Pack", read_only=False, destructive=False, idempotent=True),
+    },
 ]
 
 TOOL_MAP = {t["name"]: t for t in TOOL_SPECS}
@@ -2374,6 +2755,8 @@ INSPECTOR_MIXED_TOOLS = frozenset((
     "open_script_in_editor", "audit_ui_layout", "capture_viewport", "render_offline", "screenshot_gui",
     "self_test", "agent_bus", "manage_device_simulator", "audit_3d_scene", "bridge_ops",
     "find_and_replace_scripts", "open_cloud_action",
+    "generate_dungeon_layout", "build_gameplay_mechanic", "configure_atmosphere_fx", "synthesize_sound_effect",
+    "manage_plugin_and_playtest", "build_cutscene_sequence", "generate_ui_theme_pack",
 ))
 
 
@@ -2435,9 +2818,23 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
     if name == "manage_device_simulator" and args.get("action", "status") in ("status", "list"):
         return True
     if name == "bridge_ops" and args.get("action", "status") in (
-        "status", "metrics", "audit", "audit_verify", "events", "tunnel", "subscriptions",
-        "confirmations",
+        "status", "metrics", "audit", "audit_verify", "events", "tunnel", "tunnel_probe",
+        "subscriptions", "confirmations",
     ):
+        return True
+    if name == "generate_dungeon_layout" and not args.get("buildInStudio"):
+        return True
+    if name == "build_gameplay_mechanic" and not args.get("installInStudio"):
+        return True
+    if name == "configure_atmosphere_fx" and not args.get("applyToStudio"):
+        return True
+    if name == "synthesize_sound_effect" and not args.get("saveToRepo") and not args.get("targetPath"):
+        return True
+    if name == "manage_plugin_and_playtest" and args.get("action", "status") in ("status", "version_matrix"):
+        return True
+    if name == "build_cutscene_sequence" and not args.get("buildInStudio"):
+        return True
+    if name == "generate_ui_theme_pack" and not args.get("installInStudio"):
         return True
     return False
 
@@ -3085,9 +3482,38 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
 
     if name == "start_stop_play":
         act = args["action"]
-        target_dm = "edit" if act in ("stop", "start_play", "start_run") else dm
-        res = _unwrap_job(client.submit_job("playtest", {"action": act}, wait=25.0, dm=target_dm, peer_id=peer_id))
-        if act in ("start_play", "start_run") and args.get("waitForPeer", True):
+        target_dm = "edit" if act in ("stop", "force_stop", "cleanup", "start_play", "start_run") else dm
+        had_server_peer = False
+        if act in ("stop", "force_stop", "cleanup"):
+            try:
+                had_server_peer = any(
+                    p.get("dm") == "server" and p.get("online")
+                    for p in client.peers().get("peers", [])
+                )
+            except Exception:
+                had_server_peer = False
+        payload = {"action": act}
+        if args.get("reason"):
+            payload["reason"] = args["reason"]
+        res = _unwrap_job(client.submit_job("playtest", payload, wait=25.0, dm=target_dm, peer_id=peer_id))
+        if act in ("stop", "force_stop", "cleanup"):
+            if had_server_peer and (act == "force_stop" or not res.get("stopped")):
+                try:
+                    srv_res = _unwrap_job(client.submit_job(
+                        "playtest",
+                        {"action": "stop", "reason": args.get("reason", "stopped_by_mcp_server")},
+                        wait=3.5,
+                        dm="server",
+                    ))
+                    if srv_res.get("stopped"):
+                        res["stopped"] = True
+                        res["stoppedViaServerPeer"] = True
+                except Exception:
+                    pass
+            evict_info = client.evict_playtest_peers(reason=f"start_stop_play:{act}")
+            res["evictedPlaytestPeers"] = evict_info.get("evictedPeers", 0)
+            res["sessionClean"] = True
+        elif act in ("start_play", "start_run") and args.get("waitForPeer", True):
             deadline = time.monotonic() + 10.0
             while time.monotonic() < deadline:
                 peers = client.peers().get("peers", [])
@@ -3289,6 +3715,7 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
                 stop_result = _unwrap_job(client.submit_job("playtest", {"action": "stop", "reason": "scenario_complete"}, wait=15.0, dm="edit", peer_id=peer_id))
             except Exception as exc:
                 stop_result = {"ok": False, "error": str(exc)}
+            client.evict_playtest_peers(reason="scenario_complete")
             phase_timings["stopSec"] = round(time.monotonic() - phase_start, 3)
 
         peer_rows_after = client.peers().get("peers", [])
@@ -3623,6 +4050,30 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
     if name == "playtest_capabilities":
         return playtest_capabilities_helper(client=client, args=args, peer_id=peer_id, dm=dm)
 
+    if name == "generate_dungeon_layout":
+        return generate_dungeon_layout_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "build_gameplay_mechanic":
+        return build_gameplay_mechanic_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "configure_atmosphere_fx":
+        return configure_atmosphere_fx_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "synthesize_sound_effect":
+        return synthesize_sound_effect_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "manage_plugin_and_playtest":
+        return manage_plugin_and_playtest_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "audit_network_security":
+        return audit_network_security_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "build_cutscene_sequence":
+        return build_cutscene_sequence_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "generate_ui_theme_pack":
+        return generate_ui_theme_pack_helper(client=client, args=args, peer_id=peer_id)
+
     raise KeyError(f"Unknown tool: {name}")
 
 
@@ -3756,68 +4207,86 @@ RESOURCES = [
     {
         "uri": "studio://state",
         "name": "Roblox Studio & Bridge State",
+        "title": "Roblox Studio & Bridge State",
         "description": "Live connection health, connected Edit/Server/Client DataModel peers, place metadata, and recent job log.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://peers",
         "name": "Connected Studio Peers",
+        "title": "Connected Studio Peers",
         "description": "All active Roblox Studio DataModel peers polling the bridge.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://console",
         "name": "Studio Output Log",
+        "title": "Studio Output Log",
         "description": "Latest 150 lines from Roblox Studio LogService.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://selection",
         "name": "Current Studio Selection",
+        "title": "Current Studio Selection",
         "description": "Currently selected Instances in the Explorer/Viewport.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://survey",
         "name": "Place Architecture Survey (Metadata)",
+        "title": "Place Architecture Survey",
         "description": "Service breakdown, instance census, script inventory + hashes, remotes, tags, and settings.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://bus",
         "name": "Multi-Agent Bus (Presence, Tasks, Messages)",
+        "title": "Multi-Agent Collaboration Bus",
         "description": "Registered agents, open task board with leases, and the current activity cursor — shared by every agent on this bridge.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://ops",
         "name": "Bridge Operations Report",
+        "title": "Bridge Operations Report",
         "description": "Queue depth, peer health, tunnel state, metrics, recent audit entries, and open tasks in one document.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://audit",
         "name": "Tamper-Evident Audit Log (head)",
+        "title": "Tamper-Evident Audit Log",
         "description": "Latest hash-chained audit entries plus chain verification status.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://jobs",
         "name": "Job Queue & Per-Tool Latency",
+        "title": "Job Queue & Per-Tool Latency",
         "description": "Queue depth, pause state, live peer list, recent job summaries and p50/p95 wall time per tool.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://studios",
         "name": "Connected Studio Fleet",
+        "title": "Connected Studio Fleet",
         "description": "Every connected Studio window with peerId, place, DataModel kind, online age, label, pinned/default routing and queued job counts.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://handoff",
         "name": "Markdown Handoff Brief",
+        "title": "Markdown Handoff Brief",
         "description": "The bus export as markdown: roster, task board, recent messages and stats — paste-ready for the next agent or human.",
         "mimeType": "text/markdown",
+    },
+    {
+        "uri": "mcp://server-card.json",
+        "name": "MCP Server Card",
+        "title": "MCP Server Card (SEP-1649)",
+        "description": "Machine-readable MCP Server Card metadata describing supported protocol versions, transports, capabilities, and auth requirements.",
+        "mimeType": "application/json",
     },
 ]
 
@@ -3825,18 +4294,21 @@ RESOURCE_TEMPLATES = [
     {
         "uriTemplate": "studio://scripts/{path}",
         "name": "Live Script Source by Path",
+        "title": "Live Script Source by Path",
         "description": "Read live Luau source code for any dot-separated script path (e.g. studio://scripts/ServerScriptService.Main).",
         "mimeType": "text/x-luau",
     },
     {
         "uriTemplate": "studio://instance/{path}",
         "name": "Instance Subtree & Properties",
+        "title": "Instance Subtree & Properties",
         "description": "Inspect properties, attributes, tags, and immediate children of any Instance path.",
         "mimeType": "application/json",
     },
     {
         "uriTemplate": "skill://{name}",
         "name": "Roblox Studio Agent Skill Markdown",
+        "title": "Roblox Studio Agent Skill Markdown",
         "description": "Read full Markdown instructions for any built-in skill in `.claude/skills/{name}/SKILL.md`.",
         "mimeType": "text/markdown",
     },
@@ -3845,11 +4317,13 @@ RESOURCE_TEMPLATES = [
 PROMPTS = [
     {
         "name": "survey_and_architecture",
+        "title": "Survey & Map Place Architecture",
         "description": "Survey an unfamiliar Roblox Studio place, map client/server architecture & remotes, and spot risks before making edits.",
         "arguments": [],
     },
     {
         "name": "safe_module_edit",
+        "title": "Safe ModuleScript Edit & Verification",
         "description": "Edit a Roblox ModuleScript safely using hash checks, luau_check static global verification, cache-busting replaceInstance/require_fresh, and quantitative verification.",
         "arguments": [
             {"name": "scriptPath", "description": "Dot path of target ModuleScript", "required": True},
@@ -3858,6 +4332,7 @@ PROMPTS = [
     },
     {
         "name": "automated_playtest_debug",
+        "title": "Automated Playtest & Runtime Debug",
         "description": "Run a live playtest loop checking both Server and Client DataModel state, console errors, and clean teardown.",
         "arguments": [
             {"name": "scenario", "description": "Gameplay behavior to verify", "required": True},
@@ -3865,6 +4340,7 @@ PROMPTS = [
     },
     {
         "name": "sync_repo_package",
+        "title": "Audit & Sync Local Luau Package",
         "description": "Audit repo <-> Studio drift with exact 32-bit FNV-1a hashes, pre-check all files for undefined globals, and push atomically.",
         "arguments": [
             {"name": "localDir", "description": "Local source folder (e.g. nightloop/src)", "required": True},
@@ -3873,6 +4349,7 @@ PROMPTS = [
     },
     {
         "name": "multi_agent_handoff",
+        "title": "Multi-Agent Handoff Brief",
         "description": "Hand work to another agent: read the live board, release what you cannot finish, and post a handoff with the next concrete step.",
         "arguments": [
             {"name": "agentName", "description": "Who is handing off (defaults to the bus roster)", "required": False},
@@ -3881,6 +4358,7 @@ PROMPTS = [
     },
     {
         "name": "bus_standup",
+        "title": "Agent Bus Five-Line Standup",
         "description": "Render a five-line standup from the live Agent Bus: what changed, who owns what, what is blocked.",
         "arguments": [
             {"name": "since", "description": "Bus cursor to report from (defaults to the current cursor)", "required": False},
@@ -3888,13 +4366,281 @@ PROMPTS = [
     },
     {
         "name": "task_triage",
+        "title": "Triage Open Agent Bus Tasks",
         "description": "Rank open Agent Bus tasks by priority and dependencies, propose a claim order, and flag tasks without acceptance criteria.",
         "arguments": [],
     },
 ]
 
 
+def build_mcp_server_card(
+    origin: str = "http://127.0.0.1:8077",
+    auth_required: bool = True,
+    read_only: bool = False,
+    confirm_mode: str = "off",
+) -> dict:
+    """Build a public MCP Server Card document (SEP-1649 / SEP-1960 / SEP-2127).
+
+    Contains only public capability metadata — never place names, tokens, or
+    pending confirmation arguments.
+    """
+    origin = (origin or "http://127.0.0.1:8077").rstrip("/")
+    mcp_url = f"{origin}/mcp"
+    return {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/mcp-server-card/v1.json",
+        "version": "1.0",
+        "name": MCP_SERVER_NAME,
+        "title": "Arena Roblox Studio MCP Bridge",
+        "description": (
+            "Zero-dependency Roblox Studio MCP server and multi-peer HTTP bridge "
+            "(Edit, Server, and Client DataModels, Luau static analysis, 3D viewport "
+            "rasterizer, open-source kit, multi-agent bus, and MRTR confirmation gate)."
+        ),
+        "protocolVersion": MODERN_PROTOCOL_VERSION,
+        "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
+        "serverInfo": {
+            "name": MCP_SERVER_NAME,
+            "title": "Arena Roblox Studio MCP Bridge",
+            "version": MCP_SERVER_VERSION,
+            "description": "Multi-peer Roblox Studio MCP server (stdio + Streamable HTTP).",
+            "homepage": origin,
+        },
+        "transport": {
+            "type": "streamable-http",
+            "endpoint": "/mcp",
+            "url": mcp_url,
+        },
+        "endpoints": {
+            "streamableHttp": mcp_url,
+            "health": f"{origin}/api/health",
+            "oauthProtectedResource": f"{origin}/.well-known/oauth-protected-resource/mcp",
+        },
+        "remotes": [
+            {
+                "type": "streamable-http",
+                "url": mcp_url,
+            }
+        ],
+        "capabilities": {
+            "tools": {"listChanged": True},
+            "resources": {"subscribe": False, "listChanged": False},
+            "prompts": {"listChanged": False},
+            "completions": {},
+            "subscriptions": {"types": list(SUBSCRIPTION_TYPES)},
+            "extensions": {
+                TASKS_EXTENSION_KEY: {"requests": {"tools": {"call": {}}}, "cancel": {}},
+            },
+        },
+        "authentication": {
+            "required": bool(auth_required),
+            "schemes": ["bearer"] if auth_required else [],
+            "resourceMetadata": f"{origin}/.well-known/oauth-protected-resource/mcp",
+        },
+        "readOnly": bool(read_only),
+        "confirmationMode": confirm_mode or "off",
+        "toolCount": len(TOOL_SPECS),
+        "resourceCount": len(RESOURCES),
+        "promptCount": len(PROMPTS),
+        "tools": "dynamic",
+        "resources": "dynamic",
+        "prompts": [p["name"] for p in PROMPTS],
+    }
+
+
+_ROBLOX_ROOT_COMPLETIONS = (
+    "Workspace",
+    "ReplicatedStorage",
+    "ReplicatedStorage.Shared",
+    "ServerScriptService",
+    "ServerStorage",
+    "StarterGui",
+    "StarterPack",
+    "StarterPlayer",
+    "StarterPlayer.StarterPlayerScripts",
+    "StarterPlayer.StarterCharacterScripts",
+    "Lighting",
+    "SoundService",
+    "Teams",
+    "TextChatService",
+)
+
+
+def _rank_completion_candidates(candidates, prefix: str) -> dict:
+    """Rank unique completion strings (prefix matches first, then substring), capped at 100."""
+    needle = (prefix or "").strip().lower()
+    seen = set()
+    exact_prefix = []
+    substring = []
+    for raw in candidates:
+        if raw is None:
+            continue
+        item = str(raw).strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        low = item.lower()
+        if not needle or low.startswith(needle):
+            exact_prefix.append(item)
+        elif needle in low:
+            substring.append(item)
+    ordered = exact_prefix + substring
+    total = len(ordered)
+    return {
+        "completion": {
+            "values": ordered[:100],
+            "total": total,
+            "hasMore": total > 100,
+        }
+    }
+
+
+def _live_script_paths_fast(client: BridgeClient) -> list:
+    """Best-effort fast script path lookup when an Edit peer is already online."""
+    if client is None:
+        return []
+    try:
+        peers = (client.peers() or {}).get("peers") or []
+        if not any(p.get("online") and p.get("dm") == "edit" for p in peers):
+            return []
+        job = client.submit_job("hash_scripts", {"root": "game"}, wait=2.5, dm="edit")
+        if job.get("status") != "done" or not job.get("ok"):
+            return []
+        rows = (job.get("result") or {}).get("scripts") or []
+        return [r.get("path") for r in rows if isinstance(r, dict) and r.get("path")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def complete_mcp_argument(client: BridgeClient, params: dict) -> dict:
+    """Handle MCP `completion/complete` for `ref/prompt` and `ref/resource`."""
+    if not isinstance(params, dict):
+        raise ValueError("completion/complete params must be an object")
+    ref = params.get("ref")
+    argument = params.get("argument")
+    if not isinstance(ref, dict) or not ref.get("type"):
+        raise ValueError("Missing or invalid `ref` object in completion/complete")
+    if not isinstance(argument, dict) or not isinstance(argument.get("name"), str):
+        raise ValueError("Missing or invalid `argument` object in completion/complete")
+
+    ref_type = ref.get("type")
+    arg_name = argument.get("name") or ""
+    arg_val = str(argument.get("value") or "")
+
+    if ref_type == "ref/resource":
+        uri = str(ref.get("uri") or "")
+        known_templates = {t["uriTemplate"] for t in RESOURCE_TEMPLATES}
+        known_static = {r["uri"] for r in RESOURCES}
+        if uri not in known_templates and uri not in known_static:
+            raise ValueError(f"Unknown resource or template URI: {uri!r}")
+        if uri == "skill://{name}" and arg_name == "name":
+            names = [name for name, _ in _skill_files()]
+            return _rank_completion_candidates(names, arg_val)
+        if uri == "studio://scripts/{path}" and arg_name == "path":
+            live = _live_script_paths_fast(client)
+            seeds = list(live) + [
+                "ServerScriptService.Main",
+                "ReplicatedStorage.Shared.Config",
+                "StarterPlayer.StarterPlayerScripts.ClientMain",
+            ] + list(_ROBLOX_ROOT_COMPLETIONS)
+            return _rank_completion_candidates(seeds, arg_val)
+        if uri == "studio://instance/{path}" and arg_name == "path":
+            live = _live_script_paths_fast(client)
+            seeds = list(_ROBLOX_ROOT_COMPLETIONS) + list(live)
+            return _rank_completion_candidates(seeds, arg_val)
+        return _rank_completion_candidates([], arg_val)
+
+    if ref_type == "ref/prompt":
+        pname = str(ref.get("name") or "")
+        prompt_spec = next((p for p in PROMPTS if p["name"] == pname), None)
+        if prompt_spec is None:
+            raise ValueError(f"Unknown prompt: {pname!r}")
+        if pname == "safe_module_edit":
+            if arg_name == "scriptPath":
+                live = _live_script_paths_fast(client)
+                seeds = list(live) + [
+                    "ReplicatedStorage.Shared.Config",
+                    "ServerScriptService.Main",
+                ]
+                return _rank_completion_candidates(seeds, arg_val)
+            if arg_name == "goal":
+                return _rank_completion_candidates([
+                    "add strict server-side input validation",
+                    "fix undefined global and bust require() cache",
+                    "extract reusable helper and preserve public API",
+                    "optimize hot-loop allocations",
+                ], arg_val)
+        elif pname == "sync_repo_package":
+            if arg_name == "localDir":
+                return _rank_completion_candidates(["./src", "nightloop/src", "roblox-kit/modules"], arg_val)
+            if arg_name == "studioRoot":
+                return _rank_completion_candidates([
+                    "ServerScriptService.App",
+                    "ServerScriptService.NightLoop",
+                    "ReplicatedStorage.Shared",
+                ], arg_val)
+        elif pname == "multi_agent_handoff":
+            if arg_name == "agentName":
+                agents = []
+                if client is not None:
+                    try:
+                        rows = (client.bus_action({"action": "agents", "includeOffline": True}) or {}).get("agents") or []
+                        agents = [a.get("name") for a in rows if isinstance(a, dict) and a.get("name")]
+                    except Exception:  # noqa: BLE001
+                        agents = []
+                return _rank_completion_candidates(agents or ["lead-builder", "qa-reviewer"], arg_val)
+            if arg_name == "focus":
+                tasks = []
+                if client is not None:
+                    try:
+                        rows = (client.bus_action({"action": "tasks", "includeDone": False}) or {}).get("tasks") or []
+                        tasks = [f"{t.get('id')}: {t.get('title')}" for t in rows if isinstance(t, dict) and t.get("id")]
+                    except Exception:  # noqa: BLE001
+                        tasks = []
+                return _rank_completion_candidates(tasks or ["verify playtest and console logs", "complete UI layout pass"], arg_val)
+        elif pname == "bus_standup" and arg_name == "since":
+            cursors = ["0"]
+            if client is not None:
+                try:
+                    stats = client.bus_action({"action": "stats"}) or {}
+                    if stats.get("cursor") is not None:
+                        cursors.insert(0, str(stats["cursor"]))
+                except Exception:  # noqa: BLE001
+                    pass
+            return _rank_completion_candidates(cursors, arg_val)
+        elif pname == "automated_playtest_debug" and arg_name == "scenario":
+            return _rank_completion_candidates([
+                "verify player spawn, HUD initialization, and zero server/client errors",
+                "test round start -> objective completion -> clean teardown",
+                "verify RemoteEvent validation rejects malformed payloads",
+            ], arg_val)
+        return _rank_completion_candidates([], arg_val)
+
+    raise ValueError(f"Unsupported completion ref type: {ref_type!r}")
+
+
 def read_mcp_resource(client: BridgeClient, uri: str) -> dict:
+    if uri == "mcp://server-card.json":
+        read_only = bool(client.read_only) if client is not None else False
+        auth_req = True
+        confirm_mode = "off"
+        origin = (client.base_url if client is not None else "http://127.0.0.1:8077") or "http://127.0.0.1:8077"
+        if client is not None:
+            try:
+                health = client.health() or {}
+                auth_req = health.get("authMode") != "open"
+                confirm_mode = ((health.get("confirmGate") or {}).get("mode")) or "off"
+                pub = ((health.get("tunnel") or {}).get("publicUrl")) or None
+                if pub:
+                    origin = pub
+            except Exception:  # noqa: BLE001
+                pass
+        card = build_mcp_server_card(
+            origin=origin,
+            auth_required=auth_req,
+            read_only=read_only,
+            confirm_mode=confirm_mode,
+        )
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(card, indent=2)}]}
     if uri == "studio://state":
         data = execute_tool(client, "get_studio_state", {})
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
@@ -4635,7 +5381,7 @@ def install_template_helper(client: BridgeClient, template_name: str, peer_id: s
 
 
 def browse_kit_helper(category: str = "all", item: str = None, output_format: str = "summary", section: str = None, cursor: int = 0, limit: int = 50) -> dict:
-    from image_pipeline import PROCEDURAL_PRESETS, find_kit_root
+    from image_pipeline import ALL_PROCEDURAL_PRESETS, AUDIO_SYNTH_PRESETS, find_kit_root
 
     kit = find_kit_root()
     skills_dir = _find_skills_dir()
@@ -4758,25 +5504,53 @@ def browse_kit_helper(category: str = "all", item: str = None, output_format: st
         out["images"] = imgs
         out["imageCategories"] = cat_counts
     if category in ("all", "presets"):
-        out["proceduralPresets"] = list(PROCEDURAL_PRESETS.keys())
+        out["proceduralPresets"] = list(ALL_PROCEDURAL_PRESETS.keys())
+        out["audioSynthPresets"] = list(AUDIO_SYNTH_PRESETS.keys())
     if category in ("all", "audio"):
         audio_dir = kit / "assets" / "audio"
-        out["audio"] = [
-            {
-                "name": af.stem,
-                "fileName": af.name,
-                "localUri": f"rbxasset://arena_assets/audio/{af.name}",
-                "bytes": af.stat().st_size,
-            }
-            for af in sorted(audio_dir.glob("*"))
-            if af.is_file() and af.suffix.lower() in (".wav", ".ogg", ".mp3")
-        ] if audio_dir.is_dir() else []
+        audio_rows = []
+        if audio_dir.is_dir():
+            for af in sorted(audio_dir.glob("*")):
+                if af.is_file() and af.suffix.lower() in (".wav", ".ogg", ".mp3"):
+                    row_a = registry_by_path.get((kit / "assets" / "audio" / af.name).relative_to(kit.parent).as_posix(), {})
+                    thumb_a = str(row_a.get("thumbnail") or "")
+                    if thumb_a.startswith("roblox-kit/assets/thumbnails/"):
+                        thumb_a = thumb_a[len("roblox-kit/assets/thumbnails/") :]
+                    else:
+                        thumb_a = f"audio/{af.stem}.png"
+                    audio_rows.append({
+                        "name": af.stem,
+                        "fileName": af.name,
+                        "localUri": f"rbxasset://arena_assets/audio/{af.name}",
+                        "thumbnailPath": thumb_a,
+                        "bytes": af.stat().st_size,
+                    })
+        out["audio"] = audio_rows
     if category in ("all", "models"):
         models_dir = kit / "models"
-        out["models"] = [
-            {"name": mf.stem, "fileName": mf.name, "bytes": mf.stat().st_size, "path": str(mf)}
-            for mf in sorted(models_dir.glob("*.rbxmx"))
-        ] if models_dir.is_dir() else []
+        model_rows = []
+        if models_dir.is_dir():
+            for mf in sorted(models_dir.rglob("*")):
+                if mf.is_file() and mf.suffix.lower() in (".rbxmx", ".glb"):
+                    rel_m = mf.relative_to(models_dir).as_posix()
+                    parts_m = rel_m.split("/")
+                    pack_m = parts_m[0] if len(parts_m) > 1 else "featured"
+                    row_m = registry_by_path.get((kit / "models" / rel_m).relative_to(kit.parent).as_posix(), {})
+                    thumb_m = str(row_m.get("thumbnail") or "")
+                    if thumb_m.startswith("roblox-kit/assets/thumbnails/"):
+                        thumb_m = thumb_m[len("roblox-kit/assets/thumbnails/") :]
+                    else:
+                        thumb_m = f"model/{mf.stem}.png"
+                    model_rows.append({
+                        "name": mf.stem,
+                        "fileName": rel_m,
+                        "pack": row_m.get("category") or pack_m,
+                        "format": mf.suffix.lower().lstrip("."),
+                        "thumbnailPath": thumb_m,
+                        "bytes": mf.stat().st_size,
+                        "path": str(mf),
+                    })
+        out["models"] = model_rows
     if category in ("all", "systems"):
         out["systems"] = _discover_dropin_systems(kit)
     if category in ("all", "cloud_icons"):
@@ -5279,11 +6053,195 @@ def _device_sweep_viewports(client: BridgeClient, viewports, peer_id: str = None
     }, warnings
 
 
+def build_offline_3d_showcase_scene(
+    source: str = "showcase:starter_village",
+    seed: int = 2026,
+    theme: str = "horror_mansion",
+) -> tuple:
+    """Build a deterministic 3D Workspace + StarterGui + Lighting hierarchy for offline viewport preview & 3D scene audit."""
+    from image_pipeline import find_kit_root
+
+    kit = find_kit_root()
+    src = (source or "showcase:starter_village").strip()
+
+    if src.startswith("prefab:"):
+        stem = src.split(":", 1)[1].strip()
+        if stem.endswith(".json"):
+            stem = stem[:-5]
+        pf = kit / "prefabs" / f"{stem}.json"
+        if pf.is_file():
+            spec = json.loads(pf.read_text(encoding="utf-8"))
+            tree_nodes = spec.get("tree") or []
+            ws = {
+                "name": "Workspace",
+                "className": "Workspace",
+                "children": [
+                    {
+                        "name": "Baseplate",
+                        "className": "Part",
+                        "properties": {
+                            "Size": [128, 4, 128],
+                            "Position": [0, -2, 0],
+                            "Color": [0.24, 0.27, 0.32],
+                            "Anchored": True,
+                        },
+                    },
+                    {
+                        "name": "SpawnLocation",
+                        "className": "SpawnLocation",
+                        "properties": {
+                            "Size": [6, 1, 6],
+                            "Position": [0, 0.5, 22],
+                            "Color": [0.35, 0.62, 0.30],
+                            "Anchored": True,
+                        },
+                    },
+                    *tree_nodes,
+                ],
+            }
+            return ws, [], {"ClockTime": 14.0}, f"Prefab: {stem}"
+
+    if src.startswith("dungeon:"):
+        d = generate_dungeon_layout_helper(None, {"seed": seed, "roomCount": 8, "theme": theme, "buildInStudio": False})
+        ws = {
+            "name": "Workspace",
+            "className": "Workspace",
+            "children": d.get("tree") or [],
+        }
+        clock = 21.5 if "horror" in theme else 13.5
+        return ws, [], {"ClockTime": clock}, f"3D Dungeon ({theme}, seed {seed})"
+
+    if src == "showcase:horror_nightloop":
+        children = [
+            {
+                "name": "ForestGround",
+                "className": "Part",
+                "properties": {"Size": [180, 4, 180], "Position": [0, -2, 0], "Color": [0.14, 0.19, 0.16], "Anchored": True},
+            },
+            {
+                "name": "SpawnLocation",
+                "className": "SpawnLocation",
+                "properties": {"Size": [6, 1, 6], "Position": [0, 0.5, 28], "Color": [0.32, 0.54, 0.36], "Anchored": True},
+            },
+            {
+                "name": "NightLoopCabin",
+                "className": "Model",
+                "children": [
+                    {"name": "CabinFloor", "className": "Part", "properties": {"Size": [30, 1.2, 24], "Position": [0, 0.6, 0], "Color": [0.34, 0.24, 0.17], "Anchored": True}},
+                    {"name": "BackWall", "className": "Part", "properties": {"Size": [30, 12, 1.5], "Position": [0, 7.2, -11.25], "Color": [0.42, 0.30, 0.22], "Anchored": True}},
+                    {"name": "LeftWall", "className": "Part", "properties": {"Size": [1.5, 12, 24], "Position": [-14.25, 7.2, 0], "Color": [0.40, 0.28, 0.20], "Anchored": True}},
+                    {"name": "RightWall", "className": "Part", "properties": {"Size": [1.5, 12, 24], "Position": [14.25, 7.2, 0], "Color": [0.40, 0.28, 0.20], "Anchored": True}},
+                    {"name": "WindowGlass", "className": "Part", "properties": {"Size": [8, 5, 0.5], "Position": [0, 7.5, -11.2], "Color": [0.55, 0.78, 0.95], "Transparency": 0.45, "Material": "Glass", "Anchored": True}},
+                    {"name": "RoofLeft", "className": "WedgePart", "properties": {"Size": [32, 6, 13], "Position": [0, 16.2, -6.2], "Color": [0.22, 0.16, 0.14], "Anchored": True}},
+                    {"name": "RoofRight", "className": "WedgePart", "properties": {"Size": [32, 6, 13], "Position": [0, 16.2, 6.2], "Orientation": [0, 180, 0], "Color": [0.22, 0.16, 0.14], "Anchored": True}},
+                ],
+            },
+        ]
+        for pf_stem in ("horror_fuse_breaker_station", "horror_task_generator_machine", "world_safe_room_shelter", "world_loot_chest_shrine"):
+            pf = kit / "prefabs" / f"{pf_stem}.json"
+            if pf.is_file():
+                try:
+                    spec = json.loads(pf.read_text(encoding="utf-8"))
+                    children.extend(spec.get("tree") or [])
+                except Exception:
+                    pass
+        gui = []
+        hud_pf = kit / "prefabs" / "ui_horror_sanity_vitals_hud.json"
+        if hud_pf.is_file():
+            try:
+                gui = json.loads(hud_pf.read_text(encoding="utf-8")).get("tree") or []
+            except Exception:
+                pass
+        return (
+            {"name": "Workspace", "className": "Workspace", "children": children},
+            gui,
+            {"ClockTime": 22.0},
+            "NightLoop Horror Cabin, FuseBox, SafeRoom & Generator",
+        )
+
+    # Default showcase: Croftie Starter Village, Watchtower, Shrine, Farm Plots & Obby
+    village_children = [
+        {
+            "name": "Baseplate",
+            "className": "Part",
+            "properties": {"Size": [220, 4, 220], "Position": [0, -2, 0], "Color": [0.26, 0.46, 0.28], "Anchored": True},
+        },
+        {
+            "name": "SpawnLocation",
+            "className": "SpawnLocation",
+            "properties": {"Size": [8, 1, 8], "Position": [0, 0.5, 28], "Color": [0.36, 0.68, 0.34], "Anchored": True},
+        },
+        {
+            "name": "VillageHall",
+            "className": "Model",
+            "children": [
+                {"name": "Foundation", "className": "Part", "properties": {"Size": [26, 2, 20], "Position": [-22, 1, -12], "Color": [0.52, 0.50, 0.48], "Anchored": True}},
+                {"name": "MainWalls", "className": "Part", "properties": {"Size": [24, 11, 18], "Position": [-22, 7.5, -12], "Color": [0.82, 0.74, 0.62], "Anchored": True}},
+                {"name": "HallRoof", "className": "WedgePart", "properties": {"Size": [26, 6, 20], "Position": [-22, 16, -12], "Color": [0.68, 0.24, 0.18], "Anchored": True}},
+                {"name": "DoorFrame", "className": "Part", "properties": {"Size": [5, 8, 1.2], "Position": [-22, 6, -2.8], "Color": [0.38, 0.25, 0.16], "Anchored": True}},
+                {"name": "Lantern", "className": "Part", "properties": {"Size": [1.6, 2.2, 1.6], "Position": [-17, 8, -2.2], "Color": [1.0, 0.82, 0.32], "Material": "Neon", "Anchored": True}},
+            ],
+        },
+        {
+            "name": "Watchtower",
+            "className": "Model",
+            "children": [
+                {"name": "TowerBase", "className": "Part", "properties": {"Size": [12, 22, 12], "Position": [24, 11, -16], "Color": [0.45, 0.48, 0.54], "Anchored": True}},
+                {"name": "Battlement", "className": "Part", "properties": {"Size": [15, 3, 15], "Position": [24, 23.5, -16], "Color": [0.36, 0.39, 0.45], "Anchored": True}},
+                {"name": "BeaconCrystal", "className": "Part", "properties": {"Size": [4, 4, 4], "Position": [24, 28, -16], "Shape": "Ball", "Color": [0.24, 0.78, 1.0], "Material": "Neon", "Anchored": True}},
+            ],
+        },
+        {
+            "name": "PaletteFarmPlots",
+            "className": "Model",
+            "children": [
+                {"name": "SoilPlot1", "className": "Part", "properties": {"Size": [10, 0.8, 10], "Position": [-8, 0.4, 10], "Color": [0.42, 0.27, 0.16], "Anchored": True}},
+                {"name": "SoilPlot2", "className": "Part", "properties": {"Size": [10, 0.8, 10], "Position": [4, 0.4, 10], "Color": [0.42, 0.27, 0.16], "Anchored": True}},
+                {"name": "IrrigationCanal", "className": "Part", "properties": {"Size": [24, 0.6, 4], "Position": [-2, 0.3, 17], "Color": [0.18, 0.62, 0.92], "Transparency": 0.3, "Anchored": True}},
+                {"name": "GoldenCrop", "className": "Part", "properties": {"Size": [2.4, 3.2, 2.4], "Position": [-8, 2.2, 10], "Color": [0.95, 0.78, 0.22], "Material": "Neon", "Anchored": True}},
+                {"name": "EmeraldCrop", "className": "Part", "properties": {"Size": [2.4, 3.0, 2.4], "Position": [4, 2.1, 10], "Color": [0.24, 0.85, 0.42], "Anchored": True}},
+            ],
+        },
+        {
+            "name": "PineGrove",
+            "className": "Model",
+            "children": [
+                {"name": "Trunk1", "className": "Part", "properties": {"Size": [2.5, 9, 2.5], "Position": [22, 4.5, 14], "Color": [0.45, 0.28, 0.15], "Anchored": True}},
+                {"name": "Canopy1", "className": "Part", "properties": {"Size": [9, 9, 9], "Position": [22, 11.5, 14], "Shape": "Ball", "Color": [0.20, 0.58, 0.26], "Anchored": True}},
+                {"name": "Trunk2", "className": "Part", "properties": {"Size": [2.2, 8, 2.2], "Position": [-26, 4.0, 14], "Color": [0.45, 0.28, 0.15], "Anchored": True}},
+                {"name": "Canopy2", "className": "Part", "properties": {"Size": [8, 8, 8], "Position": [-26, 10.5, 14], "Shape": "Ball", "Color": [0.22, 0.62, 0.30], "Anchored": True}},
+            ],
+        },
+    ]
+    for pf_stem in ("world_loot_chest_shrine", "world_quest_giver_npc"):
+        pf = kit / "prefabs" / f"{pf_stem}.json"
+        if pf.is_file():
+            try:
+                spec = json.loads(pf.read_text(encoding="utf-8"))
+                village_children.extend(spec.get("tree") or [])
+            except Exception:
+                pass
+    gui = []
+    hud_pf = kit / "prefabs" / "ui_ability_cooldown_hotbar.json"
+    if hud_pf.is_file():
+        try:
+            gui = json.loads(hud_pf.read_text(encoding="utf-8")).get("tree") or []
+        except Exception:
+            pass
+    return (
+        {"name": "Workspace", "className": "Workspace", "children": village_children},
+        gui,
+        {"ClockTime": 14.0},
+        "Croftie Starter Village, Farm Plots, Watchtower & Shrine",
+    )
+
+
 def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
     import base64 as _b64
     from viewport_renderer import render_scene_png
 
     preset = args.get("preset") or "perspective"
+    target_path = args.get("path") or "Workspace"
     size = args.get("size") or {}
     w = int(size.get("w", args.get("width", 800)))
     h = int(size.get("h", args.get("height", 450)))
@@ -5291,14 +6249,20 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
     overlays = args.get("overlays") or {}
     show_labels = bool(overlays.get("labels", args.get("showLabels", True)))
     mode = args.get("mode") or "software"
+    yaw_offset = float(args.get("yaw", 0.0) or 0.0)
+    pitch_offset = float(args.get("pitch", 0.0) or 0.0)
+    zoom = float(args.get("zoom", 1.0) or 1.0)
 
     if mode == "native":
         return {"ok": False, "reason": "native_capture_unsafe", "warnings": ["Desktop capture is disabled because it cannot guarantee Studio-only pixels."]}
 
     ws_tree = _unwrap_job(client.submit_job("inspect", {
-        "path": "Workspace",
-        "depth": 8,
+        "path": target_path,
+        "depth": 10,
+        "maxChildren": 500,
         "includeProperties": True,
+        "includeStructured": True,
+        "includeStructuredDescendants": True,
     }, wait=45.0, dm="edit", peer_id=peer_id))
 
     lighting_props = {}
@@ -5307,8 +6271,9 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
             "path": "Lighting",
             "depth": 1,
             "includeProperties": True,
+            "includeStructured": True,
         }, wait=15.0, dm="edit", peer_id=peer_id))
-        lighting_props = lg.get("properties") or {}
+        lighting_props = {**(lg.get("properties") or {}), **(lg.get("structuredProperties") or {})}
     except Exception:
         pass
 
@@ -5317,8 +6282,11 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
         try:
             sg = _unwrap_job(client.submit_job("inspect", {
                 "path": "StarterGui",
-                "depth": 8,
+                "depth": 9,
+                "maxChildren": 250,
                 "includeProperties": True,
+                "includeStructured": True,
+                "includeStructuredDescendants": True,
             }, wait=20.0, dm="edit", peer_id=peer_id))
             gui_children = sg.get("children") or []
         except Exception:
@@ -5338,6 +6306,9 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
         include_hud=include_hud,
         show_labels=show_labels,
         show_grid=bool(overlays.get("grid", True)),
+        yaw_offset_deg=yaw_offset,
+        pitch_offset_deg=pitch_offset,
+        zoom=zoom,
     )
     if args.get("saveFile"):
         sp = Path(args["saveFile"]).expanduser()
@@ -5345,6 +6316,7 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
         sp.write_bytes(png_bytes)
         meta["savedFile"] = str(sp)
     meta["ok"] = True
+    meta["path"] = target_path
     meta["warnings"] = []
     if args.get("returnInline", True):
         meta["_mcp_image_png_b64"] = _b64.b64encode(png_bytes).decode("ascii")
@@ -5353,7 +6325,14 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
 
 def export_geometry_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
     from viewport_renderer import collect_parts_from_tree
-    root = _unwrap_job(client.submit_job("inspect", {"path": args.get("path", "Workspace"), "depth": args.get("depth", 10), "includeProperties": True}, wait=60.0, dm=args.get("dm", "edit"), peer_id=peer_id))
+    root = _unwrap_job(client.submit_job("inspect", {
+        "path": args.get("path", "Workspace"),
+        "depth": args.get("depth", 10),
+        "maxChildren": 500,
+        "includeProperties": True,
+        "includeStructured": True,
+        "includeStructuredDescendants": True,
+    }, wait=60.0, dm=args.get("dm", "edit"), peer_id=peer_id))
     requested = {str(x).lower() for x in args.get("include", ["cframe", "size", "color", "material", "transparency", "shape", "tags"])}
     parts = []
     stack = [root]
@@ -5390,8 +6369,8 @@ def render_offline_helper(client: BridgeClient, args: dict, peer_id: str = None,
     if gui_only:
         target = args.get("path") or ("PlayerGui" if dm == "client" else "StarterGui")
         tree = _unwrap_job(client.submit_job("inspect", {
-            "path": target, "depth": 12, "includeProperties": True,
-            "includeStructuredDescendants": True,
+            "path": target, "depth": 12, "maxChildren": 300, "includeProperties": True,
+            "includeStructured": True, "includeStructuredDescendants": True,
         }, wait=60.0, dm=dm, peer_id=peer_id))
         gui_nodes = tree.get("children", []) if tree.get("className") in ("StarterGui", "PlayerGui") else [tree]
         world = {"name": "Workspace", "className": "Workspace", "children": []}
@@ -5418,19 +6397,20 @@ def render_offline_helper(client: BridgeClient, args: dict, peer_id: str = None,
         else:
             target = args.get("path", "Workspace")
             tree = _unwrap_job(client.submit_job("inspect", {
-                "path": target, "depth": 12, "includeProperties": True,
+                "path": target, "depth": 12, "maxChildren": 500, "includeProperties": True,
+                "includeStructured": True, "includeStructuredDescendants": True,
             }, wait=60.0, dm="edit", peer_id=peer_id))
             lighting = {}
             try:
                 lighting = _unwrap_job(client.submit_job("inspect", {
-                    "path": "Lighting", "depth": 1, "includeProperties": True,
+                    "path": "Lighting", "depth": 1, "includeProperties": True, "includeStructured": True,
                 }, wait=15.0, dm="edit", peer_id=peer_id)).get("properties", {})
             except Exception:
                 pass
             if args.get("includeHud", False) and not gui_nodes:
                 gui_nodes = _unwrap_job(client.submit_job("inspect", {
-                    "path": "StarterGui", "depth": 10, "includeProperties": True,
-                    "includeStructuredDescendants": True,
+                    "path": "StarterGui", "depth": 10, "maxChildren": 250, "includeProperties": True,
+                    "includeStructured": True, "includeStructuredDescendants": True,
                 }, wait=25.0, dm="edit", peer_id=peer_id)).get("children", [])
             source = "studio"
         png, meta = render_scene_png(
@@ -5457,7 +6437,15 @@ def render_offline_helper(client: BridgeClient, args: dict, peer_id: str = None,
 
 
 def perf_audit_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
-    root = _unwrap_job(client.submit_job("inspect", {"path": args.get("path", "Workspace"), "depth": 20, "includeProperties": True, "descendantSummary": True}, wait=60.0, dm="edit", peer_id=peer_id))
+    root = _unwrap_job(client.submit_job("inspect", {
+        "path": args.get("path", "Workspace"),
+        "depth": 20,
+        "maxChildren": 500,
+        "includeProperties": True,
+        "includeStructured": True,
+        "includeStructuredDescendants": True,
+        "descendantSummary": True,
+    }, wait=60.0, dm="edit", peer_id=peer_id))
     counts, meshes, models, unanchored, bad_queries, total = {}, 0, 0, 0, 0, 0
     stack = [root]
     while stack:
@@ -5467,8 +6455,8 @@ def perf_audit_helper(client: BridgeClient, args: dict, peer_id: str = None) -> 
         if cls == "MeshPart": meshes += 1
         if cls == "Model": models += 1
         if cls in ("Part", "MeshPart", "WedgePart", "CornerWedgePart", "UnionOperation", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat"):
-            if props.get("Anchored") is False: unanchored += 1
-            if props.get("CanQuery") is False and props.get("CanCollide") is True: bad_queries += 1
+            if props.get("Anchored") is False or str(props.get("Anchored")).lower() == "false": unanchored += 1
+            if (props.get("CanQuery") is False or str(props.get("CanQuery")).lower() == "false") and (props.get("CanCollide") is True or str(props.get("CanCollide")).lower() == "true"): bad_queries += 1
         stack.extend(node.get("children") or [])
     part_count = sum(counts.get(c, 0) for c in ("Part", "MeshPart", "WedgePart", "CornerWedgePart", "UnionOperation", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat"))
     risk = "high" if part_count >= 8000 else "elevated" if part_count >= 3000 or meshes >= 1500 else "moderate" if part_count >= 1000 else "low"
@@ -5482,7 +6470,10 @@ def audit_3d_scene_helper(client: BridgeClient, args: dict, peer_id: str = None)
     root = _unwrap_job(client.submit_job("inspect", {
         "path": target_path,
         "depth": 10,
+        "maxChildren": 500,
         "includeProperties": True,
+        "includeStructured": True,
+        "includeStructuredDescendants": True,
     }, wait=45.0, dm="edit", peer_id=peer_id))
 
     report = audit_3d_hierarchy(root)
@@ -5509,7 +6500,10 @@ def audit_3d_scene_helper(client: BridgeClient, args: dict, peer_id: str = None)
         root_after = _unwrap_job(client.submit_job("inspect", {
             "path": target_path,
             "depth": 10,
+            "maxChildren": 500,
             "includeProperties": True,
+            "includeStructured": True,
+            "includeStructuredDescendants": True,
         }, wait=45.0, dm="edit", peer_id=peer_id))
         report = audit_3d_hierarchy(root_after)
         report["path"] = target_path
@@ -6401,6 +7395,1132 @@ def playtest_capabilities_helper(client: BridgeClient, args: dict, peer_id: str 
     return result
 
 
+# ---------------------------------------------------------------------------
+# Group I Helpers: Dungeon Layout, Gameplay Mechanics, Atmosphere FX, Synth Audio
+# ---------------------------------------------------------------------------
+
+DUNGEON_THEMES = {
+    "horror_mansion": {
+        "floorMaterial": "Material.WoodPlanks",
+        "floorColor": [0.22, 0.16, 0.12],
+        "corridorMaterial": "Material.Slate",
+        "corridorColor": [0.16, 0.14, 0.14],
+    },
+    "crypt_catacombs": {
+        "floorMaterial": "Material.Cobblestone",
+        "floorColor": [0.19, 0.21, 0.24],
+        "corridorMaterial": "Material.Slate",
+        "corridorColor": [0.14, 0.15, 0.18],
+    },
+    "scifi_facility": {
+        "floorMaterial": "Material.Metal",
+        "floorColor": [0.16, 0.20, 0.26],
+        "corridorMaterial": "Material.DiamondPlate",
+        "corridorColor": [0.12, 0.16, 0.22],
+    },
+    "ancient_ruins": {
+        "floorMaterial": "Material.Sandstone",
+        "floorColor": [0.42, 0.34, 0.24],
+        "corridorMaterial": "Material.Limestone",
+        "corridorColor": [0.35, 0.29, 0.21],
+    },
+}
+
+ROOM_ROLE_COLORS = {
+    "spawn": [0.27, 0.88, 0.63],
+    "normal": [0.37, 0.43, 0.51],
+    "treasure": [1.0, 0.78, 0.34],
+    "puzzle": [0.36, 0.78, 1.0],
+    "saferoom": [0.55, 0.84, 0.69],
+    "boss": [0.92, 0.29, 0.29],
+}
+
+
+def generate_dungeon_layout_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    import random as _random
+
+    seed = int(args.get("seed", 1337))
+    room_count = max(3, min(28, int(args.get("roomCount", 8))))
+    grid_step = max(24.0, min(96.0, float(args.get("gridStep", 36.0))))
+    room_height = max(8.0, min(36.0, float(args.get("roomHeight", 14.0))))
+    theme_name = str(args.get("theme") or "horror_mansion")
+    theme = DUNGEON_THEMES.get(theme_name, DUNGEON_THEMES["horror_mansion"])
+
+    rng = _random.Random(seed)
+    rooms = []
+    occupied = {(0, 0)}
+    frontier = [(0, 0)]
+
+    while len(rooms) < room_count and frontier:
+        pick_idx = rng.randrange(len(frontier))
+        gx, gz = frontier.pop(pick_idx)
+        idx = len(rooms) + 1
+        if idx == 1:
+            role = "spawn"
+        elif idx == room_count:
+            role = "boss"
+        elif idx == max(2, room_count // 2):
+            role = "saferoom"
+        elif idx % 3 == 0:
+            role = "treasure"
+        elif idx % 4 == 0:
+            role = "puzzle"
+        else:
+            role = "normal"
+
+        w = float(rng.randint(22, 30))
+        d = float(rng.randint(22, 30))
+        cx, cz = round(gx * grid_step, 2), round(gz * grid_step, 2)
+        rooms.append({
+            "id": idx,
+            "role": role,
+            "grid": [gx, gz],
+            "center": [cx, 0.0, cz],
+            "size": [w, room_height, d],
+        })
+        for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nb = (gx + dx, gz + dz)
+            if nb not in occupied:
+                occupied.add(nb)
+                frontier.append(nb)
+
+    # Prim's Minimum Spanning Tree across rooms
+    connected = {0}
+    corridors = []
+    edge_set = set()
+    for _ in range(len(rooms) - 1):
+        best_a = best_b = None
+        best_dist = float("inf")
+        for i in connected:
+            for j in range(len(rooms)):
+                if j not in connected:
+                    ax, _, az = rooms[i]["center"]
+                    bx, _, bz = rooms[j]["center"]
+                    dist = math.hypot(ax - bx, az - bz)
+                    if dist < best_dist:
+                        best_a, best_b, best_dist = i, j, dist
+        if best_a is not None and best_b is not None:
+            connected.add(best_b)
+            pair = (min(best_a, best_b), max(best_a, best_b))
+            edge_set.add(pair)
+            corridors.append({
+                "from": rooms[best_a]["id"],
+                "to": rooms[best_b]["id"],
+                "length": round(best_dist, 2),
+                "isLoop": False,
+            })
+
+    # Optional loop corridors for non-linear horror escape paths
+    for i in range(len(rooms)):
+        for j in range(i + 1, len(rooms)):
+            pair = (i, j)
+            if pair not in edge_set:
+                ax, _, az = rooms[i]["center"]
+                bx, _, bz = rooms[j]["center"]
+                dist = math.hypot(ax - bx, az - bz)
+                if dist <= grid_step * 1.45 and rng.random() < 0.28:
+                    edge_set.add(pair)
+                    corridors.append({
+                        "from": rooms[i]["id"],
+                        "to": rooms[j]["id"],
+                        "length": round(dist, 2),
+                        "isLoop": True,
+                    })
+
+    # Build Instance tree representation
+    room_nodes = []
+    for rm in rooms:
+        cx, cy, cz = rm["center"]
+        w, h, d = rm["size"]
+        role_col = ROOM_ROLE_COLORS.get(rm["role"], ROOM_ROLE_COLORS["normal"])
+        room_nodes.append({
+            "name": f"Room_{rm['id']:02d}_{rm['role']}",
+            "className": "Model",
+            "attributes": {"RoomId": rm["id"], "RoomRole": rm["role"]},
+            "children": [
+                {
+                    "name": "Floor",
+                    "className": "Part",
+                    "properties": {
+                        "Size": {"__t": "Vector3", "v": [w, 1.0, d]},
+                        "Position": {"__t": "Vector3", "v": [cx, cy + 0.5, cz]},
+                        "Material": {"__t": "Enum", "v": theme["floorMaterial"]},
+                        "Color": {"__t": "Color3", "v": theme["floorColor"]},
+                        "Anchored": True,
+                    },
+                },
+                {
+                    "name": "RoleBeacon",
+                    "className": "Part",
+                    "properties": {
+                        "Size": {"__t": "Vector3", "v": [2.2, 0.5, 2.2]},
+                        "Position": {"__t": "Vector3", "v": [cx, cy + 1.25, cz]},
+                        "Material": {"__t": "Enum", "v": "Material.Neon"},
+                        "Color": {"__t": "Color3", "v": role_col},
+                        "Anchored": True,
+                        "CanCollide": False,
+                    },
+                },
+            ],
+        })
+
+    for idx, corr in enumerate(corridors, start=1):
+        ra = rooms[corr["from"] - 1]
+        rb = rooms[corr["to"] - 1]
+        mx = round((ra["center"][0] + rb["center"][0]) * 0.5, 2)
+        mz = round((ra["center"][2] + rb["center"][2]) * 0.5, 2)
+        dx = abs(ra["center"][0] - rb["center"][0])
+        dz = abs(ra["center"][2] - rb["center"][2])
+        sx = max(6.0, dx) if dx >= dz else 6.0
+        sz = max(6.0, dz) if dz > dx else 6.0
+        room_nodes.append({
+            "name": f"Corridor_{idx:02d}",
+            "className": "Part",
+            "properties": {
+                "Size": {"__t": "Vector3", "v": [sx, 0.8, sz]},
+                "Position": {"__t": "Vector3", "v": [mx, 0.4, mz]},
+                "Material": {"__t": "Enum", "v": theme["corridorMaterial"]},
+                "Color": {"__t": "Color3", "v": theme["corridorColor"]},
+                "Anchored": True,
+            },
+        })
+
+    tree = [{
+        "name": f"GeneratedDungeon_{seed}",
+        "className": "Model",
+        "attributes": {"Seed": seed, "Theme": theme_name, "RoomCount": len(rooms)},
+        "children": room_nodes,
+    }]
+
+    studio_result = None
+    if args.get("buildInStudio") and client and client.health().get("studio_connected"):
+        target_parent = args.get("parent") or "Workspace"
+        studio_result = _unwrap_job(client.submit_job("build", {
+            "parent": target_parent,
+            "tree": tree,
+            "select": True,
+        }, note=f"generate_dungeon:{seed}", wait=45.0, dm="edit", peer_id=peer_id))
+
+    return {
+        "ok": True,
+        "seed": seed,
+        "theme": theme_name,
+        "roomCount": len(rooms),
+        "corridorCount": len(corridors),
+        "allRoomsReachable": len(connected) == len(rooms),
+        "rooms": rooms,
+        "corridors": corridors,
+        "tree": tree,
+        "builtInStudio": bool(studio_result),
+        "studioResult": studio_result,
+    }
+
+
+MECHANIC_BUNDLES = {
+    "horror-director": {
+        "system": "mechanics/horror-director",
+        "prefab": "ui_horror_sanity_vitals_hud",
+        "modules": ["StateMachine", "CooldownManager"],
+        "description": "5-phase server-authoritative horror AI Director with strike budget, NightModifiers, and sanity HUD.",
+    },
+    "round-survival": {
+        "system": "mechanics/round-survival",
+        "prefab": "horror_task_generator_machine",
+        "modules": ["StateMachine", "QuestTracker"],
+        "description": "Co-op generator repair & extraction round loop with dynamic threat targeting.",
+    },
+    "stamina-movement": {
+        "system": "mechanics/stamina-movement",
+        "prefab": None,
+        "modules": ["StateMachine", "CooldownManager"],
+        "description": "Tactical sprint stamina drain/regen and stealth crouch noise-radius controller.",
+    },
+    "inventory-loot": {
+        "system": "mechanics/inventory-loot",
+        "prefab": "world_loot_chest_shrine",
+        "modules": ["LootTable"],
+        "description": "Server-authoritative slot hotbar inventory with weighted rarity chest rolls and pity counter.",
+    },
+    "combat-abilities": {
+        "system": "mechanics/combat-abilities",
+        "prefab": None,
+        "modules": ["CombatPipeline", "CooldownManager"],
+        "description": "Cooldown ability casting with shield/armor mitigation, combo scaling, and status reactions.",
+    },
+    "weather-cycle": {
+        "system": "mechanics/weather-cycle",
+        "prefab": "lighting_horror_blood_moon",
+        "modules": ["StateMachine"],
+        "description": "Dynamic weather state machine (Clear, Rain, Thunderstorm,DenseFog, BloodMoon, Blizzard).",
+    },
+    "cutscene-camera": {
+        "system": "mechanics/cutscene-camera",
+        "prefab": "world_cutscene_stage_rig",
+        "modules": ["CutsceneDirector"],
+        "description": "Keyframed cinematic camera track player with FOV sweeps, letterbox framing, and skip support.",
+    },
+    "dialogue-npc": {
+        "system": "mechanics/dialogue-npc",
+        "prefab": "world_npc_dialogue_kiosk",
+        "modules": ["DialogueSystem", "NetworkGuard"],
+        "description": "Server-verified branching NPC & lore terminal conversation engine with conditional choices.",
+    },
+    "fuse-breaker": {
+        "system": "mechanics/horror-director",
+        "prefab": "horror_fuse_breaker_station",
+        "modules": ["CooldownManager"],
+        "description": "Interactive wall breaker & FuseBox blackout recovery station with ProximityPrompt.",
+    },
+    "task-generator": {
+        "system": "mechanics/round-survival",
+        "prefab": "horror_task_generator_machine",
+        "modules": ["QuestTracker"],
+        "description": "Hold-to-repair co-op survival generator objective with progress beacon.",
+    },
+    "loot-chest": {
+        "system": "mechanics/inventory-loot",
+        "prefab": "world_loot_chest_shrine",
+        "modules": ["LootTable"],
+        "description": "Interactive reliquary treasure chest shrine with weighted rarity loot drops.",
+    },
+    "safe-room": {
+        "system": "mechanics/horror-director",
+        "prefab": "world_safe_room_shelter",
+        "modules": ["StateMachine"],
+        "description": "Reinforced horror safe-room shelter booth with sanctuary lighting and HideSpot protection tag.",
+    },
+}
+
+
+def build_gameplay_mechanic_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from image_pipeline import find_kit_root
+
+    kit = find_kit_root()
+    mechanic = str(args.get("mechanic") or "horror-director")
+    bundle = MECHANIC_BUNDLES.get(mechanic)
+    if not bundle:
+        raise ValueError(f"Unknown gameplay mechanic: {mechanic}")
+
+    scripts = []
+    sys_rel = bundle.get("system")
+    if sys_rel:
+        sys_dir = kit / "systems" / sys_rel
+        for sub, target_parent in (
+            ("shared", "ReplicatedStorage.Shared"),
+            ("server", "ServerScriptService"),
+            ("client", "StarterPlayer.StarterPlayerScripts"),
+        ):
+            sdir = sys_dir / sub
+            if sdir.is_dir():
+                for lf in sorted(sdir.glob("*.lua")):
+                    scripts.append({
+                        "name": lf.name.split(".")[0],
+                        "fileName": lf.name,
+                        "targetParent": target_parent,
+                        "source": lf.read_text(encoding="utf-8"),
+                    })
+
+    prefab_spec = None
+    if bundle.get("prefab"):
+        pf = kit / "prefabs" / f"{bundle['prefab']}.json"
+        if pf.is_file():
+            prefab_spec = json.loads(pf.read_text(encoding="utf-8"))
+
+    studio_receipt = None
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        studio_receipt = {}
+        for mod_name in bundle.get("modules") or []:
+            install_kit_module_helper(client, mod_name, "ReplicatedStorage.Shared", peer_id=peer_id)
+        if sys_rel:
+            studio_receipt["system"] = install_dropin_system_helper(client, sys_rel, peer_id=peer_id)
+        if bundle.get("prefab"):
+            spawn_args = {"prefab": bundle["prefab"]}
+            if isinstance(args.get("position"), list) and len(args["position"]) == 3:
+                spawn_args["position"] = args["position"]
+            studio_receipt["prefab"] = spawn_prefab_helper(client, spawn_args, peer_id=peer_id)
+
+    return {
+        "ok": True,
+        "mechanic": mechanic,
+        "description": bundle["description"],
+        "system": sys_rel,
+        "prefab": bundle.get("prefab"),
+        "modules": bundle.get("modules", []),
+        "scriptCount": len(scripts),
+        "scripts": scripts,
+        "prefabSpec": prefab_spec,
+        "installedInStudio": bool(studio_receipt),
+        "studioReceipt": studio_receipt,
+    }
+
+
+ATMOSPHERE_FX_PRESETS = {
+    "BloodMoon": {
+        "lighting": {"Brightness": 0.45, "ClockTime": 0.0, "FogEnd": 150.0, "Ambient": {"__t": "Color3", "v": [0.35, 0.08, 0.10]}},
+        "atmosphere": {"Density": 0.44, "Offset": 0.15, "Color": {"__t": "Color3", "v": [0.38, 0.08, 0.10]}, "Decay": {"__t": "Color3", "v": [0.16, 0.03, 0.05]}, "Glare": 0.25, "Haze": 2.2},
+        "colorCorrection": {"Brightness": -0.04, "Contrast": 0.24, "Saturation": -0.22, "TintColor": {"__t": "Color3", "v": [0.96, 0.78, 0.80]}},
+        "bloom": {"Intensity": 0.65, "Size": 24.0, "Threshold": 0.88},
+    },
+    "DenseFog": {
+        "lighting": {"Brightness": 0.75, "ClockTime": 6.2, "FogEnd": 90.0, "Ambient": {"__t": "Color3", "v": [0.30, 0.34, 0.38]}},
+        "atmosphere": {"Density": 0.62, "Offset": 0.08, "Color": {"__t": "Color3", "v": [0.58, 0.64, 0.68]}, "Decay": {"__t": "Color3", "v": [0.28, 0.32, 0.36]}, "Glare": 0.1, "Haze": 2.8},
+        "colorCorrection": {"Brightness": -0.02, "Contrast": 0.10, "Saturation": -0.35, "TintColor": {"__t": "Color3", "v": [0.88, 0.94, 0.98]}},
+        "bloom": {"Intensity": 0.35, "Size": 18.0, "Threshold": 0.92},
+    },
+    "CyberpunkRain": {
+        "lighting": {"Brightness": 0.85, "ClockTime": 21.5, "FogEnd": 220.0, "Ambient": {"__t": "Color3", "v": [0.10, 0.18, 0.32]}},
+        "atmosphere": {"Density": 0.38, "Offset": 0.12, "Color": {"__t": "Color3", "v": [0.14, 0.32, 0.56]}, "Decay": {"__t": "Color3", "v": [0.08, 0.12, 0.28]}, "Glare": 0.4, "Haze": 1.9},
+        "colorCorrection": {"Brightness": 0.02, "Contrast": 0.28, "Saturation": 0.18, "TintColor": {"__t": "Color3", "v": [0.82, 0.94, 1.0]}},
+        "bloom": {"Intensity": 0.85, "Size": 32.0, "Threshold": 0.80},
+    },
+    "Thunderstorm": {
+        "lighting": {"Brightness": 0.55, "ClockTime": 19.2, "FogEnd": 165.0, "Ambient": {"__t": "Color3", "v": [0.16, 0.20, 0.28]}},
+        "atmosphere": {"Density": 0.48, "Offset": 0.10, "Color": {"__t": "Color3", "v": [0.22, 0.28, 0.38]}, "Decay": {"__t": "Color3", "v": [0.10, 0.14, 0.20]}, "Glare": 0.15, "Haze": 2.4},
+        "colorCorrection": {"Brightness": -0.05, "Contrast": 0.20, "Saturation": -0.25, "TintColor": {"__t": "Color3", "v": [0.84, 0.90, 0.98]}},
+        "bloom": {"Intensity": 0.50, "Size": 22.0, "Threshold": 0.86},
+    },
+    "GoldenHour": {
+        "lighting": {"Brightness": 2.2, "ClockTime": 17.6, "FogEnd": 520.0, "Ambient": {"__t": "Color3", "v": [0.42, 0.30, 0.22]}},
+        "atmosphere": {"Density": 0.28, "Offset": 0.18, "Color": {"__t": "Color3", "v": [0.95, 0.62, 0.38]}, "Decay": {"__t": "Color3", "v": [0.48, 0.24, 0.16]}, "Glare": 0.55, "Haze": 1.6},
+        "colorCorrection": {"Brightness": 0.03, "Contrast": 0.14, "Saturation": 0.12, "TintColor": {"__t": "Color3", "v": [1.0, 0.94, 0.86]}},
+        "bloom": {"Intensity": 0.55, "Size": 26.0, "Threshold": 0.85},
+    },
+    "DeepAbyss": {
+        "lighting": {"Brightness": 0.25, "ClockTime": 0.0, "FogEnd": 85.0, "Ambient": {"__t": "Color3", "v": [0.04, 0.07, 0.12]}},
+        "atmosphere": {"Density": 0.58, "Offset": 0.05, "Color": {"__t": "Color3", "v": [0.06, 0.12, 0.20]}, "Decay": {"__t": "Color3", "v": [0.02, 0.04, 0.08]}, "Glare": 0.05, "Haze": 2.6},
+        "colorCorrection": {"Brightness": -0.08, "Contrast": 0.26, "Saturation": -0.40, "TintColor": {"__t": "Color3", "v": [0.76, 0.86, 0.96]}},
+        "bloom": {"Intensity": 0.45, "Size": 20.0, "Threshold": 0.90},
+    },
+    "Blizzard": {
+        "lighting": {"Brightness": 1.45, "ClockTime": 11.5, "FogEnd": 105.0, "Ambient": {"__t": "Color3", "v": [0.52, 0.60, 0.70]}},
+        "atmosphere": {"Density": 0.54, "Offset": 0.12, "Color": {"__t": "Color3", "v": [0.82, 0.90, 0.98]}, "Decay": {"__t": "Color3", "v": [0.48, 0.58, 0.68]}, "Glare": 0.35, "Haze": 2.5},
+        "colorCorrection": {"Brightness": 0.04, "Contrast": 0.12, "Saturation": -0.28, "TintColor": {"__t": "Color3", "v": [0.90, 0.96, 1.0]}},
+        "bloom": {"Intensity": 0.60, "Size": 24.0, "Threshold": 0.84},
+    },
+    "SolarEclipse": {
+        "lighting": {"Brightness": 0.38, "ClockTime": 12.0, "FogEnd": 180.0, "Ambient": {"__t": "Color3", "v": [0.22, 0.14, 0.28]}},
+        "atmosphere": {"Density": 0.46, "Offset": 0.20, "Color": {"__t": "Color3", "v": [0.42, 0.20, 0.52]}, "Decay": {"__t": "Color3", "v": [0.16, 0.06, 0.24]}, "Glare": 0.48, "Haze": 2.1},
+        "colorCorrection": {"Brightness": -0.04, "Contrast": 0.26, "Saturation": -0.15, "TintColor": {"__t": "Color3", "v": [0.92, 0.84, 0.98]}},
+        "bloom": {"Intensity": 0.75, "Size": 28.0, "Threshold": 0.82},
+    },
+}
+
+
+def configure_atmosphere_fx_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    import copy as _copy
+
+    preset_name = str(args.get("preset") or "BloodMoon")
+    spec = _copy.deepcopy(ATMOSPHERE_FX_PRESETS.get(preset_name, ATMOSPHERE_FX_PRESETS["BloodMoon"]))
+    intensity = max(0.1, min(2.0, float(args.get("intensity", 1.0))))
+
+    atm = spec["atmosphere"]
+    atm["Density"] = round(min(1.0, atm["Density"] * intensity), 3)
+    atm["Haze"] = round(min(5.0, atm["Haze"] * intensity), 3)
+    cc = spec["colorCorrection"]
+    cc["Contrast"] = round(cc["Contrast"] * intensity, 3)
+    bl = spec["bloom"]
+    bl["Intensity"] = round(bl["Intensity"] * intensity, 3)
+
+    tree = [
+        {
+            "name": f"{preset_name}Atmosphere",
+            "className": "Atmosphere",
+            "replaceExisting": True,
+            "properties": atm,
+        },
+        {
+            "name": f"{preset_name}ColorGrading",
+            "className": "ColorCorrectionEffect",
+            "replaceExisting": True,
+            "properties": cc,
+        },
+        {
+            "name": f"{preset_name}Bloom",
+            "className": "BloomEffect",
+            "replaceExisting": True,
+            "properties": bl,
+        },
+    ]
+
+    studio_applied = False
+    if args.get("applyToStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("set_properties", {
+            "path": "Lighting",
+            "properties": spec["lighting"],
+        }, note=f"atmosphere_lighting:{preset_name}", wait=25.0, dm="edit", peer_id=peer_id))
+        _unwrap_job(client.submit_job("build", {
+            "parent": "Lighting",
+            "tree": tree,
+            "select": False,
+        }, note=f"atmosphere_fx:{preset_name}", wait=25.0, dm="edit", peer_id=peer_id))
+        studio_applied = True
+
+    return {
+        "ok": True,
+        "preset": preset_name,
+        "intensity": intensity,
+        "lightingProperties": spec["lighting"],
+        "postProcessingTree": tree,
+        "appliedToStudio": studio_applied,
+    }
+
+
+def synthesize_sound_effect_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from image_pipeline import (
+        AUDIO_SYNTH_PRESETS,
+        find_kit_root,
+        install_into_studio_content,
+        synthesize_wav_bytes,
+    )
+
+    preset = str(args.get("preset") or "horror_heartbeat")
+    spec = AUDIO_SYNTH_PRESETS.get(preset, AUDIO_SYNTH_PRESETS["horror_heartbeat"])
+    raw_name = str(args.get("name") or preset)
+    safe_stem = re.sub(r"[^A-Za-z0-9_\-]", "_", Path(raw_name).stem) or preset
+    wav_bytes = synthesize_wav_bytes(
+        preset=preset,
+        duration_ms=args.get("durationMs"),
+        base_hz=args.get("baseHz"),
+        volume=float(args.get("volume", 0.8)),
+    )
+
+    rel_audio = f"audio/{safe_stem}.wav"
+    local_install = {"installed": False, "installedPaths": [], "uri": f"rbxasset://arena_assets/{rel_audio}"}
+    if args.get("installLocalStudio", True):
+        local_install = install_into_studio_content(wav_bytes, rel_audio)
+
+    saved_repo_path = None
+    if args.get("saveToRepo", False):
+        kit = find_kit_root()
+        out_p = kit / "assets" / "audio" / f"{safe_stem}.wav"
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        out_p.write_bytes(wav_bytes)
+        saved_repo_path = str(out_p)
+
+    studio_sound = None
+    target_path = args.get("targetPath")
+    if target_path and client and client.health().get("studio_connected"):
+        studio_sound = _unwrap_job(client.submit_job("build", {
+            "parent": target_path,
+            "tree": [{
+                "name": safe_stem,
+                "className": "Sound",
+                "replaceExisting": True,
+                "properties": {
+                    "SoundId": local_install["uri"],
+                    "Volume": float(args.get("volume", 0.8)),
+                },
+            }],
+            "select": False,
+        }, note=f"synth_sound:{safe_stem}", wait=25.0, dm="edit", peer_id=peer_id))
+
+    return {
+        "ok": True,
+        "preset": preset,
+        "name": safe_stem,
+        "category": spec["category"],
+        "description": spec["description"],
+        "durationMs": int(args.get("durationMs") or spec["durationMs"]),
+        "baseHz": float(args.get("baseHz") or spec["baseHz"]),
+        "bytes": len(wav_bytes),
+        "uri": local_install["uri"],
+        "previewUrl": f"/api/kit/synth-audio/{preset}.wav",
+        "localStudioInstalled": local_install["installed"],
+        "savedToRepo": saved_repo_path,
+        "studioSound": studio_sound,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Group J Helpers (v6.0.0): Plugin & Playtest Controller, Network Security
+#                           Auditor, Cutscene Sequencer, UI Theme Pack
+# ---------------------------------------------------------------------------
+
+PLUGIN_VERSION_MATRIX = [
+    {
+        "version": "6.0.0",
+        "status": "current",
+        "highlights": [
+            "Built-in Roblox Studio DockWidgetPluginGui Dashboard (`ArenaBridgeDashboardV6`) + `Arena v6 UI` toolbar button",
+            "Bulletproof Playtest Stop: `EndTest` + `LeaveTest` fallback, idempotent already-stopped handling, automatic `__ArenaTestRunner_*` purge, and `/api/poll?goodbye=1` unload beacon",
+            "`plugin_info` telemetry handler (jobs processed, last job latency, DockWidget availability, capability flags)",
+            "Automatic `structuredProperties` extraction on bounded `inspect` subtrees for 3D Z-buffer viewport & scene auditing",
+        ],
+    },
+    {
+        "version": "4.1.0",
+        "status": "legacy_supported",
+        "highlights": [
+            "`VirtualInput` (`simulate_input`), `StudioDeviceSimulatorService` (`manage_device_simulator`), `StudioTestService` (`run_studio_tests`), `playtest_caps`",
+        ],
+    },
+    {
+        "version": "4.0.0",
+        "status": "outdated",
+        "highlights": [
+            "Multi-DataModel routing (`edit`/`server`/`client`), `ScriptEditorService` safe script writes, atomic `ChangeHistoryService` undo",
+        ],
+    },
+]
+
+
+def _parse_ver_tuple(ver_str: str) -> tuple:
+    try:
+        parts = tuple(int(x) for x in str(ver_str or "0").split(".")[:3])
+        return parts + (0,) * (3 - len(parts))
+    except Exception:
+        return (0, 0, 0)
+
+
+def manage_plugin_and_playtest_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    action = str(args.get("action") or "status").strip().lower()
+    plugin_file = Path(__file__).resolve().parent / "ArenaBridge.lua"
+    bundled_ver = "6.0.0"
+    if plugin_file.is_file():
+        m = re.search(r'local PLUGIN_VERSION = "([0-9.]+)"', plugin_file.read_text(encoding="utf-8"))
+        if m:
+            bundled_ver = m.group(1)
+
+    if action == "version_matrix":
+        return {
+            "ok": True,
+            "bundledPluginVersion": bundled_ver,
+            "bridgeVersion": MCP_SERVER_VERSION,
+            "versions": PLUGIN_VERSION_MATRIX,
+            "upgradeCommand": "python3 roblox-bridge/setup.py --install-only",
+            "downloadEndpoint": "/api/plugin/download",
+        }
+
+    if action == "install_local":
+        import setup as _setup
+        tok = (client.token if client else "") or _setup.get_token(rotate=False)
+        installed_ok = _setup.install_plugin(tok, 8077)
+        return {
+            "ok": True,
+            "action": "install_local",
+            "installedToOsPlugins": bool(installed_ok),
+            "bundledPluginVersion": bundled_ver,
+            "note": "Restart Roblox Studio once (or reload plugins) for the updated ArenaBridge.lua v6.0.0 to take effect.",
+        }
+
+    if action == "evict_stale_peers":
+        ev = client.evict_playtest_peers(reason=args.get("reason") or "mcp_evict_stale_peers") if client else {"evictedPeers": 0}
+        return {
+            "ok": True,
+            "action": "evict_stale_peers",
+            "evictedPlaytestPeers": ev.get("evictedPeers", 0),
+            "cancelledRuntimeJobs": ev.get("cancelledJobs", 0),
+        }
+
+    if action == "force_stop_playtest":
+        reason = str(args.get("reason") or "force_stop_by_agent")
+        edit_res = None
+        srv_res = None
+        if client:
+            try:
+                srv_res = _unwrap_job(client.submit_job("playtest", {"action": "force_stop", "reason": reason}, wait=3.5, dm="server"))
+            except Exception:
+                srv_res = None
+            try:
+                edit_res = _unwrap_job(client.submit_job("playtest", {"action": "force_stop", "reason": reason}, wait=12.0, dm="edit", peer_id=peer_id))
+            except Exception as exc:
+                edit_res = {"stopped": False, "error": str(exc)}
+            ev = client.evict_playtest_peers(reason=reason)
+        else:
+            ev = {"evictedPeers": 0, "cancelledJobs": 0}
+        return {
+            "ok": True,
+            "action": "force_stop_playtest",
+            "stopped": True,
+            "editResult": edit_res,
+            "serverResult": srv_res,
+            "evictedPlaytestPeers": ev.get("evictedPeers", 0),
+            "cancelledRuntimeJobs": ev.get("cancelledJobs", 0),
+            "sessionClean": True,
+        }
+
+    # Default: action == "status"
+    peers = []
+    if client:
+        try:
+            peers = client.peers().get("peers", [])
+        except Exception:
+            peers = []
+    online_peers = [p for p in peers if p.get("online")]
+    peer_statuses = []
+    outdated_count = 0
+    for p in online_peers:
+        pver = str(p.get("pluginVersion") or "unknown")
+        up_to_date = _parse_ver_tuple(pver) >= _parse_ver_tuple(bundled_ver)
+        if not up_to_date:
+            outdated_count += 1
+        peer_statuses.append({
+            "peerId": p.get("peerId"),
+            "dm": p.get("dm"),
+            "place": p.get("place"),
+            "placeId": p.get("placeId"),
+            "pluginVersion": pver,
+            "studioVersion": p.get("studioVersion"),
+            "upToDate": up_to_date,
+            "upgradeAvailable": not up_to_date,
+            "ageSeconds": p.get("ageSeconds"),
+        })
+
+    live_telemetry = None
+    if client and any(p.get("dm") == "edit" and p.get("upToDate") for p in peer_statuses):
+        try:
+            live_telemetry = _unwrap_job(client.submit_job("plugin_info", {}, wait=2.5, dm="edit", peer_id=peer_id))
+        except Exception:
+            live_telemetry = None
+
+    server_online = sum(1 for p in online_peers if p.get("dm") == "server")
+    client_online = sum(1 for p in online_peers if p.get("dm") == "client" or p.get("hasClient"))
+    return {
+        "ok": True,
+        "bridgeVersion": MCP_SERVER_VERSION,
+        "bundledPluginVersion": bundled_ver,
+        "onlinePeerCount": len(online_peers),
+        "outdatedPeerCount": outdated_count,
+        "allPeersUpToDate": outdated_count == 0,
+        "peers": peer_statuses,
+        "livePluginTelemetry": live_telemetry,
+        "playtestState": {
+            "playtestActive": bool((live_telemetry or {}).get("playtestActive") or server_online > 0),
+            "serverPeersOnline": server_online,
+            "clientPeersOnline": client_online,
+        },
+        "versionMatrix": PLUGIN_VERSION_MATRIX,
+        "downloadEndpoint": "/api/plugin/download",
+    }
+
+
+def audit_network_security_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    scripts_to_scan = []
+    remotes_found = []
+
+    if isinstance(args.get("scripts"), list):
+        for entry in args["scripts"]:
+            if isinstance(entry, dict) and isinstance(entry.get("source"), str):
+                scripts_to_scan.append({
+                    "path": str(entry.get("path") or "inline.Script"),
+                    "source": entry["source"],
+                })
+
+    if args.get("localDir"):
+        ldir = Path(args["localDir"]).expanduser()
+        if ldir.is_dir():
+            for lf in sorted(ldir.rglob("*")):
+                if lf.is_file() and lf.suffix.lower() in (".lua", ".luau"):
+                    scripts_to_scan.append({
+                        "path": lf.relative_to(ldir).as_posix(),
+                        "source": lf.read_text(encoding="utf-8", errors="replace"),
+                    })
+
+    if args.get("includeStudio", True) and client and not scripts_to_scan:
+        try:
+            if client.health().get("studio_connected"):
+                sv = _unwrap_job(client.submit_job("survey", {"includeSource": True, "maxScriptBytes": 160000}, wait=30.0, dm="edit", peer_id=peer_id))
+                for r in sv.get("remotes") or []:
+                    remotes_found.append(r)
+                for s in sv.get("scripts") or []:
+                    if s.get("source"):
+                        scripts_to_scan.append({"path": s.get("path", "Script"), "source": s["source"]})
+        except Exception:
+            pass
+
+    issues = []
+    handler_re = re.compile(
+        r"([A-Za-z0-9_.\[\]\"']+)\.(OnServerEvent|OnServerInvoke)\s*(?::Connect\s*\(\s*|=\s*)function\s*\(([^)]*)\)",
+        re.MULTILINE,
+    )
+    sensitive_arg_re = re.compile(r"\b(price|cost|currency|gold|coins|cash|gems|damage|health|hp|admin|isAdmin|xp|reward|level)\b", re.I)
+
+    total_handlers = 0
+    for item in scripts_to_scan:
+        path = item["path"]
+        src = item["source"]
+        for match in handler_re.finditer(src):
+            total_handlers += 1
+            remote_expr, hook_kind, params_raw = match.group(1), match.group(2), match.group(3)
+            params = [p.strip().split(":")[0].strip() for p in params_raw.split(",") if p.strip()]
+            client_params = params[1:] if len(params) > 1 else []
+            start_pos = match.end()
+            body_slice = src[start_pos : start_pos + 1400]
+
+            has_type_check = any(tok in body_slice for tok in ("type(", "typeof(", "NetworkGuard", "ValidatePayload", "tonumber(", "tostring("))
+            has_rate_limit = any(tok in body_slice for tok in ("RateLimiter", "NetworkGuard", "CheckRateLimit", "Cooldown", "os.clock", "tick()", "time()", "debounce"))
+
+            if client_params and not has_type_check:
+                issues.append({
+                    "code": "UNVALIDATED_REMOTE_HANDLER",
+                    "severity": "warning",
+                    "script": path,
+                    "remote": remote_expr,
+                    "hook": hook_kind,
+                    "parameters": client_params,
+                    "message": f"{remote_expr}.{hook_kind} accepts client parameters ({', '.join(client_params)}) without type/typeof or NetworkGuard validation.",
+                    "remediation": "Validate every client parameter with `typeof(arg)` or `NetworkGuard:ValidatePayload(player.Name, endpoint, payload)`.",
+                })
+
+            for cp in client_params:
+                if sensitive_arg_re.search(cp):
+                    issues.append({
+                        "code": "TRUSTED_CLIENT_AUTHORITY",
+                        "severity": "error",
+                        "script": path,
+                        "remote": remote_expr,
+                        "hook": hook_kind,
+                        "parameter": cp,
+                        "message": f"{remote_expr}.{hook_kind} accepts client-supplied authority parameter '{cp}' — exploiters can spoof currency/damage/price values.",
+                        "remediation": f"Never trust client-passed '{cp}'; look up authoritative prices/stats/damage on the server.",
+                    })
+
+            if not has_rate_limit:
+                issues.append({
+                    "code": "MISSING_RATE_LIMIT",
+                    "severity": "info",
+                    "script": path,
+                    "remote": remote_expr,
+                    "hook": hook_kind,
+                    "message": f"{remote_expr}.{hook_kind} has no visible rate-limiter or per-player cooldown.",
+                    "remediation": "Guard high-frequency remotes with `NetworkGuard:CheckRateLimit(player.Name, endpoint)` or `RateLimiter`.",
+                })
+
+    error_count = sum(1 for i in issues if i["severity"] == "error")
+    warn_count = sum(1 for i in issues if i["severity"] == "warning")
+    score = max(0, 100 - error_count * 25 - warn_count * 10)
+    return {
+        "ok": True,
+        "scriptsScanned": len(scripts_to_scan),
+        "remotesFound": len(remotes_found),
+        "handlersAnalyzed": total_handlers,
+        "securityScore": score,
+        "errorCount": error_count,
+        "warningCount": warn_count,
+        "issues": issues,
+        "recommendedGuardModule": "NetworkGuard",
+    }
+
+
+CUTSCENE_PRESETS = {
+    "boss_awakening": {
+        "title": "THE ENTITY AWAKENS",
+        "keyframes": [
+            {"offset": [0, 14, 34], "lookOffset": [0, 6, 0], "fov": 68, "duration": 1.6, "holdSeconds": 0.2, "caption": "Something stirs beneath the sanctuary..."},
+            {"offset": [-12, 8, 18], "lookOffset": [0, 7, 0], "fov": 54, "duration": 1.4, "holdSeconds": 0.5, "caption": "Hold your flashlight steady."},
+            {"offset": [0, 5, 10], "lookOffset": [0, 8, 0], "fov": 42, "duration": 0.9, "holdSeconds": 0.8, "caption": "SURVIVE UNTIL 6 AM"},
+        ],
+    },
+    "safe_room_unlock": {
+        "title": "SAFE ROOM POWER RESTORED",
+        "keyframes": [
+            {"offset": [18, 10, 22], "lookOffset": [0, 4, 0], "fov": 62, "duration": 1.3, "holdSeconds": 0.2, "caption": "Emergency generators online."},
+            {"offset": [6, 5, 11], "lookOffset": [0, 4, 0], "fov": 50, "duration": 1.1, "holdSeconds": 0.6, "caption": "Shelter doors unlocked."},
+        ],
+    },
+    "horror_corridor_reveal": {
+        "title": "HALLWAY ANOMALY",
+        "keyframes": [
+            {"offset": [0, 6, 28], "lookOffset": [0, 5, -10], "fov": 64, "duration": 1.8, "holdSeconds": 0.3, "caption": "The hallway lights begin to flicker..."},
+            {"offset": [0, 5, 12], "lookOffset": [0, 5, -15], "fov": 38, "duration": 1.2, "holdSeconds": 0.7, "caption": "DO NOT LOOK AWAY"},
+        ],
+    },
+    "victory_dawn_flyover": {
+        "title": "6:00 AM — DAWN BREAKS",
+        "keyframes": [
+            {"offset": [-24, 18, 28], "lookOffset": [0, 4, 0], "fov": 65, "duration": 2.0, "holdSeconds": 0.3, "caption": "The night curse lifts."},
+            {"offset": [20, 24, 24], "lookOffset": [0, 6, 0], "fov": 60, "duration": 2.0, "holdSeconds": 0.8, "caption": "NIGHT SURVIVED"},
+        ],
+    },
+    "arena_overview": {
+        "title": "ARENA OVERVIEW",
+        "keyframes": [
+            {"offset": [32, 26, 32], "lookOffset": [0, 2, 0], "fov": 66, "duration": 1.8, "holdSeconds": 0.2, "caption": "Welcome to the Arena"},
+            {"offset": [-24, 16, 26], "lookOffset": [0, 4, 0], "fov": 58, "duration": 1.6, "holdSeconds": 0.4, "caption": "Prepare for deployment"},
+        ],
+    },
+}
+
+
+def build_cutscene_sequence_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    preset_key = str(args.get("preset") or "boss_awakening")
+    spec = CUTSCENE_PRESETS.get(preset_key, CUTSCENE_PRESETS["boss_awakening"])
+    seq_name = re.sub(r"[^A-Za-z0-9_]", "_", str(args.get("name") or preset_key))
+    origin = args.get("origin") or [0.0, 4.0, 0.0]
+    ox, oy, oz = float(origin[0]), float(origin[1]), float(origin[2])
+    letterbox = bool(args.get("letterbox", True))
+    skippable = bool(args.get("skippable", True))
+
+    marker_children = []
+    lua_kf_lines = []
+    keyframes_out = []
+
+    for idx, kf in enumerate(spec["keyframes"], start=1):
+        px = round(ox + kf["offset"][0], 2)
+        py = round(oy + kf["offset"][1], 2)
+        pz = round(oz + kf["offset"][2], 2)
+        lx = round(ox + kf["lookOffset"][0], 2)
+        ly = round(oy + kf["lookOffset"][1], 2)
+        lz = round(oz + kf["lookOffset"][2], 2)
+        fov = float(kf.get("fov", 60))
+        dur = float(kf.get("duration", 1.5))
+        hold = float(kf.get("holdSeconds", 0.0))
+        cap = str(kf.get("caption") or "")
+
+        keyframes_out.append({
+            "index": idx,
+            "position": [px, py, pz],
+            "lookAt": [lx, ly, lz],
+            "fov": fov,
+            "duration": dur,
+            "holdSeconds": hold,
+            "caption": cap,
+        })
+        marker_children.append({
+            "name": f"Keyframe_{idx:02d}",
+            "className": "Part",
+            "attributes": {
+                "KeyframeIndex": idx,
+                "FOV": fov,
+                "Duration": dur,
+                "HoldSeconds": hold,
+                "Caption": cap,
+            },
+            "properties": {
+                "Anchored": True,
+                "CanCollide": False,
+                "Transparency": 0.35,
+                "Size": {"__t": "Vector3", "v": [1.4, 1.4, 2.2]},
+                "Position": {"__t": "Vector3", "v": [px, py, pz]},
+                "Color": {"__t": "Color3", "v": [0.24, 0.82, 0.98]},
+                "Material": {"__t": "Enum", "v": "Material.Neon"},
+            },
+        })
+        lua_kf_lines.append(
+            f"\t\t{{\n"
+            f"\t\t\tcframe = CFrame.lookAt(Vector3.new({px}, {py}, {pz}), Vector3.new({lx}, {ly}, {lz})),\n"
+            f"\t\t\tfov = {fov},\n"
+            f"\t\t\tduration = {dur},\n"
+            f"\t\t\tholdSeconds = {hold},\n"
+            f"\t\t\tcaption = {json.dumps(cap)},\n"
+            f"\t\t}},"
+        )
+
+    module_source = (
+        "--!strict\n"
+        f"-- CutsceneSequence_{seq_name}.lua — Generated by Arena MCP v6.0.0\n\n"
+        "return {\n"
+        f"\tid = {json.dumps(seq_name)},\n"
+        f"\ttitle = {json.dumps(spec['title'])},\n"
+        f"\tletterbox = {'true' if letterbox else 'false'},\n"
+        f"\tskippable = {'true' if skippable else 'false'},\n"
+        "\tkeyframes = {\n"
+        + "\n".join(lua_kf_lines)
+        + "\n\t},\n}\n"
+    )
+
+    rig_tree = [{
+        "name": f"CutsceneCameraTrack_{seq_name}",
+        "className": "Model",
+        "replaceExisting": True,
+        "attributes": {"CutsceneId": seq_name, "Title": spec["title"], "Letterbox": letterbox},
+        "children": marker_children,
+    }]
+
+    built_in_studio = False
+    if args.get("buildInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": "Workspace",
+            "tree": rig_tree,
+            "select": False,
+        }, note=f"cutscene_rig:{seq_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "ReplicatedStorage",
+            "name": f"CutsceneSequence_{seq_name}",
+            "className": "ModuleScript",
+            "source": module_source,
+            "replaceInstance": True,
+        }, note=f"cutscene_module:{seq_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        built_in_studio = True
+
+    return {
+        "ok": True,
+        "preset": preset_key,
+        "name": seq_name,
+        "title": spec["title"],
+        "keyframeCount": len(keyframes_out),
+        "totalDurationSec": round(sum(k["duration"] + k["holdSeconds"] for k in keyframes_out), 2),
+        "keyframes": keyframes_out,
+        "rigTree": rig_tree,
+        "moduleSource": module_source,
+        "builtInStudio": built_in_studio,
+    }
+
+
+UI_THEME_PALETTES = {
+    "HorrorBloodMoon": {
+        "background": [0.06, 0.04, 0.07],
+        "surface": [0.12, 0.07, 0.10],
+        "accent": [0.88, 0.18, 0.24],
+        "textPrimary": [0.96, 0.92, 0.93],
+        "textMuted": [0.68, 0.56, 0.60],
+        "cornerRadius": 10,
+        "strokeThickness": 1.5,
+    },
+    "CyberpunkNeon": {
+        "background": [0.04, 0.07, 0.14],
+        "surface": [0.08, 0.13, 0.24],
+        "accent": [0.0, 0.92, 0.98],
+        "textPrimary": [0.92, 0.98, 1.0],
+        "textMuted": [0.52, 0.74, 0.88],
+        "cornerRadius": 6,
+        "strokeThickness": 2.0,
+    },
+    "FantasyGold": {
+        "background": [0.09, 0.08, 0.06],
+        "surface": [0.16, 0.14, 0.10],
+        "accent": [0.96, 0.76, 0.26],
+        "textPrimary": [0.99, 0.96, 0.88],
+        "textMuted": [0.76, 0.68, 0.52],
+        "cornerRadius": 12,
+        "strokeThickness": 2.0,
+    },
+    "MinimalDark": {
+        "background": [0.07, 0.09, 0.13],
+        "surface": [0.12, 0.15, 0.22],
+        "accent": [0.38, 0.65, 0.98],
+        "textPrimary": [0.95, 0.97, 1.0],
+        "textMuted": [0.60, 0.66, 0.76],
+        "cornerRadius": 10,
+        "strokeThickness": 1.0,
+    },
+    "StudRetro": {
+        "background": [0.12, 0.14, 0.18],
+        "surface": [0.20, 0.24, 0.30],
+        "accent": [0.22, 0.84, 0.46],
+        "textPrimary": [1.0, 1.0, 1.0],
+        "textMuted": [0.74, 0.78, 0.84],
+        "cornerRadius": 4,
+        "strokeThickness": 2.5,
+    },
+}
+
+
+def generate_ui_theme_pack_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    theme_name = str(args.get("theme") or "HorrorBloodMoon")
+    pal = UI_THEME_PALETTES.get(theme_name, UI_THEME_PALETTES["HorrorBloodMoon"])
+    gui_name = re.sub(r"[^A-Za-z0-9_]", "_", str(args.get("guiName") or f"ArenaThemeGui_{theme_name}"))
+    cr = int(pal["cornerRadius"])
+
+    bg = pal["background"]
+    surf = pal["surface"]
+    acc = pal["accent"]
+    txt = pal["textPrimary"]
+
+    module_source = (
+        "--!strict\n"
+        f"-- UIThemeTokens_{theme_name}.lua — Generated by Arena MCP v6.0.0\n\n"
+        "return {\n"
+        f"\ttheme = {json.dumps(theme_name)},\n"
+        f"\tbackground = Color3.new({bg[0]}, {bg[1]}, {bg[2]}),\n"
+        f"\tsurface = Color3.new({surf[0]}, {surf[1]}, {surf[2]}),\n"
+        f"\taccent = Color3.new({acc[0]}, {acc[1]}, {acc[2]}),\n"
+        f"\ttextPrimary = Color3.new({txt[0]}, {txt[1]}, {txt[2]}),\n"
+        f"\tcornerRadius = UDim.new(0, {cr}),\n"
+        f"\tstrokeThickness = {pal['strokeThickness']},\n"
+        "}\n"
+    )
+
+    screen_gui_tree = [{
+        "name": gui_name,
+        "className": "ScreenGui",
+        "replaceExisting": True,
+        "properties": {"ResetOnSpawn": False, "IgnoreGuiInset": True},
+        "children": [
+            {
+                "name": "TopStatusHud",
+                "className": "Frame",
+                "properties": {
+                    "AnchorPoint": {"__t": "Vector2", "v": [0.5, 0.0]},
+                    "Position": {"__t": "UDim2", "v": [0.5, 0, 0.02, 0]},
+                    "Size": {"__t": "UDim2", "v": [0.34, 0, 0.065, 0]},
+                    "BackgroundColor3": {"__t": "Color3", "v": surf},
+                    "BackgroundTransparency": 0.12,
+                },
+                "children": [
+                    {"name": "UICorner", "className": "UICorner", "properties": {"CornerRadius": {"__t": "UDim", "v": [0, cr]}}},
+                    {"name": "UIStroke", "className": "UIStroke", "properties": {"Color": {"__t": "Color3", "v": acc}, "Thickness": pal["strokeThickness"]}},
+                    {
+                        "name": "StatusText",
+                        "className": "TextLabel",
+                        "properties": {
+                            "Size": {"__t": "UDim2", "v": [0.92, 0, 0.76, 0]},
+                            "Position": {"__t": "UDim2", "v": [0.04, 0, 0.12, 0]},
+                            "BackgroundTransparency": 1.0,
+                            "Text": f"{theme_name.upper()} · OBJECTIVE ACTIVE",
+                            "TextColor3": {"__t": "Color3", "v": txt},
+                            "TextScaled": True,
+                        },
+                    },
+                ],
+            },
+            {
+                "name": "ActionPromptPill",
+                "className": "Frame",
+                "properties": {
+                    "AnchorPoint": {"__t": "Vector2", "v": [0.5, 1.0]},
+                    "Position": {"__t": "UDim2", "v": [0.5, 0, 0.92, 0]},
+                    "Size": {"__t": "UDim2", "v": [0.24, 0, 0.055, 0]},
+                    "BackgroundColor3": {"__t": "Color3", "v": bg},
+                    "BackgroundTransparency": 0.15,
+                },
+                "children": [
+                    {"name": "UICorner", "className": "UICorner", "properties": {"CornerRadius": {"__t": "UDim", "v": [0, cr]}}},
+                    {
+                        "name": "PromptLabel",
+                        "className": "TextLabel",
+                        "properties": {
+                            "Size": {"__t": "UDim2", "v": [0.9, 0, 0.74, 0]},
+                            "Position": {"__t": "UDim2", "v": [0.05, 0, 0.13, 0]},
+                            "BackgroundTransparency": 1.0,
+                            "Text": "[E] INTERACT  ·  [F] FLASHLIGHT",
+                            "TextColor3": {"__t": "Color3", "v": acc},
+                            "TextScaled": True,
+                        },
+                    },
+                ],
+            },
+        ],
+    }]
+
+    installed_in_studio = False
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": "StarterGui",
+            "tree": screen_gui_tree,
+            "select": False,
+        }, note=f"ui_theme:{theme_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "ReplicatedStorage",
+            "name": f"UIThemeTokens_{theme_name}",
+            "className": "ModuleScript",
+            "source": module_source,
+            "replaceInstance": True,
+        }, note=f"ui_theme_tokens:{theme_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        installed_in_studio = True
+
+    return {
+        "ok": True,
+        "theme": theme_name,
+        "guiName": gui_name,
+        "palette": pal,
+        "componentCount": 2,
+        "screenGuiTree": screen_gui_tree,
+        "moduleSource": module_source,
+        "installedInStudio": installed_in_studio,
+    }
+
+
 def _bus_lines(client, include_tasks: bool = True, tasks_include_done: bool = False) -> str:
     """Compact bus snapshot for prompt rendering; never raises."""
     if client is None:
@@ -6732,16 +8852,25 @@ class MCPDispatcher:
         if (requested and requested not in SUPPORTED_PROTOCOL_VERSIONS
                 and method not in ("initialize", "server/discover")):
             return self._err(msg.get("id"), -32022, "Unsupported protocol version", {
+                "requested": requested,
+                "supported": list(SUPPORTED_PROTOCOL_VERSIONS),
                 "requestedVersion": requested,
                 "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
             })
         modern = ctx["modern"]
 
         if method == "server/discover":
-            return self._ok(msg.get("id"), self.discover_result())
+            disc = self.discover_result()
+            if modern:
+                self._decorate_meta(disc, ctx)
+            return self._ok(msg.get("id"), disc)
 
         if method in ("tasks/get", "tasks/result", "tasks/list", "tasks/cancel", "tasks/update"):
-            return self._handle_tasks(msg.get("id"), method, params, ctx)
+            resp = self._handle_tasks(msg.get("id"), method, params, ctx)
+            if modern and isinstance(resp, dict) and isinstance(resp.get("result"), dict):
+                resp["result"].setdefault("resultType", "complete")
+                self._decorate_meta(resp["result"], ctx)
+            return resp
 
         if method == "subscriptions/listen":
             try:
@@ -6840,6 +8969,7 @@ class MCPDispatcher:
                 "tools": {"listChanged": False},
                 "resources": {"subscribe": False, "listChanged": False},
                 "prompts": {"listChanged": False},
+                "completions": {},
                 "tasks": {
                     "list": {},
                     "cancel": {},
@@ -6852,6 +8982,7 @@ class MCPDispatcher:
             "tools": {"listChanged": True},
             "resources": {"subscribe": False, "listChanged": False},
             "prompts": {"listChanged": False},
+            "completions": {},
             "subscriptions": {"types": list(SUBSCRIPTION_TYPES)},
             "extensions": {TASKS_EXTENSION_KEY: {"requests": {"tools": {"call": {}}}, "cancel": {}}},
             # Kept for clients that still read the 2025-11-25 capability name.
@@ -6885,11 +9016,14 @@ class MCPDispatcher:
         return " ".join(lines)
 
     def discover_result(self) -> dict:
+        server_info = {"name": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION}
         return {
+            "resultType": "complete",
             "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
             "protocolVersion": MODERN_PROTOCOL_VERSION,
             "capabilities": self.capabilities(modern=True),
-            "serverInfo": {"name": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION},
+            "serverInfo": dict(server_info),
+            "_meta": {META_SERVER_INFO: dict(server_info)},
             "instructions": self._instructions(),
             "ttlMs": 300000,
             "cacheScope": "public",
@@ -7672,11 +9806,15 @@ class MCPDispatcher:
         ).hexdigest()[:16]
 
     def pump_subscription(self, sub_id: str, sink, stop_event: threading.Event = None,
-                          max_seconds: float = None, poll_seconds: float = 0.5) -> dict:
+                          max_seconds: float = None, poll_seconds: float = 0.5,
+                          keepalive=None, keepalive_seconds: float = 15.0) -> dict:
         """Write change notifications for one subscription until it ends.
 
         `sink(notification_dict)` is provided by the transport (stdout for
-        stdio, one SSE frame per notification for Streamable HTTP).
+        stdio, one SSE frame per notification for Streamable HTTP). `keepalive()`
+        is an optional transport heartbeat (e.g. SSE `: keepalive\\n\\n`) fired when
+        no frame was emitted for `keepalive_seconds`, preventing reverse proxies
+        and Cloudflare Tunnel from dropping idle streams after ~100s.
         """
         with self._sub_lock:
             rec = self.subscriptions.get(sub_id)
@@ -7684,8 +9822,10 @@ class MCPDispatcher:
             return {"ok": False, "reason": f"Unknown subscription: {sub_id!r}"}
         rec["sink"] = sink
         started = time.monotonic()
+        last_activity = started
         cursor = rec["cursor"]
         poll_seconds = max(0.05, min(float(poll_seconds or 0.5), 10.0))
+        keepalive_seconds = max(1.0, float(keepalive_seconds or 15.0))
         emitted = 0
         try:
             while True:
@@ -7708,6 +9848,7 @@ class MCPDispatcher:
                             sink(note)
                             emitted += 1
                             rec["emitted"] += 1
+                            last_activity = time.monotonic()
                         except Exception:  # noqa: BLE001
                             return {"ok": False, "reason": "stream closed", "emitted": emitted}
                 if "toolsListChanged" in rec["types"]:
@@ -7721,8 +9862,15 @@ class MCPDispatcher:
                                   "params": {"_meta": {META_SUBSCRIPTION_ID: sub_id}}})
                             emitted += 1
                             rec["emitted"] += 1
+                            last_activity = time.monotonic()
                         except Exception:  # noqa: BLE001
                             return {"ok": False, "reason": "stream closed", "emitted": emitted}
+                if callable(keepalive) and (time.monotonic() - last_activity) >= keepalive_seconds:
+                    try:
+                        keepalive()
+                        last_activity = time.monotonic()
+                    except Exception:  # noqa: BLE001
+                        return {"ok": False, "reason": "stream closed", "emitted": emitted}
                 if max_seconds is not None and time.monotonic() - started > float(max_seconds) - poll_seconds:
                     break
                 time.sleep(poll_seconds)
@@ -7837,6 +9985,15 @@ class MCPDispatcher:
                     "data": img_b64,
                     "mimeType": "image/png",
                 })
+            if isinstance(data, dict):
+                uri_link = data.get("uri")
+                if isinstance(uri_link, str) and uri_link.startswith(("skill://", "studio://", "mcp://")):
+                    content_items.append({
+                        "type": "resource_link",
+                        "uri": uri_link,
+                        "name": str(data.get("name") or tname),
+                        "mimeType": "text/markdown" if uri_link.startswith("skill://") else "application/json",
+                    })
             return {"isError": False, "content": content_items, "structuredContent": data}
         except Exception as tool_exc:
             if isinstance(tool_exc, NoPeerError):
@@ -7892,6 +10049,7 @@ class MCPDispatcher:
                 tools = []
                 for spec in self.visible_tools():
                     entry = dict(spec)
+                    entry.setdefault("title", (entry.get("annotations") or {}).get("title") or entry["name"])
                     execution = dict(entry.get("execution") or {})
                     execution.setdefault("taskSupport", "optional")
                     if self.gate.enabled and self.gate.requires(
@@ -7900,7 +10058,11 @@ class MCPDispatcher:
                         execution["confirmationRequired"] = True
                     entry["execution"] = execution
                     tools.append(entry)
-                return self._ok(msg_id, {"tools": tools})
+                page, next_cursor = paginate_mcp_items(tools, params)
+                out = {"tools": page}
+                if next_cursor is not None:
+                    out["nextCursor"] = next_cursor
+                return self._ok(msg_id, out)
 
             if method == "tools/call":
                 tname = params.get("name")
@@ -7952,10 +10114,18 @@ class MCPDispatcher:
                 return self._ok(msg_id, self._invoke_tool(tname, targs))
 
             if method == "resources/list":
-                return self._ok(msg_id, {"resources": RESOURCES})
+                page, next_cursor = paginate_mcp_items(RESOURCES, params)
+                out = {"resources": page}
+                if next_cursor is not None:
+                    out["nextCursor"] = next_cursor
+                return self._ok(msg_id, out)
 
             if method == "resources/templates/list":
-                return self._ok(msg_id, {"resourceTemplates": RESOURCE_TEMPLATES})
+                page, next_cursor = paginate_mcp_items(RESOURCE_TEMPLATES, params)
+                out = {"resourceTemplates": page}
+                if next_cursor is not None:
+                    out["nextCursor"] = next_cursor
+                return self._ok(msg_id, out)
 
             if method == "resources/read":
                 uri = params.get("uri", "")
@@ -7964,7 +10134,11 @@ class MCPDispatcher:
                 return self._ok(msg_id, read_mcp_resource(self.client, uri))
 
             if method == "prompts/list":
-                return self._ok(msg_id, {"prompts": PROMPTS})
+                page, next_cursor = paginate_mcp_items(PROMPTS, params)
+                out = {"prompts": page}
+                if next_cursor is not None:
+                    out["nextCursor"] = next_cursor
+                return self._ok(msg_id, out)
 
             if method == "prompts/get":
                 pname = params.get("name", "")
@@ -7979,7 +10153,7 @@ class MCPDispatcher:
                 return self._ok(msg_id, {})
 
             if method == "completion/complete":
-                return self._err(msg_id, -32601, "This server does not offer argument completion")
+                return self._ok(msg_id, complete_mcp_argument(self.client, params))
 
             return self._err(msg_id, -32601, f"Method not found: {method}")
 

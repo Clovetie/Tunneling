@@ -17,7 +17,13 @@
 
 const fs = require("fs");
 const path = require("path");
-const luaparse = require("luaparse");
+const { spawnSync } = require("child_process");
+let luaparse = null;
+try {
+	luaparse = require("luaparse");
+} catch (_) {
+	luaparse = null;
+}
 const { defaultSourceRoot } = require("./lib/paths");
 
 const root = defaultSourceRoot();
@@ -34,8 +40,25 @@ const LEGACY_ROOTS = [
 	path.join(root, "ReplicatedStorage", "Gerstner", "Serial", "ZoneManager"),
 	path.join(root, "ServerScriptService"),
 	path.join(root, "StarterPlayerScripts"),
-];
-const DEFAULT_ROOTS = path.basename(root) === "code" ? [root] : LEGACY_ROOTS;
+].filter((p) => fs.existsSync(p));
+const DEFAULT_ROOTS = path.basename(root) === "code" || LEGACY_ROOTS.length === 0 ? [root] : LEGACY_ROOTS;
+
+function findLuauCompile() {
+	const candidates = [
+		path.resolve(__dirname, "..", "..", "roblox-bridge", "tools", "luau-compile"),
+		path.resolve(__dirname, "..", "..", "roblox-bridge", "bin", "luau-compile"),
+		"luau-compile",
+	];
+	for (const candidate of candidates) {
+		const probe = spawnSync(candidate, ["--help"], { stdio: "ignore" });
+		if (!probe.error && (probe.status === 0 || probe.status === 1)) {
+			return candidate;
+		}
+	}
+	return null;
+}
+
+const LUAU_COMPILE_BIN = luaparse ? null : findLuauCompile();
 
 function collectLuauFiles(dir) {
 	const out = [];
@@ -43,7 +66,7 @@ function collectLuauFiles(dir) {
 		const full = path.join(dir, entry.name);
 		if (entry.isDirectory()) {
 			out.push(...collectLuauFiles(full));
-		} else if (entry.name.endsWith(".luau")) {
+		} else if (entry.name.endsWith(".luau") || entry.name.endsWith(".lua")) {
 			out.push(full);
 		}
 	}
@@ -178,7 +201,19 @@ if (files.length === 0) {
 for (const file of files) {
 	const source = fs.readFileSync(file, "utf8");
 	try {
-		luaparse.parse(stripLuauCasts(source), { luaVersion: "5.1" });
+		if (luaparse) {
+			luaparse.parse(stripLuauCasts(source), { luaVersion: "5.1" });
+		} else if (LUAU_COMPILE_BIN) {
+			const res = spawnSync(LUAU_COMPILE_BIN, ["--binary", file], {
+				stdio: ["ignore", "ignore", "pipe"],
+				encoding: "utf8",
+			});
+			if (res.status !== 0) {
+				throw new Error((res.stderr || `luau-compile exited ${res.status}`).trim());
+			}
+		} else {
+			throw new Error("Neither luaparse (npm --prefix tools install) nor luau-compile is available.");
+		}
 		console.log("OK   ", path.relative(process.cwd(), file));
 	} catch (err) {
 		failures += 1;

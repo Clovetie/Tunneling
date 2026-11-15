@@ -1,0 +1,73 @@
+{
+  "name": "horror_fuse_breaker_station",
+  "category": "mechanics",
+  "description": "Interactive Wall Breaker & FuseBox station with neon status indicator, sparking particles, and ProximityPrompt for blackout recovery.",
+  "defaultParent": "Workspace",
+  "tree": [
+    {
+      "name": "FuseBreakerStation",
+      "className": "Model",
+      "tags": ["FuseBox", "InteractiveObjective"],
+      "attributes": { "Tripped": false, "CooldownSeconds": 25 },
+      "children": [
+        {
+          "name": "MountingPlate",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [3.2, 4.4, 0.4] },
+            "Position": { "__t": "Vector3", "v": [0, 4.4, 0] },
+            "Material": { "__t": "Enum", "v": "Material.DiamondPlate" },
+            "Color": { "__t": "Color3", "v": [0.22, 0.25, 0.29] },
+            "Anchored": true
+          }
+        },
+        {
+          "name": "BreakerCabinet",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [2.4, 3.4, 0.9] },
+            "Position": { "__t": "Vector3", "v": [0, 4.4, 0.55] },
+            "Material": { "__t": "Enum", "v": "Material.Metal" },
+            "Color": { "__t": "Color3", "v": [0.16, 0.19, 0.23] },
+            "Anchored": true
+          },
+          "children": [
+            {
+              "name": "ResetBreakerPrompt",
+              "className": "ProximityPrompt",
+              "properties": {
+                "ActionText": "Flip Main Breaker",
+                "ObjectText": "Facility Power Grid",
+                "HoldDuration": 1.5,
+                "MaxActivationDistance": 11
+              }
+            }
+          ]
+        },
+        {
+          "name": "StatusLED",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [0.5, 0.5, 0.3] },
+            "Position": { "__t": "Vector3", "v": [0, 5.5, 1.05] },
+            "Material": { "__t": "Enum", "v": "Material.Neon" },
+            "Color": { "__t": "Color3", "v": [0.27, 0.88, 0.63] },
+            "Anchored": true,
+            "CanCollide": false
+          },
+          "children": [
+            {
+              "name": "BeaconLight",
+              "className": "PointLight",
+              "properties": {
+                "Brightness": 2.0,
+                "Range": 14,
+                "Color": { "__t": "Color3", "v": [0.27, 0.88, 0.63] }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
