@@ -99,6 +99,7 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             "snapshots": f"{origin}/api/snapshots",
             "direct_chat": f"{origin}/api/chat",
             "import_web_ui": f"{origin}/api/ui/import-web",
+            "export_web_ui": f"{origin}/api/ui/export-web",
             "agent_guide": f"{origin}/api/agent-guide",
             "self_test": f"{origin}/api/self-test",
         },
@@ -112,8 +113,9 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
                 "browse_kit", "search_assets", "search_cloud_icons",
                 "luau_check (when host binaries are installed)",
                 "render_offline with an exported hierarchy tree",
-                "import_ui_from_web", "build_vfx_emitter", "de_slop_audit",
-                "spawn_kit_mesh", "operator_chat",
+                "import_ui_from_web", "export_ui_to_web", "build_vfx_emitter", "de_slop_audit",
+                "spawn_kit_mesh", "kitbash_mesh_prop", "build_combat_hitbox",
+                "configure_camera_rig", "generate_sfx_soundbank", "operator_chat",
             ],
             "peerFreshnessSeconds": 5,
         },
@@ -2875,6 +2877,16 @@ def make_http_handler(state: BridgeState):
                 except ValueError as exc:
                     return self._send(400, {"error": str(exc)})
 
+            if path == "/api/ui/export-web":
+                ctx = self._require(qs, "read", allow_loopback=True)
+                if not ctx:
+                    return
+                from mcp_core import export_ui_to_web_helper
+                try:
+                    return self._send(200, export_ui_to_web_helper(state.mcp_client, body))
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+
             if path == "/api/bus":
                 action = (body.get("action") or "stats")
                 read_only = is_bus_action_read_only(body)
@@ -3946,16 +3958,18 @@ def dashboard_html() -> str:
     <div class="prompt-card" style="margin-bottom:14px">
       <div class="prompt-head">
         <div>
-          <h3>V6 Systems, Web UI Importer, Mesh-First &amp; De-Slop Quick-Launcher (95 Total MCP Tools)</h3>
-          <div class="sub">Test-drive the V6 tools (<code>import_ui_from_web</code>, <code>de_slop_audit</code>, <code>spawn_kit_mesh</code>, <code>build_vfx_emitter</code>, <code>operator_chat</code>, <code>audit_network_security</code>, <code>build_cutscene_sequence</code>, <code>generate_ui_theme_pack</code>, <code>manage_plugin_and_playtest</code>) + <code>VFXManager</code>, <code>CutsceneDirector</code>, <code>NetworkGuard</code>, and <code>DialogueSystem</code> modules.</div>
+          <h3>V6 Systems, Web UI Importer, Mesh-First &amp; De-Slop Quick-Launcher (100 Total MCP Tools)</h3>
+          <div class="sub">Test-drive the V6 tools (<code>import_ui_from_web</code>, <code>export_ui_to_web</code>, <code>de_slop_audit</code>, <code>spawn_kit_mesh</code>, <code>kitbash_mesh_prop</code>, <code>build_vfx_emitter</code>, <code>build_combat_hitbox</code>, <code>configure_camera_rig</code>, <code>generate_sfx_soundbank</code>, <code>operator_chat</code>, <code>audit_network_security</code>, <code>build_cutscene_sequence</code>, <code>generate_ui_theme_pack</code>, <code>manage_plugin_and_playtest</code>) + 33 reusable Luau modules.</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="sm primary" onclick="runV6ToolPreview('import_ui_from_web', {preset:'rpg_hud', deSlop:true, installInStudio:false})">&#127760; Import UI from Web</button>
-          <button class="sm primary" onclick="runV6ToolPreview('de_slop_audit', {texts:['Furthermore — delve into this seamless quest!'], includeStudio:true})">&#10024; De-Slop &amp; Visual Clarity Audit</button>
-          <button class="sm primary" onclick="runV6ToolPreview('spawn_kit_mesh', {query:'crystal', scale:1.2, spawnInStudio:false})">&#128142; Spawn 3D Mesh Asset</button>
+          <button class="sm primary" onclick="runV6ToolPreview('export_ui_to_web', {path:'StarterGui', deSlop:true})">&#128228; Export UI to Web</button>
+          <button class="sm primary" onclick="runV6ToolPreview('de_slop_audit', {texts:['Furthermore — delve into this seamless quest!'], includeStudio:true})">&#10024; De-Slop Audit</button>
+          <button class="sm primary" onclick="runV6ToolPreview('kitbash_mesh_prop', {preset:'runic_obelisk', scale:1.2, spawnInStudio:false})">&#128142; Kitbash 3D Mesh Prop</button>
+          <button class="sm primary" onclick="runV6ToolPreview('build_combat_hitbox', {preset:'melee_combo', installInStudio:false})">&#9876; Build Combat Hitbox</button>
+          <button class="sm primary" onclick="runV6ToolPreview('configure_camera_rig', {preset:'over_shoulder_action', installInStudio:false})">&#127909; Configure Camera Rig</button>
+          <button class="sm primary" onclick="runV6ToolPreview('generate_sfx_soundbank', {pack:'combat_pack', installInStudio:false})">&#128266; Generate SFX Bank</button>
           <button class="sm primary" onclick="runV6ToolPreview('build_vfx_emitter', {preset:'portal_swirl', burstCount:32, buildInStudio:false})">&#9889; Build VFX Emitter</button>
-          <button class="sm primary" onclick="runV6ToolPreview('audit_network_security', {includeStudio:true})">&#128737; Audit Network Security</button>
-          <button class="sm" onclick="runV6ToolPreview('manage_plugin_and_playtest', {action:'version_matrix'})">&#128268; Plugin Version Matrix</button>
         </div>
       </div>
       <pre id="v6-tool-out" style="max-height:220px">Select any V6 tool above to inspect its structured output.</pre>
@@ -3969,6 +3983,11 @@ def dashboard_html() -> str:
             <div class="sub">Unlike <code>agent_bus</code> broadcasts that agents can overlook, messages sent here are <strong>automatically injected into the agent&rsquo;s very next MCP tool call response</strong> (<code>operatorLiveChat</code>) and answered via <code>operator_chat(action='reply')</code>.</div>
           </div>
           <span class="pill on" id="live-chat-badge">Direct Live</span>
+        </div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin:6px 0">
+          <button class="sm" onclick="quickOperatorDirective('Prioritize 3D meshes (MeshPart / SpecialMesh / kitbash_mesh_prop) over blocky Part primitives.')">&#128142; Directive: 3D Mesh Priority</button>
+          <button class="sm" onclick="quickOperatorDirective('Import the HUD directly from the Web / Dashboard using import_ui_from_web.')">&#127760; Directive: Import Web UI</button>
+          <button class="sm" onclick="quickOperatorDirective('Run de_slop_audit: remove all em-dashes (—), filler connectors, and text dumps; add icon badges.')">&#10024; Directive: De-Slop UI</button>
         </div>
         <div id="direct-chat-feed" style="max-height:210px;overflow:auto;background:#090d14;border:1px solid var(--border);border-radius:8px;padding:10px;margin:8px 0;font-size:12.5px">
           <div class="sub">No direct chat messages yet. Send a message below to inject it into the agent&rsquo;s active tool loop.</div>
@@ -3984,8 +4003,8 @@ def dashboard_html() -> str:
       <div class="prompt-card">
         <div class="prompt-head">
           <div>
-            <h3>&#127760; Import UI from Web (HTML / CSS / Tailwind / Preset &rarr; <code>StarterGui</code>)</h3>
-            <div class="sub">Paste Web HTML/Tailwind markup or pick a preset to convert directly into a responsive Roblox <code>ScreenGui</code> with automatic De-Slop sanitization (no <code>&mdash;</code> em-dashes, no text dumps, paired icon badges).</div>
+            <h3>&#127760; Import &amp; Round-Trip UI Between Web (HTML / Tailwind) &amp; <code>StarterGui</code></h3>
+            <div class="sub">Paste Web HTML/Tailwind markup or pick a preset to convert directly into a responsive Roblox <code>ScreenGui</code> with automatic De-Slop sanitization, or export live <code>StarterGui</code> back to Web HTML.</div>
           </div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0">
@@ -3997,9 +4016,10 @@ def dashboard_html() -> str:
             <option value="boss_bar">Preset: Boss Health Bar</option>
             <option value="dialog_card">Preset: NPC Dialog Card</option>
           </select>
-          <input id="web-ui-name" value="WebImportedGui" placeholder="ScreenGui Name" style="width:165px">
+          <input id="web-ui-name" value="WebImportedGui" placeholder="ScreenGui Name" style="width:155px">
           <button class="sm primary" onclick="importWebUiFromDashboard(false)">Preview Tree</button>
           <button class="sm primary" onclick="importWebUiFromDashboard(true)">&#11014; Build in StarterGui</button>
+          <button class="sm" onclick="exportStudioUiToWeb()">&#11015; Export StarterGui &rarr; HTML</button>
         </div>
         <textarea id="web-ui-html" placeholder="Optional: paste custom HTML / Tailwind markup here (e.g. <div class='bg-slate-900 rounded-xl p-3 flex'><span>HP 100/100</span><button>[Q] DASH</button></div>)" style="min-height:68px"></textarea>
         <pre id="web-ui-out" style="max-height:140px">Converted Roblox ScreenGui tree will appear here.</pre>
@@ -4221,9 +4241,14 @@ const SAMPLE_ARGS = {
   build_cutscene_sequence: { preset: 'boss_awakening', letterbox: true, buildInStudio: false },
   generate_ui_theme_pack: { theme: 'HorrorBloodMoon', installInStudio: false },
   import_ui_from_web: { preset: 'rpg_hud', guiName: 'WebImportedGui', deSlop: true, installInStudio: false },
+  export_ui_to_web: { path: 'StarterGui', deSlop: true },
   build_vfx_emitter: { preset: 'portal_swirl', burstCount: 32, continuous: false, buildInStudio: false },
   de_slop_audit: { texts: ['Furthermore — delve into this seamless quest!'], includeStudio: true, autoFix: false },
   spawn_kit_mesh: { query: 'crystal', scale: 1.2, spawnInStudio: false },
+  kitbash_mesh_prop: { preset: 'runic_obelisk', scale: 1.2, interactive: true, spawnInStudio: false },
+  build_combat_hitbox: { preset: 'melee_combo', baseDamage: 28, maxReach: 14.0, installInStudio: false },
+  configure_camera_rig: { preset: 'over_shoulder_action', fov: 72, installInStudio: false },
+  generate_sfx_soundbank: { pack: 'combat_pack', installInStudio: false },
   operator_chat: { action: 'history', limit: 25 }
 };
 
@@ -6036,6 +6061,35 @@ async function sendOperatorLiveChat(){
     toast('Direct message queued — will inject into the agent’s next tool call!');
     refreshDirectChat();
   } catch(err){ toast(err.message); }
+}
+
+async function quickOperatorDirective(text){
+  const inp = document.getElementById('direct-chat-input');
+  const pin = document.getElementById('direct-chat-pin');
+  if(inp) inp.value = text;
+  if(pin) pin.checked = true;
+  await sendOperatorLiveChat();
+}
+
+async function exportStudioUiToWeb(){
+  const out = document.getElementById('web-ui-out');
+  const htmlBox = document.getElementById('web-ui-html');
+  if(out) out.textContent = 'Exporting StarterGui to Web HTML/Tailwind...';
+  try {
+    const r = await fetch('/api/ui/export-web', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ path: 'StarterGui', deSlop: true })
+    });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    if(htmlBox && d.html) htmlBox.value = d.html;
+    if(out) out.textContent = JSON.stringify(d, null, 2);
+    toast('Exported StarterGui into Web HTML/Tailwind!');
+  } catch(err){
+    if(out) out.textContent = err.message;
+    toast(err.message);
+  }
 }
 
 async function importWebUiFromDashboard(installInStudio){

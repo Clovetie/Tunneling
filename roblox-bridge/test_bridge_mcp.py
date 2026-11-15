@@ -2911,6 +2911,48 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         self.assertTrue(chat_res["ok"])
         self.assertEqual(chat_res["channel"], "direct_operator_live_chat")
 
+        kb_res = self.call_tool("kitbash_mesh_prop", {
+            "preset": "runic_obelisk",
+            "scale": 1.2,
+            "interactive": True,
+            "spawnInStudio": True,
+        })
+        self.assertTrue(kb_res["ok"])
+        self.assertEqual(kb_res["meshPartsCount"], 3)
+        self.assertEqual(kb_res["primitiveBlocksCount"], 0)
+        self.assertTrue(kb_res["spawnedInStudio"])
+
+        hb_res = self.call_tool("build_combat_hitbox", {
+            "preset": "melee_combo",
+            "baseDamage": 32,
+            "maxReach": 14.0,
+            "installInStudio": True,
+        })
+        self.assertTrue(hb_res["ok"])
+        self.assertTrue(hb_res["installedInStudio"])
+
+        cam_rig_res = self.call_tool("configure_camera_rig", {
+            "preset": "over_shoulder_action",
+            "fov": 74.0,
+            "installInStudio": True,
+        })
+        self.assertTrue(cam_rig_res["ok"])
+        self.assertTrue(cam_rig_res["installedInStudio"])
+
+        sfx_bank_res = self.call_tool("generate_sfx_soundbank", {
+            "pack": "combat_pack",
+            "installInStudio": True,
+        })
+        self.assertTrue(sfx_bank_res["ok"])
+        self.assertTrue(sfx_bank_res["installedInStudio"])
+
+        exp_web_res = self.call_tool("export_ui_to_web", {
+            "path": "StarterGui",
+            "deSlop": True,
+        })
+        self.assertTrue(exp_web_res["ok"])
+        self.assertIn("<div", exp_web_res["html"])
+
         cloud_started = time.monotonic()
         cloud_passed = False
         try:
@@ -4295,13 +4337,18 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
 
     def test_direct_live_chat_web_ui_deslop_and_mesh_priority(self):
         from mcp_core import search_skills_helper, apply_skill_helper, skill_references_helper
-        # 1. Verify all 5 new skills and their reference docs are discoverable & readable
+        # 1. Verify all 10 new skills and their reference docs are discoverable & readable
         for sk_name, ref_path in (
             ("vfx-and-particles", "references/vfx-libraries-and-flipbooks.md"),
             ("sfx-and-spatial-audio", "references/sfx-libraries-and-layered-audio.md"),
             ("ui-web-and-dashboard-import", "references/web-html-svg-to-roblox-ui.md"),
             ("de-slop-and-visual-clarity", "references/anti-slop-checklist.md"),
             ("mesh-first-3d-building", "references/mesh-catalog-and-kitbashing.md"),
+            ("combat-and-hitboxes", "references/spatial-hitbox-and-combo-patterns.md"),
+            ("npc-ai-and-pathfinding", "references/pathfinding-and-state-machines.md"),
+            ("camera-and-cinematics", "references/camera-rigs-and-springs.md"),
+            ("procedural-world-and-kitbashing", "references/modular-kitbashing-and-terrain.md"),
+            ("multiplayer-replication-and-netguard", "references/remote-security-and-replication.md"),
         ):
             sk = apply_skill_helper(sk_name)
             self.assertIn("instructions", sk)
@@ -4397,6 +4444,21 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
         ui_body = json.loads(raw_ui)
         self.assertTrue(ui_body["ok"])
         self.assertGreaterEqual(ui_body["elementsConverted"], 1)
+
+        # 6. Verify POST /api/ui/export-web round-trip exports ScreenGui tree to Web HTML/Tailwind
+        st_exp, raw_exp, _ = self._raw_http(
+            "/api/ui/export-web",
+            method="POST",
+            body=json.dumps({
+                "tree": ui_body["screenGuiTree"][0],
+                "deSlop": True,
+            }),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(st_exp, 200)
+        exp_body = json.loads(raw_exp)
+        self.assertTrue(exp_body["ok"])
+        self.assertIn("<button", exp_body["html"])
 
 
 if __name__ == "__main__":

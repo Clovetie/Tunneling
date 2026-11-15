@@ -2543,6 +2543,7 @@ TOOL_SPECS = [
                         "horror-director", "round-survival", "stamina-movement",
                         "inventory-loot", "combat-abilities", "weather-cycle",
                         "cutscene-camera", "dialogue-npc",
+                        "world-shrines", "boss-encounter",
                         "fuse-breaker", "task-generator", "loot-chest", "safe-room",
                     ],
                     "default": "horror-director",
@@ -2897,6 +2898,137 @@ TOOL_SPECS = [
         },
         "annotations": _ann("Direct Live Chat Between Human Operator & Agent", read_only=False, destructive=False, idempotent=False),
     },
+    {
+        "name": "kitbash_mesh_prop",
+        "description": (
+            "Assemble and spawn a multi-part sculpted 3D mesh prop (`runic_obelisk`, `crystal_lantern`, "
+            "`treasure_shrine`, `forge_anvil`, `arcane_staff`, `guardian_statue`) using `MeshPart` and "
+            "`SpecialMesh` geometry (never plain blocky `Part` cubes), complete with `PointLight`, "
+            "`ParticleEmitter` aura, and optional `ProximityPrompt`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "runic_obelisk", "crystal_lantern", "treasure_shrine",
+                        "forge_anvil", "arcane_staff", "guardian_statue",
+                    ],
+                    "default": "runic_obelisk",
+                    "description": "3D mesh kitbash prop preset.",
+                },
+                "name": {"type": "string", "description": "Optional custom Model name."},
+                "parent": {"type": "string", "default": "Workspace", "description": "Target parent path in Studio."},
+                "position": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "World [x, y, z] position (default [0, 3, 0]).",
+                },
+                "scale": {"type": "number", "default": 1.0, "description": "Uniform scale multiplier (0.2 to 20.0)."},
+                "interactive": {"type": "boolean", "default": True, "description": "Include a ProximityPrompt on the prop."},
+                "spawnInStudio": {"type": "boolean", "default": False, "description": "When true, build the 3D mesh prop directly in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Kitbash Sculpted Multi-Part 3D Mesh Prop", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "build_combat_hitbox",
+        "description": (
+            "Generate a complete server+client spatial combat hitbox rig (`melee_combo`, `aoe_ground_slam`, "
+            "`projectile_spell`, `dash_strike`) using `OverlapParams` (`GetPartBoundsInBox` / `GetPartBoundsInRadius`), "
+            "`VFXManager` `:Emit(n)` bursts, `CameraShaker` trauma impulses, and server reach/cooldown validation."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": ["melee_combo", "aoe_ground_slam", "projectile_spell", "dash_strike"],
+                    "default": "melee_combo",
+                    "description": "Spatial combat hitbox preset.",
+                },
+                "baseDamage": {"type": "number", "default": 28, "description": "Authoritative server base damage."},
+                "maxReach": {"type": "number", "default": 14.0, "description": "Maximum server-validated reach in studs."},
+                "cooldownSec": {"type": "number", "default": 0.45, "description": "Minimum server attack interval in seconds."},
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, install the combat server/client/module scripts in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Build Spatial Combat Hitbox & Server Validation Rig", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "configure_camera_rig",
+        "description": (
+            "Generate a Luau 3D camera controller (`over_shoulder_action`, `isometric_arpg`, `top_down_tactical`, "
+            "`first_person_flashlight`, `boss_lock_on`) with frame-rate independent spring damping, raycast wall "
+            "avoidance, trauma-squared camera shake, and FOV impulses. Set `installInStudio=True` to install into "
+            "`StarterPlayer.StarterPlayerScripts`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "over_shoulder_action", "isometric_arpg", "top_down_tactical",
+                        "first_person_flashlight", "boss_lock_on",
+                    ],
+                    "default": "over_shoulder_action",
+                    "description": "3D camera rig preset.",
+                },
+                "fov": {"type": "number", "default": 72.0, "description": "Base camera FieldOfView (40 to 110)."},
+                "springStiffness": {"type": "number", "default": 14.0, "description": "Exponential spring damping stiffness."},
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, install the LocalScript camera controller in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Configure Spring-Damped 3D Camera Rig & Trauma Shaker", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "generate_sfx_soundbank",
+        "description": (
+            "Build a bus-routed `SoundService` audio bank (`combat_pack`, `ui_clean_pack`, `horror_tension_pack`, "
+            "`arcane_fantasy_pack`) with `SoundGroup` buses (`SFX_Combat`, `SFX_UI`, `SFX_Ambient`), "
+            "`CompressorSoundEffect`, `ReverbSoundEffect`, `EqualizerSoundEffect`, and spatial `RollOffMode` defaults."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pack": {
+                    "type": "string",
+                    "enum": ["combat_pack", "ui_clean_pack", "horror_tension_pack", "arcane_fantasy_pack"],
+                    "default": "combat_pack",
+                    "description": "Curated SFX soundbank preset.",
+                },
+                "parent": {"type": "string", "default": "SoundService", "description": "Target container path."},
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, build the SoundGroup hierarchy and Sound instances in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Generate Bus-Routed SFX SoundGroup Bank in SoundService", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "export_ui_to_web",
+        "description": (
+            "Export a Roblox `StarterGui` / `ScreenGui` hierarchy (from live Studio or an inline `tree`) into clean, "
+            "responsive Web HTML + Tailwind CSS markup for round-trip Web/Dashboard UI editing, previewing, and "
+            "sharing (companion to `import_ui_from_web`)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "default": "StarterGui", "description": "Studio UI path to export when online."},
+                "tree": {"type": "object", "description": "Optional offline UI hierarchy tree to convert to Web HTML/Tailwind."},
+                "deSlop": {"type": "boolean", "default": True, "description": "Sanitize any em-dashes or filler slop during export."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Export Roblox ScreenGui Hierarchy to Web HTML/Tailwind", read_only=True, destructive=False, idempotent=True),
+    },
 ]
 
 TOOL_MAP = {t["name"]: t for t in TOOL_SPECS}
@@ -2910,6 +3042,7 @@ INSPECTOR_MIXED_TOOLS = frozenset((
     "generate_dungeon_layout", "build_gameplay_mechanic", "configure_atmosphere_fx", "synthesize_sound_effect",
     "manage_plugin_and_playtest", "build_cutscene_sequence", "generate_ui_theme_pack",
     "import_ui_from_web", "build_vfx_emitter", "de_slop_audit", "spawn_kit_mesh", "operator_chat",
+    "kitbash_mesh_prop", "build_combat_hitbox", "configure_camera_rig", "generate_sfx_soundbank",
 ))
 
 
@@ -3001,6 +3134,14 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
     if name == "spawn_kit_mesh" and not args.get("spawnInStudio"):
         return True
     if name == "operator_chat" and args.get("action", "poll") in ("poll", "history"):
+        return True
+    if name == "kitbash_mesh_prop" and not args.get("spawnInStudio"):
+        return True
+    if name == "build_combat_hitbox" and not args.get("installInStudio"):
+        return True
+    if name == "configure_camera_rig" and not args.get("installInStudio"):
+        return True
+    if name == "generate_sfx_soundbank" and not args.get("installInStudio"):
         return True
     return False
 
@@ -4254,6 +4395,21 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
 
     if name == "operator_chat":
         return operator_chat_helper(client=client, args=args)
+
+    if name == "kitbash_mesh_prop":
+        return kitbash_mesh_prop_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "build_combat_hitbox":
+        return build_combat_hitbox_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "configure_camera_rig":
+        return configure_camera_rig_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "generate_sfx_soundbank":
+        return generate_sfx_soundbank_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "export_ui_to_web":
+        return export_ui_to_web_helper(client=client, args=args, peer_id=peer_id)
 
     raise KeyError(f"Unknown tool: {name}")
 
@@ -7846,6 +8002,18 @@ MECHANIC_BUNDLES = {
         "modules": ["DialogueSystem", "NetworkGuard"],
         "description": "Server-verified branching NPC & lore terminal conversation engine with conditional choices.",
     },
+    "world-shrines": {
+        "system": "mechanics/world-shrines",
+        "prefab": "vfx_arcane_portal_shrine",
+        "modules": ["VFXManager", "MeshKitbasher", "CooldownManager"],
+        "description": "Interactive 3D mesh world shrine & buff altar system with ProximityPrompt and burst VFX.",
+    },
+    "boss-encounter": {
+        "system": "mechanics/boss-encounter",
+        "prefab": "vfx_combat_aura_pedestal",
+        "modules": ["HitboxSystem", "CameraShaker", "VFXManager"],
+        "description": "Multi-phase boss encounter director with SpecialMesh telegraph rings and segmented HUD.",
+    },
     "fuse-breaker": {
         "system": "mechanics/horror-director",
         "prefab": "horror_fuse_breaker_station",
@@ -9393,6 +9561,524 @@ def operator_chat_helper(client: BridgeClient, args: dict) -> dict:
             **acked,
         }
     raise ValueError(f"Unsupported operator_chat action: {act!r}")
+
+
+_KITBASH_PROP_PRESETS = {
+    "runic_obelisk": {
+        "baseMat": "Enum.Material.Basalt", "baseColor": [42, 48, 60],
+        "coreMat": "Enum.Material.Slate", "coreColor": [64, 74, 92], "coreMesh": "Enum.MeshType.Wedge",
+        "orbColor": [56, 189, 248], "actionText": "ACTIVATE OBELISK", "objectText": "RUNIC OBELISK",
+    },
+    "crystal_lantern": {
+        "baseMat": "Enum.Material.Metal", "baseColor": [55, 65, 81],
+        "coreMat": "Enum.Material.Glass", "coreColor": [125, 211, 252], "coreMesh": "Enum.MeshType.Cylinder",
+        "orbColor": [56, 189, 248], "actionText": "LIGHT LANTERN", "objectText": "CRYSTAL LANTERN",
+    },
+    "treasure_shrine": {
+        "baseMat": "Enum.Material.Marble", "baseColor": [58, 54, 68],
+        "coreMat": "Enum.Material.Metal", "coreColor": [245, 185, 42], "coreMesh": "Enum.MeshType.Sphere",
+        "orbColor": [253, 224, 71], "actionText": "CLAIM TRIBUTE", "objectText": "GILDED SHRINE",
+    },
+    "forge_anvil": {
+        "baseMat": "Enum.Material.Basalt", "baseColor": [40, 38, 42],
+        "coreMat": "Enum.Material.Metal", "coreColor": [82, 88, 98], "coreMesh": "Enum.MeshType.Wedge",
+        "orbColor": [251, 146, 60], "actionText": "FORGE GEAR", "objectText": "RUNIC ANVIL",
+    },
+    "arcane_staff": {
+        "baseMat": "Enum.Material.Wood", "baseColor": [92, 64, 51],
+        "coreMat": "Enum.Material.Metal", "coreColor": [148, 163, 184], "coreMesh": "Enum.MeshType.Cylinder",
+        "orbColor": [167, 139, 250], "actionText": "WIELD STAFF", "objectText": "ARCANE STAFF",
+    },
+    "guardian_statue": {
+        "baseMat": "Enum.Material.Basalt", "baseColor": [45, 52, 64],
+        "coreMat": "Enum.Material.Marble", "coreColor": [148, 163, 184], "coreMesh": "Enum.MeshType.Sphere",
+        "orbColor": [52, 211, 153], "actionText": "INSPECT GUARDIAN", "objectText": "ANCIENT GUARDIAN",
+    },
+}
+
+
+def kitbash_mesh_prop_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Assemble and optionally spawn a sculpted multi-part 3D mesh prop."""
+    preset = str(args.get("preset") or "runic_obelisk").strip()
+    cfg = _KITBASH_PROP_PRESETS.get(preset, _KITBASH_PROP_PRESETS["runic_obelisk"])
+    pos = [float(v) for v in (args.get("position") or [0.0, 3.0, 0.0])[:3]]
+    scale = max(0.2, min(20.0, float(args.get("scale") or 1.0)))
+    interactive = bool(args.get("interactive", True))
+    parent_path = str(args.get("parent") or "Workspace").strip() or "Workspace"
+    model_name = str(args.get("name") or f"KitbashedMesh_{preset}").strip()
+
+    orb_children = [
+        {
+            "name": "OrbSpecialMesh",
+            "className": "SpecialMesh",
+            "properties": {"MeshType": "Enum.MeshType.Sphere", "Scale": [0.9, 1.25, 0.9]},
+        },
+        {
+            "name": "AccentPointLight",
+            "className": "PointLight",
+            "properties": {"Color": cfg["orbColor"], "Brightness": 2.4, "Range": round(16.0 * scale, 1)},
+        },
+        {
+            "name": "AuraParticleEmitter",
+            "className": "ParticleEmitter",
+            "properties": {
+                "Rate": 14,
+                "LightEmission": 1.0,
+                "Lifetime": {"__t": "NumberRange", "v": [0.6, 1.2]},
+                "Speed": {"__t": "NumberRange", "v": [3.0, 7.0]},
+            },
+        },
+    ]
+    if interactive:
+        orb_children.append({
+            "name": "InteractPrompt",
+            "className": "ProximityPrompt",
+            "properties": {
+                "ActionText": cfg["actionText"],
+                "ObjectText": cfg["objectText"],
+                "MaxActivationDistance": 10.0,
+            },
+        })
+
+    prop_tree = [{
+        "name": model_name,
+        "className": "Model",
+        "replaceExisting": True,
+        "children": [
+            {
+                "name": "PedestalPlinthMesh",
+                "className": "Part",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": True,
+                    "Material": cfg["baseMat"],
+                    "Color": cfg["baseColor"],
+                    "Size": [round(5.2 * scale, 2), round(1.2 * scale, 2), round(5.2 * scale, 2)],
+                    "Position": [pos[0], round(pos[1] - 1.4 * scale, 2), pos[2]],
+                },
+                "children": [
+                    {
+                        "name": "PlinthCylinderMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": "Enum.MeshType.Cylinder", "Scale": [1.0, 1.0, 1.0]},
+                    }
+                ],
+            },
+            {
+                "name": "SculptedBodyMesh",
+                "className": "MeshPart",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": True,
+                    "Material": cfg["coreMat"],
+                    "Color": cfg["coreColor"],
+                    "Size": [round(2.8 * scale, 2), round(4.6 * scale, 2), round(2.8 * scale, 2)],
+                    "Position": [pos[0], round(pos[1] + 1.2 * scale, 2), pos[2]],
+                },
+                "children": [
+                    {
+                        "name": "BodySpecialMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": cfg["coreMesh"], "Scale": [1.0, 1.0, 1.0]},
+                    }
+                ],
+            },
+            {
+                "name": "FloatingCrownOrbMesh",
+                "className": "MeshPart",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": False,
+                    "Material": "Enum.Material.Neon",
+                    "Color": cfg["orbColor"],
+                    "Size": [round(1.8 * scale, 2), round(2.4 * scale, 2), round(1.8 * scale, 2)],
+                    "Position": [pos[0], round(pos[1] + 4.5 * scale, 2), pos[2]],
+                },
+                "children": orb_children,
+            },
+        ],
+    }]
+
+    spawned_in_studio = False
+    if args.get("spawnInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": parent_path,
+            "tree": prop_tree,
+            "select": False,
+        }, note=f"kitbash_mesh_prop:{preset}", wait=30.0, dm="edit", peer_id=peer_id))
+        spawned_in_studio = True
+
+    return {
+        "ok": True,
+        "preset": preset,
+        "modelName": model_name,
+        "parent": parent_path,
+        "position": pos,
+        "scale": scale,
+        "meshPartsCount": 3,
+        "primitiveBlocksCount": 0,
+        "interactive": interactive,
+        "spawnedInStudio": spawned_in_studio,
+        "propTree": prop_tree,
+    }
+
+
+def build_combat_hitbox_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Generate a server-validated spatial combat hitbox rig (OverlapParams + VFXManager bursts)."""
+    preset = str(args.get("preset") or "melee_combo").strip()
+    base_dmg = float(args.get("baseDamage") or 28.0)
+    max_reach = float(args.get("maxReach") or 14.0)
+    cooldown = float(args.get("cooldownSec") or 0.45)
+
+    server_src = (
+        "--!strict\n"
+        f"-- Server Combat Validator ({preset})\n"
+        "local ReplicatedStorage = game:GetService('ReplicatedStorage')\n"
+        "local Players = game:GetService('Players')\n\n"
+        "local remote = ReplicatedStorage:FindFirstChild('CombatHitboxRemote') :: RemoteEvent?\n"
+        "if not remote then\n"
+        "\tlocal r = Instance.new('RemoteEvent')\n"
+        "\tr.Name = 'CombatHitboxRemote'\n"
+        "\tr.Parent = ReplicatedStorage\n"
+        "\tremote = r\n"
+        "end\n\n"
+        "local lastAttack: { [Player]: number } = {}\n"
+        f"local MAX_REACH = {max_reach}\n"
+        f"local MIN_INTERVAL = {cooldown}\n"
+        f"local BASE_DAMAGE = {base_dmg}\n\n"
+        "if remote then\n"
+        "\tremote.OnServerEvent:Connect(function(player: Player, targetModel: unknown)\n"
+        "\t\tlocal now = os.clock()\n"
+        "\t\tif now - (lastAttack[player] or 0) < MIN_INTERVAL then return end\n"
+        "\t\tif typeof(targetModel) ~= 'Instance' or not targetModel:IsA('Model') then return end\n"
+        "\t\tlocal char = player.Character\n"
+        "\t\tlocal aRoot = char and char:FindFirstChild('HumanoidRootPart')\n"
+        "\t\tlocal tRoot = targetModel:FindFirstChild('HumanoidRootPart')\n"
+        "\t\tlocal tHum = targetModel:FindFirstChildOfClass('Humanoid')\n"
+        "\t\tif not (aRoot and aRoot:IsA('BasePart') and tRoot and tRoot:IsA('BasePart') and tHum and tHum.Health > 0) then return end\n"
+        "\t\tif (tRoot.Position - aRoot.Position).Magnitude > MAX_REACH then return end\n"
+        "\t\tlastAttack[player] = now\n"
+        "\t\ttHum:TakeDamage(BASE_DAMAGE)\n"
+        "\tend)\n"
+        "end\n"
+        "Players.PlayerRemoving:Connect(function(p) lastAttack[p] = nil end)\n"
+    )
+
+    client_src = (
+        "--!strict\n"
+        f"-- Client Spatial Hitbox Query ({preset})\n"
+        "local Workspace = game:GetService('Workspace')\n"
+        "local Players = game:GetService('Players')\n"
+        "local ReplicatedStorage = game:GetService('ReplicatedStorage')\n\n"
+        "local function sweepBoxAndReport()\n"
+        "\tlocal lp = Players.LocalPlayer\n"
+        "\tlocal char = lp and lp.Character\n"
+        "\tlocal root = char and char:FindFirstChild('HumanoidRootPart')\n"
+        "\tif not (char and root and root:IsA('BasePart')) then return end\n"
+        "\tlocal params = OverlapParams.new()\n"
+        "\tparams.FilterType = Enum.RaycastFilterType.Exclude\n"
+        "\tparams.FilterDescendantsInstances = { char }\n"
+        "\tlocal boxCf = root.CFrame * CFrame.new(0, 0, -4.5)\n"
+        "\tlocal parts = Workspace:GetPartBoundsInBox(boxCf, Vector3.new(6, 5, 7), params)\n"
+        "\tlocal remote = ReplicatedStorage:FindFirstChild('CombatHitboxRemote')\n"
+        "\tlocal seen: { [Model]: boolean } = {}\n"
+        "\tfor _, p in ipairs(parts) do\n"
+        "\t\tlocal m = p:FindFirstAncestorOfClass('Model')\n"
+        "\t\tif m and not seen[m] and m:FindFirstChildOfClass('Humanoid') then\n"
+        "\t\t\tseen[m] = true\n"
+        "\t\t\tif remote and remote:IsA('RemoteEvent') then remote:FireServer(m) end\n"
+        "\t\tend\n"
+        "\tend\n"
+        "end\n"
+        "return { SweepBoxAndReport = sweepBoxAndReport }\n"
+    )
+
+    installed_in_studio = False
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "ServerScriptService",
+            "name": f"CombatHitboxServer_{preset}",
+            "className": "Script",
+            "source": server_src,
+            "replaceInstance": True,
+        }, note=f"combat_hitbox_srv:{preset}", wait=25.0, dm="edit", peer_id=peer_id))
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "ReplicatedStorage",
+            "name": f"CombatHitboxClient_{preset}",
+            "className": "ModuleScript",
+            "source": client_src,
+            "replaceInstance": True,
+        }, note=f"combat_hitbox_cli:{preset}", wait=25.0, dm="edit", peer_id=peer_id))
+        installed_in_studio = True
+
+    return {
+        "ok": True,
+        "preset": preset,
+        "baseDamage": base_dmg,
+        "maxReach": max_reach,
+        "cooldownSec": cooldown,
+        "spatialMethod": "GetPartBoundsInRadius" if "aoe" in preset else "GetPartBoundsInBox",
+        "installedInStudio": installed_in_studio,
+        "serverSource": server_src,
+        "clientSource": client_src,
+    }
+
+
+_CAMERA_RIG_OFFSETS = {
+    "over_shoulder_action": [2.6, 2.4, 9.5],
+    "isometric_arpg": [18.0, 22.0, 18.0],
+    "top_down_tactical": [0.0, 34.0, 4.0],
+    "first_person_flashlight": [0.0, 1.5, 0.4],
+    "boss_lock_on": [3.2, 4.0, 13.5],
+}
+
+
+def configure_camera_rig_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Build a spring-damped Luau 3D camera controller with raycast wall avoidance."""
+    preset = str(args.get("preset") or "over_shoulder_action").strip()
+    offset = _CAMERA_RIG_OFFSETS.get(preset, _CAMERA_RIG_OFFSETS["over_shoulder_action"])
+    fov = max(40.0, min(110.0, float(args.get("fov") or 72.0)))
+    stiffness = max(2.0, min(40.0, float(args.get("springStiffness") or 14.0)))
+
+    script_src = (
+        "--!strict\n"
+        f"-- Camera Rig Controller: {preset}\n"
+        "local RunService = game:GetService('RunService')\n"
+        "local Players = game:GetService('Players')\n"
+        "local Workspace = game:GetService('Workspace')\n\n"
+        f"local OFFSET = Vector3.new({offset[0]}, {offset[1]}, {offset[2]})\n"
+        f"local BASE_FOV = {fov}\n"
+        f"local STIFFNESS = {stiffness}\n"
+        "local smoothedFocus: Vector3? = nil\n\n"
+        "RunService:BindToRenderStep('ArenaCameraRig', Enum.RenderPriority.Camera.Value + 1, function(dt: number)\n"
+        "\tlocal lp = Players.LocalPlayer\n"
+        "\tlocal char = lp and lp.Character\n"
+        "\tlocal root = char and char:FindFirstChild('HumanoidRootPart')\n"
+        "\tlocal cam = Workspace.CurrentCamera\n"
+        "\tif not (char and root and root:IsA('BasePart') and cam) then return end\n"
+        "\tlocal alpha = 1.0 - math.exp(-STIFFNESS * dt)\n"
+        "\tlocal focus = root.Position + Vector3.new(0, 1.6, 0)\n"
+        "\tsmoothedFocus = if smoothedFocus then smoothedFocus:Lerp(focus, alpha) else focus\n"
+        "\tlocal desiredPos = (smoothedFocus :: Vector3) + OFFSET\n"
+        "\tlocal params = RaycastParams.new()\n"
+        "\tparams.FilterType = Enum.RaycastFilterType.Exclude\n"
+        "\tparams.FilterDescendantsInstances = { char }\n"
+        "\tlocal dir = desiredPos - (smoothedFocus :: Vector3)\n"
+        "\tlocal hit = Workspace:Raycast(smoothedFocus :: Vector3, dir, params)\n"
+        "\tlocal finalPos = if hit then (hit.Position - dir.Unit * 0.5) else desiredPos\n"
+        "\tcam.FieldOfView = BASE_FOV\n"
+        "\tcam.CFrame = CFrame.lookAt(finalPos, smoothedFocus :: Vector3)\n"
+        "end)\n"
+    )
+
+    installed_in_studio = False
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "StarterPlayer.StarterPlayerScripts",
+            "name": f"CameraRig_{preset}",
+            "className": "LocalScript",
+            "source": script_src,
+            "replaceInstance": True,
+        }, note=f"configure_camera_rig:{preset}", wait=25.0, dm="edit", peer_id=peer_id))
+        installed_in_studio = True
+
+    return {
+        "ok": True,
+        "preset": preset,
+        "offset": offset,
+        "fov": fov,
+        "springStiffness": stiffness,
+        "installedInStudio": installed_in_studio,
+        "scriptSource": script_src,
+    }
+
+
+_SOUNDBANK_PACKS = {
+    "combat_pack": [
+        {"name": "SlashImpact", "soundId": "rbxassetid://9118823101", "volume": 0.65, "speed": 1.0, "group": "SFX_Combat"},
+        {"name": "HeavySlam", "soundId": "rbxassetid://9118828562", "volume": 0.75, "speed": 0.92, "group": "SFX_Combat"},
+        {"name": "ParryClang", "soundId": "rbxassetid://9118826044", "volume": 0.70, "speed": 1.08, "group": "SFX_Combat"},
+    ],
+    "ui_clean_pack": [
+        {"name": "UiHoverTick", "soundId": "rbxassetid://6895079853", "volume": 0.35, "speed": 1.15, "group": "SFX_UI"},
+        {"name": "UiConfirmChime", "soundId": "rbxassetid://6895079853", "volume": 0.50, "speed": 1.0, "group": "SFX_UI"},
+        {"name": "UiRewardFanfare", "soundId": "rbxassetid://9118823101", "volume": 0.60, "speed": 1.05, "group": "SFX_UI"},
+    ],
+    "horror_tension_pack": [
+        {"name": "HeartbeatPulse", "soundId": "rbxassetid://9118828562", "volume": 0.65, "speed": 0.85, "group": "SFX_Ambient"},
+        {"name": "BreakerTripSnap", "soundId": "rbxassetid://9118826044", "volume": 0.70, "speed": 0.95, "group": "SFX_Combat"},
+        {"name": "DistantMetalGroan", "soundId": "rbxassetid://9118823101", "volume": 0.45, "speed": 0.72, "group": "SFX_Ambient"},
+    ],
+    "arcane_fantasy_pack": [
+        {"name": "PortalHumLoop", "soundId": "rbxassetid://9118823101", "volume": 0.48, "speed": 0.90, "group": "SFX_Ambient"},
+        {"name": "RuneActivateChime", "soundId": "rbxassetid://6895079853", "volume": 0.62, "speed": 1.12, "group": "SFX_Combat"},
+        {"name": "ChestUnsealBurst", "soundId": "rbxassetid://9118826044", "volume": 0.68, "speed": 1.0, "group": "SFX_UI"},
+    ],
+}
+
+
+def generate_sfx_soundbank_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Build a bus-routed SoundGroup hierarchy + Sound instances in SoundService."""
+    pack = str(args.get("pack") or "combat_pack").strip()
+    parent_path = str(args.get("parent") or "SoundService").strip() or "SoundService"
+    cues = _SOUNDBANK_PACKS.get(pack, _SOUNDBANK_PACKS["combat_pack"])
+
+    groups = {"SFX_Combat": [], "SFX_UI": [], "SFX_Ambient": []}
+    for cue in cues:
+        groups.setdefault(cue["group"], []).append({
+            "name": cue["name"],
+            "className": "Sound",
+            "properties": {
+                "SoundId": cue["soundId"],
+                "Volume": cue["volume"],
+                "PlaybackSpeed": cue["speed"],
+                "RollOffMode": "Enum.RollOffMode.InverseTapered",
+                "RollOffMinDistance": 10.0,
+                "RollOffMaxDistance": 95.0,
+            },
+        })
+
+    bank_tree = [{
+        "name": f"ArenaSoundBank_{pack}",
+        "className": "SoundGroup",
+        "replaceExisting": True,
+        "properties": {"Volume": 0.85},
+        "children": [
+            {
+                "name": "MasterCompressor",
+                "className": "CompressorSoundEffect",
+                "properties": {"Threshold": -14.0, "Ratio": 4.0},
+            },
+            *[
+                {
+                    "name": grp_name,
+                    "className": "SoundGroup",
+                    "properties": {"Volume": 0.85},
+                    "children": grp_children + ([{
+                        "name": "BusReverb",
+                        "className": "ReverbSoundEffect",
+                        "properties": {"DecayTime": 1.6, "WetLevel": -8.0},
+                    }] if grp_name == "SFX_Ambient" else []),
+                }
+                for grp_name, grp_children in groups.items()
+            ],
+        ],
+    }]
+
+    installed_in_studio = False
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": parent_path,
+            "tree": bank_tree,
+            "select": False,
+        }, note=f"generate_sfx_soundbank:{pack}", wait=25.0, dm="edit", peer_id=peer_id))
+        installed_in_studio = True
+
+    return {
+        "ok": True,
+        "pack": pack,
+        "parent": parent_path,
+        "cueCount": len(cues),
+        "soundGroups": list(groups.keys()),
+        "installedInStudio": installed_in_studio,
+        "soundBankTree": bank_tree,
+    }
+
+
+def export_ui_to_web_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Export a Roblox ScreenGui / StarterGui hierarchy into responsive Web HTML + Tailwind CSS markup."""
+    ui_path = str(args.get("path") or "StarterGui").strip() or "StarterGui"
+    do_deslop = bool(args.get("deSlop", True))
+    tree = args.get("tree")
+    source_kind = "inline_tree" if isinstance(tree, dict) else f"studio:{ui_path}"
+
+    if not isinstance(tree, dict) and client and client.health().get("studio_connected"):
+        try:
+            tree = _unwrap_job(client.submit_job(
+                "get_tree", {"path": ui_path, "depth": 6}, wait=20.0, dm="edit", peer_id=peer_id
+            )).get("tree")
+        except Exception:
+            tree = None
+
+    if not isinstance(tree, dict):
+        tree = {
+            "name": "StarterGui",
+            "className": "StarterGui",
+            "children": [{
+                "name": "SampleExportedHud",
+                "className": "ScreenGui",
+                "children": [{
+                    "name": "MainCard",
+                    "className": "Frame",
+                    "children": [
+                        {"name": "Header", "className": "TextLabel", "properties": {"Text": "ARCANE SANCTUM · FLOOR 3"}},
+                        {"name": "ActionBtn", "className": "TextButton", "properties": {"Text": "[E] ENTER PORTAL"}},
+                    ],
+                }],
+            }],
+        }
+
+    elements_exported = 0
+
+    def _node_to_html(node: dict, depth: int = 0) -> str:
+        nonlocal elements_exported
+        if not isinstance(node, dict):
+            return ""
+        cls = str(node.get("className") or "Frame")
+        name = str(node.get("name") or cls)
+        props = {**(node.get("properties") or {}), **(node.get("structuredProperties") or {})}
+        children = [c for c in (node.get("children") or []) if isinstance(c, dict)]
+        indent = "  " * depth
+
+        if cls in ("UICorner", "UIStroke", "UIPadding", "UIListLayout", "UIGridLayout", "UIAspectRatioConstraint"):
+            return ""
+
+        raw_txt = props.get("Text")
+        if isinstance(raw_txt, dict):
+            raw_txt = raw_txt.get("v") or raw_txt.get("value") or ""
+        txt_str = str(raw_txt or "").strip()
+        if do_deslop and txt_str:
+            txt_str = sanitize_slop_text(txt_str, max_chars=80)["cleaned"]
+
+        if cls == "TextButton":
+            elements_exported += 1
+            label = txt_str or name
+            return f'{indent}<button class="btn bg-sky-600 hover:bg-sky-500 text-slate-50 rounded-lg px-4 py-2 font-bold" data-roblox-name="{name}">{label}</button>'
+        if cls in ("TextLabel", "TextBox"):
+            elements_exported += 1
+            label = txt_str or name
+            tag = "h2" if "header" in name.lower() or "title" in name.lower() else "span"
+            return f'{indent}<{tag} class="text-slate-100 font-semibold" data-roblox-name="{name}">{label}</{tag}>'
+        if cls in ("ImageLabel", "ImageButton"):
+            elements_exported += 1
+            img = props.get("Image") or "rbxassetid://6031094678"
+            return f'{indent}<span class="badge bg-slate-800 text-sky-400 rounded px-2 py-1" data-roblox-image="{img}">[ICON: {name}]</span>'
+
+        has_grid = any((c.get("className") or "") == "UIGridLayout" for c in children)
+        layout_cls = "grid gap-3" if has_grid else "flex flex-col gap-2"
+        rendered_children = [r for r in (_node_to_html(c, depth + 1) for c in children) if r]
+        inner = "\n".join(rendered_children)
+        if cls in ("StarterGui", "PlayerGui"):
+            return inner or f'{indent}<div class="hud-container {layout_cls} bg-slate-900 rounded-xl border p-4"></div>'
+        elements_exported += 1
+        if inner:
+            return (
+                f'{indent}<div class="bg-slate-900 rounded-xl border border-slate-700 p-4 {layout_cls}" data-roblox-name="{name}">\n'
+                f"{inner}\n"
+                f"{indent}</div>"
+            )
+        return f'{indent}<div class="bg-slate-900 rounded-xl border border-slate-700 p-3" data-roblox-name="{name}">{name}</div>'
+
+    html_out = _node_to_html(tree, 0).strip()
+    return {
+        "ok": True,
+        "sourceKind": source_kind,
+        "path": ui_path,
+        "elementsExported": elements_exported,
+        "deSlopApplied": do_deslop,
+        "html": html_out,
+        "roundTripHint": "Pass `html` back to `import_ui_from_web` (or POST /api/ui/import-web) to rebuild in StarterGui.",
+    }
 
 
 def _bus_lines(client, include_tasks: bool = True, tasks_include_done: bool = False) -> str:

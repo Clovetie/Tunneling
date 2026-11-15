@@ -1,0 +1,100 @@
+{
+  "name": "mesh_ancient_runic_obelisk",
+  "category": "vfx_mesh",
+  "description": "Sculpted 3D mesh runic obelisk with tiered basalt cylinder plinth, floating crystal spire (SpecialMesh), rune PointLight, and ParticleEmitter.",
+  "targetParent": "Workspace",
+  "tree": [
+    {
+      "name": "AncientRunicObelisk",
+      "className": "Model",
+      "replaceExisting": true,
+      "children": [
+        {
+          "name": "PlinthBaseMesh",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": true,
+            "Material": "Enum.Material.Basalt",
+            "Color": [42, 48, 60],
+            "Size": [7.5, 1.4, 7.5],
+            "Position": [0, 0.7, 0]
+          },
+          "children": [
+            {
+              "name": "CylinderPlinthMesh",
+              "className": "SpecialMesh",
+              "properties": {
+                "MeshType": "Enum.MeshType.Cylinder",
+                "Scale": [1.0, 1.0, 1.0]
+              }
+            }
+          ]
+        },
+        {
+          "name": "ObeliskSpireMesh",
+          "className": "MeshPart",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": true,
+            "Material": "Enum.Material.Slate",
+            "Color": [64, 74, 92],
+            "Size": [2.8, 9.5, 2.8],
+            "Position": [0, 6.1, 0]
+          },
+          "children": [
+            {
+              "name": "SpireSpecialMesh",
+              "className": "SpecialMesh",
+              "properties": {
+                "MeshType": "Enum.MeshType.Wedge",
+                "Scale": [1.0, 1.0, 1.0]
+              }
+            }
+          ]
+        },
+        {
+          "name": "FloatingRuneCrystalMesh",
+          "className": "MeshPart",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": false,
+            "Material": "Enum.Material.Neon",
+            "Color": [56, 189, 248],
+            "Size": [2.2, 3.2, 2.2],
+            "Position": [0, 12.6, 0]
+          },
+          "children": [
+            {
+              "name": "CrystalOrbMesh",
+              "className": "SpecialMesh",
+              "properties": {
+                "MeshType": "Enum.MeshType.Sphere",
+                "Scale": [0.85, 1.35, 0.85]
+              }
+            },
+            {
+              "name": "RuneGlowLight",
+              "className": "PointLight",
+              "properties": {
+                "Color": [56, 189, 248],
+                "Brightness": 2.6,
+                "Range": 20.0
+              }
+            },
+            {
+              "name": "RuneSparkEmitter",
+              "className": "ParticleEmitter",
+              "properties": {
+                "Rate": 16,
+                "LightEmission": 1.0,
+                "Lifetime": { "__t": "NumberRange", "v": [0.7, 1.4] },
+                "Speed": { "__t": "NumberRange", "v": [3.0, 7.0] }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

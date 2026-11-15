@@ -541,6 +541,24 @@ def main() -> int:
     p.add_argument("--path", default="StarterGui")
     p.add_argument("--prefab", default=None)
 
+    p = sub.add_parser("chat", help="Direct Operator <-> Agent Live Chat (push-injected into agent tool loop)")
+    p.add_argument("action", nargs="?", default="history", choices=["send", "reply", "poll", "history", "ack"])
+    p.add_argument("--message", "-m", default="", help="Chat message text to send")
+    p.add_argument("--role", default="operator", choices=["operator", "agent"])
+    p.add_argument("--sender", default=None)
+    p.add_argument("--pin", action="store_true", help="Pin message as a standing operator directive")
+    p.add_argument("--limit", type=int, default=40)
+
+    p = sub.add_parser("import-web-ui", help="Import Web HTML/CSS/Tailwind or preset directly into StarterGui")
+    p.add_argument("--preset", default="rpg_hud", choices=["rpg_hud", "shop_grid", "quest_tracker", "inventory_dock", "boss_bar", "dialog_card"])
+    p.add_argument("--html", default="", help="Raw HTML/CSS/Tailwind string to convert")
+    p.add_argument("--name", default="WebImportedGui")
+    p.add_argument("--install", action="store_true", help="Build directly in StarterGui")
+
+    p = sub.add_parser("de-slop", help="Audit and eliminate AI-slop artifacts (em-dashes, filler words, text dumps)")
+    p.add_argument("--text", action="append", default=[], help="Inline text(s) to audit and sanitize")
+    p.add_argument("--fix", action="store_true", help="Auto-fix live Studio UI labels")
+
     args = ap.parse_args()
     client = BridgeClient(base_url=BASE, token=TOKEN)
 
@@ -1230,6 +1248,39 @@ def main() -> int:
         return show_tool_output("import_place_rbxlx", client, "import_place_rbxlx", {
             "filePath": args.file,
             "stripScripts": args.strip_scripts,
+            "peerId": args.peer,
+        }, True, args.raw_json)
+
+    if args.cmd == "chat":
+        if args.action == "history":
+            print(json.dumps(call("GET", f"/api/chat?limit={args.limit}"), indent=2, ensure_ascii=False))
+            return 0
+        payload = {
+            "action": args.action,
+            "role": args.role,
+            "sender": args.sender or ("Operator" if args.role == "operator" else "Agent"),
+            "text": args.message,
+            "pinned": bool(args.pin),
+            "limit": args.limit,
+        }
+        print(json.dumps(call("POST", "/api/chat", payload), indent=2, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "import-web-ui":
+        return show_tool_output("import_ui_from_web", client, "import_ui_from_web", {
+            "preset": args.preset,
+            "html": args.html,
+            "guiName": args.name,
+            "deSlop": True,
+            "installInStudio": bool(args.install),
+            "peerId": args.peer,
+        }, True, args.raw_json)
+
+    if args.cmd == "de-slop":
+        return show_tool_output("de_slop_audit", client, "de_slop_audit", {
+            "texts": args.text,
+            "includeStudio": True,
+            "autoFix": bool(args.fix),
             "peerId": args.peer,
         }, True, args.raw_json)
 
