@@ -3,8 +3,11 @@
 > **v6.0 note (2026-11-13):** the bridge and `ArenaBridge.lua` Studio plugin are now `6.0.0`: adds the in-Studio
 > `ArenaBridgeDashboardV6` `DockWidgetPluginGui` panel, bulletproof playtest closing (`EndTest` + `LeaveTest` fallback,
 > `__ArenaTestRunner_*` cleanup, dual `edit`+`server` stop routing, and `/api/poll?goodbye=1` instant ghost-peer
-> eviction), 90 MCP tools (`manage_plugin_and_playtest`, `audit_network_security`, `build_cutscene_sequence`,
-> `generate_ui_theme_pack`), Control Center Tab 8 (`Studio Plugin & Playtest v6`), and Z-buffered 3D viewport rendering.
+> eviction), **95 MCP tools** (including `import_ui_from_web` for importing UI from the Web & Dashboard,
+> `de_slop_audit` for eliminating `—` em-dashes and text dumps, `spawn_kit_mesh` for 3D Mesh Priority over blocky
+> primitives, `build_vfx_emitter` for `:Emit(n)` particle bursts, and `operator_chat` for Direct Operator ↔ Agent
+> Live Chat push-injected into every tool call), 16 bundled skills (`.claude/skills/`), 29 Luau modules (`VFXManager`),
+> 32 prefabs, Control Center Tab 8 (`Studio Plugin & Playtest v6`), and sculpted 3D mesh viewport rendering.
 >
 > **v5.5 note (2026-11-13):** adds SEP-1649 `.well-known/mcp/server-card.json` & RFC 9728
 > `.well-known/oauth-protected-resource/mcp` discovery, SEP-2243 Base64 header validation, `completion/complete`,

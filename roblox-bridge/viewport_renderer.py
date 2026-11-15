@@ -20,6 +20,7 @@ import math
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -306,6 +307,10 @@ def _fill_poly_zbuf(
     r, g, b, a = rgba
     if a <= 0:
         return
+    min_x_f = min(p[0] for p in pts3d)
+    max_x_f = max(p[0] for p in pts3d)
+    if max_x_f < 0.0 or min_x_f >= w:
+        return
     min_y = max(0, int(math.floor(min(p[1] for p in pts3d))))
     max_y = min(h - 1, int(math.ceil(max(p[1] for p in pts3d))))
     if min_y > max_y:
@@ -554,24 +559,46 @@ _GROUND_NAMES = {
 }
 
 
-def _extract_shape(cls: str, props: dict) -> str:
+def _extract_shape(cls: str, props: dict, children: Optional[list] = None) -> Tuple[str, bool]:
     if cls == "WedgePart":
-        return "Wedge"
+        return "Wedge", False
     if cls == "CornerWedgePart":
-        return "CornerWedge"
+        return "CornerWedge", False
+    # Check child SpecialMesh / CylinderMesh / BlockMesh
+    for ch in (children or []):
+        if not isinstance(ch, dict):
+            continue
+        ccls = ch.get("className") or ""
+        if ccls == "CylinderMesh":
+            return "Cylinder", True
+        if ccls == "SpecialMesh":
+            cprops = {**(ch.get("properties") or {}), **(ch.get("structuredProperties") or {})}
+            mt = cprops.get("MeshType")
+            if isinstance(mt, dict):
+                mt = mt.get("v") or mt.get("value") or ""
+            mts = str(mt or "").lower()
+            if "sphere" in mts or "head" in mts:
+                return "Ball", True
+            if "cylinder" in mts:
+                return "Cylinder", True
+            if "wedge" in mts:
+                return "Wedge", True
+            return "SculptedMesh", True
+    if cls in ("MeshPart", "UnionOperation"):
+        return "SculptedMesh", True
     raw = props.get("Shape")
     if isinstance(raw, dict):
         raw = raw.get("v") or raw.get("value") or ""
     s = str(raw or "").lower()
     if "ball" in s or "sphere" in s:
-        return "Ball"
+        return "Ball", False
     if "cylinder" in s:
-        return "Cylinder"
+        return "Cylinder", False
     if "wedge" in s and "corner" in s:
-        return "CornerWedge"
+        return "CornerWedge", False
     if "wedge" in s:
-        return "Wedge"
-    return "Block"
+        return "Wedge", False
+    return "Block", False
 
 
 def collect_parts_from_tree(
@@ -633,6 +660,7 @@ def collect_parts_from_tree(
                     else (78, 84, 96) if name_l == "baseplate"
                     else (155, 162, 175)
                 )
+                shape_name, is_mesh = _extract_shape(cls, props, children)
                 out.append({
                     "name": name,
                     "path": node.get("path") or name,
@@ -644,7 +672,8 @@ def collect_parts_from_tree(
                     "color": _color_rgb(props.get("Color"), default_col, brick_color=props.get("BrickColor")),
                     "transparency": max(0.0, min(0.98, trans)),
                     "neon": is_neon,
-                    "shape": _extract_shape(cls, props),
+                    "shape": shape_name,
+                    "isMesh": is_mesh,
                     "isGround": is_ground,
                 })
     for ch in children:
@@ -776,6 +805,32 @@ _CYLINDER_VERTS, _CYLINDER_FACES = _build_cylinder_mesh(8)
 _BALL_VERTS, _BALL_FACES = _build_ball_mesh()
 
 
+def _build_sculpted_mesh():
+    # Chamfered octagonal 3D mesh silhouette for MeshPart / SpecialMesh / UnionOperation
+    segs = 8
+    verts = []
+    for y, r in ((-0.5, 0.38), (-0.22, 0.50), (0.22, 0.50), (0.5, 0.36)):
+        for i in range(segs):
+            ang = (2.0 * math.pi * i) / segs
+            verts.append((r * math.cos(ang), y, r * math.sin(ang)))
+    faces = []
+    for band in range(3):
+        b0 = band * segs
+        b1 = (band + 1) * segs
+        ny = -0.35 if band == 0 else (0.35 if band == 2 else 0.0)
+        for i in range(segs):
+            nxt = (i + 1) % segs
+            ang_mid = (2.0 * math.pi * (i + 0.5)) / segs
+            nrm = _v_norm((math.cos(ang_mid), ny, math.sin(ang_mid)))
+            faces.append(((b0 + i, b0 + nxt, b1 + nxt, b1 + i), nrm))
+    faces.append((tuple(range(segs - 1, -1, -1)), (0.0, -1.0, 0.0)))
+    faces.append((tuple(range(3 * segs, 4 * segs)), (0.0, 1.0, 0.0)))
+    return verts, faces
+
+
+_SCULPTED_VERTS, _SCULPTED_FACES = _build_sculpted_mesh()
+
+
 def _mesh_for_shape(shape: str):
     if shape == "Wedge":
         return _WEDGE_VERTS, _WEDGE_FACES
@@ -785,6 +840,8 @@ def _mesh_for_shape(shape: str):
         return _CYLINDER_VERTS, _CYLINDER_FACES
     if shape == "Ball":
         return _BALL_VERTS, _BALL_FACES
+    if shape == "SculptedMesh":
+        return _SCULPTED_VERTS, _SCULPTED_FACES
     return _CUBE_VERTS, _CUBE_FACES
 
 
@@ -891,9 +948,12 @@ def render_scene_png(
     pitch_offset_deg: float = 0.0,
     zoom: float = 1.0,
 ) -> Tuple[bytes, dict]:
+    t_render_start = time.monotonic()
     w = max(240, min(1280, int(width)))
     h = max(160, min(800, int(height)))
     parts = collect_parts_from_tree(workspace_tree)
+    mesh_parts_count = sum(1 for p in parts if p.get("isMesh"))
+    prim_parts_count = max(0, len(parts) - mesh_parts_count)
 
     # Sky & horizon gradient tuned from Lighting properties
     lprops = lighting_props or {}
@@ -1253,8 +1313,9 @@ def render_scene_png(
                 )
 
     total_faces = len(opaque_faces) + len(trans_faces)
+    render_ms = round((time.monotonic() - t_render_start) * 1000.0, 1)
     # Top-left HUD telemetry bar
-    banner = f"CAM:{camera_preset.upper()}  PARTS:{len(parts)}  FACES:{total_faces}  HUD:{hud_count}  {w}X{h}"
+    banner = f"CAM:{camera_preset.upper()}  PARTS:{len(parts)}  MESH:{mesh_parts_count}  FACES:{total_faces}  {w}X{h}"
     bw = len(banner) * 4 + 16
     _fill_poly_alpha(buf, w, h, [(8, 8), (8 + bw, 8), (8 + bw, 24), (8, 24)], (9, 13, 21, 195))
     _draw_text(buf, w, h, 14, 13, banner, (125, 211, 252), scale=1)
@@ -1268,8 +1329,11 @@ def render_scene_png(
         "cameraPosition": [round(x, 2) for x in cam_pos],
         "cameraLookAt": [round(x, 2) for x in look_at],
         "partsRendered": len(parts),
+        "meshPartsRendered": mesh_parts_count,
+        "primitivePartsRendered": prim_parts_count,
         "facesRasterized": total_faces,
         "hudElementsComposited": hud_count,
+        "renderMs": render_ms,
         "bytes": len(png_bytes),
     }
     if hud_audit is not None:

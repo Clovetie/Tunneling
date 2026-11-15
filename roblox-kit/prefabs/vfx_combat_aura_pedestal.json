@@ -1,0 +1,65 @@
+{
+  "name": "vfx_combat_aura_pedestal",
+  "category": "vfx",
+  "description": "3D mesh-sculpted weapon & ability aura pedestal with floating crystal SpecialMesh, rising spark ParticleEmitter, and Highlight rim glow.",
+  "tree": [
+    {
+      "name": "CombatAuraPedestal",
+      "className": "Model",
+      "children": [
+        {
+          "name": "PedestalBase",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Shape": {"__t": "Enum", "v": "PartType.Cylinder"},
+            "Size": {"__t": "Vector3", "v": [2.0, 7.0, 7.0]},
+            "CFrame": {"__t": "CFrame", "pos": [0, 1.0, 0], "rot": [0, 0, 90]},
+            "Material": {"__t": "Enum", "v": "Material.Marble"},
+            "Color": {"__t": "Color3", "v": [0.18, 0.19, 0.24]}
+          }
+        },
+        {
+          "name": "FloatingRelicMesh",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Size": {"__t": "Vector3", "v": [2.4, 3.8, 2.4]},
+            "Position": {"__t": "Vector3", "v": [0, 5.2, 0]},
+            "Material": {"__t": "Enum", "v": "Material.Neon"},
+            "Color": {"__t": "Color3", "v": [0.98, 0.76, 0.24]}
+          },
+          "children": [
+            {
+              "name": "SpecialMesh",
+              "className": "SpecialMesh",
+              "properties": {
+                "MeshType": {"__t": "Enum", "v": "MeshType.Sphere"},
+                "Scale": {"__t": "Vector3", "v": [0.75, 1.25, 0.75]}
+              }
+            },
+            {
+              "name": "AuraEmitter",
+              "className": "ParticleEmitter",
+              "properties": {
+                "Rate": 22,
+                "LightEmission": 1.0,
+                "Speed": {"__t": "NumberRange", "v": [3, 7]},
+                "Lifetime": {"__t": "NumberRange", "v": [0.6, 1.2]}
+              }
+            },
+            {
+              "name": "RelicLight",
+              "className": "PointLight",
+              "properties": {
+                "Brightness": 2.2,
+                "Range": 18,
+                "Color": {"__t": "Color3", "v": [1.0, 0.80, 0.30]}
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

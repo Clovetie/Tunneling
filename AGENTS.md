@@ -29,7 +29,15 @@ This repository provides a complete, zero-dependency **Model Context Protocol (M
    - Run **`audit_ui_layout`** across **Desktop (`1920x1080`)**, **Tablet (`1024x768`)**, and **Mobile (`844x390`)**.
 3. **Standalone `.rbxlx` Place Authoring, Open Cloud API, 14 Drop-In Systems, Images, Audio & `.rbxmx` Models**:
    - Export or generate complete standalone `.rbxlx` place files (`export_place_rbxlx` / `import_place_rbxlx`), publish or query live DataStores/Messaging via `open_cloud_action`, and install any of 14 `ProfileStore`/LiveOps/Monetization systems (`install_dropin_system`). Use `search_assets` for offline, provenance-filtered search of the local registry; `import_image`, `import_audio`, and `import_rbxmx` send selected assets into Studio.
-4. **Full Place Exploration, Surgical Editing, Sync & Playtesting**:
+4. **Import UI Directly from the Web & Control Center Dashboard (`import_ui_from_web`, `/api/ui/import-web`, `build_ui`)**:
+   - Agents and operators can import UI directly from the Web (HTML/CSS/Tailwind markup, SVG, JSON specs, or template presets) and from the Control Center Dashboard into a responsive Roblox `ScreenGui` hierarchy (`Frame`, `UICorner`, `UIStroke`, `UIListLayout`, `UIGridLayout`, `UIPadding`, `ImageLabel`, `TextLabel`, `TextButton`) with automatic De-Slop sanitization.
+5. **3D Mesh Priority (`spawn_kit_mesh`, `import_rbxmx`, `MeshPart`, `SpecialMesh`, 520-Model CC0 Catalog)**:
+   - Always prioritize 3D meshes (`MeshPart`, `SpecialMesh`, `.rbxmx` models, and sculpted mesh prefabs) over basic blocky `Part` primitives.
+6. **De-Slop & Visual Clarity + Curated VFX/SFX Libraries (`de_slop_audit`, `build_vfx_emitter`, `synthesize_sound_effect`)**:
+   - Never use AI-slop artifacts (`—` em-dashes, robotic filler connectors like *Furthermore/Moreover/Delve/Tapestry*, or wall-of-text dumps). Run `de_slop_audit` to enforce visual clarity, concise HUD copy, and iconography. Use `build_vfx_emitter` and `VFXManager.lua` for deterministic `:Emit(n)` particle bursts and `synthesize_sound_effect` / `import_audio` for spatial SFX.
+7. **Direct Operator ↔ Agent Live Chat (`operator_chat`, `/api/chat`)**:
+   - Unlike `agent_bus` broadcasts that agents might overlook, messages sent by the human operator in the Control Center Direct Live Chat are **automatically injected into the agent's very next MCP tool response** (`operatorLiveChat`). Always reply immediately via `operator_chat(action='reply', message='...')`.
+8. **Full Place Exploration, Surgical Editing, Sync & Playtesting**:
    - Multi-DataModel targeting (`dm = "edit" | "server" | "client"`), `survey_place`, `search_game_tree`, `script_read`, `multi_edit`, `script_grep`, `luau_check`, `drift_and_sync`, `manage_snapshots`, and `run_playtest_scenario`.
 
 ---

@@ -2868,6 +2868,49 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         self.assertTrue(theme_res["ok"])
         self.assertTrue(theme_res["installedInStudio"])
 
+        web_ui_res = self.call_tool("import_ui_from_web", {
+            "html": '<div class="bg-slate-900 rounded-xl p-3 flex"><h2>ARCANE HUD — LEVEL 5</h2><button>[Q] DASH</button></div>',
+            "guiName": "WebHudImported",
+            "deSlop": True,
+            "installInStudio": True,
+        })
+        self.assertTrue(web_ui_res["ok"])
+        self.assertTrue(web_ui_res["installedInStudio"])
+        self.assertGreaterEqual(web_ui_res["slopArtifactsFixed"], 1)
+
+        vfx_res = self.call_tool("build_vfx_emitter", {
+            "preset": "portal_swirl",
+            "burstCount": 32,
+            "buildInStudio": True,
+        })
+        self.assertTrue(vfx_res["ok"])
+        self.assertTrue(vfx_res["builtInStudio"])
+
+        mesh_spawn_res = self.call_tool("spawn_kit_mesh", {
+            "query": "crystal",
+            "scale": 1.25,
+            "spawnInStudio": True,
+        })
+        self.assertTrue(mesh_spawn_res["ok"])
+        self.assertTrue(mesh_spawn_res["meshPrioritized"])
+        self.assertTrue(mesh_spawn_res["spawnedInStudio"])
+
+        deslop_res = self.call_tool("de_slop_audit", {
+            "texts": ["Furthermore — delve into this seamless realm!"],
+            "includeStudio": True,
+            "autoFix": False,
+        })
+        self.assertTrue(deslop_res["ok"])
+        self.assertGreaterEqual(deslop_res["findingsCount"], 1)
+        self.assertIn("meshTelemetry", deslop_res)
+
+        chat_res = self.call_tool("operator_chat", {
+            "action": "reply",
+            "message": "Ready and prioritizing 3D meshes + Web UI import.",
+        })
+        self.assertTrue(chat_res["ok"])
+        self.assertEqual(chat_res["channel"], "direct_operator_live_chat")
+
         cloud_started = time.monotonic()
         cloud_passed = False
         try:
@@ -4249,6 +4292,111 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
         fs_body = json.loads(raw_fs)
         self.assertTrue(fs_body["ok"])
         self.assertGreaterEqual(fs_body["evictedPeers"], 1)
+
+    def test_direct_live_chat_web_ui_deslop_and_mesh_priority(self):
+        from mcp_core import search_skills_helper, apply_skill_helper, skill_references_helper
+        # 1. Verify all 5 new skills and their reference docs are discoverable & readable
+        for sk_name, ref_path in (
+            ("vfx-and-particles", "references/vfx-libraries-and-flipbooks.md"),
+            ("sfx-and-spatial-audio", "references/sfx-libraries-and-layered-audio.md"),
+            ("ui-web-and-dashboard-import", "references/web-html-svg-to-roblox-ui.md"),
+            ("de-slop-and-visual-clarity", "references/anti-slop-checklist.md"),
+            ("mesh-first-3d-building", "references/mesh-catalog-and-kitbashing.md"),
+        ):
+            sk = apply_skill_helper(sk_name)
+            self.assertIn("instructions", sk)
+            self.assertGreater(len(sk["instructions"]), 200)
+            ref = skill_references_helper(sk_name, "read", ref_path)
+            self.assertGreater(len(ref["content"]), 100)
+
+        # 2. Operator posts a Direct Live Chat directive via POST /api/chat
+        st_chat, raw_chat, _ = self._raw_http(
+            "/api/chat",
+            method="POST",
+            body=json.dumps({
+                "action": "send",
+                "role": "operator",
+                "sender": "HumanDirector",
+                "text": "Prioritize 3D meshes for the portal shrine and import the HUD from the web.",
+                "pinned": True,
+            }),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(st_chat, 200)
+        chat_post = json.loads(raw_chat)
+        self.assertTrue(chat_post["ok"])
+        op_msg_id = chat_post["message"]["id"]
+        self.assertFalse(chat_post["message"]["deliveredToAgent"])
+
+        # 3. Next MCP tool call (e.g. get_studio_state) automatically receives the operator message!
+        st_mcp, raw_mcp, _ = self._raw_http(
+            "/mcp",
+            method="POST",
+            body=json.dumps({
+                "jsonrpc": "2.0",
+                "id": "live-chat-piggyback",
+                "method": "tools/call",
+                "params": {"name": "get_studio_state", "arguments": {}},
+            }),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(st_mcp, 200)
+        mcp_resp = json.loads(raw_mcp)
+        result_obj = mcp_resp["result"]
+        self.assertIn("LIVE OPERATOR DIRECT CHAT", result_obj["content"][0]["text"])
+        structured = result_obj["structuredContent"]
+        self.assertIn("operatorLiveChat", structured)
+        self.assertEqual(structured["operatorLiveChat"]["unreadMessages"][0]["id"], op_msg_id)
+
+        # 4. Agent replies via operator_chat(action='reply') and GET /api/chat confirms repliedByAgent
+        st_rep, raw_rep, _ = self._raw_http(
+            "/mcp",
+            method="POST",
+            body=json.dumps({
+                "jsonrpc": "2.0",
+                "id": "live-chat-reply",
+                "method": "tools/call",
+                "params": {
+                    "name": "operator_chat",
+                    "arguments": {
+                        "action": "reply",
+                        "message": "Acknowledged! Spawning 3D mesh shrine and importing Web HUD now.",
+                        "replyTo": op_msg_id,
+                    },
+                },
+            }),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(st_rep, 200)
+        reply_out = json.loads(raw_rep)["result"]["structuredContent"]
+        self.assertTrue(reply_out["ok"])
+
+        st_hist, raw_hist, _ = self._raw_http(
+            "/api/chat?limit=20",
+            headers={"Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(st_hist, 200)
+        hist = json.loads(raw_hist)
+        op_entry = next(m for m in hist["messages"] if m["id"] == op_msg_id)
+        self.assertTrue(op_entry["deliveredToAgent"])
+        self.assertTrue(op_entry["repliedByAgent"])
+
+        # 5. Verify POST /api/ui/import-web endpoint works for Dashboard Web UI import
+        st_ui, raw_ui, _ = self._raw_http(
+            "/api/ui/import-web",
+            method="POST",
+            body=json.dumps({
+                "preset": "shop_grid",
+                "guiName": "DashboardImportedShop",
+                "deSlop": True,
+                "installInStudio": False,
+            }),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.token}"},
+        )
+        self.assertEqual(st_ui, 200)
+        ui_body = json.loads(raw_ui)
+        self.assertTrue(ui_body["ok"])
+        self.assertGreaterEqual(ui_body["elementsConverted"], 1)
 
 
 if __name__ == "__main__":

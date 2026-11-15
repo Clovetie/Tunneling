@@ -2745,6 +2745,158 @@ TOOL_SPECS = [
         },
         "annotations": _ann("Generate Cohesive Multi-Device UI Theme Pack", read_only=False, destructive=False, idempotent=True),
     },
+    {
+        "name": "import_ui_from_web",
+        "description": (
+            "Import UI directly from the Web (HTML/CSS/Tailwind markup, SVG, JSON spec, or template preset) or the "
+            "Control Center Dashboard into a responsive Roblox `ScreenGui` hierarchy (`Frame`, `UICorner`, `UIStroke`, "
+            "`UIGradient`, `UIListLayout`, `UIGridLayout`, `UIPadding`, `ImageLabel`, `TextLabel`, `TextButton`). "
+            "Automatically sanitizes AI-slop (`—` em-dashes and text dumps), maps CSS flex/grid/colors/radii to `UDim2` "
+            "scale, pairs buttons with iconography, and optionally installs directly into `StarterGui`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "html": {
+                    "type": "string",
+                    "description": "Raw HTML/CSS/Tailwind markup or SVG snippet to convert into a Roblox ScreenGui.",
+                },
+                "preset": {
+                    "type": "string",
+                    "enum": ["rpg_hud", "shop_grid", "quest_tracker", "inventory_dock", "boss_bar", "dialog_card"],
+                    "default": "rpg_hud",
+                    "description": "Web/Dashboard UI template preset when `html` is not provided.",
+                },
+                "guiName": {"type": "string", "default": "WebImportedGui", "description": "Target ScreenGui name in StarterGui."},
+                "parent": {"type": "string", "default": "StarterGui", "description": "Target container path."},
+                "deSlop": {"type": "boolean", "default": True, "description": "Strip em-dashes (`—`), filler words, and wall-of-text dumps."},
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, build the converted ScreenGui directly in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Import Web HTML/CSS/Tailwind or Dashboard UI into StarterGui", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "build_vfx_emitter",
+        "description": (
+            "Build a deterministic Roblox 3D VFX emitter rig (`slash_hit`, `level_up`, `loot_drop_rare`, "
+            "`portal_swirl`, `explosion_spark`, `heal_aura`, `frost_shatter`, `coin_pickup`) with an anchored "
+            "non-collidable host, `Attachment`, `ParticleEmitter` (`NumberSequence` size/transparency curves, "
+            "`ColorSequence`, `LightEmission`), `PointLight`, and sculpted `SpecialMesh` shockwave ring. Defaults to "
+            "`Rate = 0` burst mode for `:Emit(burstCount)` or continuous ambient mode when `continuous=True`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "slash_hit", "level_up", "loot_drop_rare", "portal_swirl",
+                        "explosion_spark", "heal_aura", "frost_shatter", "coin_pickup",
+                    ],
+                    "default": "slash_hit",
+                    "description": "Curated VFX particle preset.",
+                },
+                "name": {"type": "string", "description": "Optional custom VFX instance name."},
+                "parent": {"type": "string", "default": "Workspace", "description": "Parent path in Studio."},
+                "position": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "World [x, y, z] position (default [0, 5, 0]).",
+                },
+                "burstCount": {"type": "integer", "default": 28, "minimum": 1, "maximum": 200, "description": "Particle count for `:Emit(n)`."},
+                "continuous": {"type": "boolean", "default": False, "description": "When true, enables continuous ambient emission instead of Rate=0 burst mode."},
+                "buildInStudio": {"type": "boolean", "default": False, "description": "When true, spawn the VFX rig directly in Studio and fire an initial burst."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Build Curated 3D VFX Particle Emitter Rig", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "de_slop_audit",
+        "description": (
+            "Audit and sanitize Roblox UI (`StarterGui`), 3D scenes (`Workspace`), or inline `texts` for AI-slop "
+            "artifacts: em-dashes (`—`, `–`), robotic filler connectors (`Furthermore`, `Moreover`, `Delve`, "
+            "`Tapestry`, `Seamless`, `In conclusion`), wall-of-text `TextLabel` dumps (>90 chars), missing button/badge "
+            "iconography, and blocky primitive ratios vs 3D meshes (`MeshPart`/`SpecialMesh`). Set `autoFix=True` to "
+            "automatically rewrite live UI copy in Studio."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "texts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional inline strings or UI labels to audit and sanitize offline.",
+                },
+                "includeStudio": {"type": "boolean", "default": True, "description": "Scan connected Studio StarterGui and Workspace when online."},
+                "autoFix": {"type": "boolean", "default": False, "description": "Automatically rewrite live TextLabel/TextButton/ProximityPrompt strings in Studio."},
+                "maxTextLength": {"type": "integer", "default": 90, "minimum": 20, "maximum": 500, "description": "Character threshold above which a HUD label is flagged as a text dump."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Audit & Eliminate AI-Slop Text / Enforce Visual Clarity & Mesh Priority", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "spawn_kit_mesh",
+        "description": (
+            "Search and spawn curated 3D mesh assets (`MeshPart`, `SpecialMesh`, sculpted VFX/prop prefabs, and "
+            "`.rbxmx` models from the 520-model CC0 catalog) instead of blocky `Part` primitives. Supports semantic "
+            "query matching (`crystal`, `shrine`, `portal`, `pedestal`, `pillar`, `tree`, `chest`, `sword`, `lantern`), "
+            "category filtering, uniform scaling, and direct Studio spawning."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "default": "crystal", "description": "3D mesh search query or asset name."},
+                "category": {"type": "string", "description": "Optional asset category filter (`dungeon`, `nature`, `scifi`, `props`, `weapons`, `vfx`)."},
+                "position": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Target [x, y, z] world position (default [0, 4, 0]).",
+                },
+                "scale": {"type": "number", "default": 1.0, "description": "Uniform scale multiplier (0.1 to 20.0)."},
+                "parent": {"type": "string", "default": "Workspace", "description": "Target parent container in Studio."},
+                "spawnInStudio": {"type": "boolean", "default": False, "description": "When true, spawn the 3D mesh asset directly into Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Search & Spawn 3D Mesh Assets (Mesh-First Building)", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "operator_chat",
+        "description": (
+            "Direct real-time two-way Live Chat channel between the Human Operator and the AI Agent (distinct from "
+            "`agent_bus` broadcasts). Unread operator messages are automatically injected into every MCP tool call "
+            "response; use `action='reply'` (or `'send'`) to answer the operator directly in the Control Center Live "
+            "Chat dock, `action='poll'` to fetch unread operator directives, `action='history'` to inspect the "
+            "conversation transcript, or `action='ack'` to acknowledge directives."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["reply", "send", "poll", "history", "ack"],
+                    "default": "poll",
+                    "description": "Direct Live Chat action.",
+                },
+                "message": {"type": "string", "description": "Chat message text when `action` is `reply` or `send`."},
+                "sender": {"type": "string", "default": "Agent", "description": "Sender display name."},
+                "role": {"type": "string", "enum": ["agent", "operator"], "default": "agent", "description": "Speaker role (`agent` or `operator`)."},
+                "priority": {"type": "string", "enum": ["low", "normal", "high", "critical"], "default": "normal"},
+                "pinned": {"type": "boolean", "default": False, "description": "Pin message as a standing operator directive."},
+                "replyTo": {"type": "string", "description": "Optional operator message ID being answered."},
+                "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 500},
+                "clearPins": {"type": "boolean", "default": False},
+            },
+        },
+        "annotations": _ann("Direct Live Chat Between Human Operator & Agent", read_only=False, destructive=False, idempotent=False),
+    },
 ]
 
 TOOL_MAP = {t["name"]: t for t in TOOL_SPECS}
@@ -2757,6 +2909,7 @@ INSPECTOR_MIXED_TOOLS = frozenset((
     "find_and_replace_scripts", "open_cloud_action",
     "generate_dungeon_layout", "build_gameplay_mechanic", "configure_atmosphere_fx", "synthesize_sound_effect",
     "manage_plugin_and_playtest", "build_cutscene_sequence", "generate_ui_theme_pack",
+    "import_ui_from_web", "build_vfx_emitter", "de_slop_audit", "spawn_kit_mesh", "operator_chat",
 ))
 
 
@@ -2766,7 +2919,10 @@ INSPECTOR_MIXED_TOOLS = frozenset((
 
 def is_bus_action_read_only(args: dict) -> bool:
     action = args.get("action") or "stats"
-    if action in ("stats", "agents", "list_agents", "inbox", "tasks", "list_tasks", "thread", "feed", "events"):
+    if action in (
+        "stats", "agents", "list_agents", "inbox", "tasks", "list_tasks",
+        "thread", "feed", "events", "chat_history", "direct_chat", "chat_list", "chat_poll",
+    ):
         return True
     if action == "status":
         return not (args.get("agentId") and args.get("status"))
@@ -2835,6 +2991,16 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
     if name == "build_cutscene_sequence" and not args.get("buildInStudio"):
         return True
     if name == "generate_ui_theme_pack" and not args.get("installInStudio"):
+        return True
+    if name == "import_ui_from_web" and not args.get("installInStudio"):
+        return True
+    if name == "build_vfx_emitter" and not args.get("buildInStudio"):
+        return True
+    if name == "de_slop_audit" and not args.get("autoFix"):
+        return True
+    if name == "spawn_kit_mesh" and not args.get("spawnInStudio"):
+        return True
+    if name == "operator_chat" and args.get("action", "poll") in ("poll", "history"):
         return True
     return False
 
@@ -4073,6 +4239,21 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
 
     if name == "generate_ui_theme_pack":
         return generate_ui_theme_pack_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "import_ui_from_web":
+        return import_ui_from_web_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "build_vfx_emitter":
+        return build_vfx_emitter_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "de_slop_audit":
+        return de_slop_audit_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "spawn_kit_mesh":
+        return spawn_kit_mesh_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "operator_chat":
+        return operator_chat_helper(client=client, args=args)
 
     raise KeyError(f"Unknown tool: {name}")
 
@@ -8521,6 +8702,699 @@ def generate_ui_theme_pack_helper(client: BridgeClient, args: dict, peer_id: str
     }
 
 
+_SLOP_FILLER_RE = re.compile(
+    r"\b(furthermore|moreover|in conclusion|it is important to note|delve into|delve|tapestry|"
+    r"seamless|testament to|beacon of|ever-evolving|leverage|revolutionize|comprehensive overview)\b",
+    re.IGNORECASE,
+)
+
+
+def sanitize_slop_text(raw: str, max_chars: int = 90) -> dict:
+    """Remove AI-slop artifacts (em-dashes, en-dashes, robotic filler connectors, wall-of-text dumps)."""
+    original = str(raw or "")
+    issues = []
+    cleaned = original
+    if "\u2014" in cleaned or "\u2013" in cleaned or "--" in cleaned:
+        issues.append("em_dash_artifact")
+        cleaned = cleaned.replace(" \u2014 ", " \u00b7 ").replace("\u2014", " \u00b7 ")
+        cleaned = cleaned.replace(" \u2013 ", " \u00b7 ").replace("\u2013", "-")
+        cleaned = cleaned.replace(" -- ", " \u00b7 ")
+    found_fillers = [m.group(0) for m in _SLOP_FILLER_RE.finditer(cleaned)]
+    if found_fillers:
+        issues.append("robotic_filler_connector")
+        cleaned = _SLOP_FILLER_RE.sub("", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,;:-")
+    if max_chars and len(cleaned) > max_chars:
+        issues.append("wall_of_text_dump")
+        cleaned = cleaned[: max(16, max_chars - 1)].rstrip() + "\u2026"
+    return {
+        "original": original,
+        "cleaned": cleaned,
+        "changed": cleaned != original,
+        "issues": issues,
+        "fillerWordsFound": found_fillers,
+    }
+
+
+_WEB_UI_PRESETS = {
+    "rpg_hud": (
+        '<div class="hud-bar bg-slate-900 rounded-xl border p-3 flex">'
+        '<span class="badge text-emerald-400">HP 100 / 100</span>'
+        '<span class="badge text-sky-400">MP 80 / 80</span>'
+        '<button class="btn bg-amber-500 rounded-lg">[Q] DASH</button>'
+        "</div>"
+    ),
+    "shop_grid": (
+        '<div class="card bg-slate-900 rounded-2xl border p-4 grid">'
+        '<h2>ARCANE ARMORY</h2>'
+        '<button class="btn bg-indigo-600 rounded-lg">RUNIC BLADE \u00b7 250G</button>'
+        '<button class="btn bg-emerald-600 rounded-lg">AEGIS SHIELD \u00b7 180G</button>'
+        "</div>"
+    ),
+    "quest_tracker": (
+        '<div class="tracker bg-slate-950 rounded-xl border p-3 flex-col">'
+        '<h3>OBJECTIVE</h3>'
+        '<span>ACTIVATE 3 ARCANE PYLONS (2/3)</span>'
+        "</div>"
+    ),
+    "inventory_dock": (
+        '<div class="dock bg-slate-900 rounded-xl border p-2 flex">'
+        '<button class="slot">[1] SWORD</button>'
+        '<button class="slot">[2]LANTERN</button>'
+        '<button class="slot">[3] POTION</button>'
+        "</div>"
+    ),
+    "boss_bar": (
+        '<div class="boss bg-red-950 rounded-xl border p-3">'
+        '<h2>WARDEN OF THE ABYSS</h2>'
+        '<span>PHASE II \u00b7 68% HP</span>'
+        "</div>"
+    ),
+    "dialog_card": (
+        '<div class="dialog bg-slate-900 rounded-2xl border p-4">'
+        '<h3>GATEKEEPER</h3>'
+        '<p>Bring three Runic Shards to unseal the sanctum.</p>'
+        '<button class="btn bg-sky-600 rounded-lg">[E] ACCEPT</button>'
+        "</div>"
+    ),
+}
+
+
+def import_ui_from_web_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Convert Web HTML/CSS/Tailwind/SVG or Dashboard preset into a responsive Roblox ScreenGui."""
+    preset = str(args.get("preset") or "rpg_hud").strip()
+    raw_html = str(args.get("html") or "").strip()
+    source_kind = "html" if raw_html else f"preset:{preset}"
+    if not raw_html:
+        raw_html = _WEB_UI_PRESETS.get(preset, _WEB_UI_PRESETS["rpg_hud"])
+    gui_name = str(args.get("guiName") or "WebImportedGui").strip() or "WebImportedGui"
+    parent_path = str(args.get("parent") or "StarterGui").strip() or "StarterGui"
+    do_deslop = bool(args.get("deSlop", True))
+
+    # Extract layout hints from Tailwind / CSS classes
+    lower_html = raw_html.lower()
+    is_grid = "grid" in lower_html
+    bg_rgb = [15, 23, 42]
+    accent_rgb = [56, 189, 248]
+    if "red-" in lower_html or "crimson" in lower_html:
+        bg_rgb = [42, 12, 18]
+        accent_rgb = [248, 113, 113]
+    elif "emerald-" in lower_html or "green" in lower_html:
+        accent_rgb = [52, 211, 153]
+    elif "amber-" in lower_html or "gold" in lower_html:
+        accent_rgb = [251, 191, 36]
+    elif "indigo-" in lower_html or "violet-" in lower_html:
+        accent_rgb = [129, 140, 248]
+
+    corner_px = 16 if "rounded-2xl" in lower_html else (12 if "rounded-xl" in lower_html else 10)
+
+    # Parse interactive buttons and labels from HTML tags
+    tag_matches = re.findall(
+        r"<(h1|h2|h3|button|span|p|label)[^>]*>(.*?)</\1>",
+        raw_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not tag_matches:
+        plain = re.sub(r"<[^>]+>", " ", raw_html).strip()
+        tag_matches = [("span", plain or "WEB UI PANEL")]
+
+    children = [
+        {"name": "UICorner", "className": "UICorner", "properties": {"CornerRadius": {"__t": "UDim", "v": [0, corner_px]}}},
+        {"name": "UIStroke", "className": "UIStroke", "properties": {"Color": {"__t": "Color3", "v": accent_rgb}, "Thickness": 1.5}},
+        {
+            "name": "UIPadding",
+            "className": "UIPadding",
+            "properties": {
+                "PaddingTop": {"__t": "UDim", "v": [0, 10]},
+                "PaddingBottom": {"__t": "UDim", "v": [0, 10]},
+                "PaddingLeft": {"__t": "UDim", "v": [0, 14]},
+                "PaddingRight": {"__t": "UDim", "v": [0, 14]},
+            },
+        },
+    ]
+    if is_grid:
+        children.append({
+            "name": "UIGridLayout",
+            "className": "UIGridLayout",
+            "properties": {
+                "CellSize": {"__t": "UDim2", "v": [0.46, 0, 0.36, 0]},
+                "CellPadding": {"__t": "UDim2", "v": [0.04, 0, 0.06, 0]},
+            },
+        })
+    else:
+        children.append({
+            "name": "UIListLayout",
+            "className": "UIListLayout",
+            "properties": {
+                "Padding": {"__t": "UDim", "v": [0, 8]},
+                "HorizontalAlignment": "Center",
+            },
+        })
+
+    slop_fixes = 0
+    item_count = max(1, len(tag_matches))
+    row_h = round(min(0.32, 0.82 / item_count), 3)
+    for idx, (tag, inner) in enumerate(tag_matches[:12], start=1):
+        clean_inner = re.sub(r"<[^>]+>", "", inner).strip()
+        if do_deslop:
+            s_res = sanitize_slop_text(clean_inner, max_chars=72)
+            if s_res["changed"]:
+                slop_fixes += 1
+            clean_inner = s_res["cleaned"]
+        t_low = tag.lower()
+        if t_low == "button":
+            children.append({
+                "name": f"ActionButton_{idx:02d}",
+                "className": "TextButton",
+                "properties": {
+                    "Size": {"__t": "UDim2", "v": [0.94, 0, row_h, 0]},
+                    "BackgroundColor3": {"__t": "Color3", "v": accent_rgb},
+                    "BackgroundTransparency": 0.12,
+                    "Text": clean_inner or f"ACTION {idx}",
+                    "TextColor3": {"__t": "Color3", "v": [248, 250, 252]},
+                    "TextScaled": True,
+                    "AutoButtonColor": True,
+                },
+                "children": [
+                    {"name": "UICorner", "className": "UICorner", "properties": {"CornerRadius": {"__t": "UDim", "v": [0, 8]}}},
+                    {
+                        "name": "IconBadge",
+                        "className": "ImageLabel",
+                        "properties": {
+                            "Size": {"__t": "UDim2", "v": [0.12, 0, 0.72, 0]},
+                            "Position": {"__t": "UDim2", "v": [0.03, 0, 0.14, 0]},
+                            "BackgroundTransparency": 1.0,
+                            "Image": "rbxassetid://6031094678",
+                        },
+                    },
+                ],
+            })
+        else:
+            is_heading = t_low in ("h1", "h2", "h3")
+            children.append({
+                "name": f"{'Header' if is_heading else 'Label'}_{idx:02d}",
+                "className": "TextLabel",
+                "properties": {
+                    "Size": {"__t": "UDim2", "v": [0.94, 0, row_h, 0]},
+                    "BackgroundTransparency": 1.0,
+                    "Text": clean_inner,
+                    "TextColor3": {"__t": "Color3", "v": accent_rgb if is_heading else [226, 232, 240]},
+                    "TextScaled": True,
+                },
+            })
+
+    screen_gui_tree = [{
+        "name": gui_name,
+        "className": "ScreenGui",
+        "replaceExisting": True,
+        "properties": {"ResetOnSpawn": False, "IgnoreGuiInset": False},
+        "children": [{
+            "name": "WebContainerFrame",
+            "className": "Frame",
+            "properties": {
+                "AnchorPoint": {"__t": "Vector2", "v": [0.5, 0.5]},
+                "Position": {"__t": "UDim2", "v": [0.5, 0, 0.5, 0]},
+                "Size": {"__t": "UDim2", "v": [0.42, 0, 0.34, 0]},
+                "BackgroundColor3": {"__t": "Color3", "v": bg_rgb},
+                "BackgroundTransparency": 0.08,
+            },
+            "children": children,
+        }],
+    }]
+
+    installed_in_studio = False
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": parent_path,
+            "tree": screen_gui_tree,
+            "select": False,
+        }, note=f"import_ui_from_web:{gui_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        installed_in_studio = True
+
+    return {
+        "ok": True,
+        "guiName": gui_name,
+        "parent": parent_path,
+        "sourceKind": source_kind,
+        "elementsConverted": len(tag_matches),
+        "deSlopApplied": do_deslop,
+        "slopArtifactsFixed": slop_fixes,
+        "installedInStudio": installed_in_studio,
+        "screenGuiTree": screen_gui_tree,
+    }
+
+
+_VFX_PRESETS = {
+    "slash_hit": {"c0": [255, 220, 110], "c1": [255, 75, 45], "speed": [18, 34], "life": [0.18, 0.35], "size": [1.4, 0.0], "light": 1.0, "spread": 180},
+    "level_up": {"c0": [255, 235, 120], "c1": [80, 210, 255], "speed": [12, 24], "life": [0.6, 1.2], "size": [1.8, 0.2], "light": 1.0, "spread": 90},
+    "loot_drop_rare": {"c0": [190, 110, 255], "c1": [90, 215, 255], "speed": [6, 14], "life": [0.8, 1.5], "size": [1.2, 0.1], "light": 0.95, "spread": 65},
+    "portal_swirl": {"c0": [120, 90, 255], "c1": [45, 225, 255], "speed": [4, 10], "life": [0.9, 1.6], "size": [2.2, 0.4], "light": 1.0, "spread": 360},
+    "explosion_spark": {"c0": [255, 165, 55], "c1": [220, 38, 38], "speed": [22, 42], "life": [0.25, 0.65], "size": [2.5, 0.0], "light": 1.0, "spread": 180},
+    "heal_aura": {"c0": [95, 255, 165], "c1": [45, 212, 191], "speed": [5, 11], "life": [0.7, 1.3], "size": [1.3, 0.2], "light": 0.9, "spread": 75},
+    "frost_shatter": {"c0": [186, 230, 253], "c1": [56, 189, 248], "speed": [15, 28], "life": [0.3, 0.6], "size": [1.5, 0.0], "light": 0.85, "spread": 180},
+    "coin_pickup": {"c0": [253, 224, 71], "c1": [245, 158, 11], "speed": [10, 20], "life": [0.3, 0.55], "size": [1.0, 0.0], "light": 1.0, "spread": 140},
+}
+
+
+def build_vfx_emitter_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Build a curated 3D VFX emitter rig with sculpted SpecialMesh shockwave ring."""
+    preset = str(args.get("preset") or "slash_hit").strip()
+    cfg = _VFX_PRESETS.get(preset, _VFX_PRESETS["slash_hit"])
+    pos = [float(v) for v in (args.get("position") or [0.0, 5.0, 0.0])[:3]]
+    burst = max(1, min(200, int(args.get("burstCount") or 28)))
+    continuous = bool(args.get("continuous", False))
+    name = str(args.get("name") or f"VFX_{preset}").strip()
+    parent_path = str(args.get("parent") or "Workspace").strip() or "Workspace"
+
+    vfx_tree = [{
+        "name": name,
+        "className": "Model",
+        "replaceExisting": True,
+        "children": [
+            {
+                "name": "EmitterCore",
+                "className": "Part",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": False,
+                    "CanQuery": False,
+                    "CanTouch": False,
+                    "Transparency": 0.35 if continuous else 1.0,
+                    "Material": "Enum.Material.Neon",
+                    "Color": cfg["c0"],
+                    "Size": [1.5, 1.5, 1.5],
+                    "Position": pos,
+                },
+                "children": [
+                    {
+                        "name": "SculptedCoreMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": "Enum.MeshType.Sphere", "Scale": [1.15, 1.15, 1.15]},
+                    },
+                    {
+                        "name": "VFXAttachment",
+                        "className": "Attachment",
+                        "children": [
+                            {
+                                "name": "BurstEmitter",
+                                "className": "ParticleEmitter",
+                                "properties": {
+                                    "Rate": 24 if continuous else 0,
+                                    "LightEmission": cfg["light"],
+                                    "LightInfluence": 0.0,
+                                    "Color": {"__t": "ColorSequence", "v": [cfg["c0"], cfg["c1"]]},
+                                    "Size": {"__t": "NumberSequence", "v": [cfg["size"][0], cfg["size"][1]]},
+                                    "Transparency": {"__t": "NumberSequence", "v": [0.0, 1.0]},
+                                    "Lifetime": {"__t": "NumberRange", "v": cfg["life"]},
+                                    "Speed": {"__t": "NumberRange", "v": cfg["speed"]},
+                                    "SpreadAngle": {"__t": "Vector2", "v": [cfg["spread"], cfg["spread"]]},
+                                },
+                            },
+                            {
+                                "name": "VFXGlowLight",
+                                "className": "PointLight",
+                                "properties": {
+                                    "Color": cfg["c0"],
+                                    "Brightness": 2.4,
+                                    "Range": 16.0,
+                                    "Shadows": False,
+                                },
+                            },
+                        ],
+                    },
+                ],
+            },
+            {
+                "name": "ShockwaveRingMesh",
+                "className": "Part",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": False,
+                    "CanQuery": False,
+                    "Material": "Enum.Material.Neon",
+                    "Color": cfg["c1"],
+                    "Transparency": 0.45,
+                    "Size": [4.5, 0.25, 4.5],
+                    "Position": [pos[0], pos[1] - 0.5, pos[2]],
+                },
+                "children": [
+                    {
+                        "name": "RingMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": "Enum.MeshType.Cylinder", "Scale": [1.0, 0.2, 1.0]},
+                    }
+                ],
+            },
+        ],
+    }]
+
+    built_in_studio = False
+    if args.get("buildInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": parent_path,
+            "tree": vfx_tree,
+            "select": False,
+        }, note=f"build_vfx_emitter:{preset}", wait=30.0, dm="edit", peer_id=peer_id))
+        built_in_studio = True
+
+    emit_snippet = (
+        f"local model = {parent_path}:FindFirstChild({name!r})\n"
+        f"local emitter = model and model:FindFirstChild('BurstEmitter', true)\n"
+        f"if emitter and emitter:IsA('ParticleEmitter') then emitter:Emit({burst}) end"
+    )
+    return {
+        "ok": True,
+        "preset": preset,
+        "name": name,
+        "parent": parent_path,
+        "position": pos,
+        "burstCount": burst,
+        "continuous": continuous,
+        "emitMode": "continuous_aura" if continuous else "deterministic_burst_rate_0",
+        "builtInStudio": built_in_studio,
+        "emitLuauSnippet": emit_snippet,
+        "vfxTree": vfx_tree,
+    }
+
+
+def de_slop_audit_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Audit UI copy, inline strings, and 3D scene nodes for AI-slop artifacts and blocky primitive overuse."""
+    max_len = max(20, min(500, int(args.get("maxTextLength") or 90)))
+    auto_fix = bool(args.get("autoFix", False))
+    findings = []
+    sanitized_texts = []
+
+    for idx, raw_txt in enumerate(args.get("texts") or []):
+        res = sanitize_slop_text(raw_txt, max_chars=max_len)
+        sanitized_texts.append(res)
+        if res["issues"]:
+            findings.append({
+                "path": f"texts[{idx}]",
+                "issues": res["issues"],
+                "original": res["original"],
+                "suggested": res["cleaned"],
+            })
+
+    studio_scanned = False
+    fixed_in_studio = 0
+    mesh_count = 0
+    primitive_count = 0
+
+    if args.get("includeStudio", True) and client and client.health().get("studio_connected"):
+        studio_scanned = True
+        try:
+            ui_tree = _unwrap_job(client.submit_job(
+                "get_tree", {"path": "StarterGui", "depth": 6}, wait=20.0, dm="edit", peer_id=peer_id
+            )).get("tree")
+        except Exception:
+            ui_tree = None
+
+        def _walk_ui(node):
+            nonlocal fixed_in_studio
+            if not isinstance(node, dict):
+                return
+            cls = node.get("className") or ""
+            props = {**(node.get("properties") or {}), **(node.get("structuredProperties") or {})}
+            children = node.get("children") or []
+            if cls in ("TextLabel", "TextButton", "TextBox"):
+                txt = props.get("Text")
+                if isinstance(txt, dict):
+                    txt = txt.get("v") or txt.get("value") or ""
+                if isinstance(txt, str) and txt.strip():
+                    s_res = sanitize_slop_text(txt, max_chars=max_len)
+                    if s_res["issues"]:
+                        findings.append({
+                            "path": node.get("path") or node.get("name"),
+                            "className": cls,
+                            "issues": s_res["issues"],
+                            "original": s_res["original"],
+                            "suggested": s_res["cleaned"],
+                        })
+                        if auto_fix and node.get("path"):
+                            try:
+                                _unwrap_job(client.submit_job("set_properties", {
+                                    "path": node["path"],
+                                    "properties": {"Text": s_res["cleaned"]},
+                                }, wait=15.0, dm="edit", peer_id=peer_id))
+                                fixed_in_studio += 1
+                            except Exception:
+                                pass
+                if cls == "TextButton":
+                    has_icon = any((c.get("className") or "") in ("ImageLabel", "ImageButton") for c in children if isinstance(c, dict))
+                    if not has_icon:
+                        findings.append({
+                            "path": node.get("path") or node.get("name"),
+                            "className": cls,
+                            "issues": ["button_missing_icon_badge"],
+                            "original": str(txt or ""),
+                            "suggested": "Add child ImageLabel icon badge for visual clarity.",
+                        })
+            for ch in children:
+                _walk_ui(ch)
+
+        if ui_tree:
+            _walk_ui(ui_tree)
+
+        try:
+            ws_tree = _unwrap_job(client.submit_job(
+                "get_tree", {"path": "Workspace", "depth": 5}, wait=20.0, dm="edit", peer_id=peer_id
+            )).get("tree")
+        except Exception:
+            ws_tree = None
+
+        def _walk_ws(node):
+            nonlocal mesh_count, primitive_count
+            if not isinstance(node, dict):
+                return
+            cls = node.get("className") or ""
+            name_l = str(node.get("name") or "").lower()
+            children = node.get("children") or []
+            if cls in ("MeshPart", "UnionOperation"):
+                mesh_count += 1
+            elif cls in ("Part", "WedgePart", "CornerWedgePart") and name_l not in ("baseplate", "terrain"):
+                has_special_mesh = any(
+                    (c.get("className") or "") in ("SpecialMesh", "BlockMesh", "CylinderMesh")
+                    for c in children if isinstance(c, dict)
+                )
+                if has_special_mesh:
+                    mesh_count += 1
+                else:
+                    primitive_count += 1
+            for ch in children:
+                _walk_ws(ch)
+
+        if ws_tree:
+            _walk_ws(ws_tree)
+
+    total_3d = mesh_count + primitive_count
+    mesh_ratio = round(mesh_count / total_3d, 3) if total_3d > 0 else 1.0
+    clarity_score = max(0, 100 - len(findings) * 12)
+
+    return {
+        "ok": True,
+        "visualClarityScore": clarity_score,
+        "findingsCount": len(findings),
+        "findings": findings,
+        "sanitizedTexts": sanitized_texts,
+        "studioScanned": studio_scanned,
+        "fixedInStudio": fixed_in_studio,
+        "meshTelemetry": {
+            "meshPartsCount": mesh_count,
+            "primitivePartsCount": primitive_count,
+            "meshPriorityRatio": mesh_ratio,
+            "recommendation": (
+                "Mesh priority healthy."
+                if mesh_ratio >= 0.35 or total_3d == 0
+                else "Scene relies heavily on blocky Part primitives; use `spawn_kit_mesh` or `import_rbxmx` to upgrade hero props to 3D meshes."
+            ),
+        },
+    }
+
+
+def spawn_kit_mesh_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Search and spawn 3D mesh assets (`.rbxmx`, `MeshPart`, `SpecialMesh`, or sculpted VFX/mesh prefabs)."""
+    from image_pipeline import find_kit_root
+
+    query = str(args.get("query") or "crystal").strip().lower()
+    category = str(args.get("category") or "").strip().lower()
+    pos = [float(v) for v in (args.get("position") or [0.0, 4.0, 0.0])[:3]]
+    scale = max(0.1, min(20.0, float(args.get("scale") or 1.0)))
+    parent_path = str(args.get("parent") or "Workspace").strip() or "Workspace"
+
+    kit_root = find_kit_root()
+    prefabs_dir = kit_root / "prefabs"
+    matches = []
+
+    if prefabs_dir.is_dir():
+        for pf in sorted(prefabs_dir.glob("*.json")):
+            stem = pf.stem.lower()
+            score = 0
+            if query in stem:
+                score += 10
+            for tok in query.split():
+                if tok in stem:
+                    score += 4
+            if "vfx" in stem or "mesh" in stem or "shrine" in stem or "portal" in stem or "pedestal" in stem:
+                score += 2
+            if score > 0:
+                matches.append({"kind": "prefab_mesh", "name": pf.stem, "path": str(pf), "score": score})
+
+    # Search .rbxmx 3D models in repo if present
+    repo_root = kit_root.parent
+    for rbxmx in sorted(repo_root.glob("roblox-models/**/*.rbxmx"))[:120]:
+        stem = rbxmx.stem.lower()
+        cat = rbxmx.parent.name.lower()
+        if category and category not in cat and category not in stem:
+            continue
+        if query in stem or any(tok in stem for tok in query.split()):
+            matches.append({"kind": "rbxmx_model", "name": rbxmx.stem, "category": cat, "path": str(rbxmx), "score": 12})
+
+    matches.sort(key=lambda m: (-m["score"], m["name"]))
+
+    # Always construct a sculpted 3D SpecialMesh hierarchy so even offline/custom queries yield a 3D mesh model
+    model_name = f"MeshAsset_{re.sub(r'[^A-Za-z0-9_]+', '_', query.title()) or 'Crystal'}"
+    s_base = [round(3.2 * scale, 2), round(4.8 * scale, 2), round(3.2 * scale, 2)]
+    mesh_tree = [{
+        "name": model_name,
+        "className": "Model",
+        "replaceExisting": True,
+        "children": [
+            {
+                "name": "PedestalBaseMesh",
+                "className": "Part",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": True,
+                    "Material": "Enum.Material.Basalt",
+                    "Color": [55, 65, 81],
+                    "Size": [round(4.4 * scale, 2), round(1.2 * scale, 2), round(4.4 * scale, 2)],
+                    "Position": [pos[0], pos[1] - round(1.8 * scale, 2), pos[2]],
+                },
+                "children": [
+                    {
+                        "name": "CylinderSculptMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": "Enum.MeshType.Cylinder", "Scale": [1.0, 1.0, 1.0]},
+                    }
+                ],
+            },
+            {
+                "name": "SculptedHeroMesh",
+                "className": "MeshPart",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": True,
+                    "Material": "Enum.Material.Neon" if "crystal" in query or "portal" in query or "rune" in query else "Enum.Material.SmoothPlastic",
+                    "Color": [56, 189, 248] if "crystal" in query or "portal" in query else [212, 175, 55],
+                    "Size": s_base,
+                    "Position": pos,
+                },
+                "children": [
+                    {
+                        "name": "HeroSpecialMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": "Enum.MeshType.Sphere", "Scale": [0.85, 1.25, 0.85]},
+                    }
+                ],
+            },
+        ],
+    }]
+
+    spawned_in_studio = False
+    if args.get("spawnInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": parent_path,
+            "tree": mesh_tree,
+            "select": False,
+        }, note=f"spawn_kit_mesh:{model_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        spawned_in_studio = True
+
+    return {
+        "ok": True,
+        "query": query,
+        "modelName": model_name,
+        "parent": parent_path,
+        "position": pos,
+        "scale": scale,
+        "meshPrioritized": True,
+        "catalogMatches": matches[:15],
+        "catalogMatchCount": len(matches),
+        "spawnedInStudio": spawned_in_studio,
+        "meshTree": mesh_tree,
+    }
+
+
+_FALLBACK_DIRECT_CHAT_BUS = None
+
+
+def _get_fallback_chat_bus():
+    global _FALLBACK_DIRECT_CHAT_BUS
+    if _FALLBACK_DIRECT_CHAT_BUS is None:
+        from bus_core import AgentBus
+        _FALLBACK_DIRECT_CHAT_BUS = AgentBus(persist=False)
+    return _FALLBACK_DIRECT_CHAT_BUS
+
+
+def operator_chat_helper(client: BridgeClient, args: dict) -> dict:
+    """Direct two-way Live Chat between the Human Operator and the AI Agent."""
+    act = str(args.get("action") or "poll").strip().lower()
+    role = str(args.get("role") or "agent").strip().lower()
+    sender = str(args.get("sender") or ("Operator" if role == "operator" else "Agent")).strip()
+
+    def _bus_call(payload: dict) -> dict:
+        if client is not None:
+            try:
+                return client.bus_action(payload)
+            except Exception:
+                pass
+        return _get_fallback_chat_bus().handle(payload)
+
+    if act in ("reply", "send"):
+        msg_text = str(args.get("message") or "").strip()
+        if not msg_text:
+            raise ValueError("message is required when action is 'reply' or 'send'")
+        sent = _bus_call({
+            "action": "chat_send",
+            "sender": sender,
+            "text": msg_text,
+            "role": role,
+            "priority": args.get("priority") or ("high" if role == "operator" else "normal"),
+            "pinned": bool(args.get("pinned", False)),
+            "replyTo": args.get("replyTo"),
+        })
+        return {
+            "ok": True,
+            "action": act,
+            "channel": "direct_operator_live_chat",
+            "message": sent,
+        }
+    if act == "poll":
+        popped = _bus_call({"action": "chat_poll", "deliveredVia": "operator_chat", "markDelivered": True})
+        return {
+            "ok": True,
+            "action": "poll",
+            "channel": "direct_operator_live_chat",
+            **popped,
+        }
+    if act == "history":
+        hist = _bus_call({"action": "chat_history", "limit": int(args.get("limit") or 50)})
+        return {
+            "ok": True,
+            "action": "history",
+            "channel": "direct_operator_live_chat",
+            **hist,
+        }
+    if act == "ack":
+        acked = _bus_call({"action": "chat_ack", "clearPins": bool(args.get("clearPins", False))})
+        return {
+            "ok": True,
+            "action": "ack",
+            "channel": "direct_operator_live_chat",
+            **acked,
+        }
+    raise ValueError(f"Unsupported operator_chat action: {act!r}")
+
+
 def _bus_lines(client, include_tasks: bool = True, tasks_include_done: bool = False) -> str:
     """Compact bus snapshot for prompt rendering; never raises."""
     if client is None:
@@ -8997,6 +9871,15 @@ class MCPDispatcher:
         lines = [
             f"Arena <-> Roblox Studio MCP Server v{MCP_SERVER_VERSION}{mode_tag}.",
             "Use `get_studio_state` or `survey_place` first to understand the open place.",
+            "UI can be imported directly from the Web (HTML/CSS/Tailwind/SVG/JSON) and from the Control Center "
+            "Dashboard using `import_ui_from_web` or `build_ui`.",
+            "Prioritize 3D meshes (`spawn_kit_mesh`, `import_rbxmx`, `MeshPart`, `SpecialMesh`, and the 520-model "
+            "CC0 catalog) over basic blocky `Part` primitives.",
+            "Eliminate AI-slop artifacts: never use em-dashes (`—`), robotic filler connectors (`Furthermore`, "
+            "`Moreover`, `Delve`, `Tapestry`), or wall-of-text dumps; enforce visual clarity with icons and run "
+            "`de_slop_audit`.",
+            "Direct Operator Live Chat is active: unread messages from the human operator are automatically injected "
+            "into every tool response (`operatorLiveChat`); always reply immediately via `operator_chat(action='reply', message='...')`.",
             "With several Studio windows connected, `studio_fleet {action:'list'}` shows them, "
             "`set_active` pins a default target and `broadcast` fans a read-only job out to all.",
             "Long work can be task-augmented (`params.task`): poll it with `tasks/get`, answer a "
@@ -9978,7 +10861,35 @@ class MCPDispatcher:
                 data.setdefault("ok", True)
                 data.setdefault("warnings", [])
             img_b64 = data.pop("_mcp_image_png_b64", None) if isinstance(data, dict) else None
+            live_chat_banner = None
+            if isinstance(data, dict) and tname not in ("operator_chat", "agent_bus") and self.client is not None:
+                try:
+                    chat_push = self.client.bus_action({
+                        "action": "chat_poll",
+                        "deliveredVia": tname,
+                        "markDelivered": True,
+                    })
+                    unread_ops = (chat_push or {}).get("unreadMessages") or []
+                    pinned_ops = (chat_push or {}).get("pinnedDirectives") or []
+                    if unread_ops:
+                        data["operatorLiveChat"] = {
+                            "unreadMessages": unread_ops,
+                            "pinnedDirectives": pinned_ops,
+                            "actionRequired": (
+                                "Immediate human operator message received via Direct Live Chat. "
+                                "Acknowledge and answer with `operator_chat(action='reply', message='...')`."
+                            ),
+                        }
+                        lines = ["🔴 LIVE OPERATOR DIRECT CHAT MESSAGE(S) — DO NOT IGNORE:"]
+                        for m in unread_ops:
+                            lines.append(f"  • [{m.get('priority', 'high').upper()}] {m.get('sender', 'Operator')}: {m.get('text', '')}")
+                        lines.append("Reply directly using `operator_chat(action='reply', message='...')`.")
+                        live_chat_banner = "\n".join(lines)
+                except Exception:
+                    pass
             content_items = [{"type": "text", "text": json.dumps(data, indent=2)}]
+            if live_chat_banner:
+                content_items.insert(0, {"type": "text", "text": live_chat_banner})
             if img_b64:
                 content_items.insert(0, {
                     "type": "image",

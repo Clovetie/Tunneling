@@ -97,6 +97,8 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             "peers": f"{origin}/api/peers",
             "jobs": f"{origin}/api/jobs",
             "snapshots": f"{origin}/api/snapshots",
+            "direct_chat": f"{origin}/api/chat",
+            "import_web_ui": f"{origin}/api/ui/import-web",
             "agent_guide": f"{origin}/api/agent-guide",
             "self_test": f"{origin}/api/self-test",
         },
@@ -104,7 +106,15 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             "editPeer": "Required for live inspection, writes, import, snapshots and persistent-place edits.",
             "serverPeer": "Required for live server probes, playtest state and server console.",
             "clientPeer": "Required for client-only runtime probes; some server peers can forward when a player client is attached.",
-            "offlineTools": ["diagnose_connection (bridge registry only)", "search_tools", "audit_localization", "audit_onboarding_plan", "search_skills", "apply_skill", "skill_references", "browse_kit", "search_assets", "search_cloud_icons", "luau_check (when host binaries are installed)", "render_offline with an exported hierarchy tree"],
+            "offlineTools": [
+                "diagnose_connection (bridge registry only)", "search_tools", "audit_localization",
+                "audit_onboarding_plan", "search_skills", "apply_skill", "skill_references",
+                "browse_kit", "search_assets", "search_cloud_icons",
+                "luau_check (when host binaries are installed)",
+                "render_offline with an exported hierarchy tree",
+                "import_ui_from_web", "build_vfx_emitter", "de_slop_audit",
+                "spawn_kit_mesh", "operator_chat",
+            ],
             "peerFreshnessSeconds": 5,
         },
         "toolCounts": {
@@ -113,6 +123,24 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             "mutating": len(categories.get("mutating", [])),
         },
         "toolsByMode": categories,
+        "agentCapabilities": {
+            "webAndDashboardUiImport": (
+                "UI can be imported directly from the Web (HTML/CSS/Tailwind/SVG/JSON) and from the Control Center "
+                "Dashboard using `import_ui_from_web` or `POST /api/ui/import-web`."
+            ),
+            "meshFirst3DBuilding": (
+                "3D Meshes (`spawn_kit_mesh`, `import_rbxmx`, `MeshPart`, `SpecialMesh`, 520-model CC0 catalog) "
+                "must be prioritized over basic blocky `Part` primitives."
+            ),
+            "deSlopAndVisualClarity": (
+                "Divert from AI-slop artifacts (`—` em-dashes, robotic filler connectors like Furthermore/Moreover/Delve, "
+                "and wall-of-text dumps). Enforce visual clarity with iconography and `de_slop_audit`."
+            ),
+            "directOperatorLiveChat": (
+                "True Direct Live Chat (`operator_chat` and `/api/chat`) delivers human operator messages directly "
+                "into the agent's active MCP tool responses (`operatorLiveChat`), never relying on ignored broadcasts."
+            ),
+        },
         "cliQuickReference": [
             r".\ab.ps1 health",
             r".\ab.ps1 ping",
@@ -136,6 +164,10 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             r".\ab.ps1 scenario --mode play --server-code 'return {players = #game.Players:GetPlayers()}'",
         ],
         "keyTips": [
+            "Import UI from the Web & Dashboard: use `import_ui_from_web` (or the Control Center Web UI Importer) to convert HTML/CSS/Tailwind/SVG/JSON directly into responsive Roblox `StarterGui` hierarchies.",
+            "Prioritize 3D Meshes over blocky primitives: use `spawn_kit_mesh`, `import_rbxmx`, `MeshPart`, `SpecialMesh`, and the 520-model CC0 catalog instead of plain `Part` blocks.",
+            "De-Slop & Visual Clarity: never emit em-dashes (`—`), robotic filler connectors (`Furthermore`, `Moreover`, `Delve`, `Tapestry`), or wall-of-text dumps; run `de_slop_audit` and pair HUD labels with icons.",
+            "Direct Operator Live Chat: unread messages from the human operator are automatically injected into every MCP tool result (`operatorLiveChat`); always reply immediately via `operator_chat(action='reply', message='...')`.",
             "Survey before building: run `survey_place` (includeSource=false on large places, then `script_read` / `script_grep` selectively).",
             "Validate Luau offline first: `luau_check` runs `luau-compile` + `luau-analyze` to catch syntax errors and non-strict undefined globals before touching Studio.",
             "Target the right DataModel: use `dm='edit'` for persistent place changes, `dm='server'` for live Play/Run server state, and `dm='client'` for live player client state. Runtime tools fail fast when the required peer is absent.",
@@ -2347,6 +2379,14 @@ def make_http_handler(state: BridgeState):
                 except ValueError as exc:
                     return self._send(400, {"error": str(exc)})
 
+            if path == "/api/chat":
+                if not self._require(qs, "read", allow_loopback=True):
+                    return
+                limit = self._int_qs(qs, "limit", 80, 1, 500)
+                since = self._int_qs(qs, "since", 0, 0, 10_000_000)
+                unread_only = (qs.get("unreadOnly") or ["0"])[0] in ("1", "true", "yes")
+                return self._send(200, state.bus.chat_history(limit=limit, since_seq=since, unread_for_agent=unread_only))
+
             if path == "/api/tunnel":
                 if not self._require(qs, "read"):
                     return
@@ -2785,7 +2825,56 @@ def make_http_handler(state: BridgeState):
                 except ValueError as exc:
                     return self._send(400, {"error": str(exc)})
 
-            # --- v5 collaboration & ops control ---------------------------------
+            # --- v5/v6 collaboration, direct live chat & web UI import --------
+            if path == "/api/chat":
+                act = str(body.get("action") or "send").strip().lower()
+                is_ro = act in ("history", "list", "poll") and not body.get("markDelivered")
+                ctx = self._require(qs, "read" if is_ro else "write", allow_loopback=True)
+                if not ctx:
+                    return
+                try:
+                    if act in ("send", "reply"):
+                        role = body.get("role") or ("agent" if act == "reply" else "operator")
+                        res = state.bus.chat_send(
+                            sender=body.get("sender") or ("Operator" if role == "operator" else "Agent"),
+                            text=body.get("text") or body.get("message") or body.get("body") or "",
+                            role=role,
+                            priority=body.get("priority") or ("high" if role == "operator" else "normal"),
+                            pinned=bool(body.get("pinned", False)),
+                            reply_to=body.get("replyTo"),
+                        )
+                        state.telemetry.events.emit("chat.message", {
+                            "id": res["id"], "role": res["role"], "sender": res["sender"], "text": res["text"][:200],
+                        })
+                        return self._send(200, {"ok": True, "message": res, "history": state.bus.chat_history(limit=50)})
+                    if act == "poll":
+                        return self._send(200, state.bus.chat_pop_unread_for_agent(
+                            delivered_via=str(body.get("deliveredVia") or "http_api"),
+                            mark_delivered=bool(body.get("markDelivered", True)),
+                        ))
+                    if act == "ack":
+                        return self._send(200, state.bus.chat_ack(
+                            message_ids=body.get("messageIds"),
+                            clear_pins=bool(body.get("clearPins", False)),
+                            unpin_id=body.get("unpinId"),
+                        ))
+                    return self._send(200, state.bus.chat_history(
+                        limit=int(body.get("limit") or 80),
+                        since_seq=int(body.get("since") or 0),
+                    ))
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+
+            if path == "/api/ui/import-web":
+                ctx = self._require(qs, "write" if body.get("installInStudio") else "read", allow_loopback=True)
+                if not ctx:
+                    return
+                from mcp_core import import_ui_from_web_helper
+                try:
+                    return self._send(200, import_ui_from_web_helper(state.mcp_client, body))
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+
             if path == "/api/bus":
                 action = (body.get("action") or "stats")
                 read_only = is_bus_action_read_only(body)
@@ -3854,20 +3943,67 @@ def dashboard_html() -> str:
       </div>
     </div>
 
-    <div class="prompt-card">
+    <div class="prompt-card" style="margin-bottom:14px">
       <div class="prompt-head">
         <div>
-          <h3>V6 Systems &amp; Security Quick-Launcher (90 Total MCP Tools)</h3>
-          <div class="sub">Test-drive the 4 new V6 tools (<code>audit_network_security</code>, <code>build_cutscene_sequence</code>, <code>generate_ui_theme_pack</code>, <code>manage_plugin_and_playtest</code>) + new <code>CutsceneDirector</code>, <code>NetworkGuard</code>, and <code>DialogueSystem</code> kit modules.</div>
+          <h3>V6 Systems, Web UI Importer, Mesh-First &amp; De-Slop Quick-Launcher (95 Total MCP Tools)</h3>
+          <div class="sub">Test-drive the V6 tools (<code>import_ui_from_web</code>, <code>de_slop_audit</code>, <code>spawn_kit_mesh</code>, <code>build_vfx_emitter</code>, <code>operator_chat</code>, <code>audit_network_security</code>, <code>build_cutscene_sequence</code>, <code>generate_ui_theme_pack</code>, <code>manage_plugin_and_playtest</code>) + <code>VFXManager</code>, <code>CutsceneDirector</code>, <code>NetworkGuard</code>, and <code>DialogueSystem</code> modules.</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="sm primary" onclick="runV6ToolPreview('import_ui_from_web', {preset:'rpg_hud', deSlop:true, installInStudio:false})">&#127760; Import UI from Web</button>
+          <button class="sm primary" onclick="runV6ToolPreview('de_slop_audit', {texts:['Furthermore — delve into this seamless quest!'], includeStudio:true})">&#10024; De-Slop &amp; Visual Clarity Audit</button>
+          <button class="sm primary" onclick="runV6ToolPreview('spawn_kit_mesh', {query:'crystal', scale:1.2, spawnInStudio:false})">&#128142; Spawn 3D Mesh Asset</button>
+          <button class="sm primary" onclick="runV6ToolPreview('build_vfx_emitter', {preset:'portal_swirl', burstCount:32, buildInStudio:false})">&#9889; Build VFX Emitter</button>
           <button class="sm primary" onclick="runV6ToolPreview('audit_network_security', {includeStudio:true})">&#128737; Audit Network Security</button>
-          <button class="sm primary" onclick="runV6ToolPreview('build_cutscene_sequence', {preset:'boss_awakening', buildInStudio:false})">&#127916; Build Cutscene Sequence</button>
-          <button class="sm primary" onclick="runV6ToolPreview('generate_ui_theme_pack', {theme:'HorrorBloodMoon', installInStudio:false})">&#127912; Generate UI Theme Pack</button>
           <button class="sm" onclick="runV6ToolPreview('manage_plugin_and_playtest', {action:'version_matrix'})">&#128268; Plugin Version Matrix</button>
         </div>
       </div>
-      <pre id="v6-tool-out" style="max-height:260px">Select any V6 tool above to inspect its structured output.</pre>
+      <pre id="v6-tool-out" style="max-height:220px">Select any V6 tool above to inspect its structured output.</pre>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>&#128172; Direct Operator &harr; Agent Live Chat (Push-Injected into Tool Loop)</h3>
+            <div class="sub">Unlike <code>agent_bus</code> broadcasts that agents can overlook, messages sent here are <strong>automatically injected into the agent&rsquo;s very next MCP tool call response</strong> (<code>operatorLiveChat</code>) and answered via <code>operator_chat(action='reply')</code>.</div>
+          </div>
+          <span class="pill on" id="live-chat-badge">Direct Live</span>
+        </div>
+        <div id="direct-chat-feed" style="max-height:210px;overflow:auto;background:#090d14;border:1px solid var(--border);border-radius:8px;padding:10px;margin:8px 0;font-size:12.5px">
+          <div class="sub">No direct chat messages yet. Send a message below to inject it into the agent&rsquo;s active tool loop.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input id="direct-chat-input" placeholder="Message the active agent directly (e.g. Use 3D meshes for the shrine and import the HUD from Web)..." style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')sendOperatorLiveChat()">
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="direct-chat-pin"> Pin Directive</label>
+          <button class="sm primary" onclick="sendOperatorLiveChat()">Send to Agent</button>
+          <button class="sm" onclick="refreshDirectChat()">&#8635;</button>
+        </div>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>&#127760; Import UI from Web (HTML / CSS / Tailwind / Preset &rarr; <code>StarterGui</code>)</h3>
+            <div class="sub">Paste Web HTML/Tailwind markup or pick a preset to convert directly into a responsive Roblox <code>ScreenGui</code> with automatic De-Slop sanitization (no <code>&mdash;</code> em-dashes, no text dumps, paired icon badges).</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0">
+          <select id="web-ui-preset" style="width:170px">
+            <option value="rpg_hud">Preset: RPG HUD Bar</option>
+            <option value="shop_grid">Preset: Shop Grid</option>
+            <option value="quest_tracker">Preset: Quest Tracker</option>
+            <option value="inventory_dock">Preset: Inventory Dock</option>
+            <option value="boss_bar">Preset: Boss Health Bar</option>
+            <option value="dialog_card">Preset: NPC Dialog Card</option>
+          </select>
+          <input id="web-ui-name" value="WebImportedGui" placeholder="ScreenGui Name" style="width:165px">
+          <button class="sm primary" onclick="importWebUiFromDashboard(false)">Preview Tree</button>
+          <button class="sm primary" onclick="importWebUiFromDashboard(true)">&#11014; Build in StarterGui</button>
+        </div>
+        <textarea id="web-ui-html" placeholder="Optional: paste custom HTML / Tailwind markup here (e.g. <div class='bg-slate-900 rounded-xl p-3 flex'><span>HP 100/100</span><button>[Q] DASH</button></div>)" style="min-height:68px"></textarea>
+        <pre id="web-ui-out" style="max-height:140px">Converted Roblox ScreenGui tree will appear here.</pre>
+      </div>
     </div>
   </section>
 </main>
@@ -4083,7 +4219,12 @@ const SAMPLE_ARGS = {
   manage_plugin_and_playtest: { action: 'status' },
   audit_network_security: { includeStudio: true },
   build_cutscene_sequence: { preset: 'boss_awakening', letterbox: true, buildInStudio: false },
-  generate_ui_theme_pack: { theme: 'HorrorBloodMoon', installInStudio: false }
+  generate_ui_theme_pack: { theme: 'HorrorBloodMoon', installInStudio: false },
+  import_ui_from_web: { preset: 'rpg_hud', guiName: 'WebImportedGui', deSlop: true, installInStudio: false },
+  build_vfx_emitter: { preset: 'portal_swirl', burstCount: 32, continuous: false, buildInStudio: false },
+  de_slop_audit: { texts: ['Furthermore — delve into this seamless quest!'], includeStudio: true, autoFix: false },
+  spawn_kit_mesh: { query: 'crystal', scale: 1.2, spawnInStudio: false },
+  operator_chat: { action: 'history', limit: 25 }
 };
 
 function onSelectTool(){
@@ -4227,12 +4368,16 @@ Start by running a quick recon (\`.\\ab.ps1 state\` and \`.\\ab.ps1 survey\`) so
 
 Rules of engagement:
 1. Inspect live ground truth first (\`get_studio_state\`, \`survey_place\` with \`includeSource=false\`, and \`browse_kit\`).
-2. Validate Luau edits with \`luau_check\` before writing, and create a rollback point via \`manage_snapshots(action="create")\` before multi-script changes.
-3. Pass \`replaceInstance=true\` when modifying \`ModuleScript\`s that may already be cached by \`require()\`.
-4. Verify behaviour via \`run_playtest_scenario\` across \`server\` and \`client\` DataModels and check \`get_console_output\` for zero errors.
-5. Run \`self_test\` before completion; Studio-only scratch checks are \`no_peer\` skips when no peer is connected, never passes.
-6. Use \`mesh_capabilities\` to probe runtime APIs. A Studio version string is not proof of EditableMesh support; report the actual probe result and limitations.
-7. Run \`python3 -B tools/verify_licences.py\` before asset changes are accepted. Do not present pack-level attestations as exact file matches, or LDR skies/placeholders as HDRIs/rendered mesh previews.`
+2. **Import UI from Web & Dashboard**: You can import UI directly from the Web (HTML/CSS/Tailwind/SVG/JSON) and from the Control Center Dashboard using \`import_ui_from_web\` (or \`POST ${pubUrl}/api/ui/import-web\`).
+3. **Prioritize 3D Meshes over Blocky Primitives**: Always prefer 3D meshes (\`spawn_kit_mesh\`, \`import_rbxmx\`, \`MeshPart\`, \`SpecialMesh\`, and the 520-model CC0 catalog) over basic blocky \`Part\` primitives.
+4. **De-Slop & Visual Clarity**: Never use AI-slop artifacts such as em-dashes (\`—\`), robotic filler connectors (\`Furthermore\`, \`Moreover\`, \`Delve\`, \`Tapestry\`), or wall-of-text dumps. Pair HUD labels/buttons with iconography and run \`de_slop_audit\`.
+5. **Direct Operator Live Chat**: Watch for \`operatorLiveChat\` injected into tool responses and reply immediately using \`operator_chat(action="reply", message="...")\`.
+6. Validate Luau edits with \`luau_check\` before writing, and create a rollback point via \`manage_snapshots(action="create")\` before multi-script changes.
+7. Pass \`replaceInstance=true\` when modifying \`ModuleScript\`s that may already be cached by \`require()\`.
+8. Verify behaviour via \`run_playtest_scenario\` across \`server\` and \`client\` DataModels and check \`get_console_output\` for zero errors.
+9. Run \`self_test\` before completion; Studio-only scratch checks are \`no_peer\` skips when no peer is connected, never passes.
+10. Use \`mesh_capabilities\` to probe runtime APIs. A Studio version string is not proof of EditableMesh support; report the actual probe result and limitations.
+11. Run \`python3 -B tools/verify_licences.py\` before asset changes are accepted. Do not present pack-level attestations as exact file matches, or LDR skies/placeholders as HDRIs/rendered mesh previews.`
     },
     {
       title: "3. Generic Prompt — Full Place Recon & Architecture Map (Read-Only Safe)",
@@ -5830,9 +5975,95 @@ async function copyMcpConfig(){
   } catch(err){ toast(err.message || 'Cannot build MCP config'); }
 }
 
-initBoot().then(() => { tick(); refreshOps(); refreshBus(); refreshFleet();
+async function refreshDirectChat(){
+  const box = document.getElementById('direct-chat-feed');
+  if(!box) return;
+  try {
+    const r = await fetch('/api/chat?limit=40', { headers: authHeaders(), cache: 'no-store' });
+    if(!r.ok) return;
+    const d = await r.json();
+    const msgs = d.messages || [];
+    const badge = document.getElementById('live-chat-badge');
+    if(badge){
+      badge.textContent = d.unreadOperatorCount > 0
+        ? `${d.unreadOperatorCount} Queued for Next Tool Call`
+        : `Direct Live (${msgs.length})`;
+    }
+    if(!msgs.length){
+      box.innerHTML = '<div class="sub">No direct chat messages yet. Send a message below to inject it directly into the agent&rsquo;s active tool loop.</div>';
+      return;
+    }
+    box.innerHTML = msgs.map(m => {
+      const isOp = m.role === 'operator';
+      const status = isOp
+        ? (m.repliedByAgent ? '✓ Replied by Agent' : (m.deliveredToAgent ? `✓ Delivered (${m.deliveredVia || 'tool'})` : '⏳ Queued for next tool call'))
+        : '✓ Agent Reply';
+      const pinBadge = m.pinned ? ' <span class="pill ro" style="font-size:10px;padding:1px 5px">PINNED</span>' : '';
+      return `<div style="padding:6px 8px;margin-bottom:6px;border-radius:6px;background:${isOp ? 'rgba(56,189,248,0.10)' : 'rgba(52,211,153,0.10)'};border-left:3px solid ${isOp ? '#38bdf8' : '#34d399'}">
+        <div style="display:flex;justify-content:space-between;font-size:11px">
+          <strong>${esc(m.sender || (isOp ? 'Operator' : 'Agent'))}${pinBadge}</strong>
+          <span class="sub">${esc(status)}</span>
+        </div>
+        <div style="margin-top:3px;color:#e2e8f0">${esc(m.text)}</div>
+      </div>`;
+    }).join('');
+    box.scrollTop = box.scrollHeight;
+  } catch(_){}
+}
+
+async function sendOperatorLiveChat(){
+  const inp = document.getElementById('direct-chat-input');
+  const pin = document.getElementById('direct-chat-pin');
+  const text = (inp && inp.value || '').trim();
+  if(!text) return toast('Type a message for the agent first.');
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        action: 'send',
+        role: 'operator',
+        sender: 'Operator',
+        text,
+        priority: 'high',
+        pinned: Boolean(pin && pin.checked)
+      })
+    });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    inp.value = '';
+    if(pin) pin.checked = false;
+    toast('Direct message queued — will inject into the agent’s next tool call!');
+    refreshDirectChat();
+  } catch(err){ toast(err.message); }
+}
+
+async function importWebUiFromDashboard(installInStudio){
+  const preset = (document.getElementById('web-ui-preset') && document.getElementById('web-ui-preset').value) || 'rpg_hud';
+  const guiName = (document.getElementById('web-ui-name') && document.getElementById('web-ui-name').value) || 'WebImportedGui';
+  const html = (document.getElementById('web-ui-html') && document.getElementById('web-ui-html').value) || '';
+  const out = document.getElementById('web-ui-out');
+  if(out) out.textContent = installInStudio ? 'Converting & building in StarterGui...' : 'Converting Web UI to Roblox ScreenGui...';
+  try {
+    const r = await fetch('/api/ui/import-web', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ preset, guiName, html, deSlop: true, installInStudio: Boolean(installInStudio) })
+    });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    if(out) out.textContent = JSON.stringify(d, null, 2);
+    toast(installInStudio ? 'Imported Web UI into StarterGui!' : 'Converted Web UI to Roblox ScreenGui tree');
+  } catch(err){
+    if(out) out.textContent = err.message;
+    toast(err.message);
+  }
+}
+
+initBoot().then(() => { tick(); refreshOps(); refreshBus(); refreshFleet(); refreshDirectChat();
   setInterval(tick, 1500);
   setInterval(refreshFleet, 3000);
+  setInterval(refreshDirectChat, 2500);
   setInterval(() => {
     const active = document.getElementById('tab-ops').classList.contains('active');
     if(active){ refreshOps(); refreshBus(); }
