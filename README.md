@@ -45,6 +45,10 @@ python3 roblox-bridge/setup.py --tunnel --tunnel-token "$CF_TUNNEL_TOKEN" --publ
 
 ---
 
+## FOUNDRY companion app (partial, undeployed)
+
+`foundry/` contains a separate Next.js visual multi-agent development studio scaffold that integrates with the Tunneling bridge via runtime MCP discovery. It is compile-clean and unit-tested, and offers a read-only local MockWorld protocol preview, but it is **not deployed**, **not connected to a real Supabase project**, and **not validated with real Roblox Studio or a public tunnel**. See [`foundry/README.md`](foundry/README.md) and `foundry/docs/ROADMAP.md` for the exact status.
+
 ## Repository Layout
 
 | Directory | Contents |

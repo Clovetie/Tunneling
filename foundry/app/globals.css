@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --grid: rgba(255, 255, 255, 0.018);
+}
+
+* { border-color: #252d38; }
+html, body { height: 100%; }
+body {
+  @apply bg-canvas text-ink antialiased;
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+    radial-gradient(900px 500px at 80% -10%, rgba(115,214,207,0.045), transparent 70%);
+  background-size: 32px 32px, 32px 32px, auto;
+  font-feature-settings: "cv02", "cv03", "cv04", "ss01";
+}
+::selection { background: rgba(115,214,207,0.25); color: #f3f7fa; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2a323d; border-radius: 999px; border: 2px solid #0a0c10; }
+::-webkit-scrollbar-thumb:hover { background: #3b4654; }
+
+@layer components {
+  .panel {
+    @apply rounded-xl border border-line bg-graphite-900/85 shadow-panel backdrop-blur-sm;
+  }
+  .panel-flat {
+    @apply rounded-lg border border-line bg-graphite-950/60;
+  }
+  .toolbar-button {
+    @apply inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-line bg-graphite-850 px-2.5 text-xs font-medium text-ink-muted transition-colors hover:border-graphite-600 hover:bg-graphite-800 hover:text-ink focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-signal-cyan;
+  }
+  .kbd {
+    @apply rounded border border-line bg-graphite-950 px-1.5 py-0.5 font-mono text-2xs text-ink-faint;
+  }
+  .grid-noise {
+    background-image: radial-gradient(rgba(255,255,255,0.06) 0.7px, transparent 0.7px);
+    background-size: 14px 14px;
+  }
+}
+
+.react-flow__attribution { display: none; }
+.react-flow__node { font-size: 11px; }
+.react-flow__handle { width: 7px; height: 7px; border: 1px solid #0a0c10; background: #73d6cf; }
+.react-flow__edge-path { stroke: #3b4654; stroke-width: 1.5; }
+.react-flow__edge.selected .react-flow__edge-path { stroke: #73d6cf; }
+.react-flow__controls { border: 1px solid #252d38; border-radius: 8px; overflow: hidden; box-shadow: none; }
+.react-flow__controls-button { background: #141920; border-bottom: 1px solid #252d38; color: #8f9aa8; }
+.react-flow__controls-button:hover { background: #202730; color: #e7ebf0; }
+.react-flow__minimap { background: #0a0c10 !important; border: 1px solid #252d38; border-radius: 8px; }

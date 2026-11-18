@@ -15,3 +15,11 @@ nightloop/bridge/bridge_state/
 
 # Generated release artifacts (rebuild with roblox-bridge/tools/build_release.py)
 release-artifacts/
+
+# FOUNDRY app artifacts
+foundry/node_modules/
+foundry/.next/
+foundry/.env
+foundry/.env.local
+foundry/.env.*.local
+foundry/*.tsbuildinfo

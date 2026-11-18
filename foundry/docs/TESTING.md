@@ -1,0 +1,51 @@
+# Testing
+
+## Automated checks run in this workspace
+
+```bash
+cd foundry
+npm ci                 # required on a fresh checkout; node_modules is not committed
+npm run typecheck
+npm test
+npm run build
+
+# Live HTTP/MCP protocol checks against a reachable Tunneling bridge
+FOUNDRY_TEST_BRIDGE_URL=http://127.0.0.1:8077 \
+FOUNDRY_TEST_BRIDGE_TOKEN=<token> npm run verify:tunneling
+
+# Live stdio connector check against the same bridge
+FOUNDRY_TEST_BRIDGE_URL=http://127.0.0.1:8077 \
+FOUNDRY_TEST_BRIDGE_TOKEN=<token> npm run verify:stdio
+```
+
+Results on 2026-11-18:
+
+- `npm run typecheck`: clean.
+- `npm test`: `Test Files 8 passed (8)`, `Tests 33 passed (33)`.
+- `npm run build`: compiled successfully; all ten UI routes and three API route families generated.
+- `verify:tunneling` against local MockWorld: `ok:true`, protocol `2026-07-28`, `toolCount:101`, `hasAgentTeam:true`, bridge version `6.0.0`, studios `1/1`, Bus agents `9`, tasks `10`, messages `24`.
+- `verify:stdio` against the same bridge: `ok:true`, protocol `2026-07-28`, `toolCount:101`, `hasAgentTeam:true`.
+- `/api/bridge/preview`: live read-only health, 101 MCP schemas, 80 events, 80 audit entries, orchestrator project `proj-bb2b78e95e` and three evidence filenames.
+- `/api/bridge/evidence/<filename>`: `200 image/png`.
+- Browser-like JSDOM smoke of `/overview`, `/agents`, `/builder`, `/workflows`, `/projects`, `/integrations`, `/knowledge`, `/activity`, `/settings`, `/roblox`: ten navigation links, honest unconfigured and MockWorld preview notices, zero console errors.
+
+The two verification scripts and the preview proxy use a real HTTP/MCP protocol run against the repository's stateful `MockWorld`. That is **not** a claim about a live Roblox Studio, a public tunnel, a production database or deployed FOUNDRY.
+
+## Unit coverage
+
+- Workflow graph validation, topological ordering, cycles, missing config, condition/router/transform.
+- Task dependency readiness, retry policy, lease recovery and resource conflict detection.
+- Tool permission enforcement, approval categories, communication permissions and secret redaction.
+- Memory scope isolation and project knowledge isolation.
+- AES-GCM secret round trip and tamper detection.
+- Hash-chain audit computation and token-bucket rate limit.
+- MCP SSE and stdio frame parsing, schema validation and SSE response parsing.
+- Signed ConfirmGate `requestState`/`inputResponses` forwarding on retry, scoped bridge-token headers for Bus writes, stdio cwd traversal rejection and array-valued peer count summarization.
+- Bounded JSONB serialization: ordinary values unchanged, oversized output wrapped in valid JSON, circular values handled without invalid JSON.
+- Integration contract fixtures from the observed `tools/list` shape.
+
+## Gaps / skipped surfaces
+
+Database-backed command tests require `DATABASE_URL` and a real Supabase project. Local Postgres is unavailable in this sandbox, `psql`/`postgres`/`pg_ctl` are absent, and Python `psycopg2`/`psycopg` are not installed. Therefore migration application, RLS, pgvector queries, Realtime subscriptions, DB-backed job leasing and worker heartbeats were **not** exercised. Do not treat an in-memory test or a rendered UI card as production persistence.
+
+Real Roblox Studio, named tunnel egress, provider-backed model runs, deployed browser auth UX and a Vercel deployment remain manual HANDS MODE acceptance items.
