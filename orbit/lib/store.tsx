@@ -11,6 +11,7 @@ import React, {
   useState,
 } from "react";
 import { SEED_VERSION, buildSeed } from "./seed";
+import { activeTab, closeTab, createWorkspace, openTab, resolveTabLabel, stepTab, tabId } from "./tabs";
 import { uid } from "./util";
 import type {
   ActivityEntry,
@@ -29,6 +30,8 @@ import type {
   SectionId,
   Task,
   ToolCall,
+  Workspace,
+  WorkspaceTab,
 } from "./types";
 
 const STORAGE_KEY = "orbit.state.v1";
@@ -67,11 +70,216 @@ type Action =
   | { type: "runtime.add"; runtime: AgentRuntime }
   | { type: "runtime.patch"; id: string; patch: Partial<AgentRuntime> }
   | { type: "activity.add"; entry: ActivityEntry }
+  | { type: "tab.open"; section: SectionId; entityId: string | null; label: string }
+  | { type: "tab.close"; id: string }
+  | { type: "tab.activate"; id: string }
+  | { type: "tab.pin"; id: string }
+  | { type: "tab.reopen" }
+  | { type: "tab.step"; dir: 1 | -1 }
+  | { type: "tab.clear" }
+  | { type: "workspace.add"; name: string }
+  | { type: "workspace.switch"; id: string }
+  | { type: "workspace.remove"; id: string }
+  | { type: "workspace.rename"; id: string; name: string }
+  | { type: "navigate"; section: SectionId; selection?: Ctx["selection"] }
   | { type: "reset" }
   | { type: "wizard"; patch: Partial<OrbitState> };
 
 function touch(state: OrbitState): OrbitState {
   return { ...state };
+}
+
+type WorkspaceAction = Extract<
+  Action,
+  {
+    type:
+      | "tab.open"
+      | "tab.activate"
+      | "tab.close"
+      | "tab.pin"
+      | "tab.reopen"
+      | "tab.step"
+      | "tab.clear"
+      | "workspace.add"
+      | "workspace.switch"
+      | "workspace.remove"
+      | "workspace.rename"
+      | "navigate";
+  }
+>;
+
+function withWorkspace(state: OrbitState, workspace: Workspace): OrbitState {
+  return {
+    ...state,
+    workspaces: state.workspaces.map((w) => (w.id === workspace.id ? workspace : w)),
+  };
+}
+
+function currentWorkspace(state: OrbitState): Workspace {
+  return (
+    state.workspaces.find((w) => w.id === state.activeWorkspaceId) ??
+    state.workspaces[0] ??
+    createWorkspace("ws_default", "Main")
+  );
+}
+
+/**
+ * Tabs and workspaces are a projection concern: they decide *what is on screen*
+ * and never mutate domain data. Kept separate from the domain reducer so the
+ * two cannot entangle.
+ */
+function workspaceReducer(state: OrbitState, action: WorkspaceAction): OrbitState {
+  const ws = currentWorkspace(state);
+
+  switch (action.type) {
+    case "navigate": {
+      const tab: WorkspaceTab = {
+        id: tabId(action.section, null),
+        section: action.section,
+        entityId: null,
+        label: resolveTabLabel(state, action.section, null),
+        pinned: false,
+      };
+      const tabs = openTab(ws.tabs, tab);
+      return withWorkspace(state, {
+        ...ws,
+        tabs,
+        activeTabId: tab.id,
+        section: action.section,
+        selection: action.selection ?? {},
+      });
+    }
+    case "tab.open": {
+      const tab: WorkspaceTab = {
+        id: tabId(action.section, action.entityId),
+        section: action.section,
+        entityId: action.entityId,
+        label: action.label,
+        pinned: false,
+      };
+      const tabs = openTab(ws.tabs, tab);
+      const selection: Workspace["selection"] = {
+        projectId: action.section === "projects" ? action.entityId : ws.selection.projectId,
+        noteId: action.section === "knowledge" ? action.entityId : ws.selection.noteId,
+        fileId: action.section === "files" ? action.entityId : ws.selection.fileId,
+        automationId:
+          action.section === "automations" ? action.entityId : ws.selection.automationId,
+        taskId: action.section === "tasks" ? action.entityId : ws.selection.taskId,
+      };
+      return withWorkspace(state, {
+        ...ws,
+        tabs,
+        activeTabId: tab.id,
+        section: action.section,
+        selection,
+      });
+    }
+    case "tab.activate": {
+      const tab = ws.tabs.find((t) => t.id === action.id);
+      if (!tab) return state;
+      return withWorkspace(state, {
+        ...ws,
+        activeTabId: tab.id,
+        section: tab.section,
+        selection: {
+          projectId: tab.section === "projects" ? tab.entityId : null,
+          noteId: tab.section === "knowledge" ? tab.entityId : null,
+          fileId: tab.section === "files" ? tab.entityId : null,
+          automationId: tab.section === "automations" ? tab.entityId : null,
+          taskId: tab.section === "tasks" ? tab.entityId : null,
+        },
+      });
+    }
+    case "tab.close": {
+      const tab = ws.tabs.find((t) => t.id === action.id);
+      const { tabs, activeTabId } = closeTab(ws.tabs, action.id, ws.activeTabId);
+      const nextActive = tabs.find((t) => t.id === activeTabId);
+      return {
+        ...withWorkspace(state, {
+          ...ws,
+          tabs,
+          activeTabId,
+          section: nextActive?.section ?? ws.section,
+          selection: {
+            projectId: nextActive?.section === "projects" ? nextActive.entityId : null,
+            noteId: nextActive?.section === "knowledge" ? nextActive.entityId : null,
+            fileId: nextActive?.section === "files" ? nextActive.entityId : null,
+            automationId: nextActive?.section === "automations" ? nextActive.entityId : null,
+            taskId: nextActive?.section === "tasks" ? nextActive.entityId : null,
+          },
+        }),
+        closedTabs: tab ? [tab, ...state.closedTabs].slice(0, 12) : state.closedTabs,
+      };
+    }
+    case "tab.pin": {
+      return withWorkspace(state, {
+        ...ws,
+        tabs: ws.tabs.map((t) => (t.id === action.id ? { ...t, pinned: !t.pinned } : t)),
+      });
+    }
+    case "tab.reopen": {
+      const [tab, ...rest] = state.closedTabs;
+      if (!tab) return state;
+      return {
+        ...withWorkspace(state, {
+          ...ws,
+          tabs: openTab(ws.tabs, tab),
+          activeTabId: tab.id,
+          section: tab.section,
+        }),
+        closedTabs: rest,
+      };
+    }
+    case "tab.step": {
+      const activeTabId = stepTab(ws.tabs, ws.activeTabId, action.dir);
+      const tab = ws.tabs.find((t) => t.id === activeTabId);
+      if (!tab) return state;
+      return withWorkspace(state, { ...ws, activeTabId, section: tab.section });
+    }
+    case "tab.clear": {
+      const first = ws.tabs[0];
+      return withWorkspace(state, {
+        ...ws,
+        tabs: first ? [first] : [],
+        activeTabId: first?.id ?? null,
+        section: first?.section ?? ws.section,
+      });
+    }
+    case "workspace.add": {
+      const workspace = createWorkspace(uid("ws"), action.name, "home");
+      return {
+        ...state,
+        workspaces: [...state.workspaces, workspace],
+        activeWorkspaceId: workspace.id,
+      };
+    }
+    case "workspace.switch": {
+      if (!state.workspaces.some((w) => w.id === action.id)) return state;
+      return { ...state, activeWorkspaceId: action.id };
+    }
+    case "workspace.remove": {
+      if (state.workspaces.length <= 1) return state;
+      const remaining = state.workspaces.filter((w) => w.id !== action.id);
+      return {
+        ...state,
+        workspaces: remaining,
+        activeWorkspaceId:
+          state.activeWorkspaceId === action.id
+            ? remaining[0].id
+            : state.activeWorkspaceId,
+      };
+    }
+    case "workspace.rename": {
+      return {
+        ...state,
+        workspaces: state.workspaces.map((w) =>
+          w.id === action.id ? { ...w, name: action.name } : w,
+        ),
+      };
+    }
+    default:
+      return state;
+  }
 }
 
 function reducer(state: OrbitState, action: Action): OrbitState {
@@ -259,6 +467,19 @@ function reducer(state: OrbitState, action: Action): OrbitState {
       });
     case "activity.add":
       return touch({ ...state, activity: [action.entry, ...state.activity].slice(0, 200) });
+    case "tab.open":
+    case "tab.activate":
+    case "tab.close":
+    case "tab.pin":
+    case "tab.reopen":
+    case "tab.step":
+    case "tab.clear":
+    case "workspace.add":
+    case "workspace.switch":
+    case "workspace.remove":
+    case "workspace.rename":
+    case "navigate":
+      return workspaceReducer(state, action);
     case "wizard":
       return touch({ ...state, ...action.patch });
     case "reset":
@@ -268,13 +489,28 @@ function reducer(state: OrbitState, action: Action): OrbitState {
   }
 }
 
+export interface Selection {
+  projectId?: string | null;
+  taskId?: string | null;
+  noteId?: string | null;
+  fileId?: string | null;
+  automationId?: string | null;
+}
+
 interface Ctx {
   state: OrbitState;
   dispatch: React.Dispatch<Action>;
   section: SectionId;
   setSection: (s: SectionId) => void;
-  selection: { projectId?: string | null; taskId?: string | null; noteId?: string | null; fileId?: string | null; automationId?: string | null };
-  select: (patch: Ctx["selection"]) => void;
+  selection: Selection;
+  select: (patch: Selection) => void;
+  /** Open a specific entity as its own tab. */
+  openEntity: (section: SectionId, entityId: string, label?: string) => void;
+  workspace: Workspace;
+  tabs: WorkspaceTab[];
+  activeTabId: string | null;
+  closeTab: (id: string) => void;
+  reopenTab: () => void;
   commandOpen: boolean;
   setCommandOpen: (v: boolean) => void;
   hydrated: boolean;
@@ -284,18 +520,26 @@ const StoreContext = createContext<Ctx | null>(null);
 
 export function StoreProvider({
   children,
-  initialSection = "home",
+  initialSection,
 }: {
   children: React.ReactNode;
   /** Test/deep-link seam: lets the shell boot straight into a section. */
   initialSection?: SectionId;
 }) {
   const [state, dispatch] = useReducer(reducer, undefined, buildSeed);
-  const [section, setSectionRaw] = useState<SectionId>(initialSection);
-  const [selection, setSelection] = useState<Ctx["selection"]>({});
   const [commandOpen, setCommandOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const persisted = useRef(false);
+  const forcedSection = useRef<SectionId | null>(initialSection ?? null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  const workspace =
+    state.workspaces.find((w) => w.id === state.activeWorkspaceId) ??
+    state.workspaces[0];
+  const currentTab = workspace ? activeTab(workspace) : null;
+  const section: SectionId = forcedSection.current ?? currentTab?.section ?? "home";
+  const selection: Selection = workspace?.selection ?? {};
 
   useEffect(() => {
     try {
@@ -307,7 +551,7 @@ export function StoreProvider({
         }
       }
       const hash = window.location.hash.replace("#", "");
-      if (hash) setSectionRaw(hash as SectionId);
+      if (hash) dispatch({ type: "navigate", section: hash as SectionId });
     } catch {
       /* a corrupt blob must never lock the operator out */
     }
@@ -350,18 +594,66 @@ export function StoreProvider({
   }, [state.preferences.reducedMotion]);
 
   const setSection = useCallback((s: SectionId) => {
-    setSectionRaw(s);
+    forcedSection.current = null;
+    dispatch({ type: "navigate", section: s });
     window.history.replaceState(null, "", `#${s}`);
   }, []);
 
-  const select = useCallback((patch: Ctx["selection"]) => {
-    setSelection((prev) => ({ ...prev, ...patch }));
+  /**
+   * Selecting an entity opens (or focuses) a tab for it, so the workspace keeps
+   * the views you were actually using.
+   */
+  const select = useCallback(
+    (patch: Selection) => {
+      const entries = Object.entries(patch).filter(([, v]) => v !== undefined) as [
+        keyof Selection,
+        string | null,
+      ][];
+      if (!entries.length) return;
+      const [key, value] = entries[0];
+      const map: Record<keyof Selection, SectionId> = {
+        projectId: "projects",
+        taskId: "tasks",
+        noteId: "knowledge",
+        fileId: "files",
+        automationId: "automations",
+      };
+      const target = map[key];
+      if (value) {
+        dispatch({
+          type: "tab.open",
+          section: target,
+          entityId: value,
+          label: resolveTabLabel(stateRef.current, target, value),
+        });
+        window.history.replaceState(null, "", `#${target}`);
+      } else {
+        dispatch({ type: "navigate", section: target, selection: patch });
+      }
+    },
+    [],
+  );
+
+  const openEntity = useCallback((target: SectionId, entityId: string, label?: string) => {
+    dispatch({
+      type: "tab.open",
+      section: target,
+      entityId,
+      label: label ?? resolveTabLabel(stateRef.current, target, entityId),
+    });
+    window.history.replaceState(null, "", `#${target}`);
   }, []);
+
+  const closeTabAction = useCallback((id: string) => dispatch({ type: "tab.close", id }), []);
+  const reopenTab = useCallback(() => dispatch({ type: "tab.reopen" }), []);
 
   useEffect(() => {
     const onHash = () => {
       const hash = window.location.hash.replace("#", "") as SectionId;
-      if (hash) setSectionRaw(hash);
+      if (hash) {
+        forcedSection.current = null;
+        dispatch({ type: "navigate", section: hash });
+      }
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -375,11 +667,29 @@ export function StoreProvider({
       setSection,
       selection,
       select,
+      openEntity,
+      workspace,
+      tabs: workspace?.tabs ?? [],
+      activeTabId: workspace?.activeTabId ?? null,
+      closeTab: closeTabAction,
+      reopenTab,
       commandOpen,
       setCommandOpen,
       hydrated,
     }),
-    [state, section, setSection, selection, select, commandOpen, hydrated],
+    [
+      state,
+      section,
+      setSection,
+      selection,
+      select,
+      openEntity,
+      workspace,
+      closeTabAction,
+      reopenTab,
+      commandOpen,
+      hydrated,
+    ],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

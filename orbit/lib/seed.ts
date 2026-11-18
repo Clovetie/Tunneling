@@ -24,7 +24,7 @@ import type {
   ToolDefinition,
 } from "./types";
 
-export const SEED_VERSION = 7;
+export const SEED_VERSION = 8;
 
 export const identity: Identity = {
   name: "Clove",
@@ -719,6 +719,43 @@ export function buildSeed(): OrbitState {
     activeConversationId: "cnv-1",
     runtimes,
     activity,
+    workspaces: [
+      {
+        id: "ws_main",
+        name: "Main",
+        tabs: [
+          { id: "home:", section: "home", entityId: null, label: "Home", pinned: true },
+          { id: "assistant:", section: "assistant", entityId: null, label: "Assistant", pinned: false },
+        ],
+        activeTabId: "home:",
+        section: "home",
+        selection: {},
+      },
+      {
+        id: "ws_nightloop",
+        name: "NightLoop",
+        tabs: [
+          { id: "projects:prj-nightloop", section: "projects", entityId: "prj-nightloop", label: "NightLoop", pinned: false },
+          { id: "tasks:", section: "tasks", entityId: null, label: "Tasks", pinned: false },
+        ],
+        activeTabId: "projects:prj-nightloop",
+        section: "projects",
+        selection: { projectId: "prj-nightloop" },
+      },
+      {
+        id: "ws_bridge",
+        name: "Bridge ops",
+        tabs: [
+          { id: "projects:prj-bridge", section: "projects", entityId: "prj-bridge", label: "Bridge v6", pinned: false },
+          { id: "automations:", section: "automations", entityId: null, label: "Automations", pinned: false },
+        ],
+        activeTabId: "projects:prj-bridge",
+        section: "projects",
+        selection: { projectId: "prj-bridge" },
+      },
+    ],
+    activeWorkspaceId: "ws_main",
+    closedTabs: [],
     seedVersion: SEED_VERSION,
   };
 }

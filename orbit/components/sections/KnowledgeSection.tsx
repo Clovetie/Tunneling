@@ -17,7 +17,7 @@ import { cn, fmtDate, relative } from "@/lib/util";
 import { Badge, Button, Field, Input, Modal, Select, Textarea } from "@/components/ui/kit";
 
 export function KnowledgeSection() {
-  const { state, selection, select, setSection } = useOrbit();
+  const { state, selection, select, setSection, dispatch } = useOrbit();
   const actions = useActions();
   const [query, setQuery] = useState("");
   const [collection, setCollection] = useState<string | null>(null);
@@ -143,7 +143,10 @@ export function KnowledgeSection() {
         {selected ? (
           <div className="mx-auto max-w-3xl px-6 py-5">
             <button
-              onClick={() => select({ noteId: null })}
+              onClick={() => {
+                select({ noteId: null });
+                dispatch({ type: "navigate", section: "knowledge" });
+              }}
               className="mb-2 flex items-center gap-1 text-[11px] text-faint transition hover:text-ink md:hidden"
             >
               <ChevronRight className="h-3 w-3 rotate-180" /> All notes

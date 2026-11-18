@@ -48,7 +48,7 @@ python3 roblox-bridge/setup.py --tunnel --tunnel-token "$CF_TUNNEL_TOKEN" --publ
 
 | Directory | Contents |
 |---|---|
-| [`orbit/`](orbit/README.md) | **ORBIT — personal AI command center** (Next.js 15 + React 19 + Tailwind 4). Persistent shell, 11 workspace sections, 6-mode assistant with a permissioned tool layer, Supervisor + 7 specialist agents, grounded briefings, workflow engine and audit trail. `cd orbit && npm run dev` |
+| [`orbit/`](orbit/README.md) | **ORBIT — personal AI command center** (Next.js 15 + React 19 + Tailwind 4). Persistent shell with tabs, named workspaces and cross-entity search, 11 sections, 6-mode assistant with a permissioned tool layer, Supervisor + 7 specialist agents, grounded briefings, workflow engine and audit trail. `cd orbit && npm run dev` |
 | `roblox-bridge/` | MCP server (`mcp_core.py`, `mcp_server.py`), HTTP bridge & Web UI (`server.py`), tunnel supervisor (`tunnel_manager.py`), MRTR gate (`confirm_gate.py`), scoped tokens (`auth_core.py`), multi-agent bus (`bus_core.py`), metrics/SSE/SHA-256 audit log (`telemetry.py`), Studio plugin (`ArenaBridge.lua`), CLI (`arena_studio.py`, `ab.ps1`), mock Studio (`mock_studio.py`), and regression suite (`test_bridge_mcp.py`). |
 | `roblox-kit/` | Verified asset registry (`4,320` files), 28 Luau gameplay/UI/utility modules, 22 server/client systems, 6 UI templates, and 30 prefabs. |
 | `nightloop/` | Reference horror survival experience (8 entities + 6 night modifiers) + static Luau analysis & model-preflight workbench (`nightloop/tools/`). |

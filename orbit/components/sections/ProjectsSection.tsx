@@ -192,7 +192,10 @@ export function ProjectsSection() {
           <>
             <div className="border-b border-line px-6 py-4">
               <button
-                onClick={() => select({ projectId: null })}
+                onClick={() => {
+                  select({ projectId: null });
+                  dispatch({ type: "navigate", section: "projects" });
+                }}
                 className="mb-2 flex items-center gap-1 text-[11px] text-faint transition hover:text-ink md:hidden"
               >
                 <ChevronRight className="h-3 w-3 rotate-180" /> All projects

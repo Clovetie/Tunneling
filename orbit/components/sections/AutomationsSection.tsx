@@ -49,7 +49,7 @@ const TRIGGER_TONE: Record<TriggerKind, string> = {
 };
 
 export function AutomationsSection() {
-  const { state, selection, select, setSection } = useOrbit();
+  const { state, selection, select, setSection, dispatch } = useOrbit();
   const actions = useActions();
   const [createOpen, setCreateOpen] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
@@ -183,7 +183,10 @@ export function AutomationsSection() {
         {selected ? (
           <div className="mx-auto max-w-3xl px-6 py-5">
             <button
-              onClick={() => select({ automationId: null })}
+              onClick={() => {
+                select({ automationId: null });
+                dispatch({ type: "navigate", section: "automations" });
+              }}
               className="mb-2 flex items-center gap-1 text-[11px] text-faint transition hover:text-ink lg:hidden"
             >
               <ChevronRight className="h-3 w-3 rotate-180" /> All automations

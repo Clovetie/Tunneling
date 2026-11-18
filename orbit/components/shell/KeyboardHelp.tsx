@@ -9,10 +9,21 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
     rows: [
       ["⌘ K  /  Ctrl K", "Command palette"],
       ["/", "Command palette"],
+      ["⇧ ⌘ F", "Search all entities"],
       ["\\", "Collapse / expand sidebar"],
       ["]", "Show / hide intelligence panel"],
       ["?", "This help"],
       ["Esc", "Dismiss overlay"],
+    ],
+  },
+  {
+    title: "Tabs & panes",
+    rows: [
+      ["⌘ T", "New tab (Home)"],
+      ["⌘ W", "Close active tab"],
+      ["Ctrl ⇥", "Next tab"],
+      ["Ctrl ⇧ ⇥", "Previous tab"],
+      ["double-click", "Rename workspace"],
     ],
   },
   {
@@ -32,6 +43,12 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
       ["g p", "Projects"],
       ["g t", "Tasks"],
       ["g c", "Calendar"],
+      ["g k", "Knowledge"],
+      ["g f", "Files"],
+      ["g u", "Automations"],
+      ["g i", "Integrations"],
+      ["g l", "Activity"],
+      ["g s", "Settings"],
     ],
   },
 ];
@@ -45,7 +62,7 @@ export function KeyboardHelp({ open, onClose }: { open: boolean; onClose: () => 
       description="ORBIT is designed to be driven without touching the sidebar."
       width="max-w-xl"
     >
-      <div className="grid gap-5 sm:grid-cols-3">
+      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
         {GROUPS.map((g) => (
           <div key={g.title}>
             <div className="mb-2 text-[10px] font-medium tracking-[0.12em] text-faint uppercase">

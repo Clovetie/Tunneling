@@ -44,9 +44,12 @@ const NAV: { id: SectionId; label: string; icon: React.ElementType }[] = [
 
 export function Sidebar({
   onOpenSearch,
+  onDeepSearch,
   forceExpanded = false,
 }: {
   onOpenSearch: () => void;
+  /** Opens the cross-entity search overlay (Shift+Cmd+F). */
+  onDeepSearch?: () => void;
   /** The mobile drawer always renders the full rail regardless of desktop prefs. */
   forceExpanded?: boolean;
 }) {
@@ -56,6 +59,27 @@ export function Sidebar({
   const collapsed = forceExpanded ? false : state.preferences.sidebarCollapsed;
 
   // Any screen can open quick-create without owning the modal.
+  useEffect(() => {
+    const onStep = (e: Event) => {
+      const dir = (e as CustomEvent<{ dir: 1 | -1 }>).detail?.dir ?? 1;
+      dispatch({ type: "tab.step", dir });
+    };
+    const onClose = () => {
+      const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+      if (ws?.activeTabId) dispatch({ type: "tab.close", id: ws.activeTabId });
+    };
+    const onNew = () => dispatch({ type: "navigate", section: "home" });
+    window.addEventListener("orbit:tab-step", onStep);
+    window.addEventListener("orbit:tab-close", onClose);
+    window.addEventListener("orbit:tab-new", onNew);
+    return () => {
+      window.removeEventListener("orbit:tab-step", onStep);
+      window.removeEventListener("orbit:tab-close", onClose);
+      window.removeEventListener("orbit:tab-new", onNew);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     const onQuick = (e: Event) => {
       const kind = (e as CustomEvent<{ kind?: typeof quickKind }>).detail?.kind;
@@ -120,9 +144,10 @@ export function Sidebar({
                 <Plus className="h-4 w-4" />
               </button>
               <button
-                onClick={onOpenSearch}
+                onClick={onDeepSearch ?? onOpenSearch}
                 className="flex h-8 w-full items-center justify-center rounded-[7px] border border-line text-faint transition hover:text-ink"
-                aria-label="Search"
+                aria-label="Search everything"
+                title="Search everything (Shift+Cmd+F)"
               >
                 <Search className="h-4 w-4" />
               </button>
@@ -141,13 +166,14 @@ export function Sidebar({
                 </span>
               </button>
               <button
-                onClick={onOpenSearch}
+                onClick={onDeepSearch ?? onOpenSearch}
                 className="flex h-8 items-center gap-2 rounded-[7px] border border-line bg-surface px-2.5 text-[12px] text-faint transition hover:border-line-bright hover:text-muted"
+                title="Search all entities (Shift+Cmd+F)"
               >
                 <Search className="h-3.5 w-3.5" />
                 <span>Search everything</span>
                 <span className="ml-auto flex items-center gap-0.5 text-[10px]">
-                  <Command className="h-2.5 w-2.5" />/
+                  <Command className="h-2.5 w-2.5" />⇧F
                 </span>
               </button>
             </>

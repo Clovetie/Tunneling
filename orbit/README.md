@@ -24,7 +24,9 @@ npm run build      # production build
 
 | Area | State | Where |
 |---|---|---|
-| Persistent app shell (sidebar, top bar, resizable right panel, command palette, shortcuts) | working | `components/shell/` |
+| Persistent app shell (sidebar, top bar, tab strip, resizable right panel, command palette, shortcuts) | working | `components/shell/` |
+| Tabs & workspaces: persistent tabs, pinned tabs, reopen-closed, multiple named workspaces | working | `lib/tabs.ts`, `components/shell/TabStrip.tsx` |
+| Cross-entity search overlay: 7 entity types, scope filters, shared ranking | working | `lib/search.ts`, `components/shell/SearchOverlay.tsx` |
 | Home: overview, intelligence feed, quick actions, grounded daily briefing | working, derived from state | `components/sections/HomeSection.tsx`, `lib/briefing.ts` |
 | AI Assistant: 6 modes, streaming, conversation history, folders, pin/rename/archive, context controls, attachments | working | `components/sections/AssistantSection.tsx`, `lib/engine.ts` |
 | Tool system: id, schema, permission, approval gate, validation, audit log | working, enforced | `lib/tools.ts`, `lib/seed.ts` (`tools`) |
@@ -109,8 +111,31 @@ limited to 150–280ms easing with a full `prefers-reduced-motion` and in-app ov
 on text, no glow, no "AI dashboard" chrome. Dense by default: 11–13px UI type, 4px spacing rhythm,
 information-forward cards.
 
-Keyboard: `⌘K` palette, `/` palette, `\` sidebar, `]` right panel, `?` help, `⌘1–6` mode switch,
-`⌘↵` send, `g h/a/p/t/c` navigation.
+### Tabs and workspaces
+
+Opening an entity (a project, task, note, automation, conversation) opens a **tab** instead of
+replacing the view. Tabs are per-workspace, persist across reloads, can be pinned so they survive
+the 12-tab cap, and a closed tab can be reopened from the strip. Each tab records the section and
+the entity it points at, plus the scroll-independent view state; the sidebar's `section` and the
+domain `selection` are *derived* from the active tab, never duplicated.
+
+Workspaces are named tab sets with their own active tab — e.g. `Main`, `NightLoop`, `Bridge ops`.
+Switching a workspace swaps the whole tab strip and restores whatever that workspace was last
+looking at. This is projection state, so it lives in its own reducer (`workspaceReducer`) that runs
+before domain actions and can never mutate projects, tasks or notes.
+
+### Search
+
+`⌘K` is the command palette (verbs). `⌘/` — or the sidebar's deep-search field — is the **search
+overlay**: one query across projects, tasks, notes, files, automations, conversations and agents,
+grouped by type with a scope chip row and `↑ ↓ ↵ esc` navigation. Ranking lives in `lib/search.ts`
+so it is covered by the test suite: every term must match, first-position and whole-word-prefix
+hits are weighted up, and a title match beats a body match. An empty result says so — the overlay
+will not invent a hit.
+
+Keyboard: `⌘K` palette, `/` palette, `⌘/` search, `\` sidebar, `]` right panel, `?` help,
+`⌘1–6` mode switch, `⌘↵` send, `⌘T` new tab, `⌘W` close tab, `⌘⇧T` reopen tab, `⌃⇥` / `⌃⇧⇥`
+step tabs, `g h/a/p/t/c/k/f/w/i/l/s` navigation.
 
 ---
 

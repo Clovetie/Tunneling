@@ -1,34 +1,28 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/util";
 import { StoreProvider, useOrbit } from "@/lib/store";
+import type { SectionId } from "@/lib/types";
 import { Sidebar } from "./Sidebar";
 import { RightPanel } from "./RightPanel";
 import { CommandPalette } from "./CommandPalette";
 import { Sections } from "../sections/Sections";
 import { TopBar } from "./TopBar";
+import { TabStrip } from "./TabStrip";
+import { SearchOverlay } from "./SearchOverlay";
 import { KeyboardHelp } from "./KeyboardHelp";
 
 function Frame() {
   const { commandOpen, setCommandOpen, state, section, setSection } = useOrbit();
   const [help, setHelp] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
-
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 767px)");
-    const apply = () => setIsMobile(mq.matches);
-    apply();
-    mq.addEventListener("change", apply);
-    return () => mq.removeEventListener("change", apply);
-  }, []);
-
-  // The desktop sidebar is hidden below md; the drawer replaces it there.
-  void isMobile;
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const openCmd = useCallback(() => setCommandOpen(true), [setCommandOpen]);
+  // `g` is a chord prefix: press g, then a section key within ~1.1s.
+  const chordArmed = useRef(false);
+  const chordTimer = useRef<number | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -50,6 +44,11 @@ function Frame() {
         setCommandOpen(true);
         return;
       }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        setSearchOpen(true);
+        return;
+      }
       if (e.key === "?" && !typing) {
         e.preventDefault();
         setHelp((v) => !v);
@@ -63,23 +62,65 @@ function Frame() {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("orbit:toggle-panel"));
       }
+      // Ctrl/Cmd+Tab cycles tabs; Ctrl/Cmd+W closes the active one.
+      if ((e.metaKey || e.ctrlKey) && e.key === "Tab") {
+        e.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent("orbit:tab-step", { detail: { dir: e.shiftKey ? -1 : 1 } }),
+        );
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "w") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("orbit:tab-close"));
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("orbit:tab-new"));
+      }
+      // g-chord navigation, as advertised in the shortcuts dialog.
+      if (!typing && e.key === "g") {
+        chordArmed.current = true;
+        if (chordTimer.current) window.clearTimeout(chordTimer.current);
+        chordTimer.current = window.setTimeout(() => {
+          chordArmed.current = false;
+          chordTimer.current = null;
+        }, 1100);
+        return;
+      }
+      if (!typing && chordArmed.current) {
+        const map: Record<string, SectionId> = {
+          h: "home",
+          a: "assistant",
+          p: "projects",
+          t: "tasks",
+          c: "calendar",
+          k: "knowledge",
+          f: "files",
+          u: "automations",
+          i: "integrations",
+          l: "activity",
+          s: "settings",
+        };
+        const target = map[e.key.toLowerCase()];
+        chordArmed.current = false;
+        if (chordTimer.current) {
+          window.clearTimeout(chordTimer.current);
+          chordTimer.current = null;
+        }
+        if (target) {
+          e.preventDefault();
+          setSection(target);
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setCommandOpen]);
-
-  useEffect(() => {
-    const onToggle = () => {
-      // handled by store via dispatch in TopBar; kept for external dispatch
-    };
-    window.addEventListener("orbit:toggle-sidebar", onToggle);
-    return () => window.removeEventListener("orbit:toggle-sidebar", onToggle);
-  }, []);
+  }, [setCommandOpen, setSection]);
 
   return (
     <div className="flex h-[100dvh] w-full overflow-hidden bg-void">
       <div className="hidden md:flex">
-        <Sidebar onOpenSearch={() => setCommandOpen(true)} />
+        <Sidebar onOpenSearch={() => setCommandOpen(true)} onDeepSearch={() => setSearchOpen(true)} />
       </div>
 
       {mobileNav && (
@@ -105,6 +146,7 @@ function Frame() {
           onOpenSearch={() => setCommandOpen(true)}
           onOpenNav={() => setMobileNav(true)}
         />
+        <TabStrip />
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-hidden">
             <Sections />
@@ -112,7 +154,11 @@ function Frame() {
           <RightPanel />
         </div>
       </div>
-      <CommandPalette open={commandOpen || searchOpen} onClose={() => { setCommandOpen(false); setSearchOpen(false); }} />
+      <CommandPalette
+        open={commandOpen}
+        onClose={() => setCommandOpen(false)}
+      />
+      <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
       <KeyboardHelp open={help} onClose={() => setHelp(false)} />
     </div>
   );

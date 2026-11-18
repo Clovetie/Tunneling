@@ -295,6 +295,32 @@ export interface ToolDefinition {
   validate: (result: string) => boolean;
 }
 
+/* ------------------------------------------------------- tabs & workspaces */
+
+export interface WorkspaceTab {
+  /** `${section}:${entityId ?? ""}` — stable, so re-opening focuses instead of duplicating. */
+  id: string;
+  section: SectionId;
+  entityId: string | null;
+  label: string;
+  pinned: boolean;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  tabs: WorkspaceTab[];
+  activeTabId: string | null;
+  section: SectionId;
+  selection: {
+    projectId?: string | null;
+    taskId?: string | null;
+    noteId?: string | null;
+    fileId?: string | null;
+    automationId?: string | null;
+  };
+}
+
 /* ------------------------------------------------------------------ meta */
 
 export interface ActivityEntry {
@@ -359,6 +385,9 @@ export interface OrbitState {
   integrations: Integration[];
   conversations: Conversation[];
   activeConversationId: string | null;
+  workspaces: Workspace[];
+  activeWorkspaceId: string;
+  closedTabs: WorkspaceTab[];
   runtimes: AgentRuntime[];
   activity: ActivityEntry[];
   seedVersion: number;

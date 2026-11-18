@@ -39,6 +39,10 @@ import { Sidebar } from "../components/shell/Sidebar";
 import { RightPanel } from "../components/shell/RightPanel";
 import { TopBar } from "../components/shell/TopBar";
 import { CommandPalette } from "../components/shell/CommandPalette";
+import { TabStrip } from "../components/shell/TabStrip";
+import { SearchOverlay } from "../components/shell/SearchOverlay";
+import { activeTab, closeTab, openTab, resolveTabLabel, stepTab, tabId } from "../lib/tabs";
+import { parseTerms, scoreItem, scoreText } from "../lib/search";
 import { buildSeed, tools } from "../lib/seed";
 import { buildBriefing, deriveFeed } from "../lib/briefing";
 import { planFor } from "../lib/engine";
@@ -130,6 +134,8 @@ function main() {
     ["TopBar", <TopBar onOpenSearch={() => {}} />],
     ["RightPanel", <RightPanel />],
     ["CommandPalette", <CommandPalette open onClose={() => {}} />],
+    ["TabStrip", <TabStrip />],
+    ["SearchOverlay", <SearchOverlay open onClose={() => {}} />],
   ];
   for (const [name, node] of shells) {
     try {
@@ -284,6 +290,102 @@ function main() {
       actions,
     );
     ok("unverifiable read reports failure", !noSources.ok || !noSources.audit.verified);
+  }
+
+  process.stdout.write("\n  tab & workspace algebra\n");
+  {
+    const s = buildSeed();
+    const base = s.workspaces[0].tabs;
+    const label = resolveTabLabel(s, "projects", "prj-nightloop");
+    ok("labels resolve from live state", label === "NightLoop", label);
+
+    const t = {
+      id: tabId("projects", "prj-nightloop"),
+      section: "projects" as const,
+      entityId: "prj-nightloop",
+      label,
+      pinned: false,
+    };
+    const once = openTab(base, t);
+    const twice = openTab(once, t);
+    ok("opening an existing tab focuses it, never duplicates", twice.length === once.length, `${once.length} → ${twice.length}`);
+    ok("opened tab is present", twice.some((x) => x.id === t.id));
+
+    const capped = Array.from({ length: 14 }).reduce<typeof base>(
+      (acc, _, i) =>
+        openTab(acc, {
+          id: tabId("tasks", `tsk-${i}`),
+          section: "tasks",
+          entityId: `tsk-${i}`,
+          label: `t${i}`,
+          pinned: false,
+        }),
+      [],
+      12,
+    );
+    ok("tab count is capped", capped.length <= 12, `${capped.length} tabs`);
+
+    const pinnedFirst = openTab(
+      [{ ...t, pinned: true }],
+      { id: tabId("files", "fl-1"), section: "files", entityId: "fl-1", label: "f", pinned: false },
+    );
+    ok("pinned tabs survive the cap", pinnedFirst.some((x) => x.pinned));
+
+    const closing = closeTab(twice, t.id, t.id);
+    ok("closing the active tab promotes a neighbour", closing.activeTabId !== t.id);
+    ok("closing removes exactly one tab", closing.tabs.length === twice.length - 1);
+
+    const noneLeft = closeTab([t], t.id, t.id);
+    ok("closing the last tab yields no active tab", noneLeft.activeTabId === null && noneLeft.tabs.length === 0);
+
+    const stepA = stepTab(twice, twice[0].id, 1);
+    const stepB = stepTab(twice, twice[0].id, -1);
+    ok("tab stepping wraps in both directions", stepA !== stepB && stepA !== null, `${stepA} / ${stepB}`);
+
+    ok("three workspaces seeded", s.workspaces.length === 3, `${s.workspaces.length}`);
+    ok(
+      "every workspace has a valid active tab",
+      s.workspaces.every((w) => w.tabs.some((x) => x.id === w.activeTabId)),
+    );
+    ok("activeTab never returns undefined", s.workspaces.every((w) => Boolean(activeTab(w))));
+    ok(
+      "workspace selection matches its active tab",
+      s.workspaces.every((w) => {
+        const at = activeTab(w);
+        return at.section !== "projects" || w.selection.projectId === at.entityId;
+      }),
+    );
+  }
+
+  process.stdout.write("\n  cross-entity search ranking\n");
+  {
+    const st = buildSeed();
+    const t = (...w: string[]) => w;
+
+    ok("title match outranks body match",
+      scoreItem({ title: "NightLoop", body: "horror survival" }, t("nightloop")) >
+      scoreItem({ title: "Horror survival", body: "notes about nightloop" }, t("nightloop")));
+
+    ok("every term must match", scoreText("balance matrix", t("balance", "absentterm")) === 0);
+    ok("case-insensitive", scoreText("NIGHTLOOP", t("nightloop")) > 0);
+    ok("early match scores higher", scoreText("tunnel health", t("tunnel")) > scoreText("xxxx tunnel", t("tunnel")));
+    ok("whole-word beats substring", scoreText("bridge ops", t("bridge")) > scoreText("abridged", t("bridge")));
+    ok("repetition adds a little, not a lot", scoreText("x x x x x", t("x")) - scoreText("x", t("x")) <= 3);
+    ok("regex metacharacters are safe", scoreText("v1.2 release", t("1.2")) > 0);
+    ok("empty query scores nothing", scoreText("anything", parseTerms("")) === 0);
+    ok("single-char terms are ignored", parseTerms("a b cd") .join(",") === "cd");
+
+    const termSet = parseTerms("bridge");
+    const projectHits = st.projects
+      .map((p) => ({ name: p.name, s: scoreItem({ title: p.name, body: `${p.description} ${p.tags.join(" ")}` }, termSet) }))
+      .filter((h) => h.s > 0)
+      .sort((a, b) => b.s - a.s);
+    ok("search finds the bridge project", projectHits[0]?.name === "Arena Bridge v6 Ops", projectHits.map((h) => h.name).join(", "));
+
+    const noteHits = st.notes.filter(
+      (n) => scoreItem({ title: n.title, body: `${n.body} ${n.tags.join(" ")}` }, parseTerms("architecture")) > 0,
+    );
+    ok("search finds notes by body text", noteHits.length > 0, noteHits.map((n) => n.title).join(", "));
   }
 
   process.stdout.write(
