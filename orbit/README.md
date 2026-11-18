@@ -133,12 +133,42 @@ so it is covered by the test suite: every term must match, first-position and wh
 hits are weighted up, and a title match beats a body match. An empty result says so — the overlay
 will not invent a hit.
 
-Keyboard: `⌘K` palette, `/` palette, `⌘/` search, `\` sidebar, `]` right panel, `?` help,
-`⌘1–6` mode switch, `⌘↵` send, `⌥T` new tab, `⌥⇧T` reopen tab, `⌥W` close tab,
-`⌃⇥` / `⌃⇧⇥` step tabs, `g h/a/p/t/c/k/f/u/i/l/s` navigation.
+---
 
-Tab bindings use `Alt`, not `Cmd`: browsers intercept `⌘T` and `⌘W` themselves and close the
-page before the app sees the key, so the app does not claim them.
+### A note on Windows
+
+ORBIT targets **Windows**, so Windows is the default everywhere and every hint is spelled out in
+Windows terms (`Ctrl K`, `Shift Enter`, `Alt PgDn`) rather than Mac glyphs. Platform is detected
+from the UA (`lib/keys.ts`) and provided by `lib/platform.tsx`; SSR renders the Windows default and
+the client corrects itself for Mac, so there is never a hydration mismatch.
+
+Chromium **reserves** a set of chords for itself — `Ctrl+T`, `Ctrl+W`, `Ctrl+Shift+T`, `Ctrl+N`,
+`Ctrl+Shift+N`, `Ctrl+Tab`, `Ctrl+Shift+Tab` and `Ctrl+1…8`. Those are consumed by the browser
+before JavaScript runs, so binding them in a normal tab would be a promise ORBIT cannot keep. They
+are listed in `RESERVED_WINDOWS`, and a test asserts the help sheet advertises none of them.
+
+What that means in practice:
+
+| Action | In a browser tab | Installed as an app window |
+|---|---|---|
+| New tab | `Alt T` | `Ctrl T` |
+| Close tab | `Alt W` | `Ctrl W` |
+| Reopen closed tab | `Alt Shift T` | `Ctrl Shift T` |
+| Next / previous tab | `Alt PgDn` / `Alt PgUp` | same |
+| Switch assistant mode | `Alt 1–6` | same |
+| Command palette | `Ctrl K` | `Ctrl K` |
+
+`Ctrl+K` and `Ctrl+Shift+F` are *not* reserved, so the palette and deep search keep the chord people
+expect. `Ctrl+Tab` is reserved, which is why tab stepping is `Alt+PgDn` / `Alt+PgUp` on Windows —
+`Alt+Tab` would be the OS window switcher.
+
+### Getting real `Ctrl+T` / `Ctrl+W` on Windows
+
+Install ORBIT as an app. `app/manifest.ts` makes it installable;
+in Edge or Chrome open the app and choose *Install this site as an app* (or *Apps → Install this
+site as an app*). A Chromium app window is exempt from the reserved list, so the app detects
+`display-mode: standalone` at runtime and both the handler and the help sheet switch to the `Ctrl`
+chords automatically. Nothing needs to be configured.
 
 ---
 

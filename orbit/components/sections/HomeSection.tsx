@@ -34,9 +34,11 @@ import {
   sortByPriority,
 } from "@/lib/util";
 import { Badge, Button, Progress, Ring, StatusPill } from "@/components/ui/kit";
+import { chord } from "@/lib/keys";
+import { usePlatform } from "@/lib/platform";
 
 const QUICK = [
-  { id: "ask", label: "Ask AI", icon: Sparkles, hint: "⌘K" },
+  { id: "ask", label: "Ask AI", icon: Sparkles, hint: "mod+k" },
   { id: "task", label: "Create task", icon: ListChecks },
   { id: "project", label: "Create project", icon: FolderKanban },
   { id: "upload", label: "Upload file", icon: Upload },
@@ -47,6 +49,7 @@ const QUICK = [
 
 export function HomeSection() {
   const { state, setSection, select, setCommandOpen } = useOrbit();
+  const { platform } = usePlatform();
   const actions = useActions();
   const [now, setNow] = useState(new Date());
   const [briefingOpen, setBriefingOpen] = useState(true);
@@ -174,7 +177,7 @@ export function HomeSection() {
                 {q.label}
                 {q.hint && (
                   <span className="ml-0.5 rounded border border-line px-1 text-[9px] text-faint">
-                    {q.hint}
+                    {q.hint === "mod+k" ? chord(platform, "mod", "k") : q.hint}
                   </span>
                 )}
               </button>

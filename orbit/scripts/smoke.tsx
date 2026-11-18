@@ -42,7 +42,8 @@ import { CommandPalette } from "../components/shell/CommandPalette";
 import { TabStrip } from "../components/shell/TabStrip";
 import { SearchOverlay } from "../components/shell/SearchOverlay";
 import { KeyboardHelp } from "../components/shell/KeyboardHelp";
-import { GO_MAP } from "../lib/keys";
+import { PlatformProvider } from "../lib/platform";
+import { GO_MAP, RESERVED_WINDOWS, chord, detectPlatform, helpGroups, isAppWindow } from "../lib/keys";
 import { SECTION_LABEL } from "../lib/tabs";
 import { activeTab, closeTab, openTab, resolveTabLabel, stepTab, tabId } from "../lib/tabs";
 import { parseTerms, scoreItem, scoreText } from "../lib/search";
@@ -360,6 +361,24 @@ function main() {
     );
   }
 
+  process.stdout.write("\n  platform detection\n");
+  {
+    ok("windows UA → win",
+      detectPlatform("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131") === "win");
+    ok("mac UA → mac",
+      detectPlatform("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15") === "mac");
+    ok("linux UA defaults to win (no mac glyphs for non-mac)",
+      detectPlatform("Mozilla/5.0 (X11; Linux x86_64)") === "win");
+    ok("unknown UA defaults to win", detectPlatform(undefined) === "win");
+
+    ok("windows chord reads Ctrl K", chord("win", "mod", "k") === "Ctrl K", chord("win", "mod", "k"));
+    ok("mac chord reads ⌘K", chord("mac", "mod", "k") === "⌘K", chord("mac", "mod", "k"));
+    ok("windows modifier names are spelled out",
+      chord("win", "mod", "shift", "f") === "Ctrl Shift F", chord("win", "mod", "shift", "f"));
+    ok("no mac glyph leaks into windows output",
+      !/[⌘⌥⌃⇧⇥⇞⇟↵]/.test(chord("win", "mod", "alt", "shift", "enter", "tab")));
+  }
+
   process.stdout.write("\n  keyboard help matches the real bindings\n");
   {
     // The help sheet once advertised `g w` for Automations while the handler
@@ -371,16 +390,58 @@ function main() {
       Object.values(GO_MAP).every((id) => Boolean(SECTION_LABEL[id])), Object.values(GO_MAP).join(","));
     ok("g-map has no browser-reserved letters", !("w" in GO_MAP) && !("n" in GO_MAP));
 
-    const help = renderToString(<KeyboardHelp open onClose={() => {}} />);
+    const win = helpGroups("win", { appWindow: false });
+    const mac = helpGroups("mac", { appWindow: false });
+    const app = helpGroups("win", { appWindow: true });
+    const flat = (g: typeof win) => g.flatMap((x) => x.rows).map(([k]) => k);
+    const winKeys = flat(win), macKeys = flat(mac), appKeys = flat(app);
+
+    ok("every help row is unique per platform", new Set(winKeys).size === winKeys.length);
+    ok("mac help renders ⌘, windows help does not",
+      macKeys.some((k) => k.includes("⌘")) && !winKeys.some((k) => k.includes("⌘")));
+
+    // The core Windows guarantee: nothing advertised may be a Chromium-reserved
+    // chord. Ctrl+K and Ctrl+Shift+F are interceptable, so they are allowed.
+    const normalize = (k: string) => {
+      const parts = k.toLowerCase().trim().split(/\s+/);
+      return parts.length < 2 ? parts[0] ?? "" : parts.join("+");
+    };
+    // Guard against the normalizer silently neutering the check below.
+    ok("normalizer maps chords to the reserved vocabulary",
+      normalize("Ctrl Shift T") === "ctrl+shift+t" && normalize("Ctrl W") === "ctrl+w",
+      `${normalize("Ctrl Shift T")} / ${normalize("Ctrl W")}`);
+    ok("reserved list would catch Ctrl+T if it were advertised",
+      RESERVED_WINDOWS.has(normalize("Ctrl T")));
+
+    const reservedHits = winKeys.filter((k) => RESERVED_WINDOWS.has(normalize(k)));
+    ok("windows help advertises no browser-reserved chord",
+      reservedHits.length === 0, reservedHits.join(", "));
+    ok("windows mode switch is Alt+1-6, not Ctrl+1-6",
+      winKeys.includes("Alt 1-6") && !winKeys.includes("Ctrl 1-6"),
+      winKeys.filter((k) => /1-6/.test(k)).join(", "));
+    ok("windows help explicitly does not offer Ctrl+Tab",
+      !winKeys.some((k) => /ctrl.*tab/i.test(k)), winKeys.filter((k) => /tab/i.test(k)).join(", "));
+    ok("windows steps tabs with Alt+PgDn / Alt+PgUp",
+      winKeys.includes("Alt PgDn") && winKeys.includes("Alt PgUp"), winKeys.filter((k) => /pg/i.test(k)).join(", "));
+    ok("windows uses Alt+T / Alt+W outside an app window",
+      winKeys.includes("Alt T") && winKeys.includes("Alt W"));
+    ok("app window offers real Ctrl+T / Ctrl+W instead",
+      appKeys.includes("Ctrl T") && appKeys.includes("Ctrl W") && !appKeys.includes("Alt T"));
+    ok("mac keeps ⌘T out of the help sheet (browser steals it)",
+      !macKeys.includes("⌘T"), macKeys.filter((k) => k.startsWith("⌘")).join(", "));
+
+    const help = renderToString(
+      <PlatformProvider>
+        <KeyboardHelp open onClose={() => {}} />
+      </PlatformProvider>,
+    );
     for (const [key, id] of Object.entries(GO_MAP)) {
-      const row = `g ${key}`;
-      ok(`help renders "${row}" → ${SECTION_LABEL[id]}`,
-        help.includes(row) && help.includes(SECTION_LABEL[id]));
+      ok(`help renders "g ${key}" → ${SECTION_LABEL[id]}`,
+        help.includes(`g ${key}`) && help.includes(SECTION_LABEL[id]));
     }
-    ok("help does not advertise Cmd+T", !help.includes("⌘ T"));
-    ok("help does not advertise Cmd+W", !help.includes("⌘ W"));
-    ok("help advertises the Alt tab bindings", help.includes("Alt T") && help.includes("Alt W"));
     ok("help documents search overlay", help.toLowerCase().includes("search all entities"));
+    ok("SSR help defaults to Windows labels (no hydration mismatch)",
+      help.includes("Ctrl K") && !help.includes("⌘K"));
   }
 
   process.stdout.write("\n  cross-entity search ranking\n");

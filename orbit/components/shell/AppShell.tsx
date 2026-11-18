@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/util";
 import { StoreProvider, useOrbit } from "@/lib/store";
 import { GO_MAP } from "@/lib/keys";
+import { PlatformProvider, usePlatform } from "@/lib/platform";
 import type { SectionId } from "@/lib/types";
 import { Sidebar } from "./Sidebar";
 import { RightPanel } from "./RightPanel";
@@ -16,6 +17,7 @@ import { KeyboardHelp } from "./KeyboardHelp";
 
 function Frame() {
   const { commandOpen, setCommandOpen, state, section, setSection } = useOrbit();
+  const { platform, appWindow } = usePlatform();
   const [help, setHelp] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -63,21 +65,45 @@ function Frame() {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("orbit:toggle-panel"));
       }
-      // Ctrl/Cmd+Tab cycles tabs; Ctrl/Cmd+W closes the active one.
-      if ((e.metaKey || e.ctrlKey) && e.key === "Tab") {
+      // Tab stepping. Cmd+Tab is the macOS app switcher and Ctrl+Tab is
+      // reserved by Chrome on Windows, so Windows uses Alt+PgUp/PgDn — which
+      // the page reliably receives in a normal browser tab.
+      const onMac = platform === "mac";
+      const stepMod = onMac ? e.metaKey && !e.ctrlKey && !e.altKey : false;
+      const stepAlt = !onMac && e.altKey && !e.ctrlKey && !e.metaKey;
+      if (onMac && stepMod && e.key === "Tab") {
         e.preventDefault();
         window.dispatchEvent(
           new CustomEvent("orbit:tab-step", { detail: { dir: e.shiftKey ? -1 : 1 } }),
         );
       }
-      // Alt, not Cmd: browsers reserve Cmd/Ctrl+T and Cmd/Ctrl+W for tabs and
-      // close them before the page ever sees the key, so advertising those
-      // would be a promise the app cannot keep.
-      if (e.altKey && !e.metaKey && !e.ctrlKey && e.key.toLowerCase() === "w") {
+      if (stepAlt && (e.key === "PageDown" || e.key === "PageUp")) {
+        e.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent("orbit:tab-step", { detail: { dir: e.key === "PageDown" ? 1 : -1 } }),
+        );
+      }
+      // Tab create/close. In a normal browser tab Chrome reserves Ctrl+T and
+      // Ctrl+W and closes the page before the app sees the key, so the default
+      // is Alt+T / Alt+W. Inside an installed Chromium app window those Ctrl
+      // chords reach the page again, so both are accepted when we detect one.
+      const tabMod = (e.metaKey || e.ctrlKey) && !e.altKey;
+      const tabAlt = e.altKey && !e.metaKey && !e.ctrlKey;
+      if (appWindow && tabMod && e.key.toLowerCase() === "w") {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("orbit:tab-close"));
       }
-      if (e.altKey && !e.metaKey && !e.ctrlKey && e.key.toLowerCase() === "t") {
+      if (appWindow && tabMod && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent(e.shiftKey ? "orbit:tab-reopen" : "orbit:tab-new"),
+        );
+      }
+      if (tabAlt && e.key.toLowerCase() === "w") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("orbit:tab-close"));
+      }
+      if (tabAlt && e.key.toLowerCase() === "t") {
         e.preventDefault();
         window.dispatchEvent(
           new CustomEvent(e.shiftKey ? "orbit:tab-reopen" : "orbit:tab-new"),
@@ -108,7 +134,7 @@ function Frame() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [setCommandOpen, setSection]);
+  }, [setCommandOpen, setSection, platform, appWindow]);
 
   return (
     <div className="flex h-[100dvh] w-full overflow-hidden bg-void">
@@ -160,7 +186,9 @@ function Frame() {
 export function AppShell() {
   return (
     <StoreProvider>
-      <Frame />
+      <PlatformProvider>
+        <Frame />
+      </PlatformProvider>
     </StoreProvider>
   );
 }

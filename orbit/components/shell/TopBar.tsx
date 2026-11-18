@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { chord } from "@/lib/keys";
+import { usePlatform } from "@/lib/platform";
 import {
   Bell,
   ChevronRight,
@@ -38,6 +40,7 @@ export function TopBar({
   onOpenNav?: () => void;
 }) {
   const { section, state, dispatch, setCommandOpen } = useOrbit();
+  const { platform } = usePlatform();
   const [clock, setClock] = useState("--:--:--");
   const [date, setDate] = useState("");
 
@@ -112,7 +115,7 @@ export function TopBar({
           </span>
         </button>
 
-        <HoverTip content="Command palette (⌘K)">
+        <HoverTip content={`Command palette (${chord(platform, "mod", "k")})`}>
           <button
             onClick={() => setCommandOpen(true)}
             className="flex h-7 w-7 items-center justify-center rounded-[6px] text-faint transition hover:bg-raised hover:text-ink"

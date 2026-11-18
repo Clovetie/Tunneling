@@ -36,6 +36,8 @@ import {
 import { useOrbit, useActions } from "@/lib/store";
 import { executeTool } from "@/lib/tools";
 import { planFor } from "@/lib/engine";
+import { chord } from "@/lib/keys";
+import { usePlatform } from "@/lib/platform";
 import { cn, fmtTime, relative, sleep, uid } from "@/lib/util";
 import { Badge, Button, HoverTip, Input, Modal, Textarea } from "@/components/ui/kit";
 import type {
@@ -74,6 +76,7 @@ const SUGGESTIONS = [
 
 export function AssistantSection() {
   const { state, dispatch, setSection, select } = useOrbit();
+  const { platform } = usePlatform();
   const actions = useActions();
   const [mode, setMode] = useState<Mode>("chat");
   const [input, setInput] = useState("");
@@ -818,7 +821,13 @@ export function AssistantSection() {
                     e.preventDefault();
                     send();
                   }
-                  if ((e.metaKey || e.ctrlKey) && /^[1-6]$/.test(e.key)) {
+                  // Ctrl+1-8 switches Chrome tabs on Windows, so that is Alt
+                  // there; only macOS can use the Cmd number row.
+                  const modeChord =
+                    platform === "mac"
+                      ? (e.metaKey || e.ctrlKey) && !e.altKey
+                      : e.altKey && !e.metaKey && !e.ctrlKey;
+                  if (modeChord && /^[1-6]$/.test(e.key)) {
                     e.preventDefault();
                     setMode(MODES[Number(e.key) - 1].id);
                   }
@@ -867,7 +876,7 @@ export function AssistantSection() {
                   ) : (
                     <>
                       <span className="hidden text-[10px] text-faint sm:block">
-                        ⌘↵ to send
+                        {chord(platform, "mod", "enter")} to send
                       </span>
                       <Button
                         size="sm"

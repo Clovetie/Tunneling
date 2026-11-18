@@ -1,6 +1,8 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { chord } from "@/lib/keys";
+import { usePlatform } from "@/lib/platform";
 import {
   Activity,
   Boxes,
@@ -54,6 +56,7 @@ export function Sidebar({
   forceExpanded?: boolean;
 }) {
   const { state, section, setSection, dispatch, select } = useOrbit();
+  const { platform } = usePlatform();
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickKind, setQuickKind] = useState<"task" | "project" | "file" | "reminder" | undefined>();
   const collapsed = forceExpanded ? false : state.preferences.sidebarCollapsed;
@@ -147,7 +150,7 @@ export function Sidebar({
                 onClick={onDeepSearch ?? onOpenSearch}
                 className="flex h-8 w-full items-center justify-center rounded-[7px] border border-line text-faint transition hover:text-ink"
                 aria-label="Search everything"
-                title="Search everything (Shift+Cmd+F)"
+                title={`Search everything (${chord(platform, "mod", "shift", "f")})`}
               >
                 <Search className="h-4 w-4" />
               </button>
@@ -162,18 +165,18 @@ export function Sidebar({
                   <Plus className="h-3.5 w-3.5" /> Quick create
                 </span>
                 <span className="rounded border border-[#0a0d14]/25 px-1 text-[10px] opacity-70">
-                  ⌘K
+                  {chord(platform, "mod", "k")}
                 </span>
               </button>
               <button
                 onClick={onDeepSearch ?? onOpenSearch}
                 className="flex h-8 items-center gap-2 rounded-[7px] border border-line bg-surface px-2.5 text-[12px] text-faint transition hover:border-line-bright hover:text-muted"
-                title="Search all entities (Shift+Cmd+F)"
+                title={`Search all entities (${chord(platform, "mod", "shift", "f")})`}
               >
                 <Search className="h-3.5 w-3.5" />
                 <span>Search everything</span>
-                <span className="ml-auto flex items-center gap-0.5 text-[10px]">
-                  <Command className="h-2.5 w-2.5" />⇧F
+                <span className="ml-auto text-[10px]">
+                  {chord(platform, "mod", "shift", "f")}
                 </span>
               </button>
             </>
