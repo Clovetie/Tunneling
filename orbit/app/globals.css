@@ -1,0 +1,245 @@
+@import "tailwindcss";
+
+@theme {
+  --color-void: #07080a;
+  --color-abyss: #0a0c0f;
+  --color-surface: #0e1116;
+  --color-raised: #13171d;
+  --color-overlay: #181d25;
+  --color-line: #1f252e;
+  --color-line-bright: #2b333e;
+  --color-ink: #e8ecf1;
+  --color-muted: #8b96a5;
+  --color-faint: #5b6672;
+  --color-accent: #7c9cff;
+  --color-accent-dim: #2d3d6b;
+  --color-signal: #4ade9b;
+  --color-warn: #f5b556;
+  --color-danger: #f2626b;
+  --color-violet: #a78bfa;
+  --color-cyan: #56cfd8;
+
+  --font-sans:
+    "Inter var", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --font-mono:
+    "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", monospace;
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    color-scheme: dark;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background: var(--color-void);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "ss01";
+    overflow: hidden;
+    letter-spacing: -0.006em;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-accent) 34%, transparent);
+    color: #fff;
+  }
+
+  ::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #222833;
+    border-radius: 99px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #323b48;
+    background-clip: content-box;
+  }
+
+  input,
+  textarea,
+  button,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  :focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--color-accent) 70%, transparent);
+    outline-offset: 1px;
+  }
+}
+
+@utility panel {
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--color-raised) 92%, transparent),
+    var(--color-surface)
+  );
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+}
+
+@utility hairline {
+  border: 1px solid var(--color-line);
+}
+
+@utility num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+@utility text-balance-pretty {
+  text-wrap: pretty;
+}
+
+/* Motion primitives: subtle, never bouncy. */
+@keyframes orbit-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes orbit-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes orbit-pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-signal) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+@keyframes orbit-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(220%);
+  }
+}
+@keyframes orbit-caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  55%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes orbit-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(0, -8px, 0) scale(1.015);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+@keyframes orbit-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.anim-fade-up {
+  animation: orbit-fade-up 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.anim-fade {
+  animation: orbit-fade 0.2s ease both;
+}
+.anim-live {
+  animation: orbit-pulse-ring 2.4s ease-out infinite;
+}
+.anim-caret {
+  animation: orbit-caret 1.1s step-end infinite;
+}
+.anim-drift {
+  animation: orbit-drift 14s ease-in-out infinite;
+}
+.anim-spin {
+  animation: orbit-spin 0.9s linear infinite;
+}
+
+.sweep {
+  position: relative;
+  overflow: hidden;
+}
+.sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--color-accent) 16%, transparent),
+    transparent
+  );
+  animation: orbit-sweep 1.6s ease-in-out infinite;
+}
+
+.grid-bg {
+  background-image:
+    linear-gradient(to right, #12161c 1px, transparent 1px),
+    linear-gradient(to bottom, #12161c 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 20%, transparent 78%);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+html.motion-reduce *,
+html.motion-reduce *::before,
+html.motion-reduce *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

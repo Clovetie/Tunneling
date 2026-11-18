@@ -15,3 +15,12 @@ nightloop/bridge/bridge_state/
 
 # Generated release artifacts (rebuild with roblox-bridge/tools/build_release.py)
 release-artifacts/
+
+# ORBIT (Next.js app)
+orbit/.next/
+orbit/next-env.d.ts
+orbit/*.tsbuildinfo
+
+# Dependencies and build output (install with `npm install`)
+node_modules/
+**/node_modules/

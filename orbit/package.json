@@ -1,0 +1,32 @@
+{
+  "name": "orbit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ORBIT — personal AI command center. One interface. Multiple capabilities. Persistent context. Controlled autonomy.",
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0 -p 3000",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0 -p 3000",
+    "lint": "tsc --noEmit",
+    "smoke": "tsx --tsconfig tsconfig.json scripts/smoke.tsx",
+    "test": "tsc --noEmit && npm run smoke"
+  },
+  "dependencies": {
+    "lucide-react": "^1.75.0",
+    "next": "^15.5.29",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.5",
+    "@types/jsdom": "^30.0.0",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "esbuild": "^0.24.2",
+    "jsdom": "^25.0.1",
+    "tailwindcss": "^4.3.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.7.3"
+  }
+}
