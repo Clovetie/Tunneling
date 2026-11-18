@@ -28,6 +28,7 @@ Results on 2026-11-18:
 - `/api/bridge/preview`: live read-only health, 101 MCP schemas, 80 events, 80 audit entries, orchestrator project `proj-bb2b78e95e` and three evidence filenames.
 - `/api/bridge/evidence/<filename>`: `200 image/png`.
 - Browser-like JSDOM smoke of `/overview`, `/agents`, `/builder`, `/workflows`, `/projects`, `/integrations`, `/knowledge`, `/activity`, `/settings`, `/roblox`: ten navigation links, honest unconfigured and MockWorld preview notices, zero console errors.
+- Supabase connector validation: migration applied to `foundry-agent-studio` (`yagbgbzbqoajdvyrnnlp`); 24 FOUNDRY tables, 19 RLS policies, 5 helper functions, pgvector extension, 2 vector indexes, 8 Realtime publication tables, memory-version trigger and two-user RLS isolation checked. See `docs/SUPABASE_VALIDATION.md`.
 
 The two verification scripts and the preview proxy use a real HTTP/MCP protocol run against the repository's stateful `MockWorld`. That is **not** a claim about a live Roblox Studio, a public tunnel, a production database or deployed FOUNDRY.
 
@@ -46,6 +47,6 @@ The two verification scripts and the preview proxy use a real HTTP/MCP protocol 
 
 ## Gaps / skipped surfaces
 
-Database-backed command tests require `DATABASE_URL` and a real Supabase project. Local Postgres is unavailable in this sandbox, `psql`/`postgres`/`pg_ctl` are absent, and Python `psycopg2`/`psycopg` are not installed. Therefore migration application, RLS, pgvector queries, Realtime subscriptions, DB-backed job leasing and worker heartbeats were **not** exercised. Do not treat an in-memory test or a rendered UI card as production persistence.
+Database-backed command tests require a runtime that can reach `DATABASE_URL`. A dedicated Supabase project now has the migration applied; schema, RLS, pgvector extension/indexes, helper functions, Realtime publication and the memory-version trigger were checked through the Supabase connector. However direct Postgres egress from this sandbox is blocked: the direct DB host is IPv6-only and unreachable, while the IPv4 pooler resets the PostgreSQL handshake. Local Postgres is also unavailable (`psql`/`postgres`/`pg_ctl` and Python `psycopg2`/`psycopg` are absent). Therefore `npm run migrate`, `npm run seed`, `npm run worker`, FOUNDRY API CRUD, job leasing, approvals and audit-chain calls were **not** run from the app. Supabase Auth browser sessions and live Realtime subscriptions were **not** exercised. Do not treat SQL-level validation rows, an in-memory test or a rendered UI card as app-level production persistence.
 
 Real Roblox Studio, named tunnel egress, provider-backed model runs, deployed browser auth UX and a Vercel deployment remain manual HANDS MODE acceptance items.

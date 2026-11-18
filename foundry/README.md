@@ -2,7 +2,7 @@
 
 FOUNDRY is a separate Next.js companion app in this repository: a visual multi-agent development studio designed to sit **on top of** the existing Tunneling bridge rather than replace its MCP server, Studio plugin, Agent Bus, ConfirmGate, tunnel manager or `arena_team` layer.
 
-> **Current status (2026-11-18):** compile-clean UI scaffold with unit-tested core logic, with a read-only live HTTP/MCP preview against the repository's local MockWorld bridge. It is **not deployed**, **not connected to a real Supabase project**, **not migration-applied**, **not provider/worker validated**, and **not connected to a real Roblox Studio or public tunnel**. Unconfigured surfaces are labeled as such. See `docs/IMPLEMENTATION_PLAN.md` and `docs/ROADMAP.md` for exact verification boundaries.
+> **Current status (2026-11-18):** compile-clean UI scaffold with unit-tested core logic, a read-only live HTTP/MCP preview against the repository's local MockWorld bridge, and a dedicated Supabase validation project whose migration and schema-level checks have been applied. FOUNDRY is **not deployed**, **not authenticated through a real browser session**, **not DB-backed API validated from this sandbox**, **not provider/worker validated**, and **not connected to a real Roblox Studio or public tunnel**. Unconfigured surfaces are labeled as such. See `docs/SUPABASE_VALIDATION.md`, `docs/IMPLEMENTATION_PLAN.md` and `docs/ROADMAP.md` for exact verification boundaries.
 
 ## What is present
 
@@ -53,4 +53,4 @@ These exercise real Streamable HTTP and stdio MCP handshakes. In this sandbox th
 4. A reachable Tunneling bridge, optionally through a named Cloudflare/ngrok tunnel configured by Tunneling itself.
 5. HANDS MODE acceptance with genuine Roblox Studio and a deployed browser session.
 
-See `docs/DEPLOYMENT.md`, `docs/SECURITY.md`, `docs/TESTING.md` and the other documents in `docs/` before calling any phase production-complete.
+See `docs/SUPABASE_VALIDATION.md`, `docs/DEPLOYMENT.md`, `docs/SECURITY.md`, `docs/TESTING.md` and the other documents in `docs/` before calling any phase production-complete.

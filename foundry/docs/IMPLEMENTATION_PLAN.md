@@ -2,7 +2,7 @@
 
 Method: `RESEARCH → ARCHITECTURE → IMPLEMENT → TEST → DEBUG → REVIEW → DOCUMENT`, repeated per phase. Priority is a working vertical slice over superficial completion.
 
-> **Status note (2026-11-18):** this file describes the intended phases and what is present as source code. It is not a claim that all phases are production-complete. FOUNDRY is a **partial, undeployed, database-unvalidated scaffold** with all ten navigation routes compiling and a read-only live protocol preview against a local MockWorld bridge. No Supabase project, applied migration, real Auth session, provider-backed run, Vercel deployment, real Roblox Studio peer, public tunnel or persistent worker has been accepted here.
+> **Status note (2026-11-18):** this file describes the intended phases and what is present as source code. It is not a claim that all phases are production-complete. FOUNDRY is a **partial, undeployed scaffold** with all ten navigation routes compiling, a read-only live protocol preview against a local MockWorld bridge, and a dedicated Supabase validation project whose migration and schema-level checks have been applied. No real Auth session, DB-backed FOUNDRY API run, provider-backed run, Vercel deployment, real Roblox Studio peer, public tunnel or persistent worker has been accepted here.
 
 ## Phase 1 — Foundation
 
@@ -15,7 +15,7 @@ Planned / source present:
 - Agent registry, templates, projects and personal workspace items.
 - Config/health endpoints that honestly report missing environment variables.
 
-Current verification: `npm run typecheck`, `npm test`, `npm run build`, all route HTML responses, `/api/config`, `/api/health`. Migration SQL is written but **not applied**; Auth and database calls remain disabled in local preview.
+Current verification: `npm run typecheck`, `npm test`, `npm run build`, all route HTML responses, `/api/config`, `/api/health`, plus Supabase connector migration/schema/RLS/pgvector/Realtime-publication checks documented in `docs/SUPABASE_VALIDATION.md`. Migration SQL has been applied to a dedicated validation project; direct Postgres egress from this sandbox is blocked, and Auth/database calls remain disabled in the local unconfigured preview.
 
 ## Phase 2 — Agent execution
 

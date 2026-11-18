@@ -1,6 +1,6 @@
 # Deployment
 
-> **Current status:** FOUNDRY has **not** been deployed to Vercel or connected to a real Supabase project in this workspace. The instructions below are the operator runbook. The local app is currently a compile-validated UI with a read-only MockWorld protocol preview.
+> **Current status:** FOUNDRY has **not** been deployed to Vercel. A dedicated Supabase validation project exists and the migration has been applied, with schema/RLS/pgvector/Realtime-publication checks passed through the connector; see `docs/SUPABASE_VALIDATION.md`. The local app remains a compile-validated UI with a read-only MockWorld protocol preview because this sandbox cannot reach Supabase Postgres/Auth directly and no deployed environment variables have been approved. The instructions below are the operator runbook.
 
 FOUNDRY has three runtime pieces. Do not collapse them into one serverless request.
 
@@ -14,7 +14,7 @@ FOUNDRY has three runtime pieces. Do not collapse them into one serverless reque
    - `FOUNDRY_SECRET_ENCRYPTION_KEY`
    - model provider keys
    - optional `FOUNDRY_TUNNELING_URL` and `FOUNDRY_TUNNELING_TOKEN` for one-time bootstrap
-3. Apply `supabase/migrations/0001_foundry.sql` in the Supabase SQL editor or with `npm run migrate`.
+3. Apply `supabase/migrations/0001_foundry.sql` in the Supabase SQL editor or with `npm run migrate` (already applied to the dedicated validation project; do not reapply blindly outside the idempotent chunks).
 4. Enable Realtime for the publication tables listed in the migration.
 5. Deploy. Build command: `npm run build`.
 
@@ -81,4 +81,4 @@ Then create an integration in **Integrations** with the bridge URL and a server-
 - One graph run and one objective run complete with a real provider and durable task records.
 - A named tunnel is reachable from the deployed app, and deployed browser auth UX works.
 
-None of the items above has been claimed complete in this sandbox.
+Some schema-level prerequisites are verified separately through the Supabase connector, but none of the deployed live-acceptance items above has been claimed complete in this sandbox.
