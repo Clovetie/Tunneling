@@ -2,7 +2,7 @@
 
 FOUNDRY is a separate Next.js companion app in this repository: a visual multi-agent development studio designed to sit **on top of** the existing Tunneling bridge rather than replace its MCP server, Studio plugin, Agent Bus, ConfirmGate, tunnel manager or `arena_team` layer.
 
-> **Current status (2026-11-18):** compile-clean UI scaffold with unit-tested core logic, a read-only live HTTP/MCP preview against the repository's local MockWorld bridge, and a dedicated Supabase validation project whose migration and schema-level checks have been applied. FOUNDRY is **not deployed**, **not authenticated through a real browser session**, **not DB-backed API validated from this sandbox**, **not provider/worker validated**, and **not connected to a real Roblox Studio or public tunnel**. Unconfigured surfaces are labeled as such. See `docs/SUPABASE_VALIDATION.md`, `docs/IMPLEMENTATION_PLAN.md` and `docs/ROADMAP.md` for exact verification boundaries.
+> **Current status (2026-11-18):** compile-clean UI scaffold with unit-tested core logic, a read-only live HTTP/MCP preview against the repository's local MockWorld bridge, a dedicated Supabase validation project with applied migrations, and a bounded Vercel validation deployment whose cache-busted `/api/health` reports `ok:true`, `database.ok:true` and `migration:true`. The deployed app is **not authenticated through a real browser session**, **not DB-backed API CRUD validated**, **not provider/worker validated**, and **not connected to a real Roblox Studio or public tunnel**. `mode:"ready"` describes configuration presence, not production acceptance. Unconfigured surfaces are labeled as such. See `docs/SUPABASE_VALIDATION.md`, `docs/DEPLOYMENT.md`, `docs/IMPLEMENTATION_PLAN.md` and `docs/ROADMAP.md` for exact verification boundaries.
 
 ## What is present
 
@@ -13,6 +13,7 @@ FOUNDRY is a separate Next.js companion app in this repository: a visual multi-a
 - Visual React Flow builder with thirteen node types, inspector, validation and save/run wiring.
 - Scoped memory/knowledge UI, encrypted secret boundary, tool policy/approvals, durable job/worker code and hash-chained audit libraries.
 - Read-only `/api/bridge/preview` that uses server-side bridge credentials for a live MockWorld protocol demonstration, including evidence PNG proxying.
+- A bounded Vercel validation deployment at `https://foundry-agent-studio.vercel.app` with approved Supabase URL/anon key, pooled `DATABASE_URL`, encryption key and runtime-tuning environment values only; no provider, worker, bridge, tunnel, Studio, custom-domain or public-preview secrets are configured.
 
 ## Quick local preview
 
@@ -47,10 +48,10 @@ These exercise real Streamable HTTP and stdio MCP handshakes. In this sandbox th
 
 ## Production prerequisites
 
-1. Supabase project with Auth, Postgres, Realtime and applied `supabase/migrations/0001_foundry.sql`.
+1. A production Supabase project with Auth, Postgres, Realtime and applied `supabase/migrations/0001_foundry.sql`.
 2. Server-side `DATABASE_URL`, `FOUNDRY_SECRET_ENCRYPTION_KEY`, provider keys and integration secrets.
 3. A persistent `npm run worker` host; never execute long workflows inside a Vercel request.
 4. A reachable Tunneling bridge, optionally through a named Cloudflare/ngrok tunnel configured by Tunneling itself.
 5. HANDS MODE acceptance with genuine Roblox Studio and a deployed browser session.
 
-See `docs/SUPABASE_VALIDATION.md`, `docs/DEPLOYMENT.md`, `docs/SECURITY.md`, `docs/TESTING.md` and the other documents in `docs/` before calling any phase production-complete.
+A bounded Vercel validation deployment is recorded in `docs/DEPLOYMENT.md` and `docs/SUPABASE_VALIDATION.md`; it is not production acceptance. See `docs/SUPABASE_VALIDATION.md`, `docs/DEPLOYMENT.md`, `docs/SECURITY.md`, `docs/TESTING.md` and the other documents in `docs/` before calling any phase production-complete.

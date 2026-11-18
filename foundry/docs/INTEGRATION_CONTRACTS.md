@@ -1,6 +1,6 @@
 # FOUNDRY / Tunneling integration contracts
 
-> **Status:** these are the intended wire-level contracts and the client code written to follow them. Pure clients/tests and a read-only MockWorld protocol preview are validated; DB-backed persistence, provider execution, real Studio and tunnel egress remain operator-gated.
+> **Status:** these are the intended wire-level contracts and the client code written to follow them. Pure clients/tests and a read-only MockWorld protocol preview are validated; a bounded Vercel deployment has verified unauthenticated DB health. DB-backed CRUD/persistence, provider execution, real Studio and tunnel egress remain operator-gated.
 
 FOUNDRY stores one `integrations` row of `kind='tunneling'`. Secrets live in `integration_secrets`, encrypted with AES-256-GCM using `FOUNDRY_SECRET_ENCRYPTION_KEY`.
 

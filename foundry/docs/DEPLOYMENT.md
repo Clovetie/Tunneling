@@ -1,13 +1,21 @@
 # Deployment
 
-> **Current status:** FOUNDRY has **not** been deployed to Vercel. A dedicated Supabase validation project exists and the migration has been applied, with schema/RLS/pgvector/Realtime-publication checks passed through the connector; see `docs/SUPABASE_VALIDATION.md`. The local app remains a compile-validated UI with a read-only MockWorld protocol preview because this sandbox cannot reach Supabase Postgres/Auth directly and no deployed environment variables have been approved. The instructions below are the operator runbook.
+> **Current status (2026-11-18):** a bounded Vercel validation deployment exists and its unauthenticated health/config endpoints have been checked. This is not production acceptance. The instructions below remain the operator runbook.
+
+## Current bounded validation deployment
+
+- Vercel project: `foundry-agent-studio` (`prj_2PUOqEgrFG0QiZKAilUKluUoakCu`) in team `team_bEw39gpiuDYm86KVHziUXMdg`; root directory `foundry`; production alias `https://foundry-agent-studio.vercel.app`.
+- Approved scope: created only after the operator selected `deploy_generated`. Only `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, pooled `DATABASE_URL`, `FOUNDRY_SECRET_ENCRYPTION_KEY`, `PGPOOL_MAX=3` and `NODE_OPTIONS=--dns-result-order=ipv4first` are configured. No provider, worker, bridge, tunnel, Studio, custom-domain or public-preview secrets are configured.
+- The working connection uses `aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres?uselibpqcompat=true&sslmode=require`. `pg-connection-string` interprets that combination as TLS with `rejectUnauthorized:false`; it avoids the earlier self-signed-certificate-chain error but is **not** full TLS certificate verification. The `aws-0-ap-southeast-1` pooler returned `tenant/user ... not found`. Generated values are held in Vercel encrypted env storage and are not in the workspace.
+- Deployment `dpl_NYBhmqm3PvdeccVT8XXHpqsHJqQu` (source `af56e9a6a6dfd9867deb71b75e0a5076c560ad70`) built and was `READY`/`PROMOTED`. Its cache-busted `/api/health` returned `ok:true`, `database.ok:true` (`latencyMs:1676`), `migration:true`, `worker:false`, `providers:[]`; `/api/config` returned `mode:"ready"` with warnings for the missing worker and model provider.
+- The sign-in gate renders on `/overview` and `/roblox`, and `/api/foundry/dashboard` returns `UNAUTHENTICATED` without a session. This is unauthenticated config/health validation only: no browser Auth session, DB-backed FOUNDRY API CRUD, Realtime subscription, provider/worker execution, real Studio, tunnel or HANDS MODE acceptance is claimed.
 
 FOUNDRY has three runtime pieces. Do not collapse them into one serverless request.
 
 ## 1. Web app — Vercel
 
 1. Import this repository into Vercel and set the root directory to `foundry`.
-2. Configure environment variables from `.env.example`:
+2. Configure environment variables from `.env.example` (the bounded validation deployment deliberately sets only the first two public values, `DATABASE_URL`, `FOUNDRY_SECRET_ENCRYPTION_KEY` and runtime tuning; provider and bridge values remain absent):
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `DATABASE_URL` or `SUPABASE_DB_URL`
@@ -70,7 +78,7 @@ Then create an integration in **Integrations** with the bridge URL and a server-
 
 ## Live acceptance checklist (HANDS MODE / operator-gated)
 
-- `/api/health` from FOUNDRY reports `database`, `auth`, `realtime`, `worker` configured.
+- `/api/health` from FOUNDRY reports `auth`, `realtime`, `database.ok=true` and `migration=true`; `worker` remains `false` and no providers are configured.
 - Tunneling integration test reports `version 6.0.0`, tool count > 0, and honest `studioConnected`.
 - With Studio open: `/api/health` shows a live Edit peer and `/api/studios` lists it. A MockWorld peer must not satisfy this item.
 - A read-only discovered tool succeeds; a write-capable tool creates a FOUNDRY approval.
@@ -81,4 +89,4 @@ Then create an integration in **Integrations** with the bridge URL and a server-
 - One graph run and one objective run complete with a real provider and durable task records.
 - A named tunnel is reachable from the deployed app, and deployed browser auth UX works.
 
-Some schema-level prerequisites are verified separately through the Supabase connector, but none of the deployed live-acceptance items above has been claimed complete in this sandbox.
+Some schema-level prerequisites are verified separately through the Supabase connector, and the unauthenticated deployed health/config checks above are verified; no HANDS MODE or authenticated live-acceptance item has been claimed complete in this sandbox.

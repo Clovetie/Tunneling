@@ -13,6 +13,7 @@
 - Integration secrets are stored AES-256-GCM encrypted in `integration_secrets` using `FOUNDRY_SECRET_ENCRYPTION_KEY`.
 - Provider keys are read from server environment variables, never from agent config.
 - `/api/config` and `/api/health` return booleans and non-secret labels only.
+- The bounded Vercel validation deployment uses `uselibpqcompat=true&sslmode=require` on the Supabase transaction pooler. `pg-connection-string` maps this to `ssl.rejectUnauthorized=false`; this avoids the validation environment's self-signed-chain failure but is **not** full TLS certificate verification. A production deployment should use a trusted CA or verified certificate chain.
 
 ## Tool boundaries
 

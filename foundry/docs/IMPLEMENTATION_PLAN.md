@@ -2,7 +2,7 @@
 
 Method: `RESEARCH → ARCHITECTURE → IMPLEMENT → TEST → DEBUG → REVIEW → DOCUMENT`, repeated per phase. Priority is a working vertical slice over superficial completion.
 
-> **Status note (2026-11-18):** this file describes the intended phases and what is present as source code. It is not a claim that all phases are production-complete. FOUNDRY is a **partial, undeployed scaffold** with all ten navigation routes compiling, a read-only live protocol preview against a local MockWorld bridge, and a dedicated Supabase validation project whose migration and schema-level checks have been applied. No real Auth session, DB-backed FOUNDRY API run, provider-backed run, Vercel deployment, real Roblox Studio peer, public tunnel or persistent worker has been accepted here.
+> **Status note (2026-11-18):** this file describes the intended phases and what is present as source code. It is not a claim that all phases are production-complete. FOUNDRY is a **partial, bounded-deployed validation scaffold** with all ten navigation routes compiling, a read-only live protocol preview against a local MockWorld bridge, a dedicated Supabase validation project whose migration and schema-level checks have been applied, and a Vercel deployment whose unauthenticated `/api/health` confirms app-to-Postgres connectivity and migration presence. No real Auth session, DB-backed FOUNDRY API CRUD, provider-backed run, real Roblox Studio peer, public tunnel or persistent worker has been accepted here. `mode:"ready"` is not production acceptance.
 
 ## Phase 1 — Foundation
 
@@ -15,7 +15,7 @@ Planned / source present:
 - Agent registry, templates, projects and personal workspace items.
 - Config/health endpoints that honestly report missing environment variables.
 
-Current verification: `npm run typecheck`, `npm test`, `npm run build`, all route HTML responses, `/api/config`, `/api/health`, plus Supabase connector migration/schema/RLS/pgvector/Realtime-publication checks documented in `docs/SUPABASE_VALIDATION.md`. Migration SQL has been applied to a dedicated validation project; direct Postgres egress from this sandbox is blocked, and Auth/database calls remain disabled in the local unconfigured preview.
+Current verification: `npm run typecheck`, `npm test`, `npm run build`, all route HTML responses, `/api/config`, `/api/health` locally and on the bounded Vercel deployment, plus Supabase connector migration/schema/RLS/pgvector/Realtime-publication checks documented in `docs/SUPABASE_VALIDATION.md`. The deployed `/api/health` returned `ok:true`, `database.ok:true`, `migration:true`; direct Postgres egress from this sandbox remains blocked. Authenticated Auth/database CRUD calls have not been exercised through a real browser session.
 
 ## Phase 2 — Agent execution
 
@@ -79,12 +79,12 @@ Current verification: memory isolation and knowledge isolation unit tests; AES-G
 
 ## Current delivery posture
 
-The repository contains a **compile-clean, test-passing FOUNDRY application scaffold plus a read-only live MockWorld protocol preview**. It does **not** contain a deployed FOUNDRY production system, real Supabase credentials, an applied migration, a real Auth session, a real Roblox Studio peer, a public tunnel, provider-backed execution or a persistent worker heartbeat. Every unconfigured or disconnected surface is intended to be reported as such; docs and UI must not describe mock or unimplemented integrations as working.
+The repository contains a **compile-clean, test-passing FOUNDRY application scaffold plus a read-only live MockWorld protocol preview** and a bounded Vercel validation deployment. The migration is applied to the Supabase validation project and generated credentials are held outside the workspace. It does **not** contain a production-complete FOUNDRY system, a validated real Auth session, DB-backed CRUD, provider-backed execution, a persistent worker heartbeat, a real Roblox Studio peer, a public tunnel or HANDS MODE acceptance. Every unconfigured or disconnected surface is intended to be reported as such; docs and UI must not describe mock or unimplemented integrations as working.
 
 ## Operator-gated next steps
 
-1. Create a Supabase project; configure Auth, `DATABASE_URL`, Realtime and `FOUNDRY_SECRET_ENCRYPTION_KEY`.
-2. Apply `supabase/migrations/0001_foundry.sql` and run DB-backed acceptance tests.
+1. Use or promote a production Supabase project; configure Auth redirect URLs, `DATABASE_URL`, Realtime and `FOUNDRY_SECRET_ENCRYPTION_KEY`. The validation project already has the migration applied.
+2. Run DB-backed acceptance tests against a signed-in session, including CRUD, bootstrap, discovery, approvals and durable jobs.
 3. Configure provider keys and run `npm run worker` on a persistent host.
 4. Create a real FOUNDRY integration with the bridge URL and server-side token; run `Test MCP` and `Discover tools`.
 5. Repeat `verify:tunneling` / `verify:stdio` against a reachable bridge, then perform HANDS MODE acceptance with genuine Roblox Studio and an optional named tunnel.
