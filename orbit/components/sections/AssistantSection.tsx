@@ -88,6 +88,11 @@ export function AssistantSection() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef(false);
+  // Named so the Stop button and the Cmd+. shortcut below share one path.
+  const stop = useCallback(() => {
+    abortRef.current = true;
+    setBusy(false);
+  }, []);
 
   const conv = state.conversations.find((c) => c.id === state.activeConversationId) ?? null;
 
@@ -800,6 +805,11 @@ export function AssistantSection() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === ".") {
+                    e.preventDefault();
+                    stop();
+                    return;
+                  }
                   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                     e.preventDefault();
                     send();
@@ -850,10 +860,7 @@ export function AssistantSection() {
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => {
-                        abortRef.current = true;
-                        setBusy(false);
-                      }}
+                      onClick={stop}
                     >
                       <CircleSlash className="h-3 w-3" /> Stop
                     </Button>

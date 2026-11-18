@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/util";
 import { StoreProvider, useOrbit } from "@/lib/store";
+import { GO_MAP } from "@/lib/keys";
 import type { SectionId } from "@/lib/types";
 import { Sidebar } from "./Sidebar";
 import { RightPanel } from "./RightPanel";
@@ -69,13 +70,18 @@ function Frame() {
           new CustomEvent("orbit:tab-step", { detail: { dir: e.shiftKey ? -1 : 1 } }),
         );
       }
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "w") {
+      // Alt, not Cmd: browsers reserve Cmd/Ctrl+T and Cmd/Ctrl+W for tabs and
+      // close them before the page ever sees the key, so advertising those
+      // would be a promise the app cannot keep.
+      if (e.altKey && !e.metaKey && !e.ctrlKey && e.key.toLowerCase() === "w") {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("orbit:tab-close"));
       }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "t") {
+      if (e.altKey && !e.metaKey && !e.ctrlKey && e.key.toLowerCase() === "t") {
         e.preventDefault();
-        window.dispatchEvent(new CustomEvent("orbit:tab-new"));
+        window.dispatchEvent(
+          new CustomEvent(e.shiftKey ? "orbit:tab-reopen" : "orbit:tab-new"),
+        );
       }
       // g-chord navigation, as advertised in the shortcuts dialog.
       if (!typing && e.key === "g") {
@@ -88,20 +94,7 @@ function Frame() {
         return;
       }
       if (!typing && chordArmed.current) {
-        const map: Record<string, SectionId> = {
-          h: "home",
-          a: "assistant",
-          p: "projects",
-          t: "tasks",
-          c: "calendar",
-          k: "knowledge",
-          f: "files",
-          u: "automations",
-          i: "integrations",
-          l: "activity",
-          s: "settings",
-        };
-        const target = map[e.key.toLowerCase()];
+        const target = GO_MAP[e.key.toLowerCase()];
         chordArmed.current = false;
         if (chordTimer.current) {
           window.clearTimeout(chordTimer.current);

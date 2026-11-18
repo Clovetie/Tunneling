@@ -2,6 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import { Modal } from "@/components/ui/kit";
+import { GO_ROWS } from "@/lib/keys";
+import { SECTION_LABEL } from "@/lib/tabs";
 
 const GROUPS: { title: string; rows: [string, string][] }[] = [
   {
@@ -19,8 +21,9 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
   {
     title: "Tabs & panes",
     rows: [
-      ["⌘ T", "New tab (Home)"],
-      ["⌘ W", "Close active tab"],
+      ["Alt T", "New tab (Home)"],
+      ["Alt ⇧ T", "Reopen closed tab"],
+      ["Alt W", "Close active tab"],
       ["Ctrl ⇥", "Next tab"],
       ["Ctrl ⇧ ⇥", "Previous tab"],
       ["double-click", "Rename workspace"],
@@ -37,19 +40,7 @@ const GROUPS: { title: string; rows: [string, string][] }[] = [
   },
   {
     title: "Navigation",
-    rows: [
-      ["g h", "Home"],
-      ["g a", "Assistant"],
-      ["g p", "Projects"],
-      ["g t", "Tasks"],
-      ["g c", "Calendar"],
-      ["g k", "Knowledge"],
-      ["g f", "Files"],
-      ["g u", "Automations"],
-      ["g i", "Integrations"],
-      ["g l", "Activity"],
-      ["g s", "Settings"],
-    ],
+    rows: GO_ROWS.map(([k, id]) => [k, SECTION_LABEL[id]] as [string, string]),
   },
 ];
 

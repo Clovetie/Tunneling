@@ -41,6 +41,9 @@ import { TopBar } from "../components/shell/TopBar";
 import { CommandPalette } from "../components/shell/CommandPalette";
 import { TabStrip } from "../components/shell/TabStrip";
 import { SearchOverlay } from "../components/shell/SearchOverlay";
+import { KeyboardHelp } from "../components/shell/KeyboardHelp";
+import { GO_MAP } from "../lib/keys";
+import { SECTION_LABEL } from "../lib/tabs";
 import { activeTab, closeTab, openTab, resolveTabLabel, stepTab, tabId } from "../lib/tabs";
 import { parseTerms, scoreItem, scoreText } from "../lib/search";
 import { buildSeed, tools } from "../lib/seed";
@@ -355,6 +358,29 @@ function main() {
         return at.section !== "projects" || w.selection.projectId === at.entityId;
       }),
     );
+  }
+
+  process.stdout.write("\n  keyboard help matches the real bindings\n");
+  {
+    // The help sheet once advertised `g w` for Automations while the handler
+    // bound `g u`, and advertised Cmd+T/Cmd+W which browsers swallow. These
+    // assertions tie the dialog to the code that actually runs.
+    ok("g-map covers all 11 sections", Object.keys(GO_MAP).length === 11, Object.keys(GO_MAP).join(""));
+    ok("g-map values are unique", new Set(Object.values(GO_MAP)).size === 11);
+    ok("every g-map value is a real section",
+      Object.values(GO_MAP).every((id) => Boolean(SECTION_LABEL[id])), Object.values(GO_MAP).join(","));
+    ok("g-map has no browser-reserved letters", !("w" in GO_MAP) && !("n" in GO_MAP));
+
+    const help = renderToString(<KeyboardHelp open onClose={() => {}} />);
+    for (const [key, id] of Object.entries(GO_MAP)) {
+      const row = `g ${key}`;
+      ok(`help renders "${row}" → ${SECTION_LABEL[id]}`,
+        help.includes(row) && help.includes(SECTION_LABEL[id]));
+    }
+    ok("help does not advertise Cmd+T", !help.includes("⌘ T"));
+    ok("help does not advertise Cmd+W", !help.includes("⌘ W"));
+    ok("help advertises the Alt tab bindings", help.includes("Alt T") && help.includes("Alt W"));
+    ok("help documents search overlay", help.toLowerCase().includes("search all entities"));
   }
 
   process.stdout.write("\n  cross-entity search ranking\n");

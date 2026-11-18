@@ -134,8 +134,11 @@ hits are weighted up, and a title match beats a body match. An empty result says
 will not invent a hit.
 
 Keyboard: `⌘K` palette, `/` palette, `⌘/` search, `\` sidebar, `]` right panel, `?` help,
-`⌘1–6` mode switch, `⌘↵` send, `⌘T` new tab, `⌘W` close tab, `⌘⇧T` reopen tab, `⌃⇥` / `⌃⇧⇥`
-step tabs, `g h/a/p/t/c/k/f/w/i/l/s` navigation.
+`⌘1–6` mode switch, `⌘↵` send, `⌥T` new tab, `⌥⇧T` reopen tab, `⌥W` close tab,
+`⌃⇥` / `⌃⇧⇥` step tabs, `g h/a/p/t/c/k/f/u/i/l/s` navigation.
+
+Tab bindings use `Alt`, not `Cmd`: browsers intercept `⌘T` and `⌘W` themselves and close the
+page before the app sees the key, so the app does not claim them.
 
 ---
 

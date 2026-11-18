@@ -40,6 +40,14 @@ export function TabStrip() {
     el?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeTabId]);
 
+  // Alt+Shift+T is handled here rather than in the shell so the shortcut and
+  // the strip's own reopen button share one code path.
+  useEffect(() => {
+    const onReopen = () => reopenTab();
+    window.addEventListener("orbit:tab-reopen", onReopen);
+    return () => window.removeEventListener("orbit:tab-reopen", onReopen);
+  }, [reopenTab]);
+
   return (
     <div className="flex h-[34px] shrink-0 items-stretch border-b border-line bg-void/60">
       {/* workspace switcher */}
