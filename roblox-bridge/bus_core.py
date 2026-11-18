@@ -26,7 +26,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-BUS_VERSION = "5.4.0"
+BUS_VERSION = "6.0.0"
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "bridge_state"
 
 AGENT_STATUSES = ("online", "busy", "idle", "offline")
@@ -65,6 +65,8 @@ class AgentBus:
         self.agents = {}
         self.messages = deque(maxlen=max_messages)
         self.events = deque(maxlen=max_events)
+        self.direct_chat = deque(maxlen=500)
+        self.pinned_directives = []
         self.tasks = {}
         self.default_lease_seconds = int(default_lease_seconds)
         self.presence_ttl = float(presence_ttl)
@@ -90,6 +92,8 @@ class AgentBus:
             self.agents = {a["id"]: a for a in raw.get("agents", []) if a.get("id")}
             self.messages = deque(raw.get("messages", [])[-self.messages.maxlen:], maxlen=self.messages.maxlen)
             self.events = deque(raw.get("events", [])[-self.events.maxlen:], maxlen=self.events.maxlen)
+            self.direct_chat = deque(raw.get("directChat", [])[-self.direct_chat.maxlen:], maxlen=self.direct_chat.maxlen)
+            self.pinned_directives = list(raw.get("pinnedDirectives", []))[-50:]
             self.tasks = {t["id"]: t for t in raw.get("tasks", []) if t.get("id")}
             self.seq = int(raw.get("seq") or 0)
             counters = raw.get("counters") or {}
@@ -109,6 +113,8 @@ class AgentBus:
                 "agents": list(self.agents.values()),
                 "messages": list(self.messages),
                 "events": list(self.events),
+                "directChat": list(self.direct_chat),
+                "pinnedDirectives": list(self.pinned_directives),
                 "tasks": list(self.tasks.values()),
                 "counters": {
                     "agentsReaped": self.agents_reaped,
@@ -372,6 +378,158 @@ class AgentBus:
                         marked += 1
             self._save()
         return {"agentId": agent_id, "marked": marked}
+
+    # -- direct operator <-> agent live chat ---------------------------------
+
+    def chat_send(
+        self,
+        sender: str,
+        text: str,
+        role: str = "operator",
+        priority: str = "normal",
+        pinned: bool = False,
+        reply_to: str = None,
+        ack_operator: bool = True,
+        meta: dict = None,
+    ) -> dict:
+        text = _clean(text, 4000).strip()
+        if not text:
+            raise ValueError("text is required for direct chat")
+        role_norm = "operator" if str(role or "").lower() in ("operator", "human", "user", "director") else "agent"
+        sender_clean = _clean(sender or ("Operator" if role_norm == "operator" else "Agent"), 80).strip()
+        if priority not in PRIORITIES:
+            priority = "high" if role_norm == "operator" else "normal"
+        now = _now()
+        with self.lock:
+            entry = {
+                "id": "chat-" + uuid.uuid4().hex[:10],
+                "seq": self._next_seq_unlocked(),
+                "ts": now,
+                "sender": sender_clean,
+                "role": role_norm,
+                "text": text,
+                "priority": priority,
+                "pinned": bool(pinned),
+                "replyTo": reply_to,
+                "deliveredToAgent": (role_norm != "operator"),
+                "deliveredAt": now if role_norm != "operator" else None,
+                "repliedByAgent": False,
+                "meta": meta if isinstance(meta, dict) else {},
+            }
+            self.direct_chat.append(entry)
+            if pinned and role_norm == "operator":
+                self.pinned_directives = [d for d in self.pinned_directives if d.get("text") != text]
+                self.pinned_directives.append({
+                    "id": entry["id"],
+                    "seq": entry["seq"],
+                    "ts": now,
+                    "sender": sender_clean,
+                    "text": text,
+                    "priority": priority,
+                })
+            if role_norm == "agent" and ack_operator:
+                for m in self.direct_chat:
+                    if m.get("role") == "operator":
+                        if not m.get("deliveredToAgent"):
+                            m["deliveredToAgent"] = True
+                            m["deliveredAt"] = now
+                        if not reply_to or m.get("id") == reply_to:
+                            m["repliedByAgent"] = True
+            self._emit_unlocked("chat.message", {
+                "id": entry["id"],
+                "role": role_norm,
+                "sender": sender_clean,
+                "priority": priority,
+                "pinned": bool(pinned),
+                "preview": text[:160],
+            })
+            self._save()
+            return dict(entry)
+
+    def chat_history(
+        self,
+        limit: int = 80,
+        since_seq: int = 0,
+        unread_for_agent: bool = False,
+    ) -> dict:
+        limit = max(1, min(int(limit or 80), 500))
+        since_seq = int(since_seq or 0)
+        with self.lock:
+            rows = []
+            for m in self.direct_chat:
+                if since_seq and int(m.get("seq") or 0) <= since_seq:
+                    continue
+                if unread_for_agent and (m.get("role") != "operator" or m.get("deliveredToAgent")):
+                    continue
+                rows.append(dict(m))
+            rows = rows[-limit:]
+            unread_op = [
+                dict(m) for m in self.direct_chat
+                if m.get("role") == "operator" and not m.get("deliveredToAgent")
+            ]
+            unreplied_op = [
+                dict(m) for m in self.direct_chat
+                if m.get("role") == "operator" and not m.get("repliedByAgent")
+            ]
+            cursor = self.direct_chat[-1]["seq"] if self.direct_chat else since_seq
+            return {
+                "messages": rows,
+                "count": len(rows),
+                "unreadOperatorCount": len(unread_op),
+                "unreadOperatorMessages": unread_op,
+                "unrepliedOperatorCount": len(unreplied_op),
+                "pinnedDirectives": list(self.pinned_directives),
+                "cursor": cursor,
+                "serverTime": _now(),
+            }
+
+    def chat_pop_unread_for_agent(self, delivered_via: str = "mcp_tool", mark_delivered: bool = True) -> dict:
+        now = _now()
+        with self.lock:
+            unread = []
+            for m in self.direct_chat:
+                if m.get("role") == "operator" and not m.get("deliveredToAgent"):
+                    unread.append(dict(m))
+                    if mark_delivered:
+                        m["deliveredToAgent"] = True
+                        m["deliveredAt"] = now
+                        m["deliveredVia"] = delivered_via
+            if unread and mark_delivered:
+                self._save()
+            return {
+                "unreadMessages": unread,
+                "unreadCount": len(unread),
+                "pinnedDirectives": list(self.pinned_directives),
+            }
+
+    def chat_ack(self, message_ids=None, clear_pins: bool = False, unpin_id: str = None) -> dict:
+        now = _now()
+        acked = 0
+        with self.lock:
+            id_set = set(message_ids or [])
+            for m in self.direct_chat:
+                if m.get("role") != "operator":
+                    continue
+                if id_set and m.get("id") not in id_set:
+                    continue
+                if not m.get("deliveredToAgent"):
+                    m["deliveredToAgent"] = True
+                    m["deliveredAt"] = now
+                    acked += 1
+            if clear_pins:
+                self.pinned_directives = []
+                for m in self.direct_chat:
+                    m["pinned"] = False
+            elif unpin_id:
+                self.pinned_directives = [d for d in self.pinned_directives if d.get("id") != unpin_id]
+                for m in self.direct_chat:
+                    if m.get("id") == unpin_id:
+                        m["pinned"] = False
+            self._save()
+            return {
+                "acknowledged": acked,
+                "pinnedDirectives": list(self.pinned_directives),
+            }
 
     # -- task board ----------------------------------------------------------
 
@@ -736,6 +894,10 @@ class AgentBus:
         with self.lock:
             self._expire_leases_unlocked()
             agents = [self._agent_view_unlocked(a) for a in self.agents.values()]
+            unread_chat = sum(
+                1 for m in self.direct_chat
+                if m.get("role") == "operator" and not m.get("deliveredToAgent")
+            )
             return {
                 "version": BUS_VERSION,
                 "agents": len(agents),
@@ -743,6 +905,9 @@ class AgentBus:
                 "tasks": len(self.tasks),
                 "taskCounts": {s: sum(1 for t in self.tasks.values() if t["status"] == s) for s in TASK_STATUSES},
                 "messages": len(self.messages),
+                "directChatMessages": len(self.direct_chat),
+                "directChatUnread": unread_chat,
+                "pinnedDirectivesCount": len(self.pinned_directives),
                 "events": len(self.events),
                 "cursor": self.seq,
                 "unreadTotal": sum(a["inboxUnread"] for a in agents),
@@ -850,10 +1015,38 @@ class AgentBus:
             )
         if action in ("sweep", "sweep_stale"):
             return self.sweep_stale(p.get("offlineSeconds") or 900)
+        if action in ("chat_send", "direct_chat_send"):
+            return self.chat_send(
+                sender=p.get("sender") or p.get("agentId") or p.get("from") or ("Operator" if p.get("role") == "operator" else "Agent"),
+                text=p.get("text") or p.get("body") or p.get("message") or "",
+                role=p.get("role") or "agent",
+                priority=p.get("priority") or "normal",
+                pinned=bool(p.get("pinned")),
+                reply_to=p.get("replyTo"),
+                ack_operator=bool(p.get("ackOperator", True)),
+                meta=p.get("meta"),
+            )
+        if action in ("chat_history", "direct_chat", "chat_list"):
+            return self.chat_history(
+                limit=int(p.get("limit") or 80),
+                since_seq=int(p.get("since") or 0),
+                unread_for_agent=bool(p.get("unreadOnly")),
+            )
+        if action in ("chat_poll", "chat_pop"):
+            return self.chat_pop_unread_for_agent(
+                delivered_via=str(p.get("deliveredVia") or "agent_bus"),
+                mark_delivered=bool(p.get("markDelivered", True)),
+            )
+        if action in ("chat_ack", "chat_clear_pins"):
+            return self.chat_ack(
+                message_ids=p.get("messageIds"),
+                clear_pins=bool(p.get("clearPins") or action == "chat_clear_pins"),
+                unpin_id=p.get("unpinId"),
+            )
         if action == "stats":
             return self.stats()
         raise ValueError(
             "Unknown agent_bus action. Use one of: register, heartbeat, status, agents, post, inbox, "
             "thread, mark_read, tasks, task_create, task_claim, task_renew, task_release, task_update, "
-            "task_complete, task_delete, feed, export, sweep, stats."
+            "task_complete, task_delete, feed, export, sweep, chat_send, chat_history, chat_poll, chat_ack, stats."
         )

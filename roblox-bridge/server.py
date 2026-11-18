@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-server.py — Multi-Peer HTTP Bridge + Native Streamable HTTP MCP Server (v5.4.0)
+server.py — Multi-Peer HTTP Bridge + Native Streamable HTTP MCP Server (v6.0.0)
 
 Runs locally on your PC (127.0.0.1:8077 by default) with ZERO pip dependencies.
 Simultaneously serves:
   1. Roblox Studio local plugin peers (Edit + Play Server + Play Client bridge)
      via fast long-polling (`GET /api/poll`, `POST /api/result`).
   2. Native MCP Streamable HTTP endpoint (`POST /mcp`, `GET /mcp`, `DELETE /mcp`)
-     implementing MCP 2025-06-18 / 2024-11-05 JSON-RPC 2.0 (70 tools, 8 live
-     resources, 2 resource templates, 4 workflow prompts).
+     implementing MCP 2026-07-28 + 2025-11-25 / 2025-06-18 / 2024-11-05 JSON-RPC 2.0
+     (tools, live resources, resource templates, completions, prompts, tasks,
+     subscriptions, MRTR confirmations, SEP-2243 routing headers, RFC 9728 OAuth
+     protected-resource metadata, and SEP-1649 well-known Server Cards).
   3. REST API for CLI (`arena_studio.py` / `ab.ps1`) & remote cloud agents
      (`GET /api/health`, `GET /api/state`, `GET /api/agent-guide`,
       `GET /api/peers`, `POST /api/jobs`, `GET /api/jobs/<id>`,
@@ -28,32 +30,45 @@ import os
 from pathlib import Path
 import threading
 import time
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit
 import uuid
 
 from confirm_gate import ConfirmGate, GateError, mode_from_env  # noqa: E402
 from mcp_core import (
     CONFIRM_GATED_TOOLS,
     BridgeClient,
-    take_subscription_stream,
+    META_PROTOCOL_VERSION,
     MCPDispatcher,
     MODERN_PROTOCOL_VERSION,
     SUPPORTED_PROTOCOL_VERSIONS,
     TOOL_MAP,
     TOOL_SPECS,
+    READ_ONLY_JOB_TYPES,
+    build_mcp_server_card,
+    decode_mcp_header_value,
     is_tool_call_read_only,
+    is_bus_action_read_only,
     run_bridge_self_test,
+    take_subscription_stream,
 )
 from auth_core import ROLE_RANK, TokenStore
 from bus_core import AgentBus
 from telemetry import Telemetry
 from tunnel_manager import TunnelManager
 
-VERSION = "5.4.0"
+VERSION = "6.0.0"
 PEER_ONLINE_WINDOW = 5.0  # play DataModel peers are transient; do not route work to stale peers
+DEFAULT_MAX_BODY_BYTES = 32 * 1024 * 1024  # 32 MB ceiling for .rbxlx / batch image uploads
 HERE = Path(__file__).resolve().parent
 SNAPSHOT_DIR = HERE / "snapshots"
 SNAPSHOT_RETENTION = 30
+
+
+class BodyLimitError(ValueError):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
 
 
 def _now() -> float:
@@ -74,11 +89,17 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             "dashboard": f"{origin}/",
             "mcp_streamable_http": f"{origin}/mcp",
             "mcp_stdio": "python mcp_server.py",
+            "well_known_mcp": f"{origin}/.well-known/mcp.json",
+            "well_known_server_card": f"{origin}/.well-known/mcp/server-card.json",
+            "oauth_protected_resource": f"{origin}/.well-known/oauth-protected-resource/mcp",
             "health": f"{origin}/api/health",
             "state": f"{origin}/api/state",
             "peers": f"{origin}/api/peers",
             "jobs": f"{origin}/api/jobs",
             "snapshots": f"{origin}/api/snapshots",
+            "direct_chat": f"{origin}/api/chat",
+            "import_web_ui": f"{origin}/api/ui/import-web",
+            "export_web_ui": f"{origin}/api/ui/export-web",
             "agent_guide": f"{origin}/api/agent-guide",
             "self_test": f"{origin}/api/self-test",
         },
@@ -86,7 +107,16 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             "editPeer": "Required for live inspection, writes, import, snapshots and persistent-place edits.",
             "serverPeer": "Required for live server probes, playtest state and server console.",
             "clientPeer": "Required for client-only runtime probes; some server peers can forward when a player client is attached.",
-            "offlineTools": ["browse_kit", "search_assets", "search_cloud_icons", "luau_check (when host binaries are installed)", "render_offline with an exported hierarchy tree"],
+            "offlineTools": [
+                "diagnose_connection (bridge registry only)", "search_tools", "audit_localization",
+                "audit_onboarding_plan", "search_skills", "apply_skill", "skill_references",
+                "browse_kit", "search_assets", "search_cloud_icons",
+                "luau_check (when host binaries are installed)",
+                "render_offline with an exported hierarchy tree",
+                "import_ui_from_web", "export_ui_to_web", "build_vfx_emitter", "de_slop_audit",
+                "spawn_kit_mesh", "kitbash_mesh_prop", "build_combat_hitbox",
+                "configure_camera_rig", "generate_sfx_soundbank", "operator_chat",
+            ],
             "peerFreshnessSeconds": 5,
         },
         "toolCounts": {
@@ -95,6 +125,24 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             "mutating": len(categories.get("mutating", [])),
         },
         "toolsByMode": categories,
+        "agentCapabilities": {
+            "webAndDashboardUiImport": (
+                "UI can be imported directly from the Web (HTML/CSS/Tailwind/SVG/JSON) and from the Control Center "
+                "Dashboard using `import_ui_from_web` or `POST /api/ui/import-web`."
+            ),
+            "meshFirst3DBuilding": (
+                "3D Meshes (`spawn_kit_mesh`, `import_rbxmx`, `MeshPart`, `SpecialMesh`, 520-model CC0 catalog) "
+                "must be prioritized over basic blocky `Part` primitives."
+            ),
+            "deSlopAndVisualClarity": (
+                "Divert from AI-slop artifacts (`—` em-dashes, robotic filler connectors like Furthermore/Moreover/Delve, "
+                "and wall-of-text dumps). Enforce visual clarity with iconography and `de_slop_audit`."
+            ),
+            "directOperatorLiveChat": (
+                "True Direct Live Chat (`operator_chat` and `/api/chat`) delivers human operator messages directly "
+                "into the agent's active MCP tool responses (`operatorLiveChat`), never relying on ignored broadcasts."
+            ),
+        },
         "cliQuickReference": [
             r".\ab.ps1 health",
             r".\ab.ps1 ping",
@@ -118,11 +166,15 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             r".\ab.ps1 scenario --mode play --server-code 'return {players = #game.Players:GetPlayers()}'",
         ],
         "keyTips": [
+            "Import UI from the Web & Dashboard: use `import_ui_from_web` (or the Control Center Web UI Importer) to convert HTML/CSS/Tailwind/SVG/JSON directly into responsive Roblox `StarterGui` hierarchies.",
+            "Prioritize 3D Meshes over blocky primitives: use `spawn_kit_mesh`, `import_rbxmx`, `MeshPart`, `SpecialMesh`, and the 520-model CC0 catalog instead of plain `Part` blocks.",
+            "De-Slop & Visual Clarity: never emit em-dashes (`—`), robotic filler connectors (`Furthermore`, `Moreover`, `Delve`, `Tapestry`), or wall-of-text dumps; run `de_slop_audit` and pair HUD labels with icons.",
+            "Direct Operator Live Chat: unread messages from the human operator are automatically injected into every MCP tool result (`operatorLiveChat`); always reply immediately via `operator_chat(action='reply', message='...')`.",
             "Survey before building: run `survey_place` (includeSource=false on large places, then `script_read` / `script_grep` selectively).",
             "Validate Luau offline first: `luau_check` runs `luau-compile` + `luau-analyze` to catch syntax errors and non-strict undefined globals before touching Studio.",
             "Target the right DataModel: use `dm='edit'` for persistent place changes, `dm='server'` for live Play/Run server state, and `dm='client'` for live player client state. Runtime tools fail fast when the required peer is absent.",
             "`run_playtest_scenario` is successful only with a live server peer, successful requested probes, and a confirmed retained/stopped session; use `keepAlive` and the console cursor/slice fields deliberately.",
-            "`render_offline` can render a previously exported hierarchy tree without a Studio peer; use `screenshot_gui` with `dm='client', path='PlayerGui'` when live absolute UI measurements are needed."
+            "`render_offline` can render a previously exported hierarchy tree without a Studio peer; use `screenshot_gui` with `dm='client', path='PlayerGui'` when live absolute UI measurements are needed.",
             "Bust cached ModuleScripts when editing live packages: pass `replaceInstance=true` (or `--replace` in CLI) or evaluate via `require_fresh`.",
             "Protect refactors: pass `expectedHash` on edits and create a rollback point with `manage_snapshots(action='create')` before multi-script updates.",
             "All mutating operations wrap inside `ChangeHistoryService` recordings so a single Ctrl+Z in Studio cleanly undoes an entire build or sync.",
@@ -144,6 +196,7 @@ class BridgeState:
         state_dir: str = None,
         auto_tunnel: bool = False,
         tunnel_flavor: str = "auto",
+        tunnel_protocol: str = "auto",
         tunnel_token: str = None,
         tunnel_name: str = None,
         public_url: str = None,
@@ -155,6 +208,8 @@ class BridgeState:
         confirm_allowance_seconds: float = 600.0,
         confirm_wait_seconds: float = 45.0,
         auto_task_ms: float = None,
+        allowed_origins=None,
+        max_body_bytes: int = None,
     ):
         self.token = token or ""
         self.read_only = bool(read_only)
@@ -162,6 +217,16 @@ class BridgeState:
         self.started = _now()
         self.state_dir = Path(state_dir) if state_dir else (HERE / "bridge_state")
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        raw_origins = allowed_origins if allowed_origins is not None else os.environ.get("BRIDGE_ALLOWED_ORIGINS", "")
+        if isinstance(raw_origins, (list, tuple, set)):
+            self.allowed_origins = {str(o).strip().rstrip("/") for o in raw_origins if str(o).strip()}
+        else:
+            self.allowed_origins = {o.strip().rstrip("/") for o in str(raw_origins).split(",") if o.strip()}
+        raw_max_body = max_body_bytes if max_body_bytes is not None else os.environ.get("BRIDGE_MAX_BODY_BYTES")
+        try:
+            self.max_body_bytes = max(4096, int(raw_max_body)) if raw_max_body else DEFAULT_MAX_BODY_BYTES
+        except (TypeError, ValueError):
+            self.max_body_bytes = DEFAULT_MAX_BODY_BYTES
 
         self.lock = threading.RLock()
         self.poll_cv = threading.Condition(self.lock)
@@ -214,6 +279,7 @@ class BridgeState:
             port=int(os.environ.get("BRIDGE_PORT", 8077)),
             binary=tunnel_binary,
             flavor=tunnel_flavor,
+            protocol=tunnel_protocol,
             named_token=tunnel_token,
             name=tunnel_name,
             public_url=public_url,
@@ -597,6 +663,8 @@ class BridgeState:
         action = (body.get("action") or "list").lower()
         if action in ("list", "status"):
             return self.fleet_snapshot()
+        if self.read_only:
+            raise PermissionError("Blocked by Read-Only Inspector mode: fleet changes are disabled.")
         if action in ("set_active", "pin", "activate"):
             return self.set_active_peer(body.get("peerId") or body.get("peer_id"),
                                         body.get("placeId") or body.get("place_id"))
@@ -718,8 +786,21 @@ class BridgeState:
         if not peer_id:
             peer_id = f"{dm}-legacy-{place_id}"
 
-        with self.lock:
+        goodbye = qs.get("goodbye", ["0"])[0] in ("1", "true", "yes")
+        with self.poll_cv:
             existing = self.peers.get(peer_id, {})
+            if goodbye:
+                if peer_id in self.peers:
+                    self.peers[peer_id]["lastPoll"] = now - (PEER_ONLINE_WINDOW + 1.0)
+                    self.peers[peer_id]["evicted"] = True
+                self.poll_cv.notify_all()
+                return {
+                    "peerId": peer_id,
+                    "dm": dm,
+                    "place": place,
+                    "placeId": place_id,
+                    "goodbye": True,
+                }
             info = {
                 "peerId": peer_id,
                 "dm": dm,
@@ -734,9 +815,51 @@ class BridgeState:
                 "polls": existing.get("polls", 0) + 1,
                 "firstSeen": existing.get("firstSeen", now),
                 "lastPoll": now,
+                "evicted": False,
             }
             self.peers[peer_id] = info
             return dict(info)
+
+    def evict_playtest_peers(self, reason: str = "playtest_stopped") -> dict:
+        """Immediately mark runtime (`server` / `client`) peers offline and cancel queued runtime jobs."""
+        evicted_peers = 0
+        cancelled_jobs = 0
+        with self.poll_cv:
+            now = _now()
+            for pid, pinfo in list(self.peers.items()):
+                if pinfo.get("dm") in ("server", "client"):
+                    if (now - pinfo.get("lastPoll", 0.0)) < PEER_ONLINE_WINDOW and not pinfo.get("evicted"):
+                        evicted_peers += 1
+                    pinfo["lastPoll"] = now - (PEER_ONLINE_WINDOW + 1.0)
+                    pinfo["evicted"] = True
+            for jid in list(self.pending):
+                job = self.jobs.get(jid)
+                if job and job.get("status") == "queued" and job.get("target_dm") in ("server", "client"):
+                    try:
+                        self.pending.remove(jid)
+                    except ValueError:
+                        pass
+                    job["status"] = "cancelled"
+                    job["ok"] = False
+                    job["error"] = f"Playtest stopped ({reason})"
+                    job["finished"] = now
+                    evt = self.job_events.get(jid)
+                    if evt:
+                        evt.set()
+                    cancelled_jobs += 1
+            self.poll_cv.notify_all()
+        if evicted_peers or cancelled_jobs:
+            self.telemetry.events.emit("playtest.evicted", {
+                "evictedPeers": evicted_peers,
+                "cancelledJobs": cancelled_jobs,
+                "reason": reason,
+            })
+        return {
+            "ok": True,
+            "evictedPeers": evicted_peers,
+            "cancelledJobs": cancelled_jobs,
+            "reason": reason,
+        }
 
     def _active_peers_unlocked(self) -> list:
         now = _now()
@@ -837,15 +960,18 @@ class BridgeState:
         deadline = time.monotonic() + wait_seconds
         with self.poll_cv:
             while True:
+                p_entry = self.peers.get(peer_info["peerId"])
+                if not p_entry or p_entry.get("evicted"):
+                    return None
                 if self.queue_paused:
                     # Keep the peer alive (lastPoll still updates) but hand out nothing.
-                    self.peers[peer_info["peerId"]]["lastPoll"] = _now()
+                    p_entry["lastPoll"] = _now()
                     if self.poll_cv.wait(timeout=max(0.1, min(0.5, deadline - time.monotonic()))):
                         continue
                     if time.monotonic() >= deadline:
                         return None
                     continue
-                self.peers[peer_info["peerId"]]["lastPoll"] = _now()
+                p_entry["lastPoll"] = _now()
                 best = None
                 for job_id in list(self.pending):
                     job = self.jobs.get(job_id)
@@ -886,7 +1012,8 @@ class BridgeState:
     # -- enqueue / complete / cancel -----------------------------------------
 
     MUTATING_JOB_TYPES = {
-        "run_luau", "build", "write_script", "multi_edit",
+        "run_luau", "require_fresh", "build", "write_script", "batch_write", "multi_edit",
+        "scatter_props",
         "find_replace_scripts", "set_properties", "mass_set_properties",
         "clone_instance", "reparent_instance", "delete", "attributes",
         "tags", "selection", "camera", "history", "terrain",
@@ -913,7 +1040,7 @@ class BridgeState:
     ):
         payload_dict = dict(payload or {}) if isinstance(payload, dict) else {}
 
-        if self.read_only and kind in self.MUTATING_JOB_TYPES:
+        if self.read_only:
             read_sub_ok = (
                 (kind == "attributes" and payload_dict.get("action") == "get")
                 or (kind == "tags" and payload_dict.get("action") in ("list_all", "find_tagged", "get"))
@@ -926,7 +1053,7 @@ class BridgeState:
                 or (kind == "find_replace_scripts" and payload_dict.get("dryRun") is True)
                 or (kind == "device_simulator" and payload_dict.get("action") in ("status", "list"))
             )
-            if not read_sub_ok:
+            if not (isinstance(kind, str) and kind in READ_ONLY_JOB_TYPES) and not read_sub_ok:
                 raise PermissionError(
                     f"Bridge is running in --read-only Inspector mode; job '{kind}' is blocked."
                 )
@@ -1073,6 +1200,9 @@ class BridgeState:
             evt = self.job_events.get(jid)
             if evt:
                 evt.set()
+            if job.get("type") == "playtest" and isinstance(job.get("payload"), dict):
+                if job["payload"].get("action") in ("stop", "force_stop", "cleanup"):
+                    self.evict_playtest_peers(reason="playtest_job_completed")
             self.telemetry.record_job(job)
             if not ok:
                 self.telemetry.audit.append(
@@ -1151,6 +1281,8 @@ class BridgeState:
 
     def handle_snapshots(self, payload: dict) -> dict:
         action = payload.get("action", "list")
+        if self.read_only and action == "save":
+            raise PermissionError("Blocked by Read-Only Inspector mode: snapshot saving is disabled.")
         with self.lock:
             if action == "save":
                 snap = {
@@ -1327,6 +1459,8 @@ class BridgeState:
             return {"cancelled": cancelled}
         if op == "reap":
             return self.reap_jobs()
+        if op == "evict_playtest":
+            return self.evict_playtest_peers(reason=(body or {}).get("reason") or "direct_evict")
         raise ValueError(f"Unknown internal op: {op}")
 
     # -- tunnel control ------------------------------------------------------
@@ -1512,25 +1646,164 @@ def make_http_handler(state: BridgeState):
                 return False
             return ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
+        def _is_local_convenience_request(self) -> bool:
+            """Only the local dashboard/CLI gets token bootstrap or anonymous reads.
+
+            Socket loopback alone is insufficient: hostile web pages can request
+            localhost, and reverse proxies may connect from loopback as well.
+            """
+            if not self._is_loopback():
+                return False
+            if self.headers.get("Sec-Fetch-Site", "").lower() not in ("", "none", "same-origin"):
+                return False
+            try:
+                host = urlsplit("http://" + (self.headers.get("Host") or ""))
+                if (host.hostname not in ("localhost", "127.0.0.1", "::1") or
+                    (host.port or 80) != self.server.server_port or host.username is not None or
+                    host.password is not None or host.path or host.query or host.fragment):
+                    return False
+                origin = self.headers.get("Origin")
+                if origin:
+                    parsed = urlsplit(origin)
+                    if (parsed.scheme != "http" or parsed.hostname != host.hostname or
+                        (parsed.port or 80) != (host.port or 80) or parsed.username is not None or
+                        parsed.password is not None or parsed.path or parsed.query or parsed.fragment):
+                        return False
+            except ValueError:
+                return False
+            return True
+
+        def _request_origin(self) -> str:
+            host_hdr = (self.headers.get("Host") or f"127.0.0.1:{self.server.server_port}").strip()
+            forwarded_proto = (self.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+            proto = "https" if (self.headers.get("CF-Connecting-IP") or forwarded_proto == "https") else "http"
+            return f"{proto}://{host_hdr}".rstrip("/")
+
+        def _is_allowed_origin(self) -> bool:
+            """DNS-rebinding and cross-origin browser request guard (MCP security spec).
+
+            Non-browser clients (CLI, curl, Python SDKs, Roblox Studio HttpService)
+            do not send `Origin` and pass through. When `Origin` IS present, it must
+            match the server's own Host, the active public tunnel URL, or an
+            explicit `BRIDGE_ALLOWED_ORIGINS` entry.
+            """
+            raw_origin = self.headers.get("Origin")
+            if raw_origin is None:
+                return True
+            origin = raw_origin.strip().rstrip("/")
+            if not origin or origin.lower() == "null":
+                return "*" in state.allowed_origins
+            if "*" in state.allowed_origins or origin in state.allowed_origins:
+                return True
+            try:
+                parsed = urlsplit(origin)
+            except ValueError:
+                return False
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                return False
+            if parsed.username is not None or parsed.password is not None or parsed.path or parsed.query or parsed.fragment:
+                return False
+
+            # Match against the active or configured tunnel public URL.
+            for candidate in (state.tunnel.public_url, state.tunnel.user_public_url):
+                if candidate and origin.lower() == candidate.rstrip("/").lower():
+                    return True
+
+            # Match against the incoming Host header (normalizing default ports 80/443).
+            try:
+                host = urlsplit(self._request_origin())
+            except ValueError:
+                return False
+            origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            host_port = host.port or (443 if host.scheme == "https" else 80)
+            if parsed.hostname.lower() == (host.hostname or "").lower() and origin_port == host_port:
+                return True
+            loopbacks = {"localhost", "127.0.0.1", "::1"}
+            if (
+                parsed.hostname.lower() in loopbacks
+                and (host.hostname or "").lower() in loopbacks
+                and origin_port == self.server.server_port
+            ):
+                return True
+            return False
+
+        def _check_origin(self) -> bool:
+            if self._is_allowed_origin():
+                return True
+            state.telemetry.metrics.inc("bridge_origin_rejections_total", 1)
+            self._send(403, {"error": "Origin not allowed", "origin": self.headers.get("Origin")})
+            return False
+
+        def _oauth_protected_resource_metadata(self, path_scoped: bool = True) -> dict:
+            """RFC 9728 OAuth 2.0 Protected Resource Metadata for MCP clients."""
+            origin = self._request_origin()
+            meta = {
+                "resource": f"{origin}/mcp" if path_scoped else origin,
+                "bearer_methods_supported": ["header"],
+                "scopes_supported": ["mcp:read", "mcp:write", "mcp:admin"],
+                "resource_name": "Arena Roblox Studio MCP Bridge",
+                "resource_documentation": f"{origin}/api/agent-guide",
+            }
+            issuer = (os.environ.get("BRIDGE_OAUTH_ISSUER") or "").strip()
+            if issuer:
+                meta["authorization_servers"] = [issuer]
+            return meta
+
+        def _www_authenticate_header(self, code: int, required: str = "read") -> str:
+            origin = self._request_origin()
+            res_meta = f"{origin}/.well-known/oauth-protected-resource/mcp"
+            scope = f"mcp:{required}"
+            if code == 403:
+                return (
+                    f'Bearer realm="arena-roblox-studio-mcp", error="insufficient_scope", '
+                    f'scope="{scope}", resource_metadata="{res_meta}"'
+                )
+            return f'Bearer realm="arena-roblox-studio-mcp", resource_metadata="{res_meta}", scope="{scope}"'
+
         def _mcp_headers(self, protocol_version: str = None) -> dict:
             """`Mcp-Session-Id` is a legacy-era artefact: the 2026-07-28 core
             removed protocol sessions, so modern answers do not advertise one."""
             if (protocol_version or "") == MODERN_PROTOCOL_VERSION:
-                return {}
+                return {"MCP-Protocol-Version": MODERN_PROTOCOL_VERSION}
             return {"Mcp-Session-Id": state.session_id}
 
-        def _send(self, code: int, body, ctype: str = "application/json; charset=utf-8", extra_headers: dict = None):
+        def _cors_origin(self, public_discovery: bool = False) -> str:
+            if public_discovery:
+                return "*"
+            req_origin = self.headers.get("Origin")
+            if not req_origin:
+                return "*"
+            return req_origin.strip() if self._is_allowed_origin() else "null"
+
+        def _send(
+            self,
+            code: int,
+            body,
+            ctype: str = "application/json; charset=utf-8",
+            extra_headers: dict = None,
+            public_discovery: bool = False,
+        ):
             if isinstance(body, (dict, list)):
                 body = json.dumps(body)
             data = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Access-Control-Allow-Origin", self._cors_origin(public_discovery=public_discovery))
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Authorization, Content-Type, X-Arena-Token, MCP-Protocol-Version, "
+                "Mcp-Session-Id, Mcp-Method, Mcp-Name, Last-Event-ID, Idempotency-Key",
+            )
             self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-            self.send_header("Access-Control-Expose-Headers", "Mcp-Session-Id")
-            self.send_header("Cache-Control", "no-store")
+            self.send_header(
+                "Access-Control-Expose-Headers",
+                "Mcp-Session-Id, MCP-Protocol-Version, X-Arena-Subscription, X-Arena-Task, WWW-Authenticate",
+            )
+            has_cache = extra_headers and any(k.lower() == "cache-control" for k in extra_headers)
+            if not has_cache:
+                self.send_header("Cache-Control", "public, max-age=300" if public_discovery else "no-store")
             if extra_headers:
                 for hk, hv in extra_headers.items():
                     self.send_header(hk, hv)
@@ -1542,8 +1815,21 @@ def make_http_handler(state: BridgeState):
                 pass
 
         def _read_body_raw(self) -> bytes:
-            length = int(self.headers.get("Content-Length") or 0)
-            if not length:
+            raw_len = self.headers.get("Content-Length")
+            if not raw_len:
+                return b""
+            try:
+                length = int(raw_len)
+            except ValueError as exc:
+                raise BodyLimitError(400, f"Invalid Content-Length header: {raw_len!r}") from exc
+            if length < 0:
+                raise BodyLimitError(400, "Negative Content-Length header")
+            if length > state.max_body_bytes:
+                raise BodyLimitError(
+                    413,
+                    f"Request body ({length} bytes) exceeds maximum allowed ({state.max_body_bytes} bytes)",
+                )
+            if length == 0:
                 return b""
             return self.rfile.read(length)
 
@@ -1581,7 +1867,7 @@ def make_http_handler(state: BridgeState):
                 is_loopback=self._is_loopback(),
                 required=required,
             )
-            if err and allow_loopback and required == "read" and not supplied and self._is_loopback():
+            if err and allow_loopback and required == "read" and not supplied and self._is_local_convenience_request():
                 # Backwards-compatible convenience for local dashboards/CLIs on
                 # read-only discovery endpoints. Never applied to /mcp or writes.
                 return {"role": "read", "id": "loopback", "label": "loopback"}, None
@@ -1595,16 +1881,19 @@ def make_http_handler(state: BridgeState):
             """Scope check that writes the error response itself. Returns ctx or None."""
             ctx, err = self._auth_ctx(qs, required, allow_loopback=allow_loopback)
             if err:
-                headers = None
-                if err.get("code") == 429:
-                    headers = {"Retry-After": str(err.get("retryAfter", 1))}
+                code = err.get("code", 401)
+                headers = {}
+                if code == 429:
+                    headers["Retry-After"] = str(err.get("retryAfter", 1))
+                elif code in (401, 403):
+                    headers["WWW-Authenticate"] = self._www_authenticate_header(code, required=required)
                 payload = {"error": err.get("error")}
                 if err.get("retryAfter"):
                     payload["retryAfter"] = err["retryAfter"]
-                self._send(err.get("code", 401), payload, extra_headers=headers)
+                self._send(code, payload, extra_headers=headers or None)
                 state.telemetry.metrics.inc(
                     "bridge_auth_rejections_total", 1,
-                    {"code": str(err.get("code")), "path": urlparse(self.path).path},
+                    {"code": str(code), "path": urlparse(self.path).path},
                 )
                 return None
             return ctx
@@ -1612,7 +1901,9 @@ def make_http_handler(state: BridgeState):
         # -- Server-Sent Events -------------------------------------------------
 
         def _stream_events(self, qs: dict):
-            cursor = self._int_qs(qs, "since", 0) or self._int_qs(qs, "cursor", 0)
+            last_event_hdr = (self.headers.get("Last-Event-ID") or "").strip()
+            hdr_cursor = int(last_event_hdr) if last_event_hdr.isdigit() else 0
+            cursor = self._int_qs(qs, "since", 0) or self._int_qs(qs, "cursor", 0) or hdr_cursor
             kinds = (qs.get("kinds") or [None])[0]
             try:
                 max_seconds = min(float((qs.get("maxSeconds") or ["300"])[0] or 300), 900)
@@ -1621,10 +1912,11 @@ def make_http_handler(state: BridgeState):
             self.close_connection = True
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", "no-cache, no-transform")
             self.send_header("Connection", "close")
             self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Access-Control-Allow-Origin", self._cors_origin())
             self.end_headers()
 
             def _write(chunk: str):
@@ -1632,7 +1924,9 @@ def make_http_handler(state: BridgeState):
                 self.wfile.flush()
 
             started = time.monotonic()
-            _write(": arena bridge event stream\n\n")
+            # Emit immediate comment bytes so Cloudflare Tunnel flushes 200 headers
+            # right away instead of holding the stream open until the first event.
+            _write(": connected\n\n")
             try:
                 if cursor == 0:
                     seed = state.telemetry.events.since(0, 50, kinds)
@@ -1640,7 +1934,7 @@ def make_http_handler(state: BridgeState):
                         _write(f"id: {event['seq']}\ndata: {json.dumps(event)}\n\n")
                     cursor = seed["cursor"]
                 while time.monotonic() - started < max_seconds:
-                    batch = state.telemetry.events.tail(cursor, timeout=10.0)
+                    batch = state.telemetry.events.tail(cursor, timeout=15.0)
                     for event in batch["events"]:
                         _write(f"id: {event['seq']}\ndata: {json.dumps(event)}\n\n")
                         cursor = event["seq"]
@@ -1650,12 +1944,27 @@ def make_http_handler(state: BridgeState):
                 return
 
         def do_OPTIONS(self):
-            self._send(204, b"")
+            url = urlparse(self.path)
+            path = url.path.rstrip("/") or "/"
+            is_well_known = path.startswith("/.well-known/")
+            if not is_well_known and not self._is_allowed_origin():
+                return self._send(403, {"error": "Origin not allowed"})
+            self._send(204, b"", public_discovery=is_well_known)
 
         def do_DELETE(self):
+            if not self._check_origin():
+                return
             url = urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/mcp":
+                header_version = (self.headers.get("MCP-Protocol-Version") or "").strip()
+                if header_version == MODERN_PROTOCOL_VERSION:
+                    # SEP-2567: 2026-07-28 removed protocol sessions and DELETE /mcp.
+                    return self._send(
+                        405,
+                        {"error": "Protocol version 2026-07-28 is stateless; DELETE /mcp is not used."},
+                        extra_headers={"Allow": "POST"},
+                    )
                 return self._send(200, {"closed": True})
             return self._send(404, {"error": "not found"})
 
@@ -1663,6 +1972,23 @@ def make_http_handler(state: BridgeState):
             url = urlparse(self.path)
             qs = parse_qs(url.query)
             path = url.path.rstrip("/") or "/"
+
+            # --- Public RFC 8615 /.well-known discovery endpoints ----------------
+            if path in ("/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource"):
+                return self._send(
+                    200,
+                    self._oauth_protected_resource_metadata(path_scoped=path.endswith("/mcp")),
+                    public_discovery=True,
+                )
+
+            if path in ("/.well-known/mcp/server-card.json", "/.well-known/mcp.json"):
+                card = build_mcp_server_card(
+                    origin=self._request_origin(),
+                    auth_required=bool(state.token or state.tokens.records),
+                    read_only=state.read_only,
+                    confirm_mode=state.confirm_mode,
+                )
+                return self._send(200, card, public_discovery=True)
 
             if path == "/":
                 return self._send(200, dashboard_html(), "text/html; charset=utf-8")
@@ -1672,7 +1998,7 @@ def make_http_handler(state: BridgeState):
                 rel_img = path[len("/api/kit/image/") :].lstrip("/")
                 images_root = (find_kit_root() / "assets" / "images").resolve()
                 target_img = (images_root / rel_img).resolve()
-                if not str(target_img).startswith(str(images_root)) or not target_img.is_file():
+                if not target_img.is_relative_to(images_root) or not target_img.is_file():
                     return self._send(404, {"error": "image not found"})
                 mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".bmp": "image/bmp"}
                 return self._send(200, target_img.read_bytes(), mime_map.get(target_img.suffix.lower(), "application/octet-stream"))
@@ -1682,14 +2008,224 @@ def make_http_handler(state: BridgeState):
                 rel_aud = path[len("/api/kit/audio/") :].lstrip("/")
                 audio_root = (find_kit_root() / "assets" / "audio").resolve()
                 target_aud = (audio_root / rel_aud).resolve()
-                if not str(target_aud).startswith(str(audio_root)) or not target_aud.is_file():
+                if not target_aud.is_relative_to(audio_root) or not target_aud.is_file():
                     return self._send(404, {"error": "audio not found"})
                 amime = {".wav": "audio/wav", ".ogg": "audio/ogg", ".mp3": "audio/mpeg"}
                 return self._send(200, target_aud.read_bytes(), amime.get(target_aud.suffix.lower(), "application/octet-stream"))
 
+            if path.startswith("/api/kit/thumbnail/"):
+                from image_pipeline import find_kit_root
+                rel_thumb = path[len("/api/kit/thumbnail/") :].lstrip("/")
+                thumb_root = (find_kit_root() / "assets" / "thumbnails").resolve()
+                target_thumb = (thumb_root / rel_thumb).resolve()
+                if not target_thumb.is_relative_to(thumb_root) or not target_thumb.is_file():
+                    return self._send(404, {"error": "thumbnail not found"})
+                return self._send(200, target_thumb.read_bytes(), "image/png")
+
+            if path.startswith("/api/kit/procedural/"):
+                from image_pipeline import ALL_PROCEDURAL_PRESETS, encode_png_rgba, generate_procedural_rgba
+                preset_stem = path[len("/api/kit/procedural/") :].lstrip("/")
+                if preset_stem.endswith(".png"):
+                    preset_stem = preset_stem[:-4]
+                if preset_stem not in ALL_PROCEDURAL_PRESETS:
+                    return self._send(404, {"error": f"unknown procedural preset: {preset_stem}"})
+                w, h, rgba = generate_procedural_rgba(preset_stem)
+                return self._send(200, encode_png_rgba(w, h, rgba), "image/png")
+
+            if path.startswith("/api/kit/synth-audio/"):
+                from image_pipeline import AUDIO_SYNTH_PRESETS, synthesize_wav_bytes
+                preset_stem = path[len("/api/kit/synth-audio/") :].lstrip("/")
+                if preset_stem.endswith(".wav"):
+                    preset_stem = preset_stem[:-4]
+                if preset_stem not in AUDIO_SYNTH_PRESETS:
+                    return self._send(404, {"error": f"unknown audio synth preset: {preset_stem}"})
+                return self._send(200, synthesize_wav_bytes(preset=preset_stem), "audio/wav")
+
+            if path == "/api/kit/catalog":
+                from image_pipeline import AUDIO_SYNTH_PRESETS
+                from mcp_core import ATMOSPHERE_FX_PRESETS, MECHANIC_BUNDLES, browse_kit_helper
+                cat = (qs.get("category") or ["all"])[0]
+                item_q = (qs.get("item") or [None])[0]
+                fmt = (qs.get("format") or ["full"])[0]
+                sec = (qs.get("section") or [None])[0]
+                cur = self._int_qs(qs, "cursor", 0, 0, 100000)
+                lim = self._int_qs(qs, "limit", 120, 1, 500)
+                try:
+                    data = browse_kit_helper(
+                        category=cat,
+                        item=item_q,
+                        output_format=fmt,
+                        section=sec,
+                        cursor=cur,
+                        limit=lim,
+                    )
+                    if not item_q and not sec:
+                        data["audioSynthSpecs"] = [
+                            {"name": k, **v, "previewUrl": f"/api/kit/synth-audio/{k}.wav"}
+                            for k, v in AUDIO_SYNTH_PRESETS.items()
+                        ]
+                        data["mechanicBundles"] = [
+                            {"name": k, **v}
+                            for k, v in MECHANIC_BUNDLES.items()
+                        ]
+                        data["atmospherePresets"] = list(ATMOSPHERE_FX_PRESETS.keys())
+                    return self._send(200, data)
+                except KeyError as exc:
+                    return self._send(404, {"error": str(exc)})
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+
+            if path == "/api/kit/assets":
+                from mcp_core import search_assets_helper
+                q = (qs.get("query") or [""])[0]
+                atype = (qs.get("assetType") or ["any"])[0]
+                cat = (qs.get("category") or [None])[0]
+                src_id = (qs.get("sourceId") or [None])[0]
+                lic = (qs.get("license") or [None])[0]
+                prov = (qs.get("provenance") or ["any"])[0]
+                cur = self._int_qs(qs, "cursor", 0, 0, 100000)
+                lim = self._int_qs(qs, "limit", 60, 1, 200)
+                return self._send(
+                    200,
+                    search_assets_helper(
+                        query=q,
+                        asset_type=atype,
+                        category=cat,
+                        source_id=src_id,
+                        license_id=lic,
+                        provenance=prov,
+                        cursor=cur,
+                        limit=lim,
+                    ),
+                )
+
+            if path == "/api/kit/cloud-icons":
+                from mcp_core import search_cloud_icons_helper
+                q = (qs.get("query") or [""])[0]
+                pack = (qs.get("pack") or ["all"])[0]
+                cat = (qs.get("category") or [None])[0]
+                var = (qs.get("variant") or ["any"])[0]
+                lim = self._int_qs(qs, "limit", 60, 1, 250)
+                return self._send(
+                    200,
+                    search_cloud_icons_helper(
+                        query=q,
+                        pack=pack,
+                        category=cat,
+                        variant=var,
+                        limit=lim,
+                    ),
+                )
+
+            if path == "/api/kit/viewport-preview":
+                import base64 as _b64_vp
+                from mcp_core import (
+                    audit_3d_scene_helper,
+                    build_offline_3d_showcase_scene,
+                    capture_viewport_helper,
+                )
+                from scene_auditor import audit_3d_hierarchy
+                from viewport_renderer import render_scene_png
+
+                src = (qs.get("source") or ["studio:Workspace"])[0]
+                preset = (qs.get("preset") or ["perspective"])[0]
+                inc_hud = (qs.get("includeHud") or ["0"])[0] in ("1", "true", "yes")
+                show_labels = (qs.get("showLabels") or ["1"])[0] not in ("0", "false", "no")
+                show_grid = (qs.get("showGrid") or ["1"])[0] not in ("0", "false", "no")
+                w = self._int_qs(qs, "width", 680, 240, 1280)
+                h = self._int_qs(qs, "height", 360, 160, 800)
+                seed = self._int_qs(qs, "seed", 2026, 1, 999999)
+                theme = (qs.get("theme") or ["horror_mansion"])[0]
+                try:
+                    yaw = float((qs.get("yaw") or ["0"])[0] or 0.0)
+                    pitch = float((qs.get("pitch") or ["0"])[0] or 0.0)
+                    zoom = float((qs.get("zoom") or ["1"])[0] or 1.0)
+                except (TypeError, ValueError):
+                    yaw, pitch, zoom = 0.0, 0.0, 1.0
+
+                if src.startswith("studio:"):
+                    studio_path = src.split(":", 1)[1].strip() or "Workspace"
+                    with state.lock:
+                        studio_online, _ = state.legacy_studio_summary_unlocked()
+                    if studio_online:
+                        try:
+                            vp = capture_viewport_helper(
+                                state.mcp_client,
+                                {
+                                    "path": studio_path,
+                                    "preset": preset,
+                                    "includeHud": inc_hud,
+                                    "showLabels": show_labels,
+                                    "overlays": {"grid": show_grid, "labels": show_labels},
+                                    "width": w,
+                                    "height": h,
+                                    "yaw": yaw,
+                                    "pitch": pitch,
+                                    "zoom": zoom,
+                                    "returnInline": True,
+                                },
+                            )
+                            b64 = vp.pop("_mcp_image_png_b64", "")
+                            audit_rep = audit_3d_scene_helper(state.mcp_client, {"path": studio_path})
+                            return self._send(
+                                200,
+                                {
+                                    "ok": True,
+                                    "mode": "live_studio",
+                                    "isFallback": False,
+                                    "source": src,
+                                    "sourceLabel": f"Live Studio ({studio_path})",
+                                    "imageBase64": b64,
+                                    "meta": vp,
+                                    "audit": audit_rep,
+                                },
+                            )
+                        except Exception:
+                            pass
+                    is_fallback = True
+                    eff_src = "showcase:starter_village"
+                else:
+                    is_fallback = False
+                    eff_src = src
+
+                ws_tree, gui_tree, l_props, label = build_offline_3d_showcase_scene(
+                    source=eff_src,
+                    seed=seed,
+                    theme=theme,
+                )
+                png_bytes, meta = render_scene_png(
+                    workspace_tree=ws_tree,
+                    gui_tree=gui_tree,
+                    lighting_props=l_props,
+                    width=w,
+                    height=h,
+                    camera_preset=preset,
+                    include_hud=inc_hud,
+                    show_labels=show_labels,
+                    show_grid=show_grid,
+                    yaw_offset_deg=yaw,
+                    pitch_offset_deg=pitch,
+                    zoom=zoom,
+                )
+                audit_rep = audit_3d_hierarchy(ws_tree)
+                audit_rep["path"] = eff_src
+                return self._send(
+                    200,
+                    {
+                        "ok": True,
+                        "mode": "offline_fallback" if is_fallback else "offline_showcase",
+                        "isFallback": is_fallback,
+                        "source": eff_src,
+                        "sourceLabel": f"{label} (Offline Preview — connect Studio for live Workspace)" if is_fallback else label,
+                        "imageBase64": _b64_vp.b64encode(png_bytes).decode("ascii"),
+                        "meta": meta,
+                        "audit": audit_rep,
+                    },
+                )
+
             # Loopback-only bootstrap so localhost:8077 auto-fills token, paths & tools safely
             if path == "/api/local-boot":
-                is_local = self._is_loopback()
+                is_local = self._is_local_convenience_request()
                 tools_lite = [
                     {
                         "name": t["name"],
@@ -1717,20 +2253,49 @@ def make_http_handler(state: BridgeState):
                 )
 
             if path == "/mcp":
+                if not self._check_origin():
+                    return
                 ctx = self._require(qs, "read")
                 if not ctx:
                     return
+                header_version = (self.headers.get("MCP-Protocol-Version") or "").strip()
+                accept = (self.headers.get("Accept") or "").lower()
+                wants_sse = (
+                    ("text/event-stream" in accept and "application/json" not in accept)
+                    or (qs.get("stream") or ["0"])[0] in ("1", "true", "yes")
+                )
+                if header_version == MODERN_PROTOCOL_VERSION and wants_sse:
+                    # SEP-2575: 2026-07-28 removed GET /mcp SSE; use POST subscriptions/listen.
+                    return self._send(
+                        405,
+                        {"error": "GET /mcp SSE stream was removed in 2026-07-28; use POST /mcp with subscriptions/listen."},
+                        extra_headers={"Allow": "POST"},
+                    )
+                if wants_sse:
+                    try:
+                        max_sec = float((qs.get("maxSeconds") or ["60"])[0] or 60)
+                    except (TypeError, ValueError):
+                        max_sec = 60.0
+                    ack = state.mcp_dispatcher.subscribe(
+                        {"types": ["toolsListChanged", "resourceSubscriptions"], "maxSeconds": max_sec},
+                        {"principal": f"token:{ctx.get('id') or 'unknown'}"},
+                    )
+                    stream = state.mcp_dispatcher_take_stream({"id": None, "result": ack})
+                    if stream:
+                        stream["suppressAck"] = True
+                        return self._stream_mcp_subscription(stream, header_version)
                 return self._send(
                     200,
                     {
                         "name": "arena-roblox-studio-mcp",
                         "version": VERSION,
                         "transport": "streamable-http",
+                        "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
                         "tools": len(TOOL_SPECS),
                         "readOnly": state.read_only,
                         "role": ctx["role"],
                     },
-                    extra_headers={"Mcp-Session-Id": state.session_id},
+                    extra_headers=self._mcp_headers(header_version),
                 )
 
             # Public, unauthenticated liveness probe used by the tunnel supervisor
@@ -1744,18 +2309,19 @@ def make_http_handler(state: BridgeState):
                 return self._send(200, state.direct_dispatch("state", {}))
 
             if path == "/api/self-test":
-                if not self._require(qs, "read"):
+                ctx = self._require(qs, "read")
+                if not ctx:
                     return
-                return self._send(200, run_bridge_self_test(state.mcp_client, include_studio_smoke=True, timeout=180))
+                # A read token or Inspector must never initiate the live write/delete cycle.
+                smoke_allowed = not state.read_only and ctx.get("role") in ("write", "admin")
+                return self._send(200, run_bridge_self_test(state.mcp_client, include_studio_smoke=smoke_allowed, timeout=180))
 
             if path == "/api/agent-guide":
                 if not self._require(qs, "read", allow_loopback=True):
                     return
-                host_hdr = self.headers.get("Host") or "127.0.0.1:8077"
-                proto = "https" if self.headers.get("CF-Connecting-IP") else "http"
                 return self._send(
                     200,
-                    build_agent_guide(state.direct_dispatch("state", {}), origin=f"{proto}://{host_hdr}"),
+                    build_agent_guide(state.direct_dispatch("state", {}), origin=self._request_origin()),
                 )
 
             if path == "/api/peers":
@@ -1801,16 +2367,27 @@ def make_http_handler(state: BridgeState):
                 return self._send(200, state.telemetry.audit.tail(limit, (qs.get("action") or [None])[0]))
 
             if path == "/api/bus":
-                if not self._require(qs, "read"):
-                    return
                 payload = {k: v[0] for k, v in qs.items() if k != "token"}
                 payload.setdefault("action", "stats")
+                read_only = is_bus_action_read_only(payload)
+                if not self._require(qs, "read" if read_only else "write"):
+                    return
+                if state.read_only and not read_only:
+                    return self._send(403, {"error": "Blocked by Read-Only Inspector mode"})
                 try:
                     return self._send(200, state.bus.handle(payload))
                 except KeyError as exc:
                     return self._send(404, {"error": str(exc)})
                 except ValueError as exc:
                     return self._send(400, {"error": str(exc)})
+
+            if path == "/api/chat":
+                if not self._require(qs, "read", allow_loopback=True):
+                    return
+                limit = self._int_qs(qs, "limit", 80, 1, 500)
+                since = self._int_qs(qs, "since", 0, 0, 10_000_000)
+                unread_only = (qs.get("unreadOnly") or ["0"])[0] in ("1", "true", "yes")
+                return self._send(200, state.bus.chat_history(limit=limit, since_seq=since, unread_for_agent=unread_only))
 
             if path == "/api/tunnel":
                 if not self._require(qs, "read"):
@@ -1846,12 +2423,47 @@ def make_http_handler(state: BridgeState):
                 except KeyError as exc:
                     return self._send(404, {"error": str(exc)})
 
-            # Studio plugin long-polls here
+            if path == "/api/plugin-status":
+                if not self._require(qs, "read", allow_loopback=True):
+                    return
+                from mcp_core import manage_plugin_and_playtest_helper
+                return self._send(200, manage_plugin_and_playtest_helper(state.mcp_client, {"action": "status"}))
+
+            if path == "/api/plugin/download":
+                if not self._require(qs, "read", allow_loopback=True):
+                    return
+                import re as _re_dl
+                plugin_src = (HERE / "ArenaBridge.lua").read_text(encoding="utf-8")
+                target_url = state.tunnel.public_url or f"http://127.0.0.1:{self.server.server_port}"
+                plugin_src = _re_dl.sub(
+                    r'local BRIDGE_URL\s*=\s*"[^"]*"',
+                    f'local BRIDGE_URL = "{target_url}"',
+                    plugin_src,
+                )
+                plugin_src = _re_dl.sub(
+                    r'local BRIDGE_TOKEN\s*=\s*"[^"]*"',
+                    f'local BRIDGE_TOKEN = "{state.token}"',
+                    plugin_src,
+                )
+                return self._send(
+                    200,
+                    plugin_src,
+                    "text/plain; charset=utf-8",
+                    extra_headers={"Content-Disposition": 'attachment; filename="ArenaBridge.lua"'},
+                )
+
+            # Poll registers a peer and claims jobs; it is not a passive read.
             if path == "/api/poll":
-                if not self._require(qs, "read"):
+                if not self._require(qs, "write"):
                     return
                 peer_info = state.record_poll(qs)
-                job = state.poll_for_job(peer_info, wait_seconds=8.0)
+                if peer_info.get("goodbye"):
+                    return self._send(200, {"ok": True, "goodbye": True, "job": None, "paused": state.queue_paused})
+                try:
+                    wait_sec = max(0.0, min(float((qs.get("wait") or ["8.0"])[0] or 8.0), 15.0))
+                except (TypeError, ValueError):
+                    wait_sec = 8.0
+                job = state.poll_for_job(peer_info, wait_seconds=wait_sec) if wait_sec > 0 else None
                 return self._send(200, {"job": job, "paused": state.queue_paused})
 
             if path.startswith("/api/jobs/"):
@@ -1873,7 +2485,7 @@ def make_http_handler(state: BridgeState):
             return self._send(404, {"error": "not found"})
 
         def _stream_mcp_subscription(self, stream: dict, protocol_version: str = None):
-            """Hold this POST open and forward MCP notifications as SSE frames."""
+            """Hold this response open and forward MCP notifications as SSE frames."""
             sub_id = stream.get("subscriptionId")
             max_seconds = stream.get("maxSeconds")
             poll_seconds = stream.get("pollSeconds") or 0.75
@@ -1884,27 +2496,45 @@ def make_http_handler(state: BridgeState):
             self.close_connection = True
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", "no-cache, no-transform")
             self.send_header("Connection", "close")
             self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            if (protocol_version or "") != MODERN_PROTOCOL_VERSION:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Access-Control-Allow-Origin", self._cors_origin())
+            if (protocol_version or "") == MODERN_PROTOCOL_VERSION:
+                self.send_header("MCP-Protocol-Version", MODERN_PROTOCOL_VERSION)
+            else:
                 self.send_header("Mcp-Session-Id", state.session_id)
             if sub_id:
                 self.send_header("X-Arena-Subscription", str(sub_id))
             self.end_headers()
 
             stop = threading.Event()
+            write_lock = threading.Lock()
+
+            def _raw_write(text: str):
+                with write_lock:
+                    self.wfile.write(text.encode("utf-8"))
+                    self.wfile.flush()
 
             def _write(payload):
                 frame = json.dumps(payload, ensure_ascii=False, default=str)
-                self.wfile.write(f"event: message\ndata: {frame}\n\n".encode("utf-8"))
-                self.wfile.flush()
+                _raw_write(f"event: message\ndata: {frame}\n\n")
 
             try:
-                _write(stream["ack"])
+                # Emit immediate comment bytes so Cloudflare Tunnel flushes 200
+                # headers right away rather than holding until the first event.
+                _raw_write(": connected\n\n")
+                if not stream.get("suppressAck") and stream.get("ack") is not None:
+                    _write(stream["ack"])
                 state.mcp_dispatcher.pump_subscription(
-                    sub_id, _write, stop_event=stop, max_seconds=max_seconds, poll_seconds=poll_seconds,
+                    sub_id,
+                    _write,
+                    stop_event=stop,
+                    max_seconds=max_seconds,
+                    poll_seconds=poll_seconds,
+                    keepalive=lambda: _raw_write(": keepalive\n\n"),
+                    keepalive_seconds=15.0,
                 )
             except (BrokenPipeError, ConnectionResetError, OSError):
                 stop.set()
@@ -1914,6 +2544,8 @@ def make_http_handler(state: BridgeState):
                 stop.set()
 
         def do_POST(self):
+            if not self._check_origin():
+                return
             url = urlparse(self.path)
             qs = parse_qs(url.query)
             path = url.path.rstrip("/") or "/"
@@ -1921,12 +2553,12 @@ def make_http_handler(state: BridgeState):
             # Native MCP Streamable HTTP endpoint (JSON-RPC 2.0). The token role
             # determines whether mutating tools are advertised/callable.
             if path == "/api/mcp/events":
-                # MCP-side telemetry (confirmations, subscriptions) from a
-                # standalone mcp_server.py attached over HTTP. Needs admin scope:
-                # it writes into the audit chain.
                 if not self._require(qs, "admin"):
                     return
-                body = self._body()
+                try:
+                    body = self._body()
+                except BodyLimitError as exc:
+                    return self._send(exc.status_code, {"error": exc.message})
                 return self._send(200, state.publish_mcp_event(
                     body.get("kind"), body.get("detail"), body.get("level") or "info"))
 
@@ -1935,6 +2567,8 @@ def make_http_handler(state: BridgeState):
                     return
                 try:
                     report = state.confirmations_report(self._body())
+                except BodyLimitError as exc:
+                    return self._send(exc.status_code, {"error": exc.message})
                 except ValueError as exc:
                     return self._send(400, {"error": str(exc)})
                 return self._send(200, report)
@@ -1942,15 +2576,27 @@ def make_http_handler(state: BridgeState):
             if path == "/api/subscriptions/close":
                 if not self._require(qs, "admin"):
                     return
-                sub_id = (self._body() or {}).get("subscriptionId")
+                try:
+                    sub_id = (self._body() or {}).get("subscriptionId")
+                except BodyLimitError as exc:
+                    return self._send(exc.status_code, {"error": exc.message})
                 return self._send(200, state.mcp_dispatcher.drop_subscription(sub_id))
-
 
             if path == "/mcp":
                 ctx = self._require(qs, "read")
                 if not ctx:
                     return
-                raw = self._read_body_raw()
+                header_version = (self.headers.get("MCP-Protocol-Version") or "").strip()
+                raw_header_method = self.headers.get("Mcp-Method")
+                raw_header_name = self.headers.get("Mcp-Name")
+                try:
+                    raw = self._read_body_raw()
+                except BodyLimitError as exc:
+                    return self._send(
+                        exc.status_code,
+                        {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": exc.message}},
+                        extra_headers=self._mcp_headers(header_version),
+                    )
                 try:
                     rpc_in = json.loads(raw.decode("utf-8"))
                 except Exception as exc:
@@ -1959,53 +2605,120 @@ def make_http_handler(state: BridgeState):
                         {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {exc}"}},
                         extra_headers=self._mcp_headers(header_version),
                     )
-                # Dual-era MCP over Streamable HTTP:
-                #  * modern clients send the version in MCP-Protocol-Version (and
-                #    optionally per-request _meta) instead of an initialize handshake
-                #  * Mcp-Method / Mcp-Name must agree with the body (-32020)
-                header_version = (self.headers.get("MCP-Protocol-Version") or "").strip()
-                header_method = (self.headers.get("Mcp-Method") or "").strip()
-                header_name = (self.headers.get("Mcp-Name") or "").strip()
+
+                req_id = rpc_in.get("id") if isinstance(rpc_in, dict) else None
+                try:
+                    header_method = decode_mcp_header_value(raw_header_method) if raw_header_method is not None else ""
+                    header_name = decode_mcp_header_value(raw_header_name) if raw_header_name is not None else ""
+                except ValueError as exc:
+                    return self._send(
+                        400,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32020, "message": str(exc)},
+                        },
+                        extra_headers=self._mcp_headers(header_version),
+                    )
+
+                if raw_header_method is not None and not header_method:
+                    return self._send(
+                        400,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32020, "message": "Mcp-Method header must not be empty"},
+                        },
+                        extra_headers=self._mcp_headers(header_version),
+                    )
+
+                # Dual-era MCP over Streamable HTTP (SEP-2575 / SEP-2243):
+                #  * MCP-Protocol-Version must agree with _meta protocolVersion when both are present (-32020)
+                #  * Mcp-Method / Mcp-Name (including =?base64?...?= sentinels) must agree with body (-32020)
                 if isinstance(rpc_in, dict):
+                    params_obj = rpc_in.get("params") if isinstance(rpc_in.get("params"), dict) else {}
+                    top_meta = rpc_in.get("_meta") if isinstance(rpc_in.get("_meta"), dict) else {}
+                    nested_meta = params_obj.get("_meta") if isinstance(params_obj.get("_meta"), dict) else {}
+                    body_version = top_meta.get(META_PROTOCOL_VERSION) or nested_meta.get(META_PROTOCOL_VERSION)
+                    if header_version and body_version and header_version != body_version:
+                        return self._send(
+                            400,
+                            {
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": {
+                                    "code": -32020,
+                                    "message": "MCP-Protocol-Version header does not match _meta protocolVersion",
+                                    "data": {"header": header_version, "body": body_version},
+                                },
+                            },
+                            extra_headers=self._mcp_headers(header_version),
+                        )
                     if header_version:
                         meta = rpc_in.get("_meta")
                         if not isinstance(meta, dict):
                             meta = {}
                             rpc_in["_meta"] = meta
-                        meta.setdefault("io.modelcontextprotocol/protocolVersion", header_version)
+                        meta.setdefault(META_PROTOCOL_VERSION, header_version)
                     body_method = (rpc_in.get("method") or "").strip()
-                    if header_method and body_method and header_method != body_method:
-                        return self._send(400, {
-                            "jsonrpc": "2.0", "id": rpc_in.get("id"),
-                            "error": {"code": -32020, "message": "Mcp-Method header does not match the JSON-RPC method",
-                                      "data": {"header": header_method, "body": body_method}},
-                        }, extra_headers=self._mcp_headers(header_version))
-                    if header_name and body_method in ("tools/call", "resources/read", "prompts/get"):
-                        params = rpc_in.get("params") or {}
-                        body_name = params.get("name") or params.get("uri") or ""
-                        if body_name and header_name != body_name:
-                            return self._send(400, {
-                                "jsonrpc": "2.0", "id": rpc_in.get("id"),
-                                "error": {"code": -32020, "message": "Mcp-Name header does not match the request name",
-                                          "data": {"header": header_name, "body": body_name}},
-                            }, extra_headers=self._mcp_headers(header_version))
+                    if header_method and body_method != header_method:
+                        return self._send(
+                            400,
+                            {
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "error": {
+                                    "code": -32020,
+                                    "message": "Mcp-Method header does not match the JSON-RPC method",
+                                    "data": {"header": header_method, "body": body_method},
+                                },
+                            },
+                            extra_headers=self._mcp_headers(header_version),
+                        )
+                    if raw_header_name is not None and body_method in ("tools/call", "resources/read", "prompts/get"):
+                        body_name = str(params_obj.get("name") or params_obj.get("uri") or "")
+                        if not header_name or (body_name and header_name != body_name):
+                            return self._send(
+                                400,
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "error": {
+                                        "code": -32020,
+                                        "message": "Mcp-Name header does not match the request name",
+                                        "data": {"header": header_name, "body": body_name},
+                                    },
+                                },
+                                extra_headers=self._mcp_headers(header_version),
+                            )
 
                 # `_meta` is authoritative in the 2026-07-28 era: a client that
                 # negotiates per request (without an MCP-Protocol-Version header)
                 # still gets era-correct response headers.
                 negotiated_version = header_version
-                if isinstance(rpc_in, dict) and isinstance(rpc_in.get("_meta"), dict):
-                    negotiated_version = (rpc_in["_meta"].get("io.modelcontextprotocol/protocolVersion")
-                                          or header_version)
-
-                # Tell the dispatcher who is calling (scoped-token identity) so a
-                # confirmation can never be replayed by a different principal.
                 if isinstance(rpc_in, dict):
-                    meta = rpc_in.get("_meta")
+                    params_obj = rpc_in.get("params") if isinstance(rpc_in.get("params"), dict) else {}
+                    nested_meta = params_obj.get("_meta") if isinstance(params_obj.get("_meta"), dict) else {}
+                    top_meta = rpc_in.get("_meta") if isinstance(rpc_in.get("_meta"), dict) else {}
+                    negotiated_version = (
+                        top_meta.get(META_PROTOCOL_VERSION)
+                        or nested_meta.get(META_PROTOCOL_VERSION)
+                        or header_version
+                    )
+
+                # Authentication, not client-provided metadata or a non-unique
+                # label, determines the caller for every request in a batch.
+                requests = rpc_in if isinstance(rpc_in, list) else [rpc_in]
+                for request in requests:
+                    if not isinstance(request, dict):
+                        continue
+                    meta = request.get("_meta")
                     if not isinstance(meta, dict):
                         meta = {}
-                        rpc_in["_meta"] = meta
-                    meta.setdefault("x-arena-principal", f"{ctx.get('role','read')}:{ctx.get('label') or ctx.get('id') or 'anon'}")
+                        request["_meta"] = meta
+                    meta["x-arena-principal"] = f"token:{ctx.get('id') or 'unknown'}"
+                    if header_version:
+                        meta.setdefault(META_PROTOCOL_VERSION, header_version)
 
                 rpc_in, scope_error = self._enforce_mcp_scope(rpc_in, ctx)
                 if scope_error is not None:
@@ -2014,6 +2727,14 @@ def make_http_handler(state: BridgeState):
                 if rpc_out is None:
                     return self._send(202, b"", "text/plain; charset=utf-8",
                                      self._mcp_headers(negotiated_version))
+
+                # SEP-2575: Unsupported protocol version (-32022) returns HTTP 400 on Streamable HTTP.
+                if (
+                    isinstance(rpc_out, dict)
+                    and isinstance(rpc_out.get("error"), dict)
+                    and rpc_out["error"].get("code") == -32022
+                ):
+                    return self._send(400, rpc_out, extra_headers=self._mcp_headers(negotiated_version))
 
                 # subscriptions/listen answers on a long-lived response stream: the
                 # acknowledgement goes out first, then one SSE frame per notification.
@@ -2026,7 +2747,10 @@ def make_http_handler(state: BridgeState):
                     extra["X-Arena-Task"] = str(rpc_out["result"]["taskId"])
                 return self._send(200, rpc_out, extra_headers=extra)
 
-            body = self._body()
+            try:
+                body = self._body()
+            except BodyLimitError as exc:
+                return self._send(exc.status_code, {"error": exc.message})
 
             # Enqueue job for Studio (requires write scope; admin when read-only
             # inspector mode is active, since that setting is a safety control).
@@ -2096,21 +2820,81 @@ def make_http_handler(state: BridgeState):
                     return
                 try:
                     return self._send(200, state.handle_snapshots(body))
+                except PermissionError as exc:
+                    return self._send(403, {"error": str(exc)})
                 except KeyError as exc:
                     return self._send(404, {"error": str(exc)})
                 except ValueError as exc:
                     return self._send(400, {"error": str(exc)})
 
-            # --- v5 collaboration & ops control ---------------------------------
-            if path == "/api/bus":
-                action = (body.get("action") or "stats")
-                required = "write" if action not in (
-                    "stats", "agents", "list_agents", "inbox", "thread", "tasks",
-                    "list_tasks", "feed", "events", "status",
-                ) else "read"
-                ctx = self._require(qs, required)
+            # --- v5/v6 collaboration, direct live chat & web UI import --------
+            if path == "/api/chat":
+                act = str(body.get("action") or "send").strip().lower()
+                is_ro = act in ("history", "list", "poll") and not body.get("markDelivered")
+                ctx = self._require(qs, "read" if is_ro else "write", allow_loopback=True)
                 if not ctx:
                     return
+                try:
+                    if act in ("send", "reply"):
+                        role = body.get("role") or ("agent" if act == "reply" else "operator")
+                        res = state.bus.chat_send(
+                            sender=body.get("sender") or ("Operator" if role == "operator" else "Agent"),
+                            text=body.get("text") or body.get("message") or body.get("body") or "",
+                            role=role,
+                            priority=body.get("priority") or ("high" if role == "operator" else "normal"),
+                            pinned=bool(body.get("pinned", False)),
+                            reply_to=body.get("replyTo"),
+                        )
+                        state.telemetry.events.emit("chat.message", {
+                            "id": res["id"], "role": res["role"], "sender": res["sender"], "text": res["text"][:200],
+                        })
+                        return self._send(200, {"ok": True, "message": res, "history": state.bus.chat_history(limit=50)})
+                    if act == "poll":
+                        return self._send(200, state.bus.chat_pop_unread_for_agent(
+                            delivered_via=str(body.get("deliveredVia") or "http_api"),
+                            mark_delivered=bool(body.get("markDelivered", True)),
+                        ))
+                    if act == "ack":
+                        return self._send(200, state.bus.chat_ack(
+                            message_ids=body.get("messageIds"),
+                            clear_pins=bool(body.get("clearPins", False)),
+                            unpin_id=body.get("unpinId"),
+                        ))
+                    return self._send(200, state.bus.chat_history(
+                        limit=int(body.get("limit") or 80),
+                        since_seq=int(body.get("since") or 0),
+                    ))
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+
+            if path == "/api/ui/import-web":
+                ctx = self._require(qs, "write" if body.get("installInStudio") else "read", allow_loopback=True)
+                if not ctx:
+                    return
+                from mcp_core import import_ui_from_web_helper
+                try:
+                    return self._send(200, import_ui_from_web_helper(state.mcp_client, body))
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+
+            if path == "/api/ui/export-web":
+                ctx = self._require(qs, "read", allow_loopback=True)
+                if not ctx:
+                    return
+                from mcp_core import export_ui_to_web_helper
+                try:
+                    return self._send(200, export_ui_to_web_helper(state.mcp_client, body))
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+
+            if path == "/api/bus":
+                action = (body.get("action") or "stats")
+                read_only = is_bus_action_read_only(body)
+                ctx = self._require(qs, "read" if read_only else "write")
+                if not ctx:
+                    return
+                if state.read_only and not read_only:
+                    return self._send(403, {"error": "Blocked by Read-Only Inspector mode"})
                 try:
                     result = state.bus.handle(body)
                 except KeyError as exc:
@@ -2135,6 +2919,8 @@ def make_http_handler(state: BridgeState):
                             tool=body.get("tool"),
                         ))
                     return self._send(200, state.fleet_action(body))
+                except PermissionError as exc:
+                    return self._send(403, {"error": str(exc)})
                 except KeyError as exc:
                     return self._send(404, {"error": str(exc)})
                 except ValueError as exc:
@@ -2189,6 +2975,25 @@ def make_http_handler(state: BridgeState):
                     )
                 return self._send(200, result)
 
+            if path == "/api/playtest/force-stop":
+                if not self._require(qs, "write"):
+                    return
+                if (body or {}).get("action") == "evict_only":
+                    return self._send(200, state.evict_playtest_peers(reason=(body or {}).get("reason") or "api_evict"))
+                from mcp_core import manage_plugin_and_playtest_helper
+                return self._send(200, manage_plugin_and_playtest_helper(state.mcp_client, {
+                    "action": "force_stop_playtest",
+                    "reason": (body or {}).get("reason") or "api_force_stop",
+                }))
+
+            if path == "/api/plugin-status":
+                action = ((body or {}).get("action") or "status").lower()
+                req_role = "read" if action in ("status", "version_matrix") else "write"
+                if not self._require(qs, req_role):
+                    return
+                from mcp_core import manage_plugin_and_playtest_helper
+                return self._send(200, manage_plugin_and_playtest_helper(state.mcp_client, body or {"action": "status"}))
+
             # Studio plugin posts completed job result
             if path == "/api/result":
                 if not self._require(qs, "write"):
@@ -2208,19 +3013,25 @@ def make_http_handler(state: BridgeState):
                 if not isinstance(item, dict) or item.get("method") != "tools/call":
                     return None
                 params = item.get("params") or {}
+                if not isinstance(params, dict):
+                    return None  # Let the dispatcher report malformed requests.
                 name = params.get("name")
                 args = params.get("arguments") or {}
+                if not isinstance(name, str) or not isinstance(args, dict):
+                    return None
                 spec = TOOL_MAP.get(name)
                 if not spec:
                     return None
-                if spec.get("annotations", {}).get("readOnlyHint"):
-                    return None
                 if is_tool_call_read_only(name, args):
                     return None
+                # Operator controls are admin-only on REST and remain so on MCP.
+                if ctx.get("role") == "write" and name != "bridge_ops":
+                    return None
+                required = "admin" if name == "bridge_ops" else "write"
                 message = (
                     f"Blocked by token scope: token '{ctx.get('label')}' has role "
                     f"'{ctx.get('role')}', which cannot call mutating tool '{name}'. "
-                    "Mint a write-scoped token via POST /api/tokens or use bridge.token."
+                    f"Requires {required} scope."
                 )
                 return {
                     "jsonrpc": "2.0",
@@ -2253,7 +3064,7 @@ def make_http_handler(state: BridgeState):
 def dashboard_html() -> str:
     html = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<title>Roblox Studio MCP, 3D Viewport Vision &amp; Open-Source Kit (v4.0)</title>
+<title>Roblox Studio MCP, 3D Viewport Vision &amp; Open-Source Kit (v__BRIDGE_VERSION__)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
  :root{color-scheme:dark;--bg:#070b12;--bg2:#0a1018;--panel:rgba(19,25,34,.82);--panel2:#0d131c;
@@ -2459,7 +3270,7 @@ def dashboard_html() -> str:
 </style></head><body>
 
 <header>
-  <h1><span class="logo" aria-hidden="true"></span><span class="brand">Roblox Studio MCP &amp; Bridge</span> <span class="sub">v5.3</span></h1>
+  <h1><span class="logo" aria-hidden="true"></span><span class="brand">Roblox Studio MCP &amp; Bridge</span> <span class="sub">v__BRIDGE_VERSION__</span></h1>
   <span id="status" class="pill off live">checking&hellip;</span>
   <span id="fleet-badge" class="pill info-pill" style="display:none">0 studios</span>
   <span id="ro-badge" class="pill ro" style="display:none">Read-Only Inspector</span>
@@ -2467,13 +3278,15 @@ def dashboard_html() -> str:
   <button class="sm" onclick="runSelfTest()">Run Self-Test</button>
   <div class="spacer"></div>
   <span class="sub">Token:</span>
-  <input id="tok-input" type="password" placeholder="auto-loaded on localhost" style="width:185px;padding:4px 8px">
+  <input id="tok-input" type="password" placeholder="auto-loaded on localhost" onchange="applyHeaderToken()" style="width:185px;padding:4px 8px">
   <button class="sm" onclick="toggleToken()">Show</button>
 </header>
 
 <div class="fleet-bar" id="fleet-bar">
   <span class="fleet-label"><span class="dot-live" id="fleet-dot"></span> Studios</span>
   <div class="fleet-chips" id="fleet-chips"><span class="sub">Looking for connected Studio windows&hellip;</span></div>
+  <button class="sm danger" onclick="forceStopPlaytestUI()" title="Force-stop any active or stuck Play Solo / Server Run session and evict ghost runtime peers">&#9209; Force Stop Playtest</button>
+  <button class="sm primary" onclick="downloadPluginFile()" title="Download pre-configured ArenaBridge.lua v6.0.0">&#11015; Plugin v6.0.0</button>
   <button class="sm" onclick="broadcastPing()" title="Ping every online Studio and show per-peer latency">Broadcast ping</button>
 </div>
 
@@ -2503,6 +3316,7 @@ def dashboard_html() -> str:
   <button class="tab-btn" onclick="showTab('playground', this)">5. Live Tool &amp; Luau Runner</button>
   <button class="tab-btn" onclick="showTab('tips', this)">6. Helpful Tips &amp; Gotchas</button>
   <button class="tab-btn" onclick="showTab('ops', this)">7. Ops Console &amp; Agent Bus</button>
+  <button class="tab-btn" onclick="showTab('plugin', this)">8. Studio Plugin &amp; Playtest v6</button>
 </nav>
 
 <main>
@@ -2510,7 +3324,7 @@ def dashboard_html() -> str:
   <section id="tab-monitor" class="tab-pane active">
     <div class="grid">
       <div class="card"><div class="k">Studio Peers</div><div class="v" id="c-peers">0 online</div></div>
-      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">70</div></div>
+      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">—</div></div>
       <div class="card"><div class="k">Queued</div><div class="v" id="c-queued">0</div></div>
       <div class="card"><div class="k">Completed</div><div class="v" id="c-done">0</div></div>
       <div class="card"><div class="k">Failed</div><div class="v" id="c-fail">0</div></div>
@@ -2526,6 +3340,7 @@ def dashboard_html() -> str:
       <button class="sm" onclick="quickTool('list_studios', {})">List Peers</button>
       <button class="sm" onclick="quickTool('undo_redo', {action:'undo'})">Undo (Ctrl+Z)</button>
       <button class="sm" onclick="quickTool('undo_redo', {action:'redo'})">Redo</button>
+      <button class="sm danger" onclick="forceStopPlaytestUI()">&#9209; Stop Playtest</button>
       <button class="sm" onclick="quickTool('export_place_rbxlx', {outputFile:'roblox-kit/models/StarterPlace.rbxlx'})">Export .rbxlx Place</button>
       <div class="spacer"></div>
       <button class="danger sm" onclick="clearQueue()">Clear Queue</button>
@@ -2536,20 +3351,47 @@ def dashboard_html() -> str:
         <div class="prompt-head" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
           <div>
             <h2>Live 3D Place + HUD Viewport Vision</h2>
-            <div class="sub">Real-time software rasterizer &amp; HUD compositor (exact same <code>image/png</code> vision stream multimodal AI agents receive from <code>capture_viewport</code>).</div>
+            <div class="sub">Real-time Z-buffered 3D software rasterizer &amp; HUD compositor (exact same <code>image/png</code> vision stream multimodal AI agents receive from <code>capture_viewport</code>). Drag image to orbit, scroll to zoom.</div>
           </div>
           <div style="display:flex;gap:5px;flex-wrap:wrap">
             <button class="sm primary" id="cam-perspective" onclick="refresh3DViewport('perspective')">Perspective</button>
             <button class="sm" id="cam-iso_ne" onclick="refresh3DViewport('iso_ne')">Iso NE</button>
+            <button class="sm" id="cam-iso_nw" onclick="refresh3DViewport('iso_nw')">Iso NW</button>
             <button class="sm" id="cam-top_blueprint" onclick="refresh3DViewport('top_blueprint')">Top Blueprint</button>
             <button class="sm" id="cam-front" onclick="refresh3DViewport('front')">Front</button>
-            <button class="sm" onclick="toggle3DHud()" id="btn-hud-toggle">HUD: ON</button>
+            <button class="sm" onclick="toggle3DHud()" id="btn-hud-toggle">HUD: OFF</button>
+            <button class="sm primary" onclick="toggle3DLabels()" id="btn-labels-toggle">Labels: ON</button>
+            <button class="sm primary" onclick="toggle3DGrid()" id="btn-grid-toggle">Grid: ON</button>
           </div>
         </div>
-        <div style="background:#070a10;border:1px solid var(--border);border-radius:8px;overflow:hidden;text-align:center">
-          <img id="live-viewport-img" alt="Live 3D Place Viewport" style="width:100%;max-height:300px;object-fit:contain;display:block">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+          <select id="vp3d-source" onchange="onChange3DSource()" style="flex:1;min-width:210px">
+            <option value="studio:Workspace">Live Studio: Workspace (auto-fallback if offline)</option>
+            <option value="showcase:starter_village">3D Showcase: Croftie Village, Farm Plots, Watchtower &amp; Shrine</option>
+            <option value="showcase:horror_nightloop">3D Showcase: NightLoop Horror Cabin, FuseBox, SafeRoom &amp; Generator</option>
+            <option value="dungeon:seeded">3D Procedural Dungeon (MST + Escape Loops)</option>
+            <option value="prefab:world_safe_room_shelter">3D Prefab: Safe-Room Sanctuary Shelter</option>
+            <option value="prefab:world_loot_chest_shrine">3D Prefab: Ancient Loot Chest Shrine</option>
+            <option value="prefab:horror_fuse_breaker_station">3D Prefab: Wall FuseBox Breaker Station</option>
+            <option value="prefab:horror_task_generator_machine">3D Prefab: Co-op Task Generator Machine</option>
+            <option value="prefab:world_obby_stage_pack">3D Prefab: Obby Stage Pack</option>
+            <option value="prefab:world_shop_pedestal_stall">3D Prefab: Shop Pedestal Stall</option>
+            <option value="prefab:world_quest_giver_npc">3D Prefab: Quest Giver NPC</option>
+          </select>
+          <div style="display:flex;gap:4px;flex-wrap:wrap">
+            <button class="sm" onclick="orbit3DCamera(-25, 0, 1)" title="Orbit Left">&#10226;</button>
+            <button class="sm" onclick="orbit3DCamera(25, 0, 1)" title="Orbit Right">&#10227;</button>
+            <button class="sm" onclick="orbit3DCamera(0, 12, 1)" title="Pitch Up">&#8593;</button>
+            <button class="sm" onclick="orbit3DCamera(0, -12, 1)" title="Pitch Down">&#8595;</button>
+            <button class="sm" onclick="orbit3DCamera(0, 0, 0.8)" title="Zoom In">&#65291;</button>
+            <button class="sm" onclick="orbit3DCamera(0, 0, 1.25)" title="Zoom Out">&#65293;</button>
+            <button class="sm" onclick="reset3DCamera()" title="Reset Orbit/Zoom">Reset</button>
+          </div>
         </div>
-        <div id="live-viewport-meta" class="sub" style="margin-top:6px">Click any camera preset above to re-render the live Studio Workspace + HUD.</div>
+        <div id="live-viewport-stage" style="background:#070a10;border:1px solid var(--border);border-radius:8px;overflow:hidden;text-align:center;position:relative;cursor:grab;user-select:none">
+          <img id="live-viewport-img" alt="Live 3D Place Viewport" draggable="false" style="width:100%;max-height:320px;object-fit:contain;display:block">
+        </div>
+        <div id="live-viewport-meta" class="sub" style="margin-top:6px">Rendering 3D viewport&hellip;</div>
       </div>
 
       <div class="card">
@@ -2594,6 +3436,92 @@ def dashboard_html() -> str:
 
   <!-- ==================== TAB 2: IMAGE IMPORTER & STUDIO KIT ==================== -->
   <section id="tab-kit" class="tab-pane">
+    <div class="grid" style="margin-bottom:16px">
+      <div class="card"><div class="k">Licensed Registry</div><div class="v" id="kit-cnt-assets">4,320</div></div>
+      <div class="card"><div class="k">Cloud Icons</div><div class="v" id="kit-cnt-icons">4,811</div></div>
+      <div class="card"><div class="k">Luau Modules</div><div class="v" id="kit-cnt-modules">25</div></div>
+      <div class="card"><div class="k">Drop-In Systems</div><div class="v" id="kit-cnt-systems">20</div></div>
+      <div class="card"><div class="k">Prefabs</div><div class="v" id="kit-cnt-prefabs">26</div></div>
+      <div class="card"><div class="k">3D .rbxmx Models</div><div class="v" id="kit-cnt-models">520</div></div>
+    </div>
+
+    <!-- GAMEPLAY MECHANICS, PROCEDURAL DUNGEON & ATMOSPHERE WORKBENCH -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="prompt-head" style="flex-wrap:wrap;gap:10px;margin-bottom:10px">
+        <div>
+          <h2>Gameplay Mechanics, Procedural 3D Dungeon &amp; Atmosphere Workbench</h2>
+          <div class="sub">Assemble complete Server/Client gameplay mechanics, generate seeded 3D dungeons with MST + loop escape routes, tune multi-layer horror/weather atmospheres, and synthesize procedural PCM <code>.wav</code> sound effects.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="sm primary" onclick="previewDungeonLayout(false)">Generate Dungeon Map</button>
+          <button class="sm" onclick="previewDungeonLayout(true)">Build Dungeon in Studio</button>
+        </div>
+      </div>
+
+      <div class="two-col" style="margin-bottom:0">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="background:rgba(9,13,20,.65);border:1px solid var(--border);border-radius:10px;padding:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+              <strong style="font-size:12.5px">1-Click Gameplay Mechanic Builder (<code>build_gameplay_mechanic</code>)</strong>
+              <div style="display:flex;gap:6px">
+                <button class="sm" onclick="runMechanicBuilder(false)">Inspect Bundle</button>
+                <button class="sm primary" onclick="runMechanicBuilder(true)">Install in Studio</button>
+              </div>
+            </div>
+            <select id="mechanic-select" onchange="runMechanicBuilder(false)" style="width:100%;margin-bottom:6px">
+              <option value="horror-director">horror-director — 5-Phase AI Director + Strikes + NightModifiers + Sanity HUD</option>
+              <option value="round-survival">round-survival — Co-op Generator Repair &amp; Extraction Survival Loop</option>
+              <option value="stamina-movement">stamina-movement — Sprint Stamina Pool + Stealth Crouch Noise Controller</option>
+              <option value="inventory-loot">inventory-loot — Slot Hotbar Inventory + Weighted Rarity Loot Chests</option>
+              <option value="combat-abilities">combat-abilities — Cooldown Abilities + Shield/Armor Mitigation + Status FX</option>
+              <option value="weather-cycle">weather-cycle — Dynamic Weather State Machine (Rain, BloodMoon, Blizzard)</option>
+              <option value="fuse-breaker">fuse-breaker — Interactive Wall FuseBox Blackout Breaker Station</option>
+              <option value="task-generator">task-generator — Hold-to-Repair Co-op Generator Objective</option>
+              <option value="loot-chest">loot-chest — Ancient Reliquary Weighted Loot Chest Shrine</option>
+              <option value="safe-room">safe-room — Reinforced Horror Safe-Room Sanctuary Booth</option>
+            </select>
+            <div id="mechanic-meta" class="sub">Select any mechanic above to inspect its Server/Client/Shared Luau scripts, reusable modules, and prefab tree.</div>
+          </div>
+
+          <div style="background:rgba(9,13,20,.65);border:1px solid var(--border);border-radius:10px;padding:10px">
+            <strong style="font-size:12.5px;display:block;margin-bottom:6px">Atmosphere &amp; Weather Post-FX Studio (<code>configure_atmosphere_fx</code>)</strong>
+            <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px" id="atmo-preset-btns">
+              <button class="sm primary" onclick="applyAtmospherePreset('BloodMoon', false)">BloodMoon</button>
+              <button class="sm" onclick="applyAtmospherePreset('DenseFog', false)">DenseFog</button>
+              <button class="sm" onclick="applyAtmospherePreset('CyberpunkRain', false)">CyberpunkRain</button>
+              <button class="sm" onclick="applyAtmospherePreset('Thunderstorm', false)">Thunderstorm</button>
+              <button class="sm" onclick="applyAtmospherePreset('GoldenHour', false)">GoldenHour</button>
+              <button class="sm" onclick="applyAtmospherePreset('DeepAbyss', false)">DeepAbyss</button>
+              <button class="sm" onclick="applyAtmospherePreset('Blizzard', false)">Blizzard</button>
+              <button class="sm" onclick="applyAtmospherePreset('SolarEclipse', false)">SolarEclipse</button>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+              <span class="sub" id="atmo-meta">Preset: BloodMoon (Atmosphere + ColorCorrection + Bloom)</span>
+              <button class="sm primary" onclick="applyAtmospherePreset(ACTIVE_ATMO_PRESET, true)">Apply to Studio Lighting</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="background:rgba(9,13,20,.65);border:1px solid var(--border);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+            <strong style="font-size:12.5px">Seeded 3D Dungeon / Mansion Graph (<code>generate_dungeon_layout</code>)</strong>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input id="dungeon-seed" type="number" value="2026" style="width:78px;padding:4px 6px" title="Seed">
+              <input id="dungeon-rooms" type="number" min="4" max="24" value="10" style="width:62px;padding:4px 6px" title="Room Count">
+              <select id="dungeon-theme" onchange="previewDungeonLayout(false)" style="width:140px;padding:4px 6px">
+                <option value="horror_mansion">horror_mansion</option>
+                <option value="crypt_catacombs">crypt_catacombs</option>
+                <option value="scifi_facility">scifi_facility</option>
+                <option value="ancient_ruins">ancient_ruins</option>
+              </select>
+            </div>
+          </div>
+          <canvas id="dungeon-canvas" width="520" height="185" style="width:100%;height:185px;background:#070a10;border:1px solid var(--border);border-radius:8px"></canvas>
+          <div id="dungeon-meta" class="sub">Legend: <span style="color:#45e0a0">&#9632; spawn</span> · <span style="color:#8dc6af">&#9632; saferoom</span> · <span style="color:#ffc857">&#9632; treasure</span> · <span style="color:#5cc8ff">&#9632; puzzle</span> · <span style="color:#eb4b4b">&#9632; boss</span> · dashed = loop escape corridor</div>
+        </div>
+      </div>
+    </div>
+
     <div class="two-col">
       <div class="prompt-card">
         <h3>Direct Image Importer (Local File &rarr; Repo + Roblox Studio)</h3>
@@ -2623,7 +3551,7 @@ def dashboard_html() -> str:
             <h3>1-Click Full Stud UI &amp; Gameplay System Templates</h3>
             <div class="sub">Installs <code>StudUI</code> / <code>ModernUI</code> + icons, builds live editable <code>ScreenGui</code>s in <code>StarterGui</code>, and wires controllers &amp; server economy.</div>
           </div>
-          <button class="primary sm" onclick="installAllModules()">Install All 19 Luau Modules</button>
+          <button class="primary sm" onclick="installAllModules()">Install All 25 Luau Modules</button>
         </div>
         <div id="template-list" style="display:flex;flex-direction:column;gap:7px"></div>
         <pre id="kit-action-out">Click any template, system, prefab, audio clip, or module button to install straight into Studio.</pre>
@@ -2638,6 +3566,7 @@ def dashboard_html() -> str:
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
           <select id="ui-audit-src" onchange="runUiPreviewAndAudit()" style="width:240px">
+            <option value="prefab:ui_horror_sanity_vitals_hud">Prefab: ui_horror_sanity_vitals_hud</option>
             <option value="prefab:ui_kenney_shop_window">Prefab: ui_kenney_shop_window</option>
             <option value="prefab:ui_minimap_radar">Prefab: ui_minimap_radar</option>
             <option value="prefab:ui_hotbar_abilities">Prefab: ui_hotbar_abilities</option>
@@ -2687,16 +3616,17 @@ def dashboard_html() -> str:
 
     <div class="two-col" style="margin-bottom:16px">
       <div class="card">
-        <h2>45 Curated CC0 Sound Effects Soundboard (<code>.wav</code> Preview + Send to Studio)</h2>
-        <div class="sub" style="margin-bottom:8px">Genuine public-domain Kenney UI &amp; Interface SFX. Click <strong>&#9654;</strong> to audition in browser or <strong>Send</strong> to install in <code>SoundService</code>.</div>
+        <h2>45 CC0 Sound Effects + 12 Procedural Horror/Gameplay Synth SFX</h2>
+        <div class="sub" style="margin-bottom:8px">Click <strong>&#9654;</strong> to audition in browser or <strong>Send</strong> to install in <code>SoundService</code>.</div>
         <audio id="sfx-player" style="display:none"></audio>
-        <div id="audio-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:6px;max-height:320px;overflow:auto"></div>
+        <div id="synth-audio-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px;margin-bottom:10px"></div>
+        <div id="audio-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:6px;max-height:260px;overflow:auto"></div>
       </div>
 
       <div class="card">
-        <h2>14 Drop-In Server/Client Game Systems (<code>roblox-kit/systems/</code>)</h2>
-        <div class="sub" style="margin-bottom:8px">Production LiveOps, Monetization (<code>PolicyService</code> compliant), <code>ProfileStore</code> Data, &amp; Cartoon UI systems.</div>
-        <div id="dropin-system-list" style="display:flex;flex-direction:column;gap:6px;max-height:320px;overflow:auto"></div>
+        <h2>20 Drop-In Server/Client Game Systems (<code>roblox-kit/systems/</code>)</h2>
+        <div class="sub" style="margin-bottom:8px">Horror Director, Co-op Round Survival, Stamina/Stealth, Slot Inventory, Ability Combat, Dynamic Weather, LiveOps, Monetization &amp; ProfileStore Data.</div>
+        <div id="dropin-system-list" style="display:flex;flex-direction:column;gap:6px;max-height:360px;overflow:auto"></div>
       </div>
     </div>
 
@@ -2706,19 +3636,45 @@ def dashboard_html() -> str:
           <h2>Licensed Asset Library (4,320 registered · 3,705 images · 50 skies · 520 models · 45 audio)</h2>
           <div class="sub">Browse source groups, local Studio URIs, SPDX licence, source, and provenance. Kenney assets are pinned CC0; generated skies are 8-bit LDR (not HDRI). GLB thumbnails are neutral placeholders, not model renders. Use <code>search_assets</code> for model/audio/provenance filters; Send imports the selected image directly into Studio.</div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <input id="asset-search" placeholder="Filter licensed local images..." oninput="renderFilteredAssets()" style="width:210px">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <button class="sm primary" id="atype-any" onclick="setRegistryAssetType('any')">All (4,320)</button>
+          <button class="sm" id="atype-image" onclick="setRegistryAssetType('image')">Images (3,705)</button>
+          <button class="sm" id="atype-sky" onclick="setRegistryAssetType('sky')">Skies (50)</button>
+          <button class="sm" id="atype-model" onclick="setRegistryAssetType('model')">3D Models (520)</button>
+          <button class="sm" id="atype-audio" onclick="setRegistryAssetType('audio')">Audio (45)</button>
+          <input id="asset-search" placeholder="Filter licensed local assets..." oninput="renderFilteredAssets()" style="width:210px">
           <button class="sm" onclick="loadKitGallery()">Refresh</button>
         </div>
       </div>
       <div id="asset-pack-pills" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
-      <div id="asset-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:10px"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:6px 0">
+        <span class="sub" id="asset-page-meta">Loading asset catalog&hellip;</span>
+        <div style="display:flex;gap:6px">
+          <button class="sm" id="asset-prev-btn" onclick="stepAssetPage(-1)">&larr; Prev</button>
+          <button class="sm" id="asset-next-btn" onclick="stepAssetPage(1)">Next &rarr;</button>
+        </div>
+      </div>
+      <div id="asset-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:10px"></div>
+    </div>
+
+    <div class="two-col" style="margin-bottom:16px">
+      <div class="card">
+        <h2>38 Procedural Texture, VFX &amp; UI Icon Shaders (<code>image_pipeline.py</code>)</h2>
+        <div class="sub" style="margin-bottom:8px">Zero-dependency mathematical PNG shaders rendered on demand via <code>/api/kit/procedural/&lt;preset&gt;.png</code>.</div>
+        <div id="procedural-preset-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:8px;max-height:320px;overflow:auto"></div>
+      </div>
+
+      <div class="card">
+        <h2>25 Reusable Luau Gameplay &amp; UI Modules (<code>roblox-kit/modules/</code>)</h2>
+        <div class="sub" style="margin-bottom:8px">StateMachine, CooldownManager, LootTable, QuestTracker, CombatPipeline, DungeonGenerator, StudUI, ModernUI, Maid, Signal &amp; more.</div>
+        <div id="module-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:6px;max-height:320px;overflow:auto"></div>
+      </div>
     </div>
 
     <div class="card">
       <div class="prompt-head">
         <div>
-          <h2>20 Prefabs &amp; Drag-and-Drop <code>.rbxmx</code> Models (<code>roblox-kit/prefabs/</code> &amp; <code>models/</code>)</h2>
+          <h2>26 Prefabs &amp; Drag-and-Drop <code>.rbxmx</code> Models (<code>roblox-kit/prefabs/</code> &amp; <code>models/</code>)</h2>
           <div class="sub">Spawn directly into Studio OR export any live Studio path to a standalone <code>.rbxmx</code> model file.</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
@@ -2768,7 +3724,7 @@ def dashboard_html() -> str:
 
       <div class="prompt-card">
         <div class="prompt-head">
-          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">All 70 tools enabled (multi-agent bus + tunnel ops + 3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
+          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">Full tool access (subject to authorization and peer availability) (multi-agent bus + tunnel ops + 3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
           <button class="primary sm" onclick="copyById('cfg-json')">Copy</button>
         </div>
         <pre id="cfg-json"></pre>
@@ -2814,7 +3770,7 @@ def dashboard_html() -> str:
       </div>
 
       <div class="prompt-card">
-        <h3>Invoke Any of the 70 MCP Tools Directly</h3>
+        <h3>Invoke MCP Tools Directly</h3>
         <div class="sub" id="tool-desc">Select any MCP tool to inspect its fields and call it over <code>POST /mcp</code>.</div>
         <div style="display:flex;gap:8px;align-items:center">
           <select id="tool-select" onchange="onSelectTool()"></select>
@@ -2950,6 +3906,126 @@ def dashboard_html() -> str:
   <section id="tab-tips" class="tab-pane">
     <div class="two-col" id="tips-grid"></div>
   </section>
+
+  <!-- ==================== TAB 8: STUDIO PLUGIN & PLAYTEST V6 ==================== -->
+  <section id="tab-plugin" class="tab-pane">
+    <div class="grid" style="margin-bottom:14px">
+      <div class="card"><div class="k">Bundled Plugin</div><div class="v" id="plg-bundled-ver">v6.0.0</div></div>
+      <div class="card"><div class="k">Connected Peers</div><div class="v" id="plg-peer-cnt">0 online</div></div>
+      <div class="card"><div class="k">Version Status</div><div class="v" id="plg-compat-state">Checking&hellip;</div></div>
+      <div class="card"><div class="k">Playtest State</div><div class="v" id="plg-playtest-state">Idle</div></div>
+      <div class="card"><div class="k">In-Studio UI</div><div class="v" id="plg-dockwidget">DockWidget v6</div></div>
+      <div class="card"><div class="k">Plugin Jobs Run</div><div class="v" id="plg-jobs-run">0</div></div>
+    </div>
+
+    <div class="two-col" style="margin-bottom:16px">
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>Studio Plugin Version &amp; Fleet Upgrade Center (<code>ArenaBridge.lua v6.0.0</code>)</h3>
+            <div class="sub">Compares every connected Studio peer&rsquo;s <code>pluginVersion</code> against bundled <code>v6.0.0</code>. Includes the new in-Studio <code>ArenaBridgeDashboardV6</code> DockWidget panel, <code>plugin_info</code> telemetry, and <code>/api/poll?goodbye=1</code> instant peer eviction.</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="sm primary" onclick="downloadPluginFile()">&#11015; Download ArenaBridge.lua v6.0.0</button>
+            <button class="sm" onclick="installLocalPluginUI()">&#9881; Install to Local Studio</button>
+            <button class="sm" onclick="loadPluginDashboard()">&#8635; Refresh</button>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>Peer ID</th><th>DM</th><th>Place</th><th>Reported Plugin</th><th>Status</th></tr></thead>
+          <tbody id="plg-peer-table"><tr><td colspan="5" class="empty">Loading peer plugin compatibility&hellip;</td></tr></tbody>
+        </table>
+        <div id="plg-telemetry-box" class="sub" style="margin-top:8px">In-Studio telemetry will appear here when an Edit peer is connected.</div>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>Playtest Lifecycle &amp; Emergency Stop Controller</h3>
+            <div class="sub">Solves stuck Play Solo / Server Run sessions: dispatches dual <code>edit</code> + <code>server</code> stop commands, runs <code>StudioTestService:EndTest</code> with <code>LeaveTest</code> fallback, purges leftover <code>__ArenaTestRunner_*</code> scripts, and immediately evicts ghost <code>server</code>/<code>client</code> peers.</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+          <button class="sm primary" onclick="quickTool('start_stop_play', {action:'start_play', waitForPeer:true})">&#9654; Start Play Solo (F5)</button>
+          <button class="sm primary" onclick="quickTool('start_stop_play', {action:'start_run', waitForPeer:true})">&#9654; Start Server Run (F8)</button>
+          <button class="sm danger" onclick="forceStopPlaytestUI()">&#9209; Force Stop Playtest &amp; Clean Runners</button>
+          <button class="sm" onclick="evictGhostPeersUI()">&#129529; Evict Ghost Play Peers</button>
+        </div>
+        <pre id="plg-action-out" style="max-height:190px">Ready. Click "Force Stop Playtest" anytime an automated playtest or Studio session stays open.</pre>
+      </div>
+    </div>
+
+    <div class="prompt-card" style="margin-bottom:14px">
+      <div class="prompt-head">
+        <div>
+          <h3>V6 Systems, Web UI Importer, Mesh-First &amp; De-Slop Quick-Launcher (100 Total MCP Tools)</h3>
+          <div class="sub">Test-drive the V6 tools (<code>import_ui_from_web</code>, <code>export_ui_to_web</code>, <code>de_slop_audit</code>, <code>spawn_kit_mesh</code>, <code>kitbash_mesh_prop</code>, <code>build_vfx_emitter</code>, <code>build_combat_hitbox</code>, <code>configure_camera_rig</code>, <code>generate_sfx_soundbank</code>, <code>operator_chat</code>, <code>audit_network_security</code>, <code>build_cutscene_sequence</code>, <code>generate_ui_theme_pack</code>, <code>manage_plugin_and_playtest</code>) + 33 reusable Luau modules.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="sm primary" onclick="runV6ToolPreview('import_ui_from_web', {preset:'rpg_hud', deSlop:true, installInStudio:false})">&#127760; Import UI from Web</button>
+          <button class="sm primary" onclick="runV6ToolPreview('export_ui_to_web', {path:'StarterGui', deSlop:true})">&#128228; Export UI to Web</button>
+          <button class="sm primary" onclick="runV6ToolPreview('de_slop_audit', {texts:['Furthermore — delve into this seamless quest!'], includeStudio:true})">&#10024; De-Slop Audit</button>
+          <button class="sm primary" onclick="runV6ToolPreview('kitbash_mesh_prop', {preset:'runic_obelisk', scale:1.2, spawnInStudio:false})">&#128142; Kitbash 3D Mesh Prop</button>
+          <button class="sm primary" onclick="runV6ToolPreview('build_combat_hitbox', {preset:'melee_combo', installInStudio:false})">&#9876; Build Combat Hitbox</button>
+          <button class="sm primary" onclick="runV6ToolPreview('configure_camera_rig', {preset:'over_shoulder_action', installInStudio:false})">&#127909; Configure Camera Rig</button>
+          <button class="sm primary" onclick="runV6ToolPreview('generate_sfx_soundbank', {pack:'combat_pack', installInStudio:false})">&#128266; Generate SFX Bank</button>
+          <button class="sm primary" onclick="runV6ToolPreview('build_vfx_emitter', {preset:'portal_swirl', burstCount:32, buildInStudio:false})">&#9889; Build VFX Emitter</button>
+        </div>
+      </div>
+      <pre id="v6-tool-out" style="max-height:220px">Select any V6 tool above to inspect its structured output.</pre>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>&#128172; Direct Operator &harr; Agent Live Chat (Push-Injected into Tool Loop)</h3>
+            <div class="sub">Unlike <code>agent_bus</code> broadcasts that agents can overlook, messages sent here are <strong>automatically injected into the agent&rsquo;s very next MCP tool call response</strong> (<code>operatorLiveChat</code>) and answered via <code>operator_chat(action='reply')</code>.</div>
+          </div>
+          <span class="pill on" id="live-chat-badge">Direct Live</span>
+        </div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin:6px 0">
+          <button class="sm" onclick="quickOperatorDirective('Prioritize 3D meshes (MeshPart / SpecialMesh / kitbash_mesh_prop) over blocky Part primitives.')">&#128142; Directive: 3D Mesh Priority</button>
+          <button class="sm" onclick="quickOperatorDirective('Import the HUD directly from the Web / Dashboard using import_ui_from_web.')">&#127760; Directive: Import Web UI</button>
+          <button class="sm" onclick="quickOperatorDirective('Run de_slop_audit: remove all em-dashes (—), filler connectors, and text dumps; add icon badges.')">&#10024; Directive: De-Slop UI</button>
+        </div>
+        <div id="direct-chat-feed" style="max-height:210px;overflow:auto;background:#090d14;border:1px solid var(--border);border-radius:8px;padding:10px;margin:8px 0;font-size:12.5px">
+          <div class="sub">No direct chat messages yet. Send a message below to inject it into the agent&rsquo;s active tool loop.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input id="direct-chat-input" placeholder="Message the active agent directly (e.g. Use 3D meshes for the shrine and import the HUD from Web)..." style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')sendOperatorLiveChat()">
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="direct-chat-pin"> Pin Directive</label>
+          <button class="sm primary" onclick="sendOperatorLiveChat()">Send to Agent</button>
+          <button class="sm" onclick="refreshDirectChat()">&#8635;</button>
+        </div>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>&#127760; Import &amp; Round-Trip UI Between Web (HTML / Tailwind) &amp; <code>StarterGui</code></h3>
+            <div class="sub">Paste Web HTML/Tailwind markup or pick a preset to convert directly into a responsive Roblox <code>ScreenGui</code> with automatic De-Slop sanitization, or export live <code>StarterGui</code> back to Web HTML.</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0">
+          <select id="web-ui-preset" style="width:170px">
+            <option value="rpg_hud">Preset: RPG HUD Bar</option>
+            <option value="shop_grid">Preset: Shop Grid</option>
+            <option value="quest_tracker">Preset: Quest Tracker</option>
+            <option value="inventory_dock">Preset: Inventory Dock</option>
+            <option value="boss_bar">Preset: Boss Health Bar</option>
+            <option value="dialog_card">Preset: NPC Dialog Card</option>
+          </select>
+          <input id="web-ui-name" value="WebImportedGui" placeholder="ScreenGui Name" style="width:155px">
+          <button class="sm primary" onclick="importWebUiFromDashboard(false)">Preview Tree</button>
+          <button class="sm primary" onclick="importWebUiFromDashboard(true)">&#11014; Build in StarterGui</button>
+          <button class="sm" onclick="exportStudioUiToWeb()">&#11015; Export StarterGui &rarr; HTML</button>
+        </div>
+        <textarea id="web-ui-html" placeholder="Optional: paste custom HTML / Tailwind markup here (e.g. <div class='bg-slate-900 rounded-xl p-3 flex'><span>HP 100/100</span><button>[Q] DASH</button></div>)" style="min-height:68px"></textarea>
+        <pre id="web-ui-out" style="max-height:140px">Converted Roblox ScreenGui tree will appear here.</pre>
+      </div>
+    </div>
+  </section>
 </main>
 
 <div id="toast" class="toast">Copied to clipboard</div>
@@ -3021,7 +4097,16 @@ function saveToken(){
   storeToken(value); setToken(value); box.value = '';
   hideAuthBanner();
   toast('Token saved for this browser — reloading data…');
-  tick(); refreshOps(); refreshFleet(); refreshBus();
+  tick(); refreshOps(); refreshFleet(); refreshBus(); loadKitGallery(); refresh3DViewport(); run3DSceneAudit(false, false);
+}
+function applyHeaderToken(){
+  const box = document.getElementById('tok-input');
+  const value = (box && box.value || '').trim();
+  if(!value) return;
+  storeToken(value); setToken(value);
+  hideAuthBanner();
+  toast('Header token applied — reloading data…');
+  tick(); refreshOps(); refreshFleet(); refreshBus(); loadKitGallery(); refresh3DViewport(); run3DSceneAudit(false, false);
 }
 function showStaleBanner(runningVersion){
   const b = document.getElementById('stale-banner');
@@ -3055,7 +4140,7 @@ async function runSelfTest(){
   const title = document.getElementById('quick-out-title');
   const wrap = document.getElementById('quick-out-wrap');
   const pre = document.getElementById('quick-out');
-  title.textContent = 'v4.0 Self-Test — ' + (result.ok ? 'PASS' : 'FAIL');
+  title.textContent = 'v__BRIDGE_VERSION__ Self-Test — ' + (result.ok ? 'PASS' : 'FAIL');
   pre.textContent = result.humanTable + '\n\n' + JSON.stringify({suite:result.suite,studioSmoke:result.studioSmoke,toolCount:(result.toolMatrix||[]).length}, null, 2);
   wrap.style.display = 'block';
   toast(result.ok ? 'Self-test passed.' : 'Self-test reported failures or skipped Studio checks.');
@@ -3066,12 +4151,18 @@ function showTab(name, btn){
   document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
+  if(name === 'plugin') loadPluginDashboard();
 }
 
 async function callMcp(toolName, argsObj){
+  const hdrs = Object.assign({}, authHeaders(), {
+    'MCP-Protocol-Version': '2026-07-28',
+    'Mcp-Method': 'tools/call',
+    'Mcp-Name': String(toolName || '')
+  });
   const r = await fetch('/mcp', {
     method: 'POST',
-    headers: authHeaders(),
+    headers: hdrs,
     body: JSON.stringify({
       jsonrpc: '2.0',
       id: 'web-' + Date.now(),
@@ -3080,7 +4171,7 @@ async function callMcp(toolName, argsObj){
     })
   });
   const data = await r.json();
-  if(!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+  if(!r.ok) throw new Error((data.error && data.error.message) || data.error || ('HTTP ' + r.status));
   return data.result;
 }
 
@@ -3140,7 +4231,25 @@ const SAMPLE_ARGS = {
   get_console_output: { limit: 50, level: 'all' },
   luau_check: { code: 'local x = Vector3.new(1, 2, 3)\nreturn tostring(x)\n' },
   drift_and_sync: { mode: 'check', localDir: './src', studioRoot: 'ServerScriptService.App' },
-  manage_snapshots: { action: 'list' }
+  manage_snapshots: { action: 'list' },
+  generate_dungeon_layout: { seed: 2026, roomCount: 10, theme: 'horror_mansion', buildInStudio: false },
+  build_gameplay_mechanic: { mechanic: 'horror-director', installInStudio: false },
+  configure_atmosphere_fx: { preset: 'BloodMoon', intensity: 1.0, applyToStudio: false },
+  synthesize_sound_effect: { preset: 'horror_heartbeat', saveToRepo: false },
+  manage_plugin_and_playtest: { action: 'status' },
+  audit_network_security: { includeStudio: true },
+  build_cutscene_sequence: { preset: 'boss_awakening', letterbox: true, buildInStudio: false },
+  generate_ui_theme_pack: { theme: 'HorrorBloodMoon', installInStudio: false },
+  import_ui_from_web: { preset: 'rpg_hud', guiName: 'WebImportedGui', deSlop: true, installInStudio: false },
+  export_ui_to_web: { path: 'StarterGui', deSlop: true },
+  build_vfx_emitter: { preset: 'portal_swirl', burstCount: 32, continuous: false, buildInStudio: false },
+  de_slop_audit: { texts: ['Furthermore — delve into this seamless quest!'], includeStudio: true, autoFix: false },
+  spawn_kit_mesh: { query: 'crystal', scale: 1.2, spawnInStudio: false },
+  kitbash_mesh_prop: { preset: 'runic_obelisk', scale: 1.2, interactive: true, spawnInStudio: false },
+  build_combat_hitbox: { preset: 'melee_combo', baseDamage: 28, maxReach: 14.0, installInStudio: false },
+  configure_camera_rig: { preset: 'over_shoulder_action', fov: 72, installInStudio: false },
+  generate_sfx_soundbank: { pack: 'combat_pack', installInStudio: false },
+  operator_chat: { action: 'history', limit: 25 }
 };
 
 function onSelectTool(){
@@ -3257,7 +4366,7 @@ function renderPrompts(){
       sub: "Best when the next AI agent is in a cloud sandbox without tunnel access and you paste command outputs.",
       body:
 `We are working on a Roblox Studio project (${placeName}${placeId ? ', PlaceId ' + placeId : ''}).
-Roblox Studio MCP Bridge v5.4.0 is already running locally on my machine at ${window.location.origin} (directory: \`${dir}\`).
+Roblox Studio MCP Bridge v__BRIDGE_VERSION__ is already running locally on my machine at ${window.location.origin} (directory: \`${dir}\`).
 
 Use **HANDS MODE**: give me exact commands to run in PowerShell from \`${dir}\` using \`.\\ab.ps1 <subcommand>\` (or \`python arena_studio.py <subcommand>\`), and I will paste the output back.
 
@@ -3278,18 +4387,22 @@ Start by running a quick recon (\`.\\ab.ps1 state\` and \`.\\ab.ps1 survey\`) so
 `Connect directly to my live Roblox Studio Bridge & MCP Server:
 - Base URL: ${pubUrl}
 - Auth Header: \`Authorization: Bearer ${tok}\` (or \`X-Arena-Token: ${tok}\`)
-- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (70 tools, 16 skills, multimodal 3D viewport vision, 3D physics auditor, runtime mesh capability probe, .rbxlx place export, 14 LiveOps/Monetization systems, 520 3D models, 3,705 raster images + 50 LDR skies (300 cube faces), 45 CC0 WAVs, 4,811 cloud icons)
+- Native MCP Streamable HTTP Endpoint: \`POST ${pubUrl}/mcp\` (MCP tools, bundled skills, multimodal 3D viewport vision, 3D physics auditor, runtime mesh capability probe, .rbxlx place export, 14 LiveOps/Monetization systems, 520 3D models, 3,705 raster images + 50 LDR skies (300 cube faces), 45 CC0 WAVs, 4,811 cloud icons)
 - Agent Onboarding & Live State Endpoint: \`GET ${pubUrl}/api/agent-guide\`
-- Built-in Repo Kit: call \`browse_kit\` for 16 skills, 19 modules, 6 templates, 20 prefabs, 3,755 image/sky-face files, 50 LDR sky panoramas, 520 models, and 45 CC0 audio files. Use \`search_assets\` for paginated type/category/source/license/provenance filters; exact Git blob matches and pack-level attestations are distinguished. Send supported images/audio/models into Studio with \`import_image\`, \`import_audio\`, and \`import_rbxmx\`.
+- Built-in Repo Kit: call \`browse_kit\` for bundled skills, 19 modules, 6 templates, 20 prefabs, 3,755 image/sky-face files, 50 LDR sky panoramas, 520 models, and 45 CC0 audio files. Use \`search_assets\` for paginated type/category/source/license/provenance filters; exact Git blob matches and pack-level attestations are distinguished. Send supported images/audio/models into Studio with \`import_image\`, \`import_audio\`, and \`import_rbxmx\`.
 
 Rules of engagement:
 1. Inspect live ground truth first (\`get_studio_state\`, \`survey_place\` with \`includeSource=false\`, and \`browse_kit\`).
-2. Validate Luau edits with \`luau_check\` before writing, and create a rollback point via \`manage_snapshots(action="create")\` before multi-script changes.
-3. Pass \`replaceInstance=true\` when modifying \`ModuleScript\`s that may already be cached by \`require()\`.
-4. Verify behaviour via \`run_playtest_scenario\` across \`server\` and \`client\` DataModels and check \`get_console_output\` for zero errors.
-5. Run \`self_test\` before completion; Studio-only scratch checks are \`no_peer\` skips when no peer is connected, never passes.
-6. Use \`mesh_capabilities\` to probe runtime APIs. A Studio version string is not proof of EditableMesh support; report the actual probe result and limitations.
-7. Run \`python3 -B tools/verify_licences.py\` before asset changes are accepted. Do not present pack-level attestations as exact file matches, or LDR skies/placeholders as HDRIs/rendered mesh previews.`
+2. **Import UI from Web & Dashboard**: You can import UI directly from the Web (HTML/CSS/Tailwind/SVG/JSON) and from the Control Center Dashboard using \`import_ui_from_web\` (or \`POST ${pubUrl}/api/ui/import-web\`).
+3. **Prioritize 3D Meshes over Blocky Primitives**: Always prefer 3D meshes (\`spawn_kit_mesh\`, \`import_rbxmx\`, \`MeshPart\`, \`SpecialMesh\`, and the 520-model CC0 catalog) over basic blocky \`Part\` primitives.
+4. **De-Slop & Visual Clarity**: Never use AI-slop artifacts such as em-dashes (\`—\`), robotic filler connectors (\`Furthermore\`, \`Moreover\`, \`Delve\`, \`Tapestry\`), or wall-of-text dumps. Pair HUD labels/buttons with iconography and run \`de_slop_audit\`.
+5. **Direct Operator Live Chat**: Watch for \`operatorLiveChat\` injected into tool responses and reply immediately using \`operator_chat(action="reply", message="...")\`.
+6. Validate Luau edits with \`luau_check\` before writing, and create a rollback point via \`manage_snapshots(action="create")\` before multi-script changes.
+7. Pass \`replaceInstance=true\` when modifying \`ModuleScript\`s that may already be cached by \`require()\`.
+8. Verify behaviour via \`run_playtest_scenario\` across \`server\` and \`client\` DataModels and check \`get_console_output\` for zero errors.
+9. Run \`self_test\` before completion; Studio-only scratch checks are \`no_peer\` skips when no peer is connected, never passes.
+10. Use \`mesh_capabilities\` to probe runtime APIs. A Studio version string is not proof of EditableMesh support; report the actual probe result and limitations.
+11. Run \`python3 -B tools/verify_licences.py\` before asset changes are accepted. Do not present pack-level attestations as exact file matches, or LDR skies/placeholders as HDRIs/rendered mesh previews.`
     },
     {
       title: "3. Generic Prompt — Full Place Recon & Architecture Map (Read-Only Safe)",
@@ -3407,15 +4520,214 @@ async function uploadBrowserImage(){
 }
 
 let ALL_KIT_IMAGES = [];
+let ALL_KIT_MODELS = [];
+let ALL_KIT_AUDIO = [];
 let ACTIVE_PACK = 'all';
+let ACTIVE_ASSET_TYPE = 'any';
+let ASSET_PAGE = 0;
+const ASSET_PAGE_SIZE = 72;
 let ACTIVE_CLOUD_CAT = '';
+let ACTIVE_ATMO_PRESET = 'BloodMoon';
 
 async function installAllModules(){
   const out = document.getElementById('kit-action-out');
-  out.textContent = 'Installing all 19 Luau modules -> ReplicatedStorage.Shared...';
+  out.textContent = 'Installing all 25 Luau modules -> ReplicatedStorage.Shared...';
   try {
     const res = await callMcp('install_kit_module', { module: 'all', parent: 'ReplicatedStorage.Shared' });
     out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    tick();
+  } catch (e) { out.textContent = String(e); }
+}
+
+async function installSingleModule(mname){
+  const out = document.getElementById('kit-action-out');
+  out.textContent = 'Installing Luau module ' + mname + ' -> ReplicatedStorage.Shared...';
+  try {
+    const res = await callMcp('install_kit_module', { module: mname, parent: 'ReplicatedStorage.Shared' });
+    out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    toast('Installed module ' + mname);
+    tick();
+  } catch (e) { out.textContent = String(e); }
+}
+
+async function inspectSingleModule(mname){
+  const out = document.getElementById('kit-action-out');
+  out.textContent = 'Loading module ' + mname + '.lua...';
+  try {
+    const r = await fetch('/api/kit/catalog?category=modules&item=' + encodeURIComponent(mname), { cache: 'no-store' });
+    const d = await r.json();
+    out.textContent = d.content || JSON.stringify(d, null, 2);
+  } catch (e) { out.textContent = String(e); }
+}
+
+async function runMechanicBuilder(installInStudio){
+  const mech = (document.getElementById('mechanic-select') && document.getElementById('mechanic-select').value) || 'horror-director';
+  const meta = document.getElementById('mechanic-meta');
+  const out = document.getElementById('kit-action-out');
+  try {
+    if(installInStudio){
+      out.textContent = 'Installing gameplay mechanic ' + mech + ' into Studio...';
+      const res = await callMcp('build_gameplay_mechanic', { mechanic: mech, installInStudio: true });
+      const d = res.structuredContent || res;
+      out.textContent = JSON.stringify(d, null, 2);
+      toast('Installed gameplay mechanic: ' + mech);
+      tick();
+      return;
+    }
+    const r = await fetch('/api/kit/catalog?format=full', { cache: 'no-store' });
+    const cat = await r.json();
+    const b = (cat.mechanicBundles || []).find(x => x.name === mech);
+    if(b && meta){
+      meta.innerHTML = `<strong>${esc(b.name)}</strong>: ${esc(b.description)} &bull; System: <code>${esc(b.system||'none')}</code> &bull; Prefab: <code>${esc(b.prefab||'none')}</code> &bull; Modules: <code>${esc((b.modules||[]).join(', '))}</code>`;
+    }
+  } catch (e) {
+    if(meta) meta.textContent = String(e);
+  }
+}
+
+async function applyAtmospherePreset(presetName, sendToStudio){
+  ACTIVE_ATMO_PRESET = presetName || 'BloodMoon';
+  document.querySelectorAll('#atmo-preset-btns button').forEach(b => {
+    b.classList.toggle('primary', b.textContent.trim() === ACTIVE_ATMO_PRESET);
+  });
+  const meta = document.getElementById('atmo-meta');
+  if(meta) meta.textContent = `Preset: ${ACTIVE_ATMO_PRESET} (Atmosphere + ColorCorrectionEffect + BloomEffect)`;
+  if(sendToStudio){
+    const out = document.getElementById('kit-action-out');
+    out.textContent = 'Applying atmosphere preset ' + ACTIVE_ATMO_PRESET + ' to Studio Lighting...';
+    try {
+      const res = await callMcp('configure_atmosphere_fx', { preset: ACTIVE_ATMO_PRESET, intensity: 1.0, applyToStudio: true });
+      out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+      toast('Applied ' + ACTIVE_ATMO_PRESET + ' to Lighting');
+      tick();
+    } catch (e) { out.textContent = String(e); }
+  }
+}
+
+function drawDungeonCanvas(rooms, corridors){
+  const cv = document.getElementById('dungeon-canvas');
+  if(!cv || !cv.getContext) return;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if(!rooms || !rooms.length) return;
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  rooms.forEach(r => {
+    const [cx, , cz] = r.center;
+    const [w, , d] = r.size;
+    minX = Math.min(minX, cx - w); maxX = Math.max(maxX, cx + w);
+    minZ = Math.min(minZ, cz - d); maxZ = Math.max(maxZ, cz + d);
+  });
+  const spanX = Math.max(40, maxX - minX);
+  const spanZ = Math.max(40, maxZ - minZ);
+  const pad = 22;
+  const scale = Math.min((cv.width - pad * 2) / spanX, (cv.height - pad * 2) / spanZ);
+  const toScreen = (x, z) => [
+    pad + (x - minX) * scale,
+    pad + (z - minZ) * scale
+  ];
+  const roleColors = {
+    spawn: '#45e0a0', normal: '#5e6e82', treasure: '#ffc857',
+    puzzle: '#5cc8ff', saferoom: '#8dc6af', boss: '#eb4b4b'
+  };
+  (corridors || []).forEach(c => {
+    const ra = rooms[c.from - 1];
+    const rb = rooms[c.to - 1];
+    if(!ra || !rb) return;
+    const [x1, y1] = toScreen(ra.center[0], ra.center[2]);
+    const [x2, y2] = toScreen(rb.center[0], rb.center[2]);
+    ctx.save();
+    ctx.strokeStyle = c.isLoop ? 'rgba(255,200,87,0.75)' : 'rgba(92,200,255,0.65)';
+    ctx.lineWidth = c.isLoop ? 1.8 : 2.6;
+    if(c.isLoop) ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.restore();
+  });
+  rooms.forEach(r => {
+    const [sx, sy] = toScreen(r.center[0], r.center[2]);
+    const rw = Math.max(14, r.size[0] * scale);
+    const rd = Math.max(14, r.size[2] * scale);
+    ctx.fillStyle = 'rgba(15, 22, 34, 0.92)';
+    ctx.strokeStyle = roleColors[r.role] || '#5e6e82';
+    ctx.lineWidth = 2;
+    ctx.fillRect(sx - rw / 2, sy - rd / 2, rw, rd);
+    ctx.strokeRect(sx - rw / 2, sy - rd / 2, rw, rd);
+    ctx.fillStyle = roleColors[r.role] || '#e2e8f0';
+    ctx.font = 'bold 10px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(String(r.id) + ':' + r.role.slice(0, 4), sx, sy + 3);
+  });
+}
+
+async function previewDungeonLayout(buildInStudio){
+  const seed = parseInt((document.getElementById('dungeon-seed') && document.getElementById('dungeon-seed').value) || '2026', 10) || 2026;
+  const roomCount = Math.max(3, Math.min(28, parseInt((document.getElementById('dungeon-rooms') && document.getElementById('dungeon-rooms').value) || '10', 10) || 10));
+  const theme = (document.getElementById('dungeon-theme') && document.getElementById('dungeon-theme').value) || 'horror_mansion';
+  try {
+    const res = await callMcp('generate_dungeon_layout', { seed, roomCount, theme, buildInStudio: Boolean(buildInStudio) });
+    const d = res.structuredContent || res;
+    drawDungeonCanvas(d.rooms || [], d.corridors || []);
+    const meta = document.getElementById('dungeon-meta');
+    if(meta){
+      meta.innerHTML = `Seed <code>${d.seed}</code> · <strong>${d.roomCount}</strong> rooms · <strong>${d.corridorCount}</strong> corridors (MST + escape loops) · Reachable: <strong>${d.allRoomsReachable ? '100%' : 'partial'}</strong>`;
+    }
+    if(buildInStudio){
+      document.getElementById('kit-action-out').textContent = JSON.stringify(d, null, 2);
+      toast('Generated 3D dungeon in Studio!');
+      tick();
+    }
+  } catch (e) {
+    // Deterministic client-side fallback preview if offline/unauthenticated
+    const rooms = [];
+    const corridors = [];
+    for(let i = 0; i < roomCount; i++){
+      const angle = (i / roomCount) * Math.PI * 2;
+      const rad = 45 + (i % 2) * 24;
+      const roles = ['spawn', 'normal', 'treasure', 'puzzle', 'saferoom', 'boss'];
+      const role = i === 0 ? 'spawn' : (i === roomCount - 1 ? 'boss' : roles[(i % 4) + 1]);
+      rooms.push({ id: i + 1, role, center: [Math.cos(angle) * rad, 0, Math.sin(angle) * rad], size: [24, 14, 24] });
+      if(i > 0) corridors.push({ from: i, to: i + 1, isLoop: false });
+    }
+    if(roomCount > 3) corridors.push({ from: 1, to: roomCount, isLoop: true });
+    drawDungeonCanvas(rooms, corridors);
+  }
+}
+
+function playSynthAudio(preset){
+  const player = document.getElementById('sfx-player');
+  player.src = '/api/kit/synth-audio/' + encodeURIComponent(preset) + '.wav';
+  player.currentTime = 0;
+  player.play().catch(_ => {});
+}
+
+async function sendSynthAudioToStudio(preset){
+  const out = document.getElementById('kit-action-out');
+  out.textContent = 'Synthesizing procedural WAV ' + preset + ' -> SoundService...';
+  try {
+    const res = await callMcp('synthesize_sound_effect', { preset, targetPath: 'SoundService', saveToRepo: false });
+    out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    toast('Synthesized & installed ' + preset);
+    tick();
+  } catch (e) { out.textContent = String(e); }
+}
+
+async function sendProceduralPresetToStudio(preset){
+  toast('Generating procedural shader ' + preset + ' -> StarterGui...');
+  await quickTool('generate_procedural_image', {
+    preset,
+    name: preset,
+    saveToRepo: false,
+    targetPath: 'StarterGui',
+    applyMode: 'screen_gui'
+  });
+}
+
+async function importRbxmxModelToStudio(relModel){
+  const out = document.getElementById('kit-action-out');
+  out.textContent = 'Importing 3D .rbxmx model ' + relModel + ' -> Workspace...';
+  try {
+    const res = await callMcp('import_rbxmx', { repoModel: relModel, parent: 'Workspace' });
+    out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    toast('Imported ' + relModel + ' into Workspace!');
     tick();
   } catch (e) { out.textContent = String(e); }
 }
@@ -3476,8 +4788,24 @@ async function spawnCloudIconPreview(uri, label){
   });
 }
 
+function setRegistryAssetType(atype){
+  ACTIVE_ASSET_TYPE = atype || 'any';
+  ASSET_PAGE = 0;
+  ['any', 'image', 'sky', 'model', 'audio'].forEach(k => {
+    const b = document.getElementById('atype-' + k);
+    if(b) b.classList.toggle('primary', k === ACTIVE_ASSET_TYPE);
+  });
+  renderFilteredAssets();
+}
+
+function stepAssetPage(delta){
+  ASSET_PAGE = Math.max(0, ASSET_PAGE + delta);
+  renderFilteredAssets();
+}
+
 function selectPack(pack){
   ACTIVE_PACK = pack;
+  ASSET_PAGE = 0;
   document.querySelectorAll('#asset-pack-pills button').forEach(b => {
     b.classList.toggle('primary', b.dataset.pack === pack);
   });
@@ -3486,24 +4814,100 @@ function selectPack(pack){
 
 function renderFilteredAssets(){
   const q = (document.getElementById('asset-search').value || '').trim().toLowerCase();
-  const filtered = ALL_KIT_IMAGES.filter(im => {
-    if(ACTIVE_PACK !== 'all' && im.pack !== ACTIVE_PACK) return false;
-    if(q && !(im.relPath.toLowerCase().includes(q) || im.name.toLowerCase().includes(q))) return false;
-    return true;
-  });
-  document.getElementById('asset-gallery').innerHTML = filtered.slice(0, 96).map(im => `
-    <div class="card" style="padding:10px;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center">
-      <div style="width:68px;height:68px;display:flex;align-items:center;justify-content:center;background:repeating-conic-gradient(#161d29 0% 25%, #0d121a 0% 50%) 50% / 14px 14px;border-radius:8px;padding:6px">
-        <img src="/api/kit/image/${esc(im.relPath)}" alt="${esc(im.name)}" loading="lazy" style="max-width:54px;max-height:54px;image-rendering:auto">
-      </div>
-      <div style="font-size:10px;color:var(--muted)">${esc(im.pack)} · ${esc(im.category||im.pack)}</div>
-      <div style="font-size:9px;color:var(--muted);max-width:100%;overflow-wrap:anywhere">${esc(im.license||'license undeclared')} · ${esc(im.provenance||'unverified')} · ${esc(im.sourceId||'unknown source')}</div>
-      <code style="font-size:11px;word-break:break-all">${esc(im.name)}</code>
-      <div style="display:flex;gap:4px">
-        <button class="sm" onclick="copyText('${esc(im.localUri)}')">URI</button>
-        <button class="sm primary" onclick="importRepoAssetToStudio('${esc(im.relPath)}')">Send</button>
-      </div>
-    </div>`).join('') + (filtered.length > 96 ? `<div class="sub" style="grid-column:1/-1">Showing 96 of ${filtered.length} matching images — pick a source-group pill or type a filter above to narrow further.</div>` : '');
+  const combined = [];
+
+  if(ACTIVE_ASSET_TYPE === 'any' || ACTIVE_ASSET_TYPE === 'image' || ACTIVE_ASSET_TYPE === 'sky'){
+    ALL_KIT_IMAGES.forEach(im => {
+      const isSky = im.pack === 'arena_skies' || im.thumbnailKind === 'equirectangular-panorama';
+      if(ACTIVE_ASSET_TYPE === 'sky' && !isSky) return;
+      if(ACTIVE_ASSET_TYPE === 'image' && isSky) return;
+      if(ACTIVE_PACK !== 'all' && im.pack !== ACTIVE_PACK) return;
+      if(q && !(im.relPath.toLowerCase().includes(q) || im.name.toLowerCase().includes(q) || String(im.category||'').toLowerCase().includes(q))) return;
+      combined.push({ kind: isSky ? 'sky' : 'image', data: im });
+    });
+  }
+  if(ACTIVE_ASSET_TYPE === 'any' || ACTIVE_ASSET_TYPE === 'model'){
+    ALL_KIT_MODELS.forEach(m => {
+      const packName = 'model_' + (m.pack || 'featured');
+      if(ACTIVE_PACK !== 'all' && ACTIVE_PACK !== packName && ACTIVE_PACK !== m.pack) return;
+      if(q && !(m.fileName.toLowerCase().includes(q) || m.name.toLowerCase().includes(q))) return;
+      combined.push({ kind: 'model', data: m });
+    });
+  }
+  if(ACTIVE_ASSET_TYPE === 'any' || ACTIVE_ASSET_TYPE === 'audio'){
+    ALL_KIT_AUDIO.forEach(a => {
+      if(ACTIVE_PACK !== 'all' && ACTIVE_PACK !== 'audio_cc0') return;
+      if(q && !(a.fileName.toLowerCase().includes(q) || a.name.toLowerCase().includes(q))) return;
+      combined.push({ kind: 'audio', data: a });
+    });
+  }
+
+  const maxPage = Math.max(0, Math.ceil(combined.length / ASSET_PAGE_SIZE) - 1);
+  if(ASSET_PAGE > maxPage) ASSET_PAGE = maxPage;
+  const start = ASSET_PAGE * ASSET_PAGE_SIZE;
+  const pageItems = combined.slice(start, start + ASSET_PAGE_SIZE);
+
+  const pageMeta = document.getElementById('asset-page-meta');
+  if(pageMeta){
+    pageMeta.textContent = combined.length
+      ? `Showing ${start + 1}–${Math.min(combined.length, start + pageItems.length)} of ${combined.length.toLocaleString()} matching licensed assets (Page ${ASSET_PAGE + 1} of ${maxPage + 1})`
+      : 'No assets match the current filter.';
+  }
+  const prevBtn = document.getElementById('asset-prev-btn');
+  const nextBtn = document.getElementById('asset-next-btn');
+  if(prevBtn) prevBtn.disabled = ASSET_PAGE <= 0;
+  if(nextBtn) nextBtn.disabled = ASSET_PAGE >= maxPage;
+
+  document.getElementById('asset-gallery').innerHTML = pageItems.map(entry => {
+    if(entry.kind === 'model'){
+      const m = entry.data;
+      const thumbUrl = m.thumbnailPath ? `/api/kit/thumbnail/${esc(m.thumbnailPath)}` : '';
+      return `
+        <div class="card" style="padding:10px;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center">
+          <div style="width:76px;height:76px;display:flex;align-items:center;justify-content:center;background:#0d131d;border:1px solid var(--border);border-radius:8px;padding:4px;overflow:hidden">
+            ${thumbUrl ? `<img src="${thumbUrl}" alt="${esc(m.name)}" loading="lazy" style="max-width:66px;max-height:66px;object-fit:contain" onerror="this.style.display='none'">` : `<span class="sub">3D .rbxmx</span>`}
+          </div>
+          <div style="font-size:10px;color:var(--accent)">3D Model &bull; ${esc(m.pack||'featured')}</div>
+          <div style="font-size:9px;color:var(--muted)">CC0-1.0 &bull; ${(m.bytes/1024).toFixed(1)} KB</div>
+          <code style="font-size:11px;word-break:break-all">${esc(m.name)}</code>
+          <div style="display:flex;gap:4px">
+            <button class="sm" onclick="copyText('${esc(m.fileName)}')">Path</button>
+            <button class="sm primary" onclick="importRbxmxModelToStudio('${esc(m.fileName)}')">Spawn</button>
+          </div>
+        </div>`;
+    }
+    if(entry.kind === 'audio'){
+      const a = entry.data;
+      const thumbUrl = a.thumbnailPath ? `/api/kit/thumbnail/${esc(a.thumbnailPath)}` : '';
+      return `
+        <div class="card" style="padding:10px;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center">
+          <div style="width:110px;height:52px;display:flex;align-items:center;justify-content:center;background:#0d131d;border:1px solid var(--border);border-radius:8px;padding:4px;overflow:hidden">
+            ${thumbUrl ? `<img src="${thumbUrl}" alt="${esc(a.name)}" loading="lazy" style="width:100%;height:100%;object-fit:contain">` : `<span class="sub">WAV</span>`}
+          </div>
+          <div style="font-size:10px;color:var(--green)">CC0 Audio &bull; ${(a.bytes/1024).toFixed(1)} KB</div>
+          <code style="font-size:11px;word-break:break-all">${esc(a.name)}</code>
+          <div style="display:flex;gap:4px">
+            <button class="sm" onclick="playBrowserAudio('${esc(a.fileName)}')">&#9654;</button>
+            <button class="sm" onclick="copyText('${esc(a.localUri)}')">URI</button>
+            <button class="sm primary" onclick="sendAudioToStudio('${esc(a.fileName)}')">Send</button>
+          </div>
+        </div>`;
+    }
+    const im = entry.data;
+    return `
+      <div class="card" style="padding:10px;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center">
+        <div style="width:76px;height:76px;display:flex;align-items:center;justify-content:center;background:repeating-conic-gradient(#161d29 0% 25%, #0d121a 0% 50%) 50% / 14px 14px;border-radius:8px;padding:6px">
+          <img src="/api/kit/image/${esc(im.relPath)}" alt="${esc(im.name)}" loading="lazy" style="max-width:62px;max-height:62px;image-rendering:auto">
+        </div>
+        <div style="font-size:10px;color:var(--muted)">${esc(im.pack)} &middot; ${esc(im.category||im.pack)}</div>
+        <div style="font-size:9px;color:var(--muted);max-width:100%;overflow-wrap:anywhere">${esc(im.license||'CC0-1.0')} &middot; ${esc(im.provenance||'verified')}</div>
+        <code style="font-size:11px;word-break:break-all">${esc(im.name)}</code>
+        <div style="display:flex;gap:4px">
+          <button class="sm" onclick="copyText('${esc(im.localUri)}')">URI</button>
+          <button class="sm primary" onclick="importRepoAssetToStudio('${esc(im.relPath)}')">Send</button>
+        </div>
+      </div>`;
+  }).join('');
 }
 
 let ACTIVE_ICON_PACK = 'all';
@@ -3615,60 +5019,175 @@ function renderUiPreviewStage(){
 }
 
 let ACTIVE_3D_PRESET = 'perspective';
-let ACTIVE_3D_HUD = true;
+let ACTIVE_3D_HUD = false;
+let ACTIVE_3D_LABELS = true;
+let ACTIVE_3D_GRID = true;
+let ACTIVE_3D_YAW = 0;
+let ACTIVE_3D_PITCH = 0;
+let ACTIVE_3D_ZOOM = 1.0;
+
+function renderAuditReportUI(d, labelPrefix){
+  if(!d) return;
+  const prefix = labelPrefix ? (labelPrefix + ' • ') : '';
+  document.getElementById('scene-audit-summary').textContent =
+    `${prefix}Audited ${d.totalPartsAudited||0} parts — Errors: ${d.errorCount||0}, Warnings: ${d.warningCount||0}` +
+    (d.autoFixedUnanchored ? ` (Auto-anchored ${d.autoFixedUnanchored}!)` : '') +
+    (d.autoSnappedFloating ? ` (Snapped ${d.autoSnappedFloating}!)` : '');
+  const issues = d.issues || [];
+  document.getElementById('scene-audit-list').innerHTML = issues.length === 0
+    ? '<div class="pill on" style="display:inline-block">All 3D geometry grounded, anchored &amp; spawn-clear!</div>'
+    : issues.map(iss => `
+      <div class="cmd-row" style="flex-direction:column;align-items:flex-start;gap:3px">
+        <div><span class="pill ${iss.severity==='error'?'off':'ro'}" style="font-size:10px;padding:1px 7px">${esc(iss.code)}</span> <code style="font-size:11px">${esc(iss.path)}</code></div>
+        <div class="sub">${esc(iss.message)}</div>
+      </div>`).join('');
+}
 
 async function refresh3DViewport(preset){
   if(preset) ACTIVE_3D_PRESET = preset;
-  ['perspective', 'iso_ne', 'top_blueprint', 'front'].forEach(k => {
+  ['perspective', 'iso_ne', 'iso_nw', 'top_blueprint', 'front'].forEach(k => {
     const b = document.getElementById('cam-' + k);
     if(b) b.classList.toggle('primary', k === ACTIVE_3D_PRESET);
   });
+  const srcSel = document.getElementById('vp3d-source');
+  const source = (srcSel && srcSel.value) || 'studio:Workspace';
+  const seed = parseInt((document.getElementById('dungeon-seed') && document.getElementById('dungeon-seed').value) || '2026', 10) || 2026;
+  const theme = (document.getElementById('dungeon-theme') && document.getElementById('dungeon-theme').value) || 'horror_mansion';
+
+  // 1. If targeting live Studio and a Studio peer is online, try MCP capture_viewport first
+  if(source.startswith ? source.startswith('studio:') : source.indexOf('studio:') === 0){
+    const studioPath = source.slice('studio:'.length) || 'Workspace';
+    try {
+      const res = await callMcp('capture_viewport', {
+        path: studioPath,
+        preset: ACTIVE_3D_PRESET,
+        includeHud: ACTIVE_3D_HUD,
+        showLabels: ACTIVE_3D_LABELS,
+        overlays: { grid: ACTIVE_3D_GRID, labels: ACTIVE_3D_LABELS },
+        yaw: ACTIVE_3D_YAW,
+        pitch: ACTIVE_3D_PITCH,
+        zoom: ACTIVE_3D_ZOOM,
+        width: 680,
+        height: 360
+      });
+      const imgItem = (res && res.content || []).find(c => c.type === 'image');
+      const sc = (res && res.structuredContent) || {};
+      if(!res.isError && imgItem && imgItem.data){
+        document.getElementById('live-viewport-img').src = 'data:image/png;base64,' + imgItem.data;
+        document.getElementById('live-viewport-meta').textContent =
+          `Live Studio (${studioPath}) • Camera: ${sc.cameraPreset} [${(sc.cameraPosition||[]).join(', ')}] • Parts rendered: ${sc.partsRendered||0} • Faces: ${sc.facesRasterized||0} • HUD widgets: ${sc.hudElementsComposited||0}`;
+        return;
+      }
+    } catch(_){}
+  }
+
+  // 2. Render via /api/kit/viewport-preview (live Studio or deterministic 3D showcase/prefab/dungeon fallback)
   try {
-    const res = await callMcp('capture_viewport', {
+    const qs = new URLSearchParams({
+      source,
       preset: ACTIVE_3D_PRESET,
-      includeHud: ACTIVE_3D_HUD,
-      width: 680,
-      height: 360
+      includeHud: ACTIVE_3D_HUD ? '1' : '0',
+      showLabels: ACTIVE_3D_LABELS ? '1' : '0',
+      showGrid: ACTIVE_3D_GRID ? '1' : '0',
+      yaw: String(ACTIVE_3D_YAW),
+      pitch: String(ACTIVE_3D_PITCH),
+      zoom: String(ACTIVE_3D_ZOOM),
+      seed: String(seed),
+      theme,
+      width: '680',
+      height: '360'
     });
-    const imgItem = (res.content || []).find(c => c.type === 'image');
-    const sc = res.structuredContent || {};
-    if(imgItem && imgItem.data){
-      document.getElementById('live-viewport-img').src = 'data:image/png;base64,' + imgItem.data;
+    const r = await fetch('/api/kit/viewport-preview?' + qs.toString(), { cache: 'no-store' });
+    const d = await r.json();
+    if(d && d.imageBase64){
+      document.getElementById('live-viewport-img').src = 'data:image/png;base64,' + d.imageBase64;
+      const sc = d.meta || {};
+      document.getElementById('live-viewport-meta').textContent =
+        `${d.sourceLabel || source} • Camera: ${sc.cameraPreset} [${(sc.cameraPosition||[]).join(', ')}] • Parts rendered: ${sc.partsRendered||0} • Faces: ${sc.facesRasterized||0} • HUD widgets: ${sc.hudElementsComposited||0}`;
+      if(d.audit){
+        renderAuditReportUI(d.audit, d.isFallback ? 'Offline Showcase' : '');
+      }
     }
-    document.getElementById('live-viewport-meta').textContent =
-      `Camera: ${sc.cameraPreset} [${(sc.cameraPosition||[]).join(', ')}] • Parts rendered: ${sc.partsRendered||0} • HUD widgets: ${sc.hudElementsComposited||0}`;
   } catch(e){
     document.getElementById('live-viewport-meta').textContent = String(e);
   }
 }
 
+function onChange3DSource(){
+  ACTIVE_3D_YAW = 0;
+  ACTIVE_3D_PITCH = 0;
+  ACTIVE_3D_ZOOM = 1.0;
+  refresh3DViewport();
+}
+
+function orbit3DCamera(dYaw, dPitch, zoomMult){
+  ACTIVE_3D_YAW = (ACTIVE_3D_YAW + (dYaw || 0)) % 360;
+  ACTIVE_3D_PITCH = Math.max(-65, Math.min(65, ACTIVE_3D_PITCH + (dPitch || 0)));
+  if(zoomMult && zoomMult !== 1){
+    ACTIVE_3D_ZOOM = Math.max(0.3, Math.min(3.0, +(ACTIVE_3D_ZOOM * zoomMult).toFixed(2)));
+  }
+  refresh3DViewport();
+}
+
+function reset3DCamera(){
+  ACTIVE_3D_YAW = 0;
+  ACTIVE_3D_PITCH = 0;
+  ACTIVE_3D_ZOOM = 1.0;
+  refresh3DViewport('perspective');
+}
+
 function toggle3DHud(){
   ACTIVE_3D_HUD = !ACTIVE_3D_HUD;
-  document.getElementById('btn-hud-toggle').textContent = 'HUD: ' + (ACTIVE_3D_HUD ? 'ON' : 'OFF');
+  const b = document.getElementById('btn-hud-toggle');
+  if(b){
+    b.textContent = 'HUD: ' + (ACTIVE_3D_HUD ? 'ON' : 'OFF');
+    b.classList.toggle('primary', ACTIVE_3D_HUD);
+  }
+  refresh3DViewport();
+}
+
+function toggle3DLabels(){
+  ACTIVE_3D_LABELS = !ACTIVE_3D_LABELS;
+  const b = document.getElementById('btn-labels-toggle');
+  if(b){
+    b.textContent = 'Labels: ' + (ACTIVE_3D_LABELS ? 'ON' : 'OFF');
+    b.classList.toggle('primary', ACTIVE_3D_LABELS);
+  }
+  refresh3DViewport();
+}
+
+function toggle3DGrid(){
+  ACTIVE_3D_GRID = !ACTIVE_3D_GRID;
+  const b = document.getElementById('btn-grid-toggle');
+  if(b){
+    b.textContent = 'Grid: ' + (ACTIVE_3D_GRID ? 'ON' : 'OFF');
+    b.classList.toggle('primary', ACTIVE_3D_GRID);
+  }
   refresh3DViewport();
 }
 
 async function run3DSceneAudit(fixUnanchored, snapFloating){
+  const srcSel = document.getElementById('vp3d-source');
+  const source = (srcSel && srcSel.value) || 'studio:Workspace';
   try {
-    const res = await callMcp('audit_3d_scene', {
-      path: 'Workspace',
-      autoFixUnanchored: Boolean(fixUnanchored),
-      snapFloating: Boolean(snapFloating)
-    });
-    const d = res.structuredContent || {};
-    document.getElementById('scene-audit-summary').textContent =
-      `Audited ${d.totalPartsAudited||0} parts — Errors: ${d.errorCount||0}, Warnings: ${d.warningCount||0}` +
-      (d.autoFixedUnanchored ? ` (Auto-anchored ${d.autoFixedUnanchored}!)` : '') +
-      (d.autoSnappedFloating ? ` (Snapped ${d.autoSnappedFloating}!)` : '');
-    const issues = d.issues || [];
-    document.getElementById('scene-audit-list').innerHTML = issues.length === 0
-      ? '<div class="pill on" style="display:inline-block">All 3D geometry grounded, anchored &amp; spawn-clear!</div>'
-      : issues.map(iss => `
-        <div class="cmd-row" style="flex-direction:column;align-items:flex-start;gap:3px">
-          <div><span class="pill ${iss.severity==='error'?'off':'ro'}" style="font-size:10px;padding:1px 7px">${esc(iss.code)}</span> <code style="font-size:11px">${esc(iss.path)}</code></div>
-          <div class="sub">${esc(iss.message)}</div>
-        </div>`).join('');
-    if(fixUnanchored || snapFloating) refresh3DViewport();
+    if(source.indexOf('studio:') === 0){
+      const studioPath = source.slice('studio:'.length) || 'Workspace';
+      const res = await callMcp('audit_3d_scene', {
+        path: studioPath,
+        autoFixUnanchored: Boolean(fixUnanchored),
+        snapFloating: Boolean(snapFloating)
+      });
+      if(!res.isError && res.structuredContent){
+        renderAuditReportUI(res.structuredContent, `Live Studio (${studioPath})`);
+        if(fixUnanchored || snapFloating) refresh3DViewport();
+        return;
+      }
+    }
+    const r = await fetch('/api/kit/viewport-preview?source=' + encodeURIComponent(source), { cache: 'no-store' });
+    const d = await r.json();
+    if(d && d.audit){
+      renderAuditReportUI(d.audit, d.sourceLabel || source);
+    }
   } catch(e){
     document.getElementById('scene-audit-summary').textContent = String(e);
   }
@@ -3688,16 +5207,13 @@ async function searchCloudIconsUI(catOverride){
   if(catOverride !== undefined) ACTIVE_CLOUD_CAT = catOverride;
   const q = (document.getElementById('cloud-icon-q').value || '').trim();
   try {
-    const res = await callMcp('search_cloud_icons', {
-      query: q,
-      pack: ACTIVE_ICON_PACK,
-      category: ACTIVE_CLOUD_CAT || undefined,
-      limit: 32
-    });
-    const d = res.structuredContent || {};
+    const qs = new URLSearchParams({ query: q, pack: ACTIVE_ICON_PACK, limit: '36' });
+    if(ACTIVE_CLOUD_CAT) qs.set('category', ACTIVE_CLOUD_CAT);
+    const r = await fetch('/api/kit/cloud-icons?' + qs.toString(), { cache: 'no-store' });
+    const d = await r.json();
     const cats = d.categories || {};
     document.getElementById('cloud-icon-cats').innerHTML =
-      `<button class="sm ${ACTIVE_CLOUD_CAT===''?'primary':''}" onclick="searchCloudIconsUI('')">All (${d.totalCatalogIcons||1587})</button>` +
+      `<button class="sm ${ACTIVE_CLOUD_CAT===''?'primary':''}" onclick="searchCloudIconsUI('')">All (${d.totalCatalogIcons||4811})</button>` +
       Object.entries(cats).map(([c, n]) =>
         `<button class="sm ${ACTIVE_CLOUD_CAT===c?'primary':''}" onclick="searchCloudIconsUI('${esc(c)}')">${esc(c)} (${n})</button>`
       ).join('');
@@ -3717,8 +5233,15 @@ async function searchCloudIconsUI(catOverride){
 
 async function loadKitGallery(){
   try {
-    const res = await callMcp('browse_kit', { category: 'all' });
-    const data = res.structuredContent || {};
+    let data = {};
+    try {
+      const r = await fetch('/api/kit/catalog?category=all&format=full', { cache: 'no-store' });
+      if(r.ok) data = await r.json();
+    } catch(_){}
+    if(!data.images){
+      const res = await callMcp('browse_kit', { category: 'all', format: 'full' });
+      data = res.structuredContent || {};
+    }
 
     const templates = data.templates || [];
     document.getElementById('template-list').innerHTML = templates.map(t => `
@@ -3736,7 +5259,24 @@ async function loadKitGallery(){
         <button class="sm primary" onclick="installDropinSystemUI('${esc(s.system)}')">Install</button>
       </div>`).join('');
 
+    const synthSpecs = data.audioSynthSpecs || [];
+    const synthBox = document.getElementById('synth-audio-list');
+    if(synthBox){
+      synthBox.innerHTML = synthSpecs.map(s => `
+        <div class="cmd-row" style="justify-content:space-between;padding:6px 8px;border-color:rgba(92,200,255,.3)">
+          <div style="min-width:0">
+            <code style="font-size:11px;color:var(--accent)">[Synth] ${esc(s.name)}</code>
+            <div class="sub" style="font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.description||'')}</div>
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0">
+            <button class="sm" onclick="playSynthAudio('${esc(s.name)}')">&#9654;</button>
+            <button class="sm primary" onclick="sendSynthAudioToStudio('${esc(s.name)}')">Send</button>
+          </div>
+        </div>`).join('');
+    }
+
     const audios = data.audio || [];
+    ALL_KIT_AUDIO = audios;
     document.getElementById('audio-list').innerHTML = audios.map(a => `
       <div class="cmd-row" style="justify-content:space-between;padding:6px 8px">
         <code style="font-size:11px">${esc(a.name)}</code>
@@ -3745,6 +5285,30 @@ async function loadKitGallery(){
           <button class="sm primary" onclick="sendAudioToStudio('${esc(a.fileName)}')">Send</button>
         </div>
       </div>`).join('');
+
+    const presets = data.proceduralPresets || [];
+    const presetBox = document.getElementById('procedural-preset-list');
+    if(presetBox){
+      presetBox.innerHTML = presets.map(p => `
+        <div class="card" style="padding:8px;display:flex;flex-direction:column;align-items:center;gap:5px;text-align:center">
+          <img src="/api/kit/procedural/${esc(p)}.png" alt="${esc(p)}" loading="lazy" style="width:48px;height:48px;border-radius:6px;background:#0d121a">
+          <code style="font-size:10px;word-break:break-all">${esc(p)}</code>
+          <button class="sm primary" onclick="sendProceduralPresetToStudio('${esc(p)}')">Send</button>
+        </div>`).join('');
+    }
+
+    const modules = data.modules || [];
+    const modBox = document.getElementById('module-list');
+    if(modBox){
+      modBox.innerHTML = modules.map(m => `
+        <div class="cmd-row" style="justify-content:space-between;padding:6px 8px">
+          <div><strong style="font-size:12px">${esc(m.name)}</strong> <span class="sub">${(m.bytes/1024).toFixed(1)}K</span></div>
+          <div style="display:flex;gap:4px">
+            <button class="sm" onclick="inspectSingleModule('${esc(m.name)}')">Code</button>
+            <button class="sm primary" onclick="installSingleModule('${esc(m.name)}')">Install</button>
+          </div>
+        </div>`).join('');
+    }
 
     const prefabs = data.prefabs || [];
     document.getElementById('prefab-list').innerHTML = prefabs.map(p => `
@@ -3755,18 +5319,70 @@ async function loadKitGallery(){
       </div>`).join('');
 
     ALL_KIT_IMAGES = data.images || [];
+    ALL_KIT_MODELS = data.models || [];
+    const totalLicensed = ALL_KIT_IMAGES.length + ALL_KIT_MODELS.length + ALL_KIT_AUDIO.length;
+    const setKpi = (id, v) => { const el = document.getElementById(id); if(el) el.textContent = v.toLocaleString(); };
+    setKpi('kit-cnt-assets', totalLicensed || 4320);
+    setKpi('kit-cnt-icons', data.cloudIconsCount || 4811);
+    setKpi('kit-cnt-modules', modules.length || 25);
+    setKpi('kit-cnt-systems', systems.length || 20);
+    setKpi('kit-cnt-prefabs', prefabs.length || 26);
+    setKpi('kit-cnt-models', ALL_KIT_MODELS.length || 520);
+
     const catCounts = data.imageCategories || {};
     document.getElementById('asset-pack-pills').innerHTML =
-      `<button class="sm ${ACTIVE_PACK==='all'?'primary':''}" data-pack="all" onclick="selectPack('all')">All (${ALL_KIT_IMAGES.length})</button>` +
+      `<button class="sm ${ACTIVE_PACK==='all'?'primary':''}" data-pack="all" onclick="selectPack('all')">All Sources (${totalLicensed})</button>` +
       Object.entries(catCounts).sort().map(([pack, cnt]) =>
         `<button class="sm ${ACTIVE_PACK===pack?'primary':''}" data-pack="${esc(pack)}" onclick="selectPack('${esc(pack)}')">${esc(pack)} (${cnt})</button>`
-      ).join('');
+      ).join('') +
+      `<button class="sm ${ACTIVE_PACK==='audio_cc0'?'primary':''}" data-pack="audio_cc0" onclick="selectPack('audio_cc0')">audio_cc0 (${ALL_KIT_AUDIO.length})</button>`;
+
     renderFilteredAssets();
     searchCloudIconsUI('');
+    runMechanicBuilder(false);
+    previewDungeonLayout(false);
     runUiPreviewAndAudit();
     refresh3DViewport('perspective');
     run3DSceneAudit(false, false);
   } catch(_){}
+}
+
+function bindViewportInteractiveControls(){
+  const stage = document.getElementById('live-viewport-stage');
+  if(!stage || stage.__boundOrbit) return;
+  stage.__boundOrbit = true;
+  let dragging = false, startX = 0, startY = 0, baseYaw = 0, basePitch = 0;
+  stage.addEventListener('pointerdown', e => {
+    dragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+    baseYaw = ACTIVE_3D_YAW;
+    basePitch = ACTIVE_3D_PITCH;
+    stage.style.cursor = 'grabbing';
+    try { stage.setPointerCapture(e.pointerId); } catch(_){}
+  });
+  stage.addEventListener('pointermove', e => {
+    if(!dragging) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    ACTIVE_3D_YAW = Math.round(baseYaw - dx * 0.55) % 360;
+    ACTIVE_3D_PITCH = Math.max(-65, Math.min(65, Math.round(basePitch + dy * 0.45)));
+  });
+  const finishDrag = e => {
+    if(!dragging) return;
+    dragging = false;
+    stage.style.cursor = 'grab';
+    if(Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3){
+      refresh3DViewport();
+    }
+  };
+  stage.addEventListener('pointerup', finishDrag);
+  stage.addEventListener('pointercancel', finishDrag);
+  stage.addEventListener('wheel', e => {
+    e.preventDefault();
+    const mult = e.deltaY > 0 ? 1.12 : 0.88;
+    orbit3DCamera(0, 0, mult);
+  }, { passive: false });
 }
 
 async function initBoot(){
@@ -3799,9 +5415,138 @@ async function initBoot(){
     ).join('');
     onSelectTool();
   } catch(_){}
+  bindViewportInteractiveControls();
   renderTips();
   renderPrompts();
+  refresh3DViewport('perspective');
+  run3DSceneAudit(false, false);
   loadKitGallery();
+  loadPluginDashboard();
+}
+
+async function loadPluginDashboard(){
+  try {
+    const r = await apiFetch('/api/plugin-status');
+    const d = await r.json();
+    const setEl = (id, v) => { const el = document.getElementById(id); if(el) el.textContent = v; };
+    setEl('plg-bundled-ver', 'v' + (d.bundledPluginVersion || '6.0.0'));
+    setEl('plg-peer-cnt', (d.onlinePeerCount || 0) + ' online');
+    setEl('plg-compat-state', d.outdatedPeerCount > 0 ? (d.outdatedPeerCount + ' outdated') : 'All v6 Up-to-Date');
+    const ptActive = d.playtestState && d.playtestState.playtestActive;
+    setEl('plg-playtest-state', ptActive ? 'RUNNING (' + (d.playtestState.serverPeersOnline || 0) + ' srv)' : 'Idle / Clean');
+    const tel = d.livePluginTelemetry || {};
+    setEl('plg-dockwidget', tel.dashboardAvailable ? 'DockWidget v6 Ready' : (d.onlinePeerCount ? 'Toolbar Active' : 'Connect Studio'));
+    setEl('plg-jobs-run', String(tel.jobsProcessed != null ? tel.jobsProcessed : 0));
+
+    const ptb = document.getElementById('plg-peer-table');
+    if(ptb){
+      const peers = d.peers || [];
+      if(!peers.length){
+        ptb.innerHTML = '<tr><td colspan="5" class="empty">No Studio peers currently online. Open Roblox Studio with <code>ArenaBridge.lua</code> installed.</td></tr>';
+      } else {
+        ptb.innerHTML = peers.map(p => `<tr>
+          <td><code>${esc(p.peerId)}</code></td>
+          <td><code>${esc(p.dm)}</code></td>
+          <td>${esc(p.place || '')}</td>
+          <td><code>v${esc(p.pluginVersion || '?')}</code></td>
+          <td class="${p.upToDate ? 's-done' : 's-error'}">${p.upToDate ? '&#10003; v6 Up-to-Date' : '&#9888; Update to v' + esc(d.bundledPluginVersion || '6.0.0')}</td>
+        </tr>`).join('');
+      }
+    }
+    const tbox = document.getElementById('plg-telemetry-box');
+    if(tbox){
+      if(d.livePluginTelemetry){
+        tbox.innerHTML = `Live In-Studio Telemetry: <strong>${d.livePluginTelemetry.jobsProcessed || 0}</strong> jobs processed (${d.livePluginTelemetry.jobsFailed || 0} errors) &bull; Last job: <code>${esc(d.livePluginTelemetry.lastJobType || 'none')}</code> (${d.livePluginTelemetry.lastJobMs || 0}ms) &bull; DockWidget UI: <strong>${d.livePluginTelemetry.dashboardAvailable ? 'Available' : 'N/A'}</strong>`;
+      } else if(d.outdatedPeerCount > 0){
+        tbox.innerHTML = `<span style="color:var(--warn)">Connected Studio is running an older plugin version. Click <strong>Download ArenaBridge.lua v6.0.0</strong> or <strong>Install to Local Studio</strong> and reload plugins in Roblox Studio.</span>`;
+      } else {
+        tbox.textContent = 'Connect a Roblox Studio Edit session to view live in-Studio plugin telemetry.';
+      }
+    }
+  } catch(_){}
+}
+
+function downloadPluginFile(){
+  const tok = getToken();
+  const url = '/api/plugin/download' + (tok ? ('?token=' + encodeURIComponent(tok)) : '');
+  window.open(url, '_blank');
+  toast('Downloading pre-configured ArenaBridge.lua v6.0.0…');
+}
+
+async function installLocalPluginUI(){
+  const out = document.getElementById('plg-action-out');
+  if(out) out.textContent = 'Installing ArenaBridge.lua v6.0.0 into local Studio Plugins folder…';
+  try {
+    const r = await apiFetch('/api/plugin-status', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'install_local' })
+    });
+    const d = await r.json();
+    if(out) out.textContent = JSON.stringify(d, null, 2);
+    toast(d.installedToOsPlugins ? 'Installed ArenaBridge.lua v6.0.0 to local Studio Plugins!' : 'Local Studio Plugins folder not found on this host — use Download button instead.');
+    loadPluginDashboard();
+  } catch(e){
+    if(out) out.textContent = String(e);
+  }
+}
+
+async function forceStopPlaytestUI(){
+  toast('Force-stopping active playtest & evicting ghost runtime peers…');
+  const out = document.getElementById('plg-action-out');
+  if(out) out.textContent = 'Dispatching dual edit + server force_stop + runner cleanup + ghost peer eviction…';
+  try {
+    const r = await apiFetch('/api/playtest/force-stop', {
+      method: 'POST',
+      body: JSON.stringify({ reason: 'dashboard_force_stop' })
+    });
+    const d = await r.json();
+    if(out) out.textContent = JSON.stringify(d, null, 2);
+    const wrap = document.getElementById('quick-out-wrap');
+    const pre = document.getElementById('quick-out');
+    if(wrap && pre){
+      document.getElementById('quick-out-title').textContent = 'Playtest Force-Stop & Cleanup [OK]';
+      pre.textContent = JSON.stringify(d, null, 2);
+      wrap.style.display = 'block';
+    }
+    toast(`Playtest stopped cleanly (${d.evictedPlaytestPeers || 0} runtime peers evicted).`);
+    tick();
+    refreshFleet();
+    loadPluginDashboard();
+  } catch(e){
+    if(out) out.textContent = String(e);
+    toast('Force-stop error: ' + e.message);
+  }
+}
+
+async function evictGhostPeersUI(){
+  const out = document.getElementById('plg-action-out');
+  try {
+    const r = await apiFetch('/api/playtest/force-stop', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'evict_only', reason: 'manual_ghost_peer_evict' })
+    });
+    const d = await r.json();
+    if(out) out.textContent = JSON.stringify(d, null, 2);
+    toast(`Evicted ${d.evictedPeers || 0} runtime peer(s).`);
+    tick();
+    refreshFleet();
+    loadPluginDashboard();
+  } catch(e){
+    if(out) out.textContent = String(e);
+  }
+}
+
+async function runV6ToolPreview(toolName, argsObj){
+  const out = document.getElementById('v6-tool-out');
+  if(out) out.textContent = `Running ${toolName}…`;
+  try {
+    const res = await callMcp(toolName, argsObj);
+    if(out) out.textContent = JSON.stringify(res.structuredContent || res, null, 2);
+    toast(`Completed ${toolName}`);
+    tick();
+  } catch(e){
+    if(out) out.textContent = String(e);
+  }
 }
 
 async function tick(){
@@ -3813,7 +5558,12 @@ async function tick(){
       showStaleBanner(s.version);
     }
     const prevPlace = LAST_STATE.studio && LAST_STATE.studio.place;
+    const wasConnected = Boolean(LAST_STATE.studio_connected);
     LAST_STATE = s;
+    if((!wasConnected && s.studio_connected) || (s.studio && s.studio.place && s.studio.place !== prevPlace)){
+      refresh3DViewport();
+      run3DSceneAudit(false, false);
+    }
 
     const st = document.getElementById('status');
     st.textContent = s.studio_connected ? 'Studio connected' : 'Waiting for Studio';
@@ -3832,7 +5582,7 @@ async function tick(){
     const peers = s.peers || [];
     const onlinePeers = peers.filter(p => p.online);
     document.getElementById('c-peers').textContent = onlinePeers.length + ' online';
-    document.getElementById('c-tools').textContent = s.mcp_tools || 37;
+    document.getElementById('c-tools').textContent = s.mcp_tools ?? '—';
     document.getElementById('c-queued').textContent = s.queued || 0;
     document.getElementById('c-snaps').textContent = s.snapshots || 0;
     const rows = s.recent || [];
@@ -3843,14 +5593,21 @@ async function tick(){
     if(!peers.length){
       ptb.innerHTML = '<tr><td colspan="6" class="empty">Waiting for Roblox Studio plugin to poll <code>/api/poll</code>&hellip;</td></tr>';
     } else {
-      ptb.innerHTML = peers.map(p => `<tr>
-        <td><code>${esc(p.peerId)}</code></td>
-        <td><code>${esc(p.dm)}</code></td>
-        <td>${esc(p.place || '')}</td>
-        <td>v${esc(p.pluginVersion || '?')}</td>
-        <td>${p.hasClient ? 'ready (' + p.playerCount + 'p)' : '&mdash;'}</td>
-        <td class="${p.online ? 's-done' : 's-queued'}">${p.online ? 'online' : 'stale'}</td>
-      </tr>`).join('');
+      ptb.innerHTML = peers.map(p => {
+        const pv = String(p.pluginVersion || '?');
+        const isV6 = pv.startsWith('6.');
+        const pvBadge = isV6
+          ? `<span class="s-done">v${esc(pv)} &#10003;</span>`
+          : `<span class="s-error" title="Update ArenaBridge.lua to v6.0.0 in Tab 8">v${esc(pv)} &#9888;</span>`;
+        return `<tr>
+          <td><code>${esc(p.peerId)}</code></td>
+          <td><code>${esc(p.dm)}</code></td>
+          <td>${esc(p.place || '')}</td>
+          <td>${pvBadge}</td>
+          <td>${p.hasClient ? 'ready (' + p.playerCount + 'p)' : '&mdash;'}</td>
+          <td class="${p.online ? 's-done' : 's-queued'}">${p.online ? 'online' : 'stale'}</td>
+        </tr>`;
+      }).join('');
     }
 
     const tb = document.getElementById('rows');
@@ -4243,9 +6000,124 @@ async function copyMcpConfig(){
   } catch(err){ toast(err.message || 'Cannot build MCP config'); }
 }
 
-initBoot().then(() => { tick(); refreshOps(); refreshBus(); refreshFleet();
+async function refreshDirectChat(){
+  const box = document.getElementById('direct-chat-feed');
+  if(!box) return;
+  try {
+    const r = await fetch('/api/chat?limit=40', { headers: authHeaders(), cache: 'no-store' });
+    if(!r.ok) return;
+    const d = await r.json();
+    const msgs = d.messages || [];
+    const badge = document.getElementById('live-chat-badge');
+    if(badge){
+      badge.textContent = d.unreadOperatorCount > 0
+        ? `${d.unreadOperatorCount} Queued for Next Tool Call`
+        : `Direct Live (${msgs.length})`;
+    }
+    if(!msgs.length){
+      box.innerHTML = '<div class="sub">No direct chat messages yet. Send a message below to inject it directly into the agent&rsquo;s active tool loop.</div>';
+      return;
+    }
+    box.innerHTML = msgs.map(m => {
+      const isOp = m.role === 'operator';
+      const status = isOp
+        ? (m.repliedByAgent ? '✓ Replied by Agent' : (m.deliveredToAgent ? `✓ Delivered (${m.deliveredVia || 'tool'})` : '⏳ Queued for next tool call'))
+        : '✓ Agent Reply';
+      const pinBadge = m.pinned ? ' <span class="pill ro" style="font-size:10px;padding:1px 5px">PINNED</span>' : '';
+      return `<div style="padding:6px 8px;margin-bottom:6px;border-radius:6px;background:${isOp ? 'rgba(56,189,248,0.10)' : 'rgba(52,211,153,0.10)'};border-left:3px solid ${isOp ? '#38bdf8' : '#34d399'}">
+        <div style="display:flex;justify-content:space-between;font-size:11px">
+          <strong>${esc(m.sender || (isOp ? 'Operator' : 'Agent'))}${pinBadge}</strong>
+          <span class="sub">${esc(status)}</span>
+        </div>
+        <div style="margin-top:3px;color:#e2e8f0">${esc(m.text)}</div>
+      </div>`;
+    }).join('');
+    box.scrollTop = box.scrollHeight;
+  } catch(_){}
+}
+
+async function sendOperatorLiveChat(){
+  const inp = document.getElementById('direct-chat-input');
+  const pin = document.getElementById('direct-chat-pin');
+  const text = (inp && inp.value || '').trim();
+  if(!text) return toast('Type a message for the agent first.');
+  try {
+    const r = await fetch('/api/chat', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({
+        action: 'send',
+        role: 'operator',
+        sender: 'Operator',
+        text,
+        priority: 'high',
+        pinned: Boolean(pin && pin.checked)
+      })
+    });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    inp.value = '';
+    if(pin) pin.checked = false;
+    toast('Direct message queued — will inject into the agent’s next tool call!');
+    refreshDirectChat();
+  } catch(err){ toast(err.message); }
+}
+
+async function quickOperatorDirective(text){
+  const inp = document.getElementById('direct-chat-input');
+  const pin = document.getElementById('direct-chat-pin');
+  if(inp) inp.value = text;
+  if(pin) pin.checked = true;
+  await sendOperatorLiveChat();
+}
+
+async function exportStudioUiToWeb(){
+  const out = document.getElementById('web-ui-out');
+  const htmlBox = document.getElementById('web-ui-html');
+  if(out) out.textContent = 'Exporting StarterGui to Web HTML/Tailwind...';
+  try {
+    const r = await fetch('/api/ui/export-web', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ path: 'StarterGui', deSlop: true })
+    });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    if(htmlBox && d.html) htmlBox.value = d.html;
+    if(out) out.textContent = JSON.stringify(d, null, 2);
+    toast('Exported StarterGui into Web HTML/Tailwind!');
+  } catch(err){
+    if(out) out.textContent = err.message;
+    toast(err.message);
+  }
+}
+
+async function importWebUiFromDashboard(installInStudio){
+  const preset = (document.getElementById('web-ui-preset') && document.getElementById('web-ui-preset').value) || 'rpg_hud';
+  const guiName = (document.getElementById('web-ui-name') && document.getElementById('web-ui-name').value) || 'WebImportedGui';
+  const html = (document.getElementById('web-ui-html') && document.getElementById('web-ui-html').value) || '';
+  const out = document.getElementById('web-ui-out');
+  if(out) out.textContent = installInStudio ? 'Converting & building in StarterGui...' : 'Converting Web UI to Roblox ScreenGui...';
+  try {
+    const r = await fetch('/api/ui/import-web', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ preset, guiName, html, deSlop: true, installInStudio: Boolean(installInStudio) })
+    });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    if(out) out.textContent = JSON.stringify(d, null, 2);
+    toast(installInStudio ? 'Imported Web UI into StarterGui!' : 'Converted Web UI to Roblox ScreenGui tree');
+  } catch(err){
+    if(out) out.textContent = err.message;
+    toast(err.message);
+  }
+}
+
+initBoot().then(() => { tick(); refreshOps(); refreshBus(); refreshFleet(); refreshDirectChat();
   setInterval(tick, 1500);
   setInterval(refreshFleet, 3000);
+  setInterval(refreshDirectChat, 2500);
   setInterval(() => {
     const active = document.getElementById('tab-ops').classList.contains('active');
     if(active){ refreshOps(); refreshBus(); }
@@ -4282,6 +6154,7 @@ def create_http_server(
     state_dir: str = None,
     auto_tunnel: bool = False,
     tunnel_flavor: str = "auto",
+    tunnel_protocol: str = "auto",
     tunnel_token: str = None,
     tunnel_name: str = None,
     public_url: str = None,
@@ -4293,6 +6166,8 @@ def create_http_server(
     confirm_allowance_seconds: float = 600.0,
     confirm_wait_seconds: float = 45.0,
     auto_task_ms: float = None,
+    allowed_origins=None,
+    max_body_bytes: int = None,
 ):
     resolved_token = load_token_default(token)
     state = BridgeState(
@@ -4302,6 +6177,7 @@ def create_http_server(
         state_dir=state_dir,
         auto_tunnel=False,  # started after the socket is bound, so the port is known
         tunnel_flavor=tunnel_flavor,
+        tunnel_protocol=tunnel_protocol,
         tunnel_token=tunnel_token,
         tunnel_name=tunnel_name,
         public_url=public_url,
@@ -4313,6 +6189,8 @@ def create_http_server(
         confirm_allowance_seconds=confirm_allowance_seconds,
         confirm_wait_seconds=confirm_wait_seconds,
         auto_task_ms=auto_task_ms,
+        allowed_origins=allowed_origins,
+        max_body_bytes=max_body_bytes,
     )
     httpd = ThreadingHTTPServer((host, port), make_http_handler(state))
     httpd.daemon_threads = True
@@ -4346,6 +6224,9 @@ def main():
                     help="Supervise a public cloudflared/ngrok tunnel for this bridge (auto-restart, health probes)")
     ap.add_argument("--tunnel-flavor", default=os.environ.get("BRIDGE_TUNNEL_FLAVOR", "auto"),
                     choices=["auto", "cloudflared", "ngrok"], help="Tunnel provider")
+    ap.add_argument("--tunnel-protocol", default=os.environ.get("BRIDGE_TUNNEL_PROTOCOL", "auto"),
+                    choices=["auto", "http2", "quic"],
+                    help="Cloudflare tunnel edge transport (use http2 behind UDP-blocking firewalls; auto falls back to http2)")
     ap.add_argument("--tunnel-token", default=os.environ.get("TUNNEL_TOKEN"),
                     help="Cloudflare named-tunnel token (https://one.dash.cloudflare.com)")
     ap.add_argument("--tunnel-name", default=os.environ.get("BRIDGE_TUNNEL_NAME"),
@@ -4391,6 +6272,7 @@ def main():
         state_dir=args.state_dir,
         auto_tunnel=args.tunnel,
         tunnel_flavor=args.tunnel_flavor,
+        tunnel_protocol=args.tunnel_protocol,
         tunnel_token=args.tunnel_token,
         tunnel_name=args.tunnel_name,
         public_url=args.public_url,

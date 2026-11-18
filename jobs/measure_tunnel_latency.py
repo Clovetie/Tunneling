@@ -29,10 +29,29 @@ import urllib.error
 import urllib.request
 
 DEFAULT_TOOLS = "ping_studio,get_studio_state,script_read"
+JOB_TYPE_MAP = {
+    "ping_studio": "ping",
+    "get_studio_state": "survey",
+    "survey_place": "survey",
+    "inspect_instance": "inspect",
+    "script_read": "inspect",
+    "execute_luau": "run_luau",
+}
 TOOL_PAYLOADS = {
     "ping_studio": {},
     "get_studio_state": {},
-    "script_read": {"path": "ServerScriptService"},
+    "survey_place": {},
+    "inspect_instance": {"path": "ServerScriptService", "depth": 1},
+    "script_read": {"path": "ServerScriptService", "depth": 1},
+    "execute_luau": {"code": "return true"},
+}
+MCP_TOOL_ARGS = {
+    "ping_studio": {},
+    "get_studio_state": {},
+    "survey_place": {},
+    "inspect_instance": {"path": "ServerScriptService", "depth": 1},
+    "script_read": {"path": "ServerScriptService", "startLine": 1, "endLine": 5},
+    "execute_luau": {"code": "return true"},
 }
 
 
@@ -46,12 +65,13 @@ def parse_target(value: str):
 
 def post_job(base_url: str, tool: str, token: str, timeout: float):
     """POST one Studio job and return (elapsed_ms, job_dict)."""
+    job_type = JOB_TYPE_MAP.get(tool, tool)
     payload = {
-        "type": tool,
+        "type": job_type,
         "payload": TOOL_PAYLOADS.get(tool, {}),
         "wait": timeout,
         "dm": "edit",
-        "note": "measure_tunnel_latency",
+        "note": f"measure_tunnel_latency:{tool}",
     }
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -69,6 +89,44 @@ def post_job(base_url: str, tool: str, token: str, timeout: float):
     return elapsed_ms, job
 
 
+def post_mcp_call(base_url: str, tool: str, token: str, timeout: float):
+    """POST one Streamable HTTP /mcp tools/call and return (elapsed_ms, normalized_dict)."""
+    rpc = {
+        "jsonrpc": "2.0",
+        "id": f"lat-{tool}-{int(time.time() * 1000)}",
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": MCP_TOOL_ARGS.get(tool, {})},
+    }
+    data = json.dumps(rpc).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": tool,
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(base_url + "/mcp", data=data, method="POST", headers=headers)
+    started = time.perf_counter()
+    with urllib.request.urlopen(request, timeout=timeout + 15) as response:
+        body = response.read().decode("utf-8")
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return elapsed_ms, {"status": "error", "error": body[:200]}
+    if isinstance(parsed, dict) and parsed.get("error"):
+        err = parsed["error"]
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+        return elapsed_ms, {"status": "error", "error": msg}
+    result = (parsed or {}).get("result") if isinstance(parsed, dict) else {}
+    if isinstance(result, dict) and result.get("isError"):
+        content = result.get("content") or []
+        text = content[0].get("text", "MCP tool error") if content and isinstance(content[0], dict) else "MCP tool error"
+        return elapsed_ms, {"status": "error", "error": text}
+    return elapsed_ms, {"status": "done", "result": result}
+
+
 def percentile(values, fraction: float) -> float:
     """Nearest-rank percentile; deterministic for small samples."""
     if not values:
@@ -80,10 +138,11 @@ def percentile(values, fraction: float) -> float:
     return ordered[rank - 1]
 
 
-def measure(targets, tools, token, runs, timeout, warmup, quiet=False):
+def measure(targets, tools, token, runs, timeout, warmup, quiet=False, transport="jobs"):
     """Return {label: {tool: {"samples": [...], "errors": [...]}}} plus a fatal reason if any."""
     results = {}
     fatal = None
+    caller = post_mcp_call if transport == "mcp" else post_job
     for label, base in targets:
         results[label] = {}
         for tool in tools:
@@ -91,7 +150,7 @@ def measure(targets, tools, token, runs, timeout, warmup, quiet=False):
             attempts = runs + max(0, warmup)
             for index in range(attempts):
                 try:
-                    elapsed, job = post_job(base, tool, token, timeout)
+                    elapsed, job = caller(base, tool, token, timeout)
                 except urllib.error.HTTPError as exc:
                     detail = exc.read().decode("utf-8", "replace")[:300]
                     if exc.code == 401:
@@ -108,7 +167,8 @@ def measure(targets, tools, token, runs, timeout, warmup, quiet=False):
                 if job.get("status") == "error":
                     message = str(job.get("error") or "")
                     errors.append(message or "job failed")
-                    if "no peer" in message.lower() or "no studio" in message.lower():
+                    low = message.lower()
+                    if "no peer" in low or "no studio" in low or "no_peer" in low:
                         fatal = fatal or (
                             f"{label}: no Studio peer connected to the bridge, so there is nothing to time. "
                             "Open the place with the ArenaBridge plugin and retry."
@@ -184,6 +244,8 @@ def main(argv=None):
     parser.add_argument("--runs", type=int, default=20, help="Samples per tool (default: 20)")
     parser.add_argument("--warmup", type=int, default=1, help="Discarded warm-up calls per tool")
     parser.add_argument("--tools", default=DEFAULT_TOOLS, help=f"Comma list (default: {DEFAULT_TOOLS})")
+    parser.add_argument("--transport", default="jobs", choices=["jobs", "mcp"],
+                        help="Benchmark REST /api/jobs (default) or Streamable HTTP /mcp tools/call")
     parser.add_argument("--timeout", type=float, default=60.0, help="Per-job wait in seconds")
     parser.add_argument("--json-out", default=None, help="Write raw samples and summary JSON here")
     parser.add_argument("--markdown", action="store_true", help="Print only the markdown table")
@@ -192,7 +254,7 @@ def main(argv=None):
     targets = [parse_target(u) for u in (args.url or ["http://127.0.0.1:8077"])]
     tools = [t.strip() for t in args.tools.split(",") if t.strip()]
     results, fatal = measure(targets, tools, args.token, max(1, args.runs), args.timeout,
-                             max(0, args.warmup))
+                             max(0, args.warmup), transport=args.transport)
     summary, lines = render(results, tools, args.runs)
 
     if args.json_out:

@@ -1,6 +1,6 @@
 # v5 Ops Platform — tunnels, multi-agent coordination, telemetry, scoped auth
 
-_Applies to bridge `5.4.0`._
+_Applies to bridge `6.0.0`._
 
 Everything in this document ships in `roblox-bridge/` and is **stdlib-only**
 (no pip installs). It layers on top of the v4 MCP + plugin bridge; nothing in the
@@ -29,14 +29,15 @@ old workflow breaks.
 child process.
 
 ```bash
-python setup.py --tunnel                      # auto-detect cloudflared or ngrok
+python setup.py --tunnel                      # auto-detect cloudflared or ngrok (QUIC -> http2 fallback)
+python setup.py --tunnel --tunnel-protocol http2   # force HTTP/2 behind UDP-blocking firewalls
 python setup.py --tunnel --tunnel-flavor ngrok
-python setup.py --tunnel --tunnel-token "$CF_TOKEN"     # named Cloudflare tunnel
+python setup.py --tunnel --tunnel-token "$CF_TOKEN" --public-url https://mcp.example.com
 BRIDGE_PUBLIC_URL=https://mcp.example.com python setup.py   # you run the tunnel
 ```
 
 ```bash
-python server.py --tunnel --tunnel-flavor cloudflared --port 8077
+python server.py --tunnel --tunnel-flavor cloudflared --tunnel-protocol auto --port 8077
 ```
 
 What the supervisor does:

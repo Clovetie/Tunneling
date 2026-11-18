@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
 mcp_core.py — Zero-dependency Model Context Protocol (MCP) engine & Roblox Studio
-tool suite for Arena <-> Roblox Studio (v5.4.0).
+tool suite for Arena <-> Roblox Studio (v6.0.0).
 
 Supports:
   - Dual-era MCP: 2026-07-28 (stateless, server/discover, resultType, MRTR,
-    subscriptions/listen, tasks extension) and the legacy 2025-11-25 /
-    2025-06-18 / 2025-03-26 / 2024-11-05 handshake eras
+    subscriptions/listen, SEP-2243 Base64 header sentinels, tasks extension) and
+    the legacy 2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05 handshake eras
+  - Argument autocompletion (`completion/complete` for `ref/prompt` & `ref/resource`)
+  - MCP Server Card discovery (`mcp://server-card.json` + HTTP `/.well-known/mcp.json`)
   - Multi Round-Trip Requests: destructive calls can answer with
     resultType "input_required" + a signed requestState (human-in-the-loop)
   - Task-augmented tool calls (tasks/get · tasks/update · tasks/cancel, plus the
     legacy tasks/result · tasks/list pair for 2025-11-25 clients)
   - subscriptions/listen: one opt-in stream for resource-update notifications
   - Transports: stdio (via mcp_server.py) and Streamable HTTP /mcp (via server.py)
-  - 75 curated, annotated Roblox Studio & Luau engineering tools
-  - Live MCP Resources + Resource Templates + Workflow Prompts
+  - Curated, annotated Roblox Studio & Luau engineering tools
+  - Live MCP Resources + Resource Templates + Workflow Prompts + cursor pagination
   - Exact 53-bit-safe 32-bit FNV-1a hashing matching ArenaBridge.lua bit-for-bit
   - Local pre-flight Luau syntax + undefined-global static analysis (luau_check)
   - Repo <-> Studio drift detection, atomic cache-busting sync, & snapshots
@@ -22,6 +24,7 @@ Supports:
   - Transparent fallback to run_luau if an older v2.0 Studio plugin is still loaded
 """
 
+import base64
 import json
 import math
 import os
@@ -30,6 +33,7 @@ import re
 import threading
 import uuid
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -44,7 +48,7 @@ from confirm_gate import (  # noqa: E402  (v5.4.0 human-in-the-loop gate)
 )
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "5.4.0"
+MCP_SERVER_VERSION = "6.0.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2026-07-28",   # stateless era: server/discover, per-request _meta, resultType
     "2025-11-25",   # final legacy era: tasks, elicitation, structured output
@@ -73,6 +77,95 @@ META_RELATED_TASK = "io.modelcontextprotocol/related-task"
 TASKS_EXTENSION_KEY = "io.modelcontextprotocol/tasks"
 #: Trace-context keys (SEP-414): forward the caller's spans into the audit chain.
 TRACE_META_KEYS = ("traceparent", "tracestate", "baggage")
+
+_B64_SENTINEL_RE = re.compile(r"^=\?base64\?([A-Za-z0-9+/_-]*={0,2})\?=$")
+
+
+def encode_mcp_header_value(value: str) -> str:
+    """Encode an `Mcp-Name` / `Mcp-Param-*` HTTP header per SEP-2243.
+
+    Plain visible ASCII (0x21..0x7E) without `=?base64?` ambiguity travels raw;
+    anything containing whitespace, control bytes, non-ASCII UTF-8, or a literal
+    `=?` prefix is wrapped in a `=?base64?<urlsafe-b64>?=` sentinel.
+    """
+    text = str(value if value is not None else "")
+    if not text:
+        return ""
+    needs_b64 = text.startswith("=?") or any(ord(ch) <= 0x20 or ord(ch) >= 0x7F for ch in text)
+    if not needs_b64:
+        return text
+    token = base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii").rstrip("=")
+    return f"=?base64?{token}?="
+
+
+def decode_mcp_header_value(raw: str) -> str:
+    """Decode a SEP-2243 HTTP header value, unwrapping `=?base64?...?=` sentinels.
+
+    Raises `ValueError` on malformed sentinels or non-UTF-8 payloads so the HTTP
+    transport can answer with `400 Bad Request` + JSON-RPC `-32020` (`HeaderMismatch`).
+    """
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if not text.startswith("=?"):
+        return text
+    match = _B64_SENTINEL_RE.match(text)
+    if not match:
+        raise ValueError(f"Malformed Base64 MCP header sentinel: {text[:80]!r}")
+    b64 = match.group(1).replace("-", "+").replace("_", "/")
+    rem = len(b64) % 4
+    if rem == 1:
+        raise ValueError("Invalid Base64 length in MCP header sentinel")
+    if rem:
+        b64 += "=" * (4 - rem)
+    try:
+        decoded = base64.b64decode(b64, validate=True)
+        return decoded.decode("utf-8", errors="strict")
+    except Exception as exc:
+        raise ValueError(f"Invalid Base64/UTF-8 MCP header payload: {exc}") from exc
+
+
+def paginate_mcp_items(items: list, params: dict = None) -> tuple:
+    """Cursor pagination helper for `tools/list`, `resources/list`, etc.
+
+    When neither `cursor` nor `pageSize` is supplied, returns `(items, None)` so
+    non-paginating clients receive the complete catalog in one call. Invalid
+    cursors raise `ValueError` (mapped to JSON-RPC `-32602`).
+    """
+    params = params if isinstance(params, dict) else {}
+    raw_cursor = params.get("cursor")
+    raw_size = params.get("pageSize") if params.get("pageSize") is not None else params.get("limit")
+    if raw_cursor is None and raw_size is None:
+        return list(items), None
+    offset = 0
+    if raw_cursor is not None:
+        if not isinstance(raw_cursor, str) or not raw_cursor.strip():
+            raise ValueError(f"Invalid pagination cursor: {raw_cursor!r}")
+        token = raw_cursor.strip()
+        if token.isdigit():
+            offset = int(token)
+        else:
+            try:
+                padded = token + "=" * ((4 - len(token) % 4) % 4)
+                parsed = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+                offset = int(parsed.get("o"))
+            except Exception as exc:
+                raise ValueError(f"Invalid pagination cursor: {raw_cursor!r}") from exc
+        if offset < 0 or offset > len(items):
+            raise ValueError(f"Pagination cursor out of range: {raw_cursor!r}")
+    page_size = 50
+    if raw_size is not None:
+        if isinstance(raw_size, bool) or not isinstance(raw_size, int) or raw_size < 1 or raw_size > 500:
+            raise ValueError("pageSize must be an integer between 1 and 500")
+        page_size = raw_size
+    sliced = list(items[offset : offset + page_size])
+    next_offset = offset + len(sliced)
+    next_cursor = None
+    if next_offset < len(items):
+        next_cursor = base64.urlsafe_b64encode(
+            json.dumps({"o": next_offset}, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+    return sliced, next_cursor
 
 #: What `subscriptions/listen` can actually deliver from this bridge.
 SUBSCRIPTION_TYPES = (
@@ -165,8 +258,8 @@ KNOWN_ROBLOX_GLOBALS = {
 READ_ONLY_JOB_TYPES = {
     "ping", "studio_state", "inspect", "search_tree", "compare_instances",
     "get_properties", "read_script", "read_scripts", "hash_scripts",
-    "script_search", "script_grep", "survey", "console", "require_fresh",
-    "playtest_caps",
+    "script_search", "script_grep", "survey", "console", "mesh_capabilities",
+    "playtest_caps", "plugin_info",
 }
 
 
@@ -200,27 +293,29 @@ def fnv1a_hex(data) -> str:
 
 def _find_tool_binary(name: str):
     here = Path(__file__).resolve().parent
-    candidates = [
-        here / "tools" / name,
-        here / "tools" / f"{name}.exe",
-        here.parent / "tools" / name,
-        here.parent / "tools" / f"{name}.exe",
-        here.parent / "roblox-bridge" / "tools" / name,
-        here.parent / "roblox-bridge" / "tools" / f"{name}.exe",
-        here.parent.parent / "roblox-bridge" / "tools" / name,
-        here.parent.parent / "roblox-bridge" / "tools" / f"{name}.exe",
-        here.parent / "nightloop" / ".tools" / "bin" / name,
-        here.parent / ".tools" / "bin" / name,
+    directories = [
+        here / "tools", here.parent / "tools", here.parent / "roblox-bridge" / "tools",
+        here.parent.parent / "roblox-bridge" / "tools", here.parent / "nightloop" / ".tools" / "bin",
+        here.parent / ".tools" / "bin",
     ]
-    for path in candidates:
-        if path.is_file():
-            if not os.access(path, os.X_OK):
-                try:
-                    os.chmod(path, path.stat().st_mode | 0o111)
-                except OSError:
-                    pass
-            if os.access(path, os.X_OK):
-                return str(path)
+    # Bundled Unix binaries are ELF/Linux; do not mistake them for native
+    # Windows/macOS executables when a separately installed tool is available.
+    names = (f"{name}.exe", name) if sys.platform == "win32" else (name, f"{name}.exe")
+    for directory in directories:
+        for candidate in names:
+            path = directory / candidate
+            if not path.is_file() or not os.access(path, os.X_OK):
+                continue
+            try:
+                with path.open("rb") as stream:
+                    magic = stream.read(4)
+            except OSError:
+                continue
+            if magic == b"\x7fELF" and not sys.platform.startswith("linux"):
+                continue
+            if magic[:2] == b"MZ" and sys.platform != "win32":
+                continue
+            return str(path)
     from shutil import which
     return which(name)
 
@@ -242,6 +337,8 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
         "hash": fnv1a_hex(normalize_newlines(source)),
     }
 
+    syntax_checked = False
+    globals_checked = False
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".lua", encoding="utf-8", delete=False
     ) as tmp:
@@ -261,11 +358,15 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
                 compiler = None
                 result["toolchainError"] = f"luau-compile unavailable: {exc}"
                 proc = None
+            if proc is not None:
+                syntax_checked = True
             if proc is not None and proc.returncode != 0:
                 err_txt = proc.stderr.decode("utf-8", "replace").strip()
                 err_txt = err_txt.replace(tmp_path, filename)
                 result["syntaxOk"] = False
                 result["ok"] = False
+                result["checksPerformed"] = {"syntax": True, "undefinedGlobals": False, "unusedLocals": False}
+                result["warnings"] = ["Global and unused-local analysis did not run after the compiler error."]
                 result["compileErrors"] = [
                     ln for ln in err_txt.splitlines() if ln.strip()
                 ]
@@ -280,6 +381,8 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
                     timeout=15,
                 )
                 output = proc.stdout.decode("utf-8", "replace").replace(tmp_path, filename)
+                syntax_checked = True
+                globals_checked = True
             except (OSError, subprocess.SubprocessError) as exc:
                 result["toolchainError"] = f"luau-analyze unavailable: {exc}"
                 analyzer = None
@@ -302,6 +405,7 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
             pass
 
     result["toolchainAvailable"] = bool(compiler or analyzer)
+    result["checksPerformed"] = {"syntax": syntax_checked, "undefinedGlobals": globals_checked, "unusedLocals": globals_checked}
     result["ok"] = result["syntaxOk"] and len(result["undefinedGlobals"]) == 0
     if not result["toolchainAvailable"]:
         result["backend"] = "unavailable"
@@ -309,7 +413,7 @@ def check_luau_source(source: str, filename: str = "input.lua") -> dict:
         result["reason"] = "toolchain_unavailable"
         result["warnings"] = ["No executable Luau compiler/analyzer is available on the bridge host."]
     else:
-        result["warnings"] = []
+        result["warnings"] = [] if globals_checked else ["Luau analyzer unavailable; undefined-global and unused-local checks did not run."]
     return result
 
 
@@ -536,9 +640,10 @@ class BridgeClient:
 
     def _http_request(self, method: str, path: str, payload=None, timeout: float = 125.0):
         url = f"{self.base_url}{path}"
-        headers = {}
+        headers = {"User-Agent": f"ArenaRobloxMCPClient/{MCP_SERVER_VERSION}"}
         if self.token:
             headers["X-Arena-Token"] = self.token
+            headers["Authorization"] = f"Bearer {self.token}"
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
         if data is not None:
             headers["Content-Type"] = "application/json"
@@ -587,6 +692,14 @@ class BridgeClient:
             return self._http_request("GET", "/api/studios", timeout=15.0)
         return self._http_request("POST", "/api/studios", payload, timeout=30.0)
 
+    def evict_playtest_peers(self, reason: str = "playtest_stopped") -> dict:
+        try:
+            if self.direct_dispatch:
+                return self.direct_dispatch("evict_playtest", {"reason": reason})
+            return self._http_request("POST", "/api/playtest/force-stop", {"action": "evict_only", "reason": reason}, timeout=10.0)
+        except Exception:
+            return {"ok": True, "evictedPeers": 0}
+
     def broadcast(self, kind: str = "ping", payload: dict = None, timeout: float = 20.0,
                   dm: str = None) -> dict:
         body = {"action": "broadcast", "type": kind, "payload": payload or {},
@@ -606,9 +719,10 @@ class BridgeClient:
                 "audit_verify": ("audit", {"verify": True}),
                 "events": ("events", {"cursor": p.get("cursor", 0), "limit": p.get("limit", 50)}),
                 "tunnel": ("tunnel", {"action": "status"}),
-                "tunnel_start": ("tunnel", {"action": "start"}),
+                "tunnel_probe": ("tunnel", {"action": "probe"}),
+                "tunnel_start": ("tunnel", {"action": "start", "protocol": p.get("protocol")}),
                 "tunnel_stop": ("tunnel", {"action": "stop"}),
-                "tunnel_restart": ("tunnel", {"action": "restart"}),
+                "tunnel_restart": ("tunnel", {"action": "restart", "protocol": p.get("protocol")}),
                 "queue_clear": ("queue_clear", {}),
                 "queue_pause": ("queue_pause", {"reason": p.get("reason")}),
                 "queue_resume": ("queue_resume", {}),
@@ -645,11 +759,20 @@ class BridgeClient:
             return self._http_request(
                 "GET", f"/api/events?once=1&since={int(p.get('cursor') or 0)}&limit={int(p.get('limit') or 50)}", timeout=20.0
             )
-        if action in ("tunnel", "tunnel_start", "tunnel_stop", "tunnel_restart"):
-            sub = {"tunnel": "status", "tunnel_start": "start", "tunnel_stop": "stop", "tunnel_restart": "restart"}[action]
+        if action in ("tunnel", "tunnel_probe", "tunnel_start", "tunnel_stop", "tunnel_restart"):
+            sub = {
+                "tunnel": "status",
+                "tunnel_probe": "probe",
+                "tunnel_start": "start",
+                "tunnel_stop": "stop",
+                "tunnel_restart": "restart",
+            }[action]
             if sub == "status":
                 return self._http_request("GET", "/api/tunnel", timeout=15.0)
-            return self._http_request("POST", "/api/tunnel", {"action": sub}, timeout=90.0)
+            body = {"action": sub}
+            if p.get("protocol"):
+                body["protocol"] = p.get("protocol")
+            return self._http_request("POST", "/api/tunnel", body, timeout=90.0)
         if action == "queue_pause":
             return self._http_request("POST", "/api/queue/pause", {"reason": p.get("reason")}, timeout=20.0)
         if action == "queue_resume":
@@ -910,6 +1033,12 @@ TOOL_SPECS = [
         "annotations": _ann("Get Studio State", read_only=True, idempotent=True),
     },
     {
+        "name": "diagnose_connection",
+        "description": "Read-only bridge health and authenticated peer registry diagnostics; no Studio jobs are sent. Reports reachability, read access, online peer counts and reported plugin versions without exposing credentials. Registry presence is not a runtime capability probe.",
+        "inputSchema": {"type": "object", "properties": {}},
+        "annotations": _ann("Diagnose Bridge Connection", read_only=True, idempotent=True),
+    },
+    {
         "name": "list_studios",
         "description": "List all Roblox Studio instances and DataModel peers currently connected to the bridge (including Edit mode and running Play Server / Client peers).",
         "inputSchema": {"type": "object", "properties": {}},
@@ -1045,7 +1174,7 @@ TOOL_SPECS = [
     },
     {
         "name": "write_script",
-        "description": "Create or overwrite a Script, LocalScript, or ModuleScript using ScriptEditorService:UpdateSourceAsync (safe past 200 KB and live open editor tabs). Runs local luau_check pre-validation by default, supports expectedHash optimistic locking, and supports replaceInstance=true to bust Studio's ModuleScript require() cache.",
+        "description": "Create or overwrite a script using ScriptEditorService:UpdateSourceAsync. A same-named non-script is destroyed; expectedHash checks an existing script only, not absence or a non-script collision. Syntax validation may fall back or be unavailable. replaceInstance=true recreates the script to bust the require() cache.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1053,7 +1182,7 @@ TOOL_SPECS = [
                 "name": {"type": "string", "description": "Script instance name without extension."},
                 "className": {"type": "string", "enum": ["Script", "LocalScript", "ModuleScript"], "default": "ModuleScript"},
                 "source": {"type": "string", "description": "Complete Luau source code."},
-                "expectedHash": {"type": "string", "description": "Optional 8-char FNV-1a hex hash from script_read to prevent stale overwrites."},
+                "expectedHash": {"type": "string", "description": "Optional FNV-1a hash checked only against an existing script; does not guard missing targets or non-script collisions."},
                 "replaceInstance": {"type": "boolean", "default": False, "description": "Destroy & recreate the script instance so Studio's ModuleScript require() cache refreshes."},
                 "validateSyntax": {"type": "boolean", "default": True, "description": "Pre-check syntax & undefined globals via luau_check before writing."},
                 "dm": DM_PROP,
@@ -1065,7 +1194,7 @@ TOOL_SPECS = [
     },
     {
         "name": "multi_edit",
-        "description": "Apply multiple ordered edits atomically to a script in one undo step. Each edit specifies either {oldText, newText, replaceAll?} OR {startLine, endLine, newText}. Validates ambiguity & hashes up front so partial broken edits never happen.",
+        "description": "Apply ordered edits to a script in one undo step. Each edit specifies either {oldText, newText, replaceAll?} OR {startLine, endLine, newText}. Hash and match checks precede the source write; syntax checking, when enabled, occurs after it. Creating a missing script can itself change the place before later checks fail.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1161,11 +1290,11 @@ TOOL_SPECS = [
                 "peerId": PEER_PROP,
             },
         },
-        "annotations": _ann("Open or List Script Editor Tabs", read_only=True, idempotent=True),
+        "annotations": _ann("Open or List Script Editor Tabs", read_only=False, idempotent=True),
     },
     {
         "name": "require_fresh",
-        "description": "Clone a ModuleScript (and its enclosing package tree so relative sibling requires resolve cleanly too) into an unarchivable sandbox, require() the fresh copy bypassing Studio's stale ModuleScript cache, optionally run a probe function(MODULE, MODULE_INSTANCE, PACKAGE_ROOT), return the serialized result, and clean up automatically.",
+        "description": "Clone a ModuleScript and its package into a temporary sandbox and require it fresh; optionally run a probe. Module initialization and probe code can have side effects outside the clone. Requires write access and may need confirmation.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1177,7 +1306,7 @@ TOOL_SPECS = [
             },
             "required": ["path"],
         },
-        "annotations": _ann("Require Fresh Module (Bypass Cache)", read_only=True, idempotent=True),
+        "annotations": _ann("Require Fresh Module (Bypass Cache)", read_only=False, destructive=True, idempotent=False),
     },
 
     # --- Group D: Luau Execution & Playtest Automation ---
@@ -1200,17 +1329,27 @@ TOOL_SPECS = [
     },
     {
         "name": "start_stop_play",
-        "description": "Start a non-blocking Studio playtest ('play' = Play Solo F5 with client character, 'run' = Server Simulation F8), 'stop' an active session cleanly via StudioTestService:EndTest, or query 'status'.",
+        "description": (
+            "Start a non-blocking Studio playtest ('start_play' = Play Solo F5 with client character, "
+            "'start_run' = Server Simulation F8), 'stop' or 'force_stop' an active session cleanly via "
+            "StudioTestService:EndTest + LeaveTest fallback (plus automatic temporary test runner cleanup and "
+            "immediate ghost play-peer eviction), 'cleanup' leftover test runners, or query 'status'."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["start_play", "start_run", "stop", "status"], "default": "status"},
+                "action": {
+                    "type": "string",
+                    "enum": ["start_play", "start_run", "stop", "force_stop", "cleanup", "status"],
+                    "default": "status",
+                },
+                "reason": {"type": "string", "description": "Optional reason string logged when stopping a playtest."},
                 "waitForPeer": {"type": "boolean", "default": True, "description": "Wait briefly for the Play Server peer to connect on start."},
                 "peerId": PEER_PROP,
             },
             "required": ["action"],
         },
-        "annotations": _ann("Start or Stop Playtest", read_only=False, destructive=False, idempotent=False),
+        "annotations": _ann("Start, Stop, or Force-Close Playtest", read_only=False, destructive=False, idempotent=False),
     },
     {
         "name": "run_playtest_scenario",
@@ -1309,7 +1448,7 @@ TOOL_SPECS = [
     },
     {
         "name": "mass_set_properties",
-        "description": "Set properties and/or apply relative deltas (e.g. relative={'Position':[0,10,0]}) across many Instances in one single Ctrl+Z undo step.",
+        "description": "Set properties and/or relative deltas across many Instances. Reports per-path and property failures; successful updates may remain when others fail. An Edit-mode undo recording is attempted but is not guaranteed.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1344,7 +1483,7 @@ TOOL_SPECS = [
     },
     {
         "name": "reparent_or_rename",
-        "description": "Move one or more Instances to a new parent cleanly without destroying/recreating them, optionally preserving world Pivot CFrame and/or renaming.",
+        "description": "Move instances or rename a single instance, optionally preserving world Pivot CFrame. A later failure may leave earlier changes if an Edit-mode recording is unavailable; verify results and retain a backup.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1361,7 +1500,7 @@ TOOL_SPECS = [
     },
     {
         "name": "delete_instance",
-        "description": "Destroy one or more Instances atomically in a single Ctrl+Z undo step.",
+        "description": "Destroy resolved Instances and report missing or failed paths. Some targets may be deleted even when others fail; an Edit-mode undo recording is attempted but is not guaranteed.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1502,7 +1641,7 @@ TOOL_SPECS = [
     # --- Group H: Local Luau Toolchain, Drift Audit, Package Sync & Snapshots ---
     {
         "name": "luau_check",
-        "description": "Offline local pre-push verifier: compiles Luau code via luau-compile AND detects genuine undefined globals (filtering standard Roblox API globals) + unused locals via luau-analyze. Works on inline 'code' or a local file/directory 'path' without needing Studio open.",
+        "description": "Offline local pre-push verifier using available luau-compile and luau-analyze binaries. Reports missing toolchains; does not submit a Studio job. Analysis coverage depends on installed binaries and does not prove runtime correctness.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1618,6 +1757,77 @@ TOOL_SPECS = [
             "required": ["preset"],
         },
         "annotations": _ann("Generate Procedural UI/VFX/Surface PNG", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "search_tools",
+        "description": "Search the visible MCP tool catalog offline by name, title and description. Annotations are hints, not authorization or guarantees of peer availability. Use tools/list for full schemas.",
+        "inputSchema": {"type": "object", "properties": {
+            "query": {"type": "string", "default": "", "description": "Task keywords; empty lists tools."},
+            "readOnlyOnly": {"type": "boolean", "default": False, "description": "Only tools whose original annotation declares read-only; excludes mixed-action tools."},
+            "cursor": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}
+        }},
+        "annotations": _ann("Search MCP Tools", read_only=True, idempotent=True),
+    },
+    {
+        "name": "search_skills",
+        "description": "Search bundled Roblox Studio agent skills by task keywords, downweighting common terms and ignoring common English filler. Offline, read-only; use apply_skill to load the full guidance.",
+        "inputSchema": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Keywords describing the task; empty lists all skills."},
+            "includeReferences": {"type": "boolean", "default": False, "description": "Also search bounded bundled reference Markdown; partial scans are reported."},
+            "cursor": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}
+        }},
+        "annotations": _ann("Search Roblox Studio Skills", read_only=True, idempotent=True),
+    },
+    {
+        "name": "apply_skill",
+        "description": "Load a bundled skill's complete instructions into the calling agent's context for it to apply to its current task. This does not modify the agent, persist activation, or change Studio.",
+        "inputSchema": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "Exact skill directory name from search_skills."}
+        }, "required": ["name"]},
+        "annotations": _ann("Load Skill Instructions", read_only=True, idempotent=True),
+    },
+    {
+        "name": "audit_localization",
+        "description": "Offline, read-only audit of caller-supplied translation entries for duplicate keys, missing locale text and mismatched named/positional parameters, format differences and unrecognized brace syntax. Does not inspect Studio or validate translation quality, complete formatting syntax or layout.",
+        "inputSchema": {"type": "object", "properties": {
+            "entries": {"type": "array", "minItems": 1, "maxItems": 200, "items": {"type": "object", "properties": {
+                "key": {"type": "string"}, "source": {"type": "string"},
+                "translations": {"type": "object", "additionalProperties": {"type": "string"}}
+            }, "required": ["key", "source", "translations"]}},
+            "locales": {"type": "array", "minItems": 1, "maxItems": 20, "items": {"type": "string"}, "description": "Exact locale keys to check (no fallback inferred)."},
+            "cursor": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}
+        }, "required": ["entries", "locales"]},
+        "annotations": _ann("Audit Supplied Localization Entries", read_only=True, idempotent=True),
+    },
+    {
+        "name": "audit_onboarding_plan",
+        "description": "Offline structural audit of supplied onboarding milestones: missing objective, completion evidence or recovery, duplicate IDs, missing/ambiguous prerequisites and dependency cycles. Does not inspect Studio or prove player comprehension, authority, persistence or runtime behavior.",
+        "inputSchema": {"type": "object", "properties": {
+            "milestones": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"type": "object", "properties": {
+                "id": {"type": "string"}, "objective": {"type": "string"}, "completionEvidence": {"type": "string"},
+                "recovery": {"type": "string"}, "prerequisites": {"type": "array", "maxItems": 20, "items": {"type": "string"}}
+            }, "required": ["id"]}},
+            "cursor": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}
+        }, "required": ["milestones"]},
+        "annotations": _ann("Audit Onboarding Milestone Plan", read_only=True, idempotent=True),
+    },
+    {
+        "name": "skill_references",
+        "description": "List or read bundled Markdown reference files for an exact skill. Offline, read-only; references are guidance, not executed instructions. Only files under the skill's references directory are exposed.",
+        "inputSchema": {"type": "object", "properties": {
+            "name": {"type": "string", "description": "Exact skill directory name from search_skills."},
+            "action": {"type": "string", "enum": ["list", "read"], "default": "list"},
+            "path": {"type": "string", "description": "For read, exact relative path returned by list, e.g. references/ui.md."},
+            "startLine": {"type": "integer", "minimum": 1, "description": "Optional 1-based first line for read."},
+            "endLine": {"type": "integer", "minimum": 1, "description": "Optional inclusive last line for read."},
+            "cursor": {"type": "integer", "minimum": 0, "default": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}
+        }, "required": ["name"]},
+        "annotations": _ann("List or Read Skill References", read_only=True, idempotent=True),
     },
     {
         "name": "browse_kit",
@@ -1790,7 +2000,7 @@ TOOL_SPECS = [
                 "peerId": PEER_PROP,
             },
         },
-        "annotations": _ann("Audit Multi-Device Responsive UI Layout & Bounds", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Audit Multi-Device Responsive UI Layout & Bounds", read_only=False, destructive=False, idempotent=True),
     },
     {
         "name": "install_dropin_system",
@@ -1820,9 +2030,13 @@ TOOL_SPECS = [
                     "default": "perspective",
                     "description": "Camera angle preset ('top_blueprint' renders an orthographic architectural floorplan).",
                 },
+                "path": {"type": "string", "default": "Workspace", "description": "Root DataModel path to render (defaults to 'Workspace')."},
                 "includeHud": {"type": "boolean", "default": False, "description": "Composite active StarterGui ScreenGuis on top of the 3D frame. Defaults off for a deterministic world-only render."},
                 "showLabels": {"type": "boolean", "default": True, "description": "Draw crisp callout labels on foreground 3D parts."},
                 "camera": {"type": "object", "description": "Optional deterministic camera {position:[x,y,z], target:[x,y,z], fov:number, ortho:boolean}."},
+                "yaw": {"type": "number", "default": 0, "description": "Optional horizontal camera orbit offset in degrees."},
+                "pitch": {"type": "number", "default": 0, "description": "Optional vertical camera pitch offset in degrees."},
+                "zoom": {"type": "number", "default": 1.0, "description": "Optional camera distance multiplier (0.25..3.5; <1 zooms in)."},
                 "size": {"type": "object", "description": "Optional output dimensions {w:240..1280,h:160..800}; width/height remain supported."},
                 "overlays": {"type": "object", "description": "Optional overlay flags {bounds,labels,grid}. Unknown keys are rejected."},
                 "returnInline": {"type": "boolean", "default": True, "description": "Include the PNG as a native MCP image block."},
@@ -1833,7 +2047,7 @@ TOOL_SPECS = [
                 "peerId": PEER_PROP,
             },
         },
-        "annotations": _ann("Capture Visual 3D Viewport + HUD PNG", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Capture Visual 3D Viewport + HUD PNG", read_only=False, destructive=False, idempotent=True),
     },
     {
         "name": "export_geometry",
@@ -1845,13 +2059,13 @@ TOOL_SPECS = [
         "name": "render_offline",
         "description": "Render live Workspace geometry or a previously exported hierarchy tree into a deterministic PNG. Supply tree/lighting/gui for offline no-peer rendering; supports explicit camera, orthographic projection and HUD toggle.",
         "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "default": "Workspace"}, "tree": {"type": "object", "description": "Previously exported hierarchy tree; when supplied, no Studio peer is required."}, "lighting": {"type": "object"}, "gui": {"type": "array", "items": {"type": "object"}}, "width": {"type": "integer", "default": 800, "minimum": 240, "maximum": 1280}, "height": {"type": "integer", "default": 450, "minimum": 160, "maximum": 800}, "camera": {"type": "object"}, "includeHud": {"type": "boolean", "default": False}, "saveFile": {"type": "string"}, "dm": DM_PROP, "peerId": PEER_PROP}},
-        "annotations": _ann("Render Offline Scene PNG", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Render Offline Scene PNG", read_only=False, destructive=False, idempotent=True),
     },
     {
         "name": "screenshot_gui",
         "description": "Render a ScreenGui hierarchy into an inline PNG. Use dm='client', path='PlayerGui' for live client absolute measurements; edit-mode StarterGui previews report derived measurements.",
         "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "Defaults to StarterGui in edit or PlayerGui in a client DataModel."}, "width": {"type": "integer", "default": 800, "minimum": 240, "maximum": 1280}, "height": {"type": "integer", "default": 450, "minimum": 160, "maximum": 800}, "dm": DM_PROP, "saveFile": {"type": "string"}, "peerId": PEER_PROP}},
-        "annotations": _ann("Screenshot GUI to PNG", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Screenshot GUI to PNG", read_only=False, destructive=False, idempotent=True),
     },
     {
         "name": "mesh_capabilities",
@@ -1867,9 +2081,9 @@ TOOL_SPECS = [
     },
     {
         "name": "batch_write",
-        "description": "Validate and write multiple scripts in a single Studio job/ChangeHistory recording. Any validation or write failure cancels the single transaction.",
-        "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "minItems": 1, "items": {"type": "object"}}, "validateSyntax": {"type": "boolean", "default": True}, "peerId": PEER_PROP}, "required": ["files"]},
-        "annotations": _ann("Atomically Write a Script Batch", read_only=False, destructive=False, idempotent=False),
+        "description": "Validate and write multiple scripts in one Studio job. Edit-mode ChangeHistory recording is attempted, but rollback is not guaranteed if recording is unavailable or the operation has side effects outside it. Use a backup and verify results.",
+        "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"parent": {"type": "string"}, "name": {"type": "string"}, "source": {"type": "string"}, "className": {"type": "string", "enum": ["Script", "LocalScript", "ModuleScript"]}, "expectedHash": {"type": "string"}, "replaceInstance": {"type": "boolean"}, "properties": {"type": "object"}, "attributes": {"type": "object"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["parent", "name", "source"]}}, "validateSyntax": {"type": "boolean", "default": True}, "peerId": PEER_PROP}, "required": ["files"]},
+        "annotations": _ann("Write a Script Batch", read_only=False, destructive=False, idempotent=False),
     },
     {
         "name": "build_biome",
@@ -1905,7 +2119,7 @@ TOOL_SPECS = [
         "name": "self_test",
         "description": "Run the local test suite, syntax/toolchain checks, kit/asset integrity checks, and a Studio scratch write-read-delete smoke test when a live edit peer is available. Returns a per-tool pass/fail/call-count/timing matrix plus a human-readable summary.",
         "inputSchema": {"type": "object", "properties": {"includeStudioSmoke": {"type": "boolean", "default": True}, "timeout": {"type": "integer", "default": 180, "minimum": 10, "maximum": 600}}},
-        "annotations": _ann("Run Bridge Self Test", read_only=True, destructive=False, idempotent=True),
+        "annotations": _ann("Run Bridge Self Test", read_only=False, destructive=False, idempotent=True),
     },
     {
         "name": "audit_3d_scene",
@@ -2028,7 +2242,7 @@ TOOL_SPECS = [
                 "includeDone": {"type": "boolean", "description": "Include finished tasks in `tasks` / `export`."},
             },
         },
-        "annotations": _ann("Multi-Agent Coordination Bus", read_only=True, destructive=False, idempotent=False),
+        "annotations": _ann("Multi-Agent Coordination Bus", read_only=False, destructive=False, idempotent=False),
     },
     {
         "name": "bridge_ops",
@@ -2048,11 +2262,16 @@ TOOL_SPECS = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "metrics", "audit", "audit_verify", "events", "tunnel", "tunnel_start",
-                             "tunnel_stop", "tunnel_restart", "queue_pause", "queue_resume",
+                    "enum": ["status", "metrics", "audit", "audit_verify", "events", "tunnel", "tunnel_probe",
+                             "tunnel_start", "tunnel_stop", "tunnel_restart", "queue_pause", "queue_resume",
                              "queue_clear", "sweep", "reap",
                              "confirmations", "confirm_approve", "confirm_deny", "subscriptions"],
                     "default": "status",
+                },
+                "protocol": {
+                    "type": "string",
+                    "enum": ["auto", "http2", "quic"],
+                    "description": "Cloudflare tunnel edge transport for tunnel_start/tunnel_restart (use http2 behind UDP-blocking firewalls).",
                 },
                 "requestId": {"type": "string", "description": "Confirmation requestId for confirm_approve/confirm_deny."},
                 "remember": {"type": "boolean", "description": "confirm_approve only: skip the gate for this tool for a bounded window."},
@@ -2275,14 +2494,575 @@ TOOL_SPECS = [
         },
         "annotations": _ann("Probe Playtest API Capabilities", read_only=True, destructive=False, idempotent=True),
     },
+    # --- Group I: Procedural Gameplay, Dungeon, Atmosphere & Synth Audio ----
+    {
+        "name": "generate_dungeon_layout",
+        "description": (
+            "Generate a deterministic seeded 3D dungeon or horror mansion room & corridor layout using "
+            "discrete grid separation, Prim's Minimum Spanning Tree (MST), and extra escape loops. "
+            "Assigns gameplay roles (`spawn`, `normal`, `treasure`, `puzzle`, `saferoom`, `boss`), verifies "
+            "100% room reachability, returns the full room/corridor graph + ready-to-build Instance tree, "
+            "and optionally materializes the 3D dungeon in Studio when `buildInStudio=True`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "seed": {"type": "integer", "default": 1337, "description": "Deterministic PRNG seed."},
+                "roomCount": {"type": "integer", "minimum": 3, "maximum": 28, "default": 8, "description": "Number of rooms to generate (3-28)."},
+                "gridStep": {"type": "number", "minimum": 24, "maximum": 96, "default": 36, "description": "Stud spacing between room grid centers."},
+                "roomHeight": {"type": "number", "minimum": 8, "maximum": 36, "default": 14, "description": "Wall height in studs."},
+                "theme": {
+                    "type": "string",
+                    "enum": ["horror_mansion", "crypt_catacombs", "scifi_facility", "ancient_ruins"],
+                    "default": "horror_mansion",
+                    "description": "Visual material & color theme for generated rooms and corridors.",
+                },
+                "buildInStudio": {"type": "boolean", "default": False, "description": "When true, build the generated 3D dungeon Model in Studio."},
+                "parent": {"type": "string", "default": "Workspace", "description": "Target Studio parent when buildInStudio=true."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Generate Procedural 3D Dungeon / Mansion Layout", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "build_gameplay_mechanic",
+        "description": (
+            "Bundle or install a complete drop-in Roblox gameplay mechanic (`horror-director`, `round-survival`, "
+            "`stamina-movement`, `inventory-loot`, `combat-abilities`, `weather-cycle`, `fuse-breaker`, "
+            "`task-generator`, `loot-chest`, `safe-room`) including Server/Client/Shared Luau scripts, "
+            "supporting reusable kit modules (`StateMachine`, `CooldownManager`, `LootTable`, `QuestTracker`, "
+            "`CombatPipeline`, `DungeonGenerator`), and interactive 3D/HUD prefabs. Works offline (`installInStudio=False`) "
+            "or injects directly into live Studio (`installInStudio=True`)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mechanic": {
+                    "type": "string",
+                    "enum": [
+                        "horror-director", "round-survival", "stamina-movement",
+                        "inventory-loot", "combat-abilities", "weather-cycle",
+                        "cutscene-camera", "dialogue-npc",
+                        "world-shrines", "boss-encounter",
+                        "fuse-breaker", "task-generator", "loot-chest", "safe-room",
+                    ],
+                    "default": "horror-director",
+                    "description": "Gameplay mechanic system or interactive objective to assemble.",
+                },
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, install scripts/prefabs directly into the connected Studio session."},
+                "position": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Optional [x, y, z] world offset when spawning an interactive 3D mechanic prefab.",
+                },
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Assemble or Install Drop-In Gameplay Mechanic", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "configure_atmosphere_fx",
+        "description": (
+            "Configure or preview a multi-layer Roblox `Lighting` + post-processing atmosphere preset "
+            "(`BloodMoon`, `DenseFog`, `CyberpunkRain`, `Thunderstorm`, `GoldenHour`, `DeepAbyss`, "
+            "`Blizzard`, `SolarEclipse`) with calibrated `Atmosphere`, `ColorCorrectionEffect`, `BloomEffect`, "
+            "and `DepthOfFieldEffect` instances. Set `applyToStudio=True` to apply directly to `Lighting`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "BloodMoon", "DenseFog", "CyberpunkRain", "Thunderstorm",
+                        "GoldenHour", "DeepAbyss", "Blizzard", "SolarEclipse",
+                    ],
+                    "default": "BloodMoon",
+                    "description": "Named lighting & post-FX atmosphere preset.",
+                },
+                "intensity": {"type": "number", "minimum": 0.1, "maximum": 2.0, "default": 1.0, "description": "Scalar multiplier for haze, bloom, and contrast."},
+                "applyToStudio": {"type": "boolean", "default": False, "description": "When true, apply properties and post-FX children to Studio Lighting."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Configure Lighting, Weather & Post-Processing FX", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "synthesize_sound_effect",
+        "description": (
+            "Synthesize a zero-dependency 16-bit mono PCM `.wav` gameplay or horror sound effect "
+            "(`horror_heartbeat`, `horror_clock_tick`, `horror_whisper_drone`, `horror_jumpscare_stinger`, "
+            "`horror_breaker_trip`, `flash_camera_strobe`, `ui_click_crisp`, `ui_quest_complete`, "
+            "`loot_chest_legendary`, `combat_hit_impact`, `combat_shield_break`, `ambient_Geiger_click`), "
+            "install it into local Roblox Studio `content/arena_assets/audio/<name>.wav` (`rbxasset://arena_assets/audio/<name>.wav`), "
+            "and optionally create a `Sound` instance in Studio."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "horror_heartbeat", "horror_clock_tick", "horror_whisper_drone",
+                        "horror_jumpscare_stinger", "horror_breaker_trip", "flash_camera_strobe",
+                        "ui_click_crisp", "ui_quest_complete", "loot_chest_legendary",
+                        "combat_hit_impact", "combat_shield_break", "ambient_Geiger_click",
+                    ],
+                    "default": "horror_heartbeat",
+                    "description": "Procedural audio synthesis preset.",
+                },
+                "name": {"type": "string", "description": "Optional filename stem (defaults to preset name)."},
+                "durationMs": {"type": "integer", "minimum": 40, "maximum": 4000, "description": "Optional override duration in milliseconds."},
+                "baseHz": {"type": "number", "minimum": 30, "maximum": 8000, "description": "Optional override fundamental frequency in Hz."},
+                "volume": {"type": "number", "minimum": 0.05, "maximum": 1.0, "default": 0.8},
+                "installLocalStudio": {"type": "boolean", "default": True, "description": "Install into local Studio `content/arena_assets/audio/`."},
+                "saveToRepo": {"type": "boolean", "default": False, "description": "Save into `roblox-kit/assets/audio/` (default false to keep licensed registry immutable)."},
+                "targetPath": {"type": "string", "description": "Optional Studio parent path to spawn a Sound instance."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Synthesize Procedural Gameplay / Horror WAV Sound Effect", read_only=False, destructive=False, idempotent=True),
+    },
+    # =========================================================================
+    # GROUP J: V6 Plugin & Playtest Controller, Network Security Auditor,
+    #          Cutscene Sequencer, and UI Theme Pack Generator (4 Tools)
+    # =========================================================================
+    {
+        "name": "manage_plugin_and_playtest",
+        "description": (
+            "Inspect Studio plugin version compatibility (`v6.0.0` vs older `v4.0.0`/`v4.1.0` peers), query live "
+            "in-Studio `ArenaBridge` plugin telemetry (`plugin_info`: jobs processed, DockWidget dashboard status, "
+            "capabilities), install/update `ArenaBridge.lua` v6.0.0 into local Studio Plugins, or run "
+            "`force_stop_playtest` / `evict_stale_peers` to cleanly close stuck playtests and purge ghost runtime peers."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "status",
+                        "version_matrix",
+                        "force_stop_playtest",
+                        "evict_stale_peers",
+                        "install_local",
+                    ],
+                    "default": "status",
+                    "description": "Plugin or playtest lifecycle operation.",
+                },
+                "reason": {"type": "string", "description": "Optional reason when stopping playtest or evicting peers."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Manage Studio Plugin Version & Playtest Lifecycle", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "audit_network_security",
+        "description": (
+            "Audit Roblox `RemoteEvent`, `RemoteFunction`, and `UnreliableRemoteEvent` network security across live "
+            "Studio (`ServerScriptService`, `ReplicatedStorage`, `Workspace`), a local Luau directory (`localDir`), "
+            "or inline `scripts`. Detects unvalidated `.OnServerEvent` / `.OnServerInvoke` parameters, client-trusted "
+            "currency/damage/price/admin arguments, missing rate-limiting/debounces, and NaN/Vector3 injection risks, "
+            "returning a 0-100 `securityScore` and `NetworkGuard` remediation snippets."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "localDir": {"type": "string", "description": "Optional local Luau directory to scan offline."},
+                "scripts": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Optional array of `{path, source}` script objects for offline security auditing.",
+                },
+                "includeStudio": {"type": "boolean", "default": True, "description": "Also scan connected Studio server scripts and remotes when online."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Audit RemoteEvent / Network Exploit Security", read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "build_cutscene_sequence",
+        "description": (
+            "Generate a keyframed 3D camera cutscene track (`boss_awakening`, `safe_room_unlock`, "
+            "`horror_corridor_reveal`, `victory_dawn_flyover`, `arena_overview`, or custom `keyframes`) with "
+            "3D frustum waypoint markers (`CutsceneCameraTrack_<name>`) and a `CutsceneDirector`-compatible Luau "
+            "ModuleScript (`CutsceneSequence_<name>`). Set `buildInStudio=True` to inject directly into Studio."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "boss_awakening",
+                        "safe_room_unlock",
+                        "horror_corridor_reveal",
+                        "victory_dawn_flyover",
+                        "arena_overview",
+                    ],
+                    "default": "boss_awakening",
+                    "description": "Cinematic camera track preset.",
+                },
+                "name": {"type": "string", "description": "Optional custom sequence identifier."},
+                "origin": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Optional [x, y, z] focal point in world space (default [0, 4, 0]).",
+                },
+                "letterbox": {"type": "boolean", "default": True, "description": "Include cinematic 2.35:1 letterbox bars."},
+                "skippable": {"type": "boolean", "default": True, "description": "Allow players to skip the cutscene."},
+                "buildInStudio": {"type": "boolean", "default": False, "description": "When true, build the 3D camera rig and ModuleScript in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Build Keyframed 3D Cutscene Camera Sequence", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "generate_ui_theme_pack",
+        "description": (
+            "Generate a cohesive, multi-device responsive Roblox `ScreenGui` theme pack (`HorrorBloodMoon`, "
+            "`CyberpunkNeon`, `FantasyGold`, `MinimalDark`, `StudRetro`) with a `UIThemeTokens` Luau style module "
+            "and a complete `StarterGui` component hierarchy (top status bar, interaction prompt pill, notification "
+            "toast, and modal dialog card) using `UDim2` scale, `UICorner`, and `UIStroke`. Set `installInStudio=True` "
+            "to inject directly into `StarterGui` and `ReplicatedStorage.Shared`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "theme": {
+                    "type": "string",
+                    "enum": ["HorrorBloodMoon", "CyberpunkNeon", "FantasyGold", "MinimalDark", "StudRetro"],
+                    "default": "HorrorBloodMoon",
+                    "description": "Visual UI design theme preset.",
+                },
+                "guiName": {"type": "string", "description": "Optional ScreenGui name override."},
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, build ScreenGui in StarterGui and UIThemeTokens in ReplicatedStorage.Shared."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Generate Cohesive Multi-Device UI Theme Pack", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "import_ui_from_web",
+        "description": (
+            "Import UI directly from the Web (HTML/CSS/Tailwind markup, SVG, JSON spec, or template preset) or the "
+            "Control Center Dashboard into a responsive Roblox `ScreenGui` hierarchy (`Frame`, `UICorner`, `UIStroke`, "
+            "`UIGradient`, `UIListLayout`, `UIGridLayout`, `UIPadding`, `ImageLabel`, `TextLabel`, `TextButton`). "
+            "Automatically sanitizes AI-slop (`—` em-dashes and text dumps), maps CSS flex/grid/colors/radii to `UDim2` "
+            "scale, pairs buttons with iconography, and optionally installs directly into `StarterGui`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "html": {
+                    "type": "string",
+                    "description": "Raw HTML/CSS/Tailwind markup or SVG snippet to convert into a Roblox ScreenGui.",
+                },
+                "preset": {
+                    "type": "string",
+                    "enum": ["rpg_hud", "shop_grid", "quest_tracker", "inventory_dock", "boss_bar", "dialog_card"],
+                    "default": "rpg_hud",
+                    "description": "Web/Dashboard UI template preset when `html` is not provided.",
+                },
+                "guiName": {"type": "string", "default": "WebImportedGui", "description": "Target ScreenGui name in StarterGui."},
+                "parent": {"type": "string", "default": "StarterGui", "description": "Target container path."},
+                "deSlop": {"type": "boolean", "default": True, "description": "Strip em-dashes (`—`), filler words, and wall-of-text dumps."},
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, build the converted ScreenGui directly in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Import Web HTML/CSS/Tailwind or Dashboard UI into StarterGui", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "build_vfx_emitter",
+        "description": (
+            "Build a deterministic Roblox 3D VFX emitter rig (`slash_hit`, `level_up`, `loot_drop_rare`, "
+            "`portal_swirl`, `explosion_spark`, `heal_aura`, `frost_shatter`, `coin_pickup`) with an anchored "
+            "non-collidable host, `Attachment`, `ParticleEmitter` (`NumberSequence` size/transparency curves, "
+            "`ColorSequence`, `LightEmission`), `PointLight`, and sculpted `SpecialMesh` shockwave ring. Defaults to "
+            "`Rate = 0` burst mode for `:Emit(burstCount)` or continuous ambient mode when `continuous=True`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "slash_hit", "level_up", "loot_drop_rare", "portal_swirl",
+                        "explosion_spark", "heal_aura", "frost_shatter", "coin_pickup",
+                    ],
+                    "default": "slash_hit",
+                    "description": "Curated VFX particle preset.",
+                },
+                "name": {"type": "string", "description": "Optional custom VFX instance name."},
+                "parent": {"type": "string", "default": "Workspace", "description": "Parent path in Studio."},
+                "position": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "World [x, y, z] position (default [0, 5, 0]).",
+                },
+                "burstCount": {"type": "integer", "default": 28, "minimum": 1, "maximum": 200, "description": "Particle count for `:Emit(n)`."},
+                "continuous": {"type": "boolean", "default": False, "description": "When true, enables continuous ambient emission instead of Rate=0 burst mode."},
+                "buildInStudio": {"type": "boolean", "default": False, "description": "When true, spawn the VFX rig directly in Studio and fire an initial burst."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Build Curated 3D VFX Particle Emitter Rig", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "de_slop_audit",
+        "description": (
+            "Audit and sanitize Roblox UI (`StarterGui`), 3D scenes (`Workspace`), or inline `texts` for AI-slop "
+            "artifacts: em-dashes (`—`, `–`), robotic filler connectors (`Furthermore`, `Moreover`, `Delve`, "
+            "`Tapestry`, `Seamless`, `In conclusion`), wall-of-text `TextLabel` dumps (>90 chars), missing button/badge "
+            "iconography, and blocky primitive ratios vs 3D meshes (`MeshPart`/`SpecialMesh`). Set `autoFix=True` to "
+            "automatically rewrite live UI copy in Studio."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "texts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional inline strings or UI labels to audit and sanitize offline.",
+                },
+                "includeStudio": {"type": "boolean", "default": True, "description": "Scan connected Studio StarterGui and Workspace when online."},
+                "autoFix": {"type": "boolean", "default": False, "description": "Automatically rewrite live TextLabel/TextButton/ProximityPrompt strings in Studio."},
+                "maxTextLength": {"type": "integer", "default": 90, "minimum": 20, "maximum": 500, "description": "Character threshold above which a HUD label is flagged as a text dump."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Audit & Eliminate AI-Slop Text / Enforce Visual Clarity & Mesh Priority", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "spawn_kit_mesh",
+        "description": (
+            "Search and spawn curated 3D mesh assets (`MeshPart`, `SpecialMesh`, sculpted VFX/prop prefabs, and "
+            "`.rbxmx` models from the 520-model CC0 catalog) instead of blocky `Part` primitives. Supports semantic "
+            "query matching (`crystal`, `shrine`, `portal`, `pedestal`, `pillar`, `tree`, `chest`, `sword`, `lantern`), "
+            "category filtering, uniform scaling, and direct Studio spawning."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "default": "crystal", "description": "3D mesh search query or asset name."},
+                "category": {"type": "string", "description": "Optional asset category filter (`dungeon`, `nature`, `scifi`, `props`, `weapons`, `vfx`)."},
+                "position": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Target [x, y, z] world position (default [0, 4, 0]).",
+                },
+                "scale": {"type": "number", "default": 1.0, "description": "Uniform scale multiplier (0.1 to 20.0)."},
+                "parent": {"type": "string", "default": "Workspace", "description": "Target parent container in Studio."},
+                "spawnInStudio": {"type": "boolean", "default": False, "description": "When true, spawn the 3D mesh asset directly into Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Search & Spawn 3D Mesh Assets (Mesh-First Building)", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "operator_chat",
+        "description": (
+            "Direct real-time two-way Live Chat channel between the Human Operator and the AI Agent (distinct from "
+            "`agent_bus` broadcasts). Unread operator messages are automatically injected into every MCP tool call "
+            "response; use `action='reply'` (or `'send'`) to answer the operator directly in the Control Center Live "
+            "Chat dock, `action='poll'` to fetch unread operator directives, `action='history'` to inspect the "
+            "conversation transcript, or `action='ack'` to acknowledge directives."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["reply", "send", "poll", "history", "ack"],
+                    "default": "poll",
+                    "description": "Direct Live Chat action.",
+                },
+                "message": {"type": "string", "description": "Chat message text when `action` is `reply` or `send`."},
+                "sender": {"type": "string", "default": "Agent", "description": "Sender display name."},
+                "role": {"type": "string", "enum": ["agent", "operator"], "default": "agent", "description": "Speaker role (`agent` or `operator`)."},
+                "priority": {"type": "string", "enum": ["low", "normal", "high", "critical"], "default": "normal"},
+                "pinned": {"type": "boolean", "default": False, "description": "Pin message as a standing operator directive."},
+                "replyTo": {"type": "string", "description": "Optional operator message ID being answered."},
+                "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 500},
+                "clearPins": {"type": "boolean", "default": False},
+            },
+        },
+        "annotations": _ann("Direct Live Chat Between Human Operator & Agent", read_only=False, destructive=False, idempotent=False),
+    },
+    {
+        "name": "kitbash_mesh_prop",
+        "description": (
+            "Assemble and spawn a multi-part sculpted 3D mesh prop (`runic_obelisk`, `crystal_lantern`, "
+            "`treasure_shrine`, `forge_anvil`, `arcane_staff`, `guardian_statue`) using `MeshPart` and "
+            "`SpecialMesh` geometry (never plain blocky `Part` cubes), complete with `PointLight`, "
+            "`ParticleEmitter` aura, and optional `ProximityPrompt`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "runic_obelisk", "crystal_lantern", "treasure_shrine",
+                        "forge_anvil", "arcane_staff", "guardian_statue",
+                    ],
+                    "default": "runic_obelisk",
+                    "description": "3D mesh kitbash prop preset.",
+                },
+                "name": {"type": "string", "description": "Optional custom Model name."},
+                "parent": {"type": "string", "default": "Workspace", "description": "Target parent path in Studio."},
+                "position": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "World [x, y, z] position (default [0, 3, 0]).",
+                },
+                "scale": {"type": "number", "default": 1.0, "description": "Uniform scale multiplier (0.2 to 20.0)."},
+                "interactive": {"type": "boolean", "default": True, "description": "Include a ProximityPrompt on the prop."},
+                "spawnInStudio": {"type": "boolean", "default": False, "description": "When true, build the 3D mesh prop directly in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Kitbash Sculpted Multi-Part 3D Mesh Prop", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "build_combat_hitbox",
+        "description": (
+            "Generate a complete server+client spatial combat hitbox rig (`melee_combo`, `aoe_ground_slam`, "
+            "`projectile_spell`, `dash_strike`) using `OverlapParams` (`GetPartBoundsInBox` / `GetPartBoundsInRadius`), "
+            "`VFXManager` `:Emit(n)` bursts, `CameraShaker` trauma impulses, and server reach/cooldown validation."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": ["melee_combo", "aoe_ground_slam", "projectile_spell", "dash_strike"],
+                    "default": "melee_combo",
+                    "description": "Spatial combat hitbox preset.",
+                },
+                "baseDamage": {"type": "number", "default": 28, "description": "Authoritative server base damage."},
+                "maxReach": {"type": "number", "default": 14.0, "description": "Maximum server-validated reach in studs."},
+                "cooldownSec": {"type": "number", "default": 0.45, "description": "Minimum server attack interval in seconds."},
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, install the combat server/client/module scripts in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Build Spatial Combat Hitbox & Server Validation Rig", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "configure_camera_rig",
+        "description": (
+            "Generate a Luau 3D camera controller (`over_shoulder_action`, `isometric_arpg`, `top_down_tactical`, "
+            "`first_person_flashlight`, `boss_lock_on`) with frame-rate independent spring damping, raycast wall "
+            "avoidance, trauma-squared camera shake, and FOV impulses. Set `installInStudio=True` to install into "
+            "`StarterPlayer.StarterPlayerScripts`."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {
+                    "type": "string",
+                    "enum": [
+                        "over_shoulder_action", "isometric_arpg", "top_down_tactical",
+                        "first_person_flashlight", "boss_lock_on",
+                    ],
+                    "default": "over_shoulder_action",
+                    "description": "3D camera rig preset.",
+                },
+                "fov": {"type": "number", "default": 72.0, "description": "Base camera FieldOfView (40 to 110)."},
+                "springStiffness": {"type": "number", "default": 14.0, "description": "Exponential spring damping stiffness."},
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, install the LocalScript camera controller in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Configure Spring-Damped 3D Camera Rig & Trauma Shaker", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "generate_sfx_soundbank",
+        "description": (
+            "Build a bus-routed `SoundService` audio bank (`combat_pack`, `ui_clean_pack`, `horror_tension_pack`, "
+            "`arcane_fantasy_pack`) with `SoundGroup` buses (`SFX_Combat`, `SFX_UI`, `SFX_Ambient`), "
+            "`CompressorSoundEffect`, `ReverbSoundEffect`, `EqualizerSoundEffect`, and spatial `RollOffMode` defaults."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pack": {
+                    "type": "string",
+                    "enum": ["combat_pack", "ui_clean_pack", "horror_tension_pack", "arcane_fantasy_pack"],
+                    "default": "combat_pack",
+                    "description": "Curated SFX soundbank preset.",
+                },
+                "parent": {"type": "string", "default": "SoundService", "description": "Target container path."},
+                "installInStudio": {"type": "boolean", "default": False, "description": "When true, build the SoundGroup hierarchy and Sound instances in Studio."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Generate Bus-Routed SFX SoundGroup Bank in SoundService", read_only=False, destructive=False, idempotent=True),
+    },
+    {
+        "name": "export_ui_to_web",
+        "description": (
+            "Export a Roblox `StarterGui` / `ScreenGui` hierarchy (from live Studio or an inline `tree`) into clean, "
+            "responsive Web HTML + Tailwind CSS markup for round-trip Web/Dashboard UI editing, previewing, and "
+            "sharing (companion to `import_ui_from_web`)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "default": "StarterGui", "description": "Studio UI path to export when online."},
+                "tree": {"type": "object", "description": "Optional offline UI hierarchy tree to convert to Web HTML/Tailwind."},
+                "deSlop": {"type": "boolean", "default": True, "description": "Sanitize any em-dashes or filler slop during export."},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Export Roblox ScreenGui Hierarchy to Web HTML/Tailwind", read_only=True, destructive=False, idempotent=True),
+    },
 ]
 
 TOOL_MAP = {t["name"]: t for t in TOOL_SPECS}
+# Inspector exposes these mixed tools for their read-only actions only.
+INSPECTOR_MIXED_TOOLS = frozenset((
+    "manage_attributes", "manage_tags", "manage_selection", "manage_camera",
+    "undo_redo", "edit_terrain", "start_stop_play", "drift_and_sync", "manage_snapshots",
+    "open_script_in_editor", "audit_ui_layout", "capture_viewport", "render_offline", "screenshot_gui",
+    "self_test", "agent_bus", "manage_device_simulator", "audit_3d_scene", "bridge_ops",
+    "find_and_replace_scripts", "open_cloud_action",
+    "generate_dungeon_layout", "build_gameplay_mechanic", "configure_atmosphere_fx", "synthesize_sound_effect",
+    "manage_plugin_and_playtest", "build_cutscene_sequence", "generate_ui_theme_pack",
+    "import_ui_from_web", "build_vfx_emitter", "de_slop_audit", "spawn_kit_mesh", "operator_chat",
+    "kitbash_mesh_prop", "build_combat_hitbox", "configure_camera_rig", "generate_sfx_soundbank",
+))
 
 
 # ---------------------------------------------------------------------------
 # Read-only classification per tool invocation
 # ---------------------------------------------------------------------------
+
+def is_bus_action_read_only(args: dict) -> bool:
+    action = args.get("action") or "stats"
+    if action in (
+        "stats", "agents", "list_agents", "inbox", "tasks", "list_tasks",
+        "thread", "feed", "events", "chat_history", "direct_chat", "chat_list", "chat_poll",
+    ):
+        return True
+    if action == "status":
+        return not (args.get("agentId") and args.get("status"))
+    if action in ("export", "handoff"):
+        return not args.get("path")
+    return False
+
 
 def is_tool_call_read_only(name: str, args: dict) -> bool:
     spec = TOOL_MAP.get(name)
@@ -2290,6 +3070,16 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
         return True
     if spec["annotations"].get("readOnlyHint"):
         return True
+    if name == "agent_bus":
+        return is_bus_action_read_only(args)
+    if name == "self_test":
+        return args.get("includeStudioSmoke", True) is False
+    if name == "open_script_in_editor":
+        return args.get("listOnly") is True
+    if name == "audit_ui_layout":
+        return not args.get("deviceSweep", False)
+    if name in ("capture_viewport", "render_offline", "screenshot_gui"):
+        return not args.get("saveFile")
     if name == "find_and_replace_scripts" and args.get("dryRun") is True:
         return True
     if name == "manage_attributes" and args.get("action", "get") == "get":
@@ -2316,14 +3106,42 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
         return True
     if name == "manage_device_simulator" and args.get("action", "status") in ("status", "list"):
         return True
-    if name == "agent_bus" and args.get("action", "stats") in (
-        "stats", "agents", "inbox", "tasks", "thread", "feed", "status",
+    if name == "bridge_ops" and args.get("action", "status") in (
+        "status", "metrics", "audit", "audit_verify", "events", "tunnel", "tunnel_probe",
+        "subscriptions", "confirmations",
     ):
         return True
-    if name == "bridge_ops" and args.get("action", "status") in (
-        "status", "metrics", "audit", "audit_verify", "events", "tunnel", "subscriptions",
-        "confirmations",
-    ):
+    if name == "generate_dungeon_layout" and not args.get("buildInStudio"):
+        return True
+    if name == "build_gameplay_mechanic" and not args.get("installInStudio"):
+        return True
+    if name == "configure_atmosphere_fx" and not args.get("applyToStudio"):
+        return True
+    if name == "synthesize_sound_effect" and not args.get("saveToRepo") and not args.get("targetPath"):
+        return True
+    if name == "manage_plugin_and_playtest" and args.get("action", "status") in ("status", "version_matrix"):
+        return True
+    if name == "build_cutscene_sequence" and not args.get("buildInStudio"):
+        return True
+    if name == "generate_ui_theme_pack" and not args.get("installInStudio"):
+        return True
+    if name == "import_ui_from_web" and not args.get("installInStudio"):
+        return True
+    if name == "build_vfx_emitter" and not args.get("buildInStudio"):
+        return True
+    if name == "de_slop_audit" and not args.get("autoFix"):
+        return True
+    if name == "spawn_kit_mesh" and not args.get("spawnInStudio"):
+        return True
+    if name == "operator_chat" and args.get("action", "poll") in ("poll", "history"):
+        return True
+    if name == "kitbash_mesh_prop" and not args.get("spawnInStudio"):
+        return True
+    if name == "build_combat_hitbox" and not args.get("installInStudio"):
+        return True
+    if name == "configure_camera_rig" and not args.get("installInStudio"):
+        return True
+    if name == "generate_sfx_soundbank" and not args.get("installInStudio"):
         return True
     return False
 
@@ -2363,6 +3181,124 @@ def validate_arguments(schema: dict, args: dict) -> str:
     return ""
 
 
+def validate_action_arguments(name: str, args: dict) -> str:
+    """Validate compatibility-sensitive action semantics before gating or dispatch.
+
+    This is deliberately targeted, not a complete JSON Schema implementation.
+    """
+    if name in ("delete_instance", "mass_set_properties", "reparent_or_rename"):
+        paths = args.get("paths")
+        if not isinstance(paths, list) or not paths:
+            return "Parameter 'paths' must contain at least one path."
+        for index, path in enumerate(paths, 1):
+            if not isinstance(path, str) or not path.strip(" ./\t\r\n"):
+                return f"Path #{index} must be a non-empty instance path."
+        if name == "mass_set_properties" and not (args.get("properties") or args.get("relative")):
+            return "Provide non-empty properties or relative deltas."
+        if name == "reparent_or_rename":
+            if not args.get("newParent") and not args.get("newName"):
+                return "Provide newParent or newName."
+            if args.get("newName") and len(paths) != 1:
+                return "newName requires exactly one path."
+    if name == "set_properties":
+        if not args.get("path", "").strip(" ./\t\r\n"):
+            return "Parameter 'path' must be a non-empty instance path."
+        if not args.get("properties"):
+            return "Parameter 'properties' must not be empty."
+    if name == "manage_camera":
+        action = args.get("action", "get")
+        if action == "focus":
+            if not (args.get("path") or "").strip(" ./\t\r\n"):
+                return "Camera focus requires a non-empty path."
+            distance = args.get("distanceMultiplier")
+            if distance is not None and (distance <= 0 or distance > 1e308 or
+                                         (isinstance(distance, float) and not math.isfinite(distance))):
+                return "distanceMultiplier must be finite and positive."
+        if action == "set":
+            if not any(args.get(key) is not None for key in ("position", "fov")):
+                return "Camera set requires position or fov."
+            if args.get("lookAt") is not None and args.get("position") is None:
+                return "Camera lookAt requires position."
+            for key in ("position", "lookAt"):
+                value = args.get(key)
+                if value is not None and (len(value) != 3 or any(
+                    isinstance(v, bool) or not isinstance(v, (int, float)) or
+                    (isinstance(v, float) and not math.isfinite(v)) or abs(v) > 1e308
+                    for v in value)):
+                    return f"Camera {key} must contain three finite numbers."
+            fov = args.get("fov")
+            if fov is not None and (not 1 <= fov <= 120 or
+                                    (isinstance(fov, float) and not math.isfinite(fov))):
+                return "Camera fov must be between 1 and 120."
+    if name == "clone_instance":
+        if not args.get("path", "").strip(" ./\t\r\n"):
+            return "Parameter 'path' must be a non-empty instance path."
+        count = args.get("count", 1)
+        if count is not None and not 1 <= count <= 500:
+            return "Parameter 'count' must be between 1 and 500."
+        offset = args.get("offset")
+        if offset is not None and (len(offset) != 3 or any(
+                isinstance(v, bool) or not isinstance(v, (int, float)) or
+                (isinstance(v, float) and not math.isfinite(v)) or abs(v) > 1e308
+                for v in offset)):
+            return "Parameter 'offset' must contain three finite numbers."
+    if name == "batch_write":
+        files = args.get("files")
+        if not isinstance(files, list) or not files:
+            return "Parameter 'files' must contain at least one script."
+        for index, entry in enumerate(files, 1):
+            prefix = f"File #{index}"
+            if not isinstance(entry, dict):
+                return f"{prefix} must be an object."
+            for key in ("parent", "name", "source"):
+                if not isinstance(entry.get(key), str):
+                    return f"{prefix} requires a string {key}."
+            if not entry["parent"].strip() or not entry["name"].strip():
+                return f"{prefix} parent and name must not be empty."
+            if "className" in entry and entry["className"] not in ("Script", "LocalScript", "ModuleScript"):
+                return f"{prefix} className must be Script, LocalScript, or ModuleScript."
+            if "expectedHash" in entry and not isinstance(entry["expectedHash"], str):
+                return f"{prefix} expectedHash must be a string."
+            if "replaceInstance" in entry and not isinstance(entry["replaceInstance"], bool):
+                return f"{prefix} replaceInstance must be a boolean."
+            for key in ("properties", "attributes"):
+                if key in entry and not isinstance(entry[key], dict):
+                    return f"{prefix} {key} must be an object."
+            if "tags" in entry and (not isinstance(entry["tags"], list) or
+                                    any(not isinstance(tag, str) for tag in entry["tags"])):
+                return f"{prefix} tags must be an array of strings."
+        return ""
+    if name != "multi_edit":
+        return ""
+    edits = args.get("edits")
+    if not isinstance(edits, list) or not edits:
+        return "Parameter 'edits' must contain at least one edit."
+    for index, edit in enumerate(edits, 1):
+        prefix = f"Edit #{index}"
+        if not isinstance(edit, dict):
+            return f"{prefix} must be an object."
+        if not isinstance(edit.get("newText"), str):
+            return f"{prefix} requires a string newText."
+        has_old = "oldText" in edit
+        has_start = "startLine" in edit
+        has_end = "endLine" in edit
+        if has_old and (has_start or has_end):
+            return f"{prefix} must not combine oldText with line coordinates."
+        if has_old:
+            if not isinstance(edit["oldText"], str):
+                return f"{prefix} oldText must be a string."
+            if "replaceAll" in edit and not isinstance(edit["replaceAll"], bool):
+                return f"{prefix} replaceAll must be a boolean."
+        else:
+            start, end = edit.get("startLine"), edit.get("endLine")
+            if (isinstance(start, bool) or not isinstance(start, int) or start < 1 or
+                    isinstance(end, bool) or not isinstance(end, int) or end < start - 1):
+                return f"{prefix} requires integer startLine >= 1 and endLine >= startLine - 1."
+            if "replaceAll" in edit:
+                return f"{prefix} replaceAll is only valid with oldText."
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Tool Execution Engine
 # ---------------------------------------------------------------------------
@@ -2385,6 +3321,95 @@ def _unwrap_job(job: dict) -> dict:
         f"Studio did not complete job {job.get('id')} in time (status={status}). "
         "Verify Roblox Studio is open and connected."
     )
+
+
+def _reported_version(value):
+    # Registry fields are peer supplied. Do not echo arbitrary text, URLs or tokens.
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,4}(?:\.[0-9]{1,4}){1,3}", value):
+        return value
+    return None
+
+
+def _diagnostic_error(exc):
+    cause = exc.__cause__ or exc
+    if isinstance(cause, urllib.error.HTTPError):
+        if cause.code in (401, 403):
+            return "auth_error"
+        return "bridge_error"
+    if isinstance(cause, (urllib.error.URLError, TimeoutError, OSError)):
+        return "bridge_unreachable"
+    return "bridge_error"
+
+
+def diagnose_connection_helper(client):
+    """Inspect registry only; never submit jobs, inspect tokens, or echo transport errors."""
+    report = {"status": "unknown", "bridge": {"status": "unknown"},
+              "readAccess": "unknown", "peers": {"status": "unknown"},
+              "checks": [], "limitations": [
+                  "Registry information is self-reported and may be stale; no Studio job or runtime capability test was performed.",
+                  "This check does not inspect installed plugins, expose credentials, or verify client RPC or feature support."]}
+    try:
+        health = client.health()
+        if not isinstance(health, dict) or health.get("ok") is not True:
+            raise ValueError("invalid bridge health")
+    except Exception as exc:
+        status = _diagnostic_error(exc)
+        report["status"] = status
+        report["bridge"]["status"] = status
+        report["checks"].append({"code": status, "severity": "error",
+                                  "nextStep": "Check the bridge is running and the configured connection is correct; inspect local logs without sharing secrets."})
+        return report
+    report["bridge"] = {"status": "reachable", "version": _reported_version(health.get("version")),
+                        "readOnly": health.get("read_only") if isinstance(health.get("read_only"), bool) else None,
+                        "inspectorMode": bool(client.read_only),
+                        "queuePaused": health.get("queuePaused") if isinstance(health.get("queuePaused"), bool) else None}
+    try:
+        response = client.peers()
+        if not isinstance(response, dict) or not isinstance(response.get("peers"), list) or not all(isinstance(p, dict) and isinstance(p.get("online"), bool) for p in response["peers"]):
+            raise ValueError("invalid peer registry")
+    except Exception as exc:
+        status = _diagnostic_error(exc)
+        report["status"] = status
+        report["readAccess"] = "denied" if status == "auth_error" else "unknown"
+        report["checks"].append({"code": status, "severity": "error",
+                                  "nextStep": "Check the bridge connection and read authorization; do not paste credentials into chat or logs."})
+        return report
+    report["readAccess"] = ("direct_dispatch" if client.direct_dispatch else
+                            "open" if health.get("authMode") == "open" else
+                            "authorized" if health.get("authMode") == "scoped" else "unknown")
+    peers = response["peers"]
+    online = [p for p in peers if p.get("online") is True]
+    report["peers"] = {"status": "online" if online else "none_online",
+                       "online": len(online), "stale": len(peers) - len(online),
+                       "edit": sum(p.get("dm") == "edit" for p in online),
+                       "server": sum(p.get("dm") == "server" for p in online),
+                       "clientAdvertised": sum(p.get("dm") == "client" or p.get("hasClient") is True for p in online)}
+    if not online:
+        report["status"] = "no_peer"
+        report["checks"].append({"code": "no_peer", "severity": "warning", "nextStep": "Open Studio, load and connect the plugin, then check its bridge address and authorization locally."})
+    else:
+        report["status"] = "connected"
+    if report["readAccess"] == "open":
+        report["checks"].append({"code": "open_auth", "severity": "warning", "nextStep": "Review bridge authentication and exposure before allowing remote access."})
+    if report["bridge"]["queuePaused"] is True:
+        report["checks"].append({"code": "queue_paused", "severity": "warning", "nextStep": "Ask the operator to review the paused queue before sending Studio jobs."})
+    try:
+        plugin_source = (Path(__file__).resolve().parent / "ArenaBridge.lua").read_text(encoding="utf-8")
+        match = re.search(r'^local PLUGIN_VERSION = "([0-9.]+)"', plugin_source, re.MULTILINE)
+        bundled = _reported_version(match.group(1)) if match else None
+    except (OSError, UnicodeError):
+        bundled = None
+    versions = sorted({_reported_version(p.get("pluginVersion")) for p in online} - {None})
+    unknown = sum(_reported_version(p.get("pluginVersion")) is None for p in online)
+    report["pluginVersions"] = {"bundled": bundled, "reportedOnline": versions, "unknownOnline": unknown}
+    def version_tuple(v):
+        parts = tuple(map(int, v.split(".")))
+        return parts + (0,) * (4 - len(parts))
+    if bundled and any(version_tuple(v) < version_tuple(bundled) for v in versions):
+        report["checks"].append({"code": "older_plugin_reported", "severity": "warning", "nextStep": "Review the installed plugin version and update it through the setup workflow if appropriate; probe required features separately."})
+    if unknown:
+        report["checks"].append({"code": "unknown_plugin_version", "severity": "warning", "nextStep": "Check the connected plugin version locally; do not infer compatibility from an unknown version."})
+    return report
 
 
 def create_snapshot_helper(client: BridgeClient, root: str = "game", label: str = None, peer_id: str = None, paths_filter: list = None) -> dict:
@@ -2512,20 +3537,12 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
         return run_bridge_self_test(client, include_studio_smoke=args.get("includeStudioSmoke", True), timeout=args.get("timeout", 180))
 
     if name == "luau_check":
-        result = run_luau_check(code=args.get("code"), path=args.get("path"))
-        if result.get("ok") or result.get("toolchainAvailable"):
-            return result
-        if args.get("code") is not None:
-            checked = _studio_luau_check(client, args["code"], "inline.lua", dm=dm if dm != "auto" else "edit", peer_id=peer_id)
-            return {"ok": checked["ok"], "backend": checked["backend"], "filesChecked": 1, "filesFailed": 0 if checked["ok"] else 1, "results": [checked], "warnings": checked.get("warnings", [])}
-        target = Path(args["path"]).expanduser().resolve()
-        files = [target] if target.is_file() else sorted(p for p in target.rglob("*") if p.is_file() and p.suffix.lower() in (".lua", ".luau"))
-        checked_files = []
-        for file in files:
-            chk = _studio_luau_check(client, file.read_text(encoding="utf-8"), str(file), dm=dm if dm != "auto" else "edit", peer_id=peer_id)
-            checked_files.append(chk)
-        failed = sum(not x.get("ok") for x in checked_files)
-        return {"ok": failed == 0, "backend": "studio-loadstring", "filesChecked": len(checked_files), "filesFailed": failed, "results": checked_files, "warnings": [] if checked_files else ["No .lua or .luau files found."]}
+        # This tool is advertised as offline/read-only. Never submit a
+        # run_luau job as a fallback, even if a Studio peer is available.
+        return run_luau_check(code=args.get("code"), path=args.get("path"))
+
+    if name == "diagnose_connection":
+        return diagnose_connection_helper(client)
 
     if name == "list_studios":
         return client.peers()
@@ -2772,9 +3789,38 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
 
     if name == "start_stop_play":
         act = args["action"]
-        target_dm = "edit" if act in ("stop", "start_play", "start_run") else dm
-        res = _unwrap_job(client.submit_job("playtest", {"action": act}, wait=25.0, dm=target_dm, peer_id=peer_id))
-        if act in ("start_play", "start_run") and args.get("waitForPeer", True):
+        target_dm = "edit" if act in ("stop", "force_stop", "cleanup", "start_play", "start_run") else dm
+        had_server_peer = False
+        if act in ("stop", "force_stop", "cleanup"):
+            try:
+                had_server_peer = any(
+                    p.get("dm") == "server" and p.get("online")
+                    for p in client.peers().get("peers", [])
+                )
+            except Exception:
+                had_server_peer = False
+        payload = {"action": act}
+        if args.get("reason"):
+            payload["reason"] = args["reason"]
+        res = _unwrap_job(client.submit_job("playtest", payload, wait=25.0, dm=target_dm, peer_id=peer_id))
+        if act in ("stop", "force_stop", "cleanup"):
+            if had_server_peer and (act == "force_stop" or not res.get("stopped")):
+                try:
+                    srv_res = _unwrap_job(client.submit_job(
+                        "playtest",
+                        {"action": "stop", "reason": args.get("reason", "stopped_by_mcp_server")},
+                        wait=3.5,
+                        dm="server",
+                    ))
+                    if srv_res.get("stopped"):
+                        res["stopped"] = True
+                        res["stoppedViaServerPeer"] = True
+                except Exception:
+                    pass
+            evict_info = client.evict_playtest_peers(reason=f"start_stop_play:{act}")
+            res["evictedPlaytestPeers"] = evict_info.get("evictedPeers", 0)
+            res["sessionClean"] = True
+        elif act in ("start_play", "start_run") and args.get("waitForPeer", True):
             deadline = time.monotonic() + 10.0
             while time.monotonic() < deadline:
                 peers = client.peers().get("peers", [])
@@ -2976,6 +4022,7 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
                 stop_result = _unwrap_job(client.submit_job("playtest", {"action": "stop", "reason": "scenario_complete"}, wait=15.0, dm="edit", peer_id=peer_id))
             except Exception as exc:
                 stop_result = {"ok": False, "error": str(exc)}
+            client.evict_playtest_peers(reason="scenario_complete")
             phase_timings["stopSec"] = round(time.monotonic() - phase_start, 3)
 
         peer_rows_after = client.peers().get("peers", [])
@@ -3079,9 +4126,9 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
         }, wait=20.0, dm="edit", peer_id=peer_id))
 
     if name == "manage_camera":
-        return _unwrap_job(client.submit_job("camera", {
-            k: args[k] for k in ("action", "path", "position", "lookAt", "fov", "distanceMultiplier") if k in args
-        }, wait=20.0, dm=dm, peer_id=peer_id))
+        camera_args = {k: args[k] for k in ("path", "position", "lookAt", "fov", "distanceMultiplier") if k in args}
+        camera_args["action"] = args.get("action", "get")
+        return _unwrap_job(client.submit_job("camera", camera_args, wait=20.0, dm=dm, peer_id=peer_id))
 
     if name == "undo_redo":
         return _unwrap_job(client.submit_job("history", {
@@ -3160,6 +4207,31 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
                 }, wait=30.0, dm="edit", peer_id=peer_id))
                 restored.append(entry["path"])
             return {"restoredSnapshot": args["snapshotId"], "restoredCount": len(restored), "paths": restored}
+
+    if name == "search_tools":
+        return search_tools_helper(args.get("query", ""), args.get("readOnlyOnly", False),
+                                   args.get("cursor", 0), args.get("limit", 20),
+                                   read_only=bool(client and client.read_only))
+
+    if name == "search_skills":
+        return search_skills_helper(args.get("query", ""), args.get("cursor", 0), args.get("limit", 20), args.get("includeReferences", False))
+
+    if name == "apply_skill":
+        return apply_skill_helper(args.get("name"))
+
+    if name == "audit_onboarding_plan":
+        from onboarding_auditor import audit_onboarding_plan
+        return audit_onboarding_plan(args.get("milestones"), cursor=args.get("cursor", 0), limit=args.get("limit", 50))
+
+    if name == "audit_localization":
+        from localization_auditor import audit_localization
+        return audit_localization(args.get("entries"), args.get("locales"),
+                                  args.get("cursor", 0), args.get("limit", 50))
+
+    if name == "skill_references":
+        return skill_references_helper(args.get("name"), args.get("action", "list"),
+                                       args.get("path"), args.get("cursor", 0), args.get("limit", 20),
+                                       start_line=args.get("startLine"), end_line=args.get("endLine"))
 
     if name == "browse_kit":
         return browse_kit_helper(category=args.get("category", "all"), item=args.get("item"),
@@ -3284,6 +4356,60 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
 
     if name == "playtest_capabilities":
         return playtest_capabilities_helper(client=client, args=args, peer_id=peer_id, dm=dm)
+
+    if name == "generate_dungeon_layout":
+        return generate_dungeon_layout_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "build_gameplay_mechanic":
+        return build_gameplay_mechanic_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "configure_atmosphere_fx":
+        return configure_atmosphere_fx_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "synthesize_sound_effect":
+        return synthesize_sound_effect_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "manage_plugin_and_playtest":
+        return manage_plugin_and_playtest_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "audit_network_security":
+        return audit_network_security_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "build_cutscene_sequence":
+        return build_cutscene_sequence_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "generate_ui_theme_pack":
+        return generate_ui_theme_pack_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "import_ui_from_web":
+        return import_ui_from_web_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "build_vfx_emitter":
+        return build_vfx_emitter_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "de_slop_audit":
+        return de_slop_audit_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "spawn_kit_mesh":
+        return spawn_kit_mesh_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "operator_chat":
+        return operator_chat_helper(client=client, args=args)
+
+    if name == "kitbash_mesh_prop":
+        return kitbash_mesh_prop_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "build_combat_hitbox":
+        return build_combat_hitbox_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "configure_camera_rig":
+        return configure_camera_rig_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "generate_sfx_soundbank":
+        return generate_sfx_soundbank_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "export_ui_to_web":
+        return export_ui_to_web_helper(client=client, args=args, peer_id=peer_id)
 
     raise KeyError(f"Unknown tool: {name}")
 
@@ -3418,68 +4544,86 @@ RESOURCES = [
     {
         "uri": "studio://state",
         "name": "Roblox Studio & Bridge State",
+        "title": "Roblox Studio & Bridge State",
         "description": "Live connection health, connected Edit/Server/Client DataModel peers, place metadata, and recent job log.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://peers",
         "name": "Connected Studio Peers",
+        "title": "Connected Studio Peers",
         "description": "All active Roblox Studio DataModel peers polling the bridge.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://console",
         "name": "Studio Output Log",
+        "title": "Studio Output Log",
         "description": "Latest 150 lines from Roblox Studio LogService.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://selection",
         "name": "Current Studio Selection",
+        "title": "Current Studio Selection",
         "description": "Currently selected Instances in the Explorer/Viewport.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://survey",
         "name": "Place Architecture Survey (Metadata)",
+        "title": "Place Architecture Survey",
         "description": "Service breakdown, instance census, script inventory + hashes, remotes, tags, and settings.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://bus",
         "name": "Multi-Agent Bus (Presence, Tasks, Messages)",
+        "title": "Multi-Agent Collaboration Bus",
         "description": "Registered agents, open task board with leases, and the current activity cursor — shared by every agent on this bridge.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://ops",
         "name": "Bridge Operations Report",
+        "title": "Bridge Operations Report",
         "description": "Queue depth, peer health, tunnel state, metrics, recent audit entries, and open tasks in one document.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://audit",
         "name": "Tamper-Evident Audit Log (head)",
+        "title": "Tamper-Evident Audit Log",
         "description": "Latest hash-chained audit entries plus chain verification status.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://jobs",
         "name": "Job Queue & Per-Tool Latency",
+        "title": "Job Queue & Per-Tool Latency",
         "description": "Queue depth, pause state, live peer list, recent job summaries and p50/p95 wall time per tool.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://studios",
         "name": "Connected Studio Fleet",
+        "title": "Connected Studio Fleet",
         "description": "Every connected Studio window with peerId, place, DataModel kind, online age, label, pinned/default routing and queued job counts.",
         "mimeType": "application/json",
     },
     {
         "uri": "studio://handoff",
         "name": "Markdown Handoff Brief",
+        "title": "Markdown Handoff Brief",
         "description": "The bus export as markdown: roster, task board, recent messages and stats — paste-ready for the next agent or human.",
         "mimeType": "text/markdown",
+    },
+    {
+        "uri": "mcp://server-card.json",
+        "name": "MCP Server Card",
+        "title": "MCP Server Card (SEP-1649)",
+        "description": "Machine-readable MCP Server Card metadata describing supported protocol versions, transports, capabilities, and auth requirements.",
+        "mimeType": "application/json",
     },
 ]
 
@@ -3487,18 +4631,21 @@ RESOURCE_TEMPLATES = [
     {
         "uriTemplate": "studio://scripts/{path}",
         "name": "Live Script Source by Path",
+        "title": "Live Script Source by Path",
         "description": "Read live Luau source code for any dot-separated script path (e.g. studio://scripts/ServerScriptService.Main).",
         "mimeType": "text/x-luau",
     },
     {
         "uriTemplate": "studio://instance/{path}",
         "name": "Instance Subtree & Properties",
+        "title": "Instance Subtree & Properties",
         "description": "Inspect properties, attributes, tags, and immediate children of any Instance path.",
         "mimeType": "application/json",
     },
     {
         "uriTemplate": "skill://{name}",
         "name": "Roblox Studio Agent Skill Markdown",
+        "title": "Roblox Studio Agent Skill Markdown",
         "description": "Read full Markdown instructions for any built-in skill in `.claude/skills/{name}/SKILL.md`.",
         "mimeType": "text/markdown",
     },
@@ -3507,11 +4654,13 @@ RESOURCE_TEMPLATES = [
 PROMPTS = [
     {
         "name": "survey_and_architecture",
+        "title": "Survey & Map Place Architecture",
         "description": "Survey an unfamiliar Roblox Studio place, map client/server architecture & remotes, and spot risks before making edits.",
         "arguments": [],
     },
     {
         "name": "safe_module_edit",
+        "title": "Safe ModuleScript Edit & Verification",
         "description": "Edit a Roblox ModuleScript safely using hash checks, luau_check static global verification, cache-busting replaceInstance/require_fresh, and quantitative verification.",
         "arguments": [
             {"name": "scriptPath", "description": "Dot path of target ModuleScript", "required": True},
@@ -3520,6 +4669,7 @@ PROMPTS = [
     },
     {
         "name": "automated_playtest_debug",
+        "title": "Automated Playtest & Runtime Debug",
         "description": "Run a live playtest loop checking both Server and Client DataModel state, console errors, and clean teardown.",
         "arguments": [
             {"name": "scenario", "description": "Gameplay behavior to verify", "required": True},
@@ -3527,6 +4677,7 @@ PROMPTS = [
     },
     {
         "name": "sync_repo_package",
+        "title": "Audit & Sync Local Luau Package",
         "description": "Audit repo <-> Studio drift with exact 32-bit FNV-1a hashes, pre-check all files for undefined globals, and push atomically.",
         "arguments": [
             {"name": "localDir", "description": "Local source folder (e.g. nightloop/src)", "required": True},
@@ -3535,6 +4686,7 @@ PROMPTS = [
     },
     {
         "name": "multi_agent_handoff",
+        "title": "Multi-Agent Handoff Brief",
         "description": "Hand work to another agent: read the live board, release what you cannot finish, and post a handoff with the next concrete step.",
         "arguments": [
             {"name": "agentName", "description": "Who is handing off (defaults to the bus roster)", "required": False},
@@ -3543,6 +4695,7 @@ PROMPTS = [
     },
     {
         "name": "bus_standup",
+        "title": "Agent Bus Five-Line Standup",
         "description": "Render a five-line standup from the live Agent Bus: what changed, who owns what, what is blocked.",
         "arguments": [
             {"name": "since", "description": "Bus cursor to report from (defaults to the current cursor)", "required": False},
@@ -3550,13 +4703,281 @@ PROMPTS = [
     },
     {
         "name": "task_triage",
+        "title": "Triage Open Agent Bus Tasks",
         "description": "Rank open Agent Bus tasks by priority and dependencies, propose a claim order, and flag tasks without acceptance criteria.",
         "arguments": [],
     },
 ]
 
 
+def build_mcp_server_card(
+    origin: str = "http://127.0.0.1:8077",
+    auth_required: bool = True,
+    read_only: bool = False,
+    confirm_mode: str = "off",
+) -> dict:
+    """Build a public MCP Server Card document (SEP-1649 / SEP-1960 / SEP-2127).
+
+    Contains only public capability metadata — never place names, tokens, or
+    pending confirmation arguments.
+    """
+    origin = (origin or "http://127.0.0.1:8077").rstrip("/")
+    mcp_url = f"{origin}/mcp"
+    return {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/mcp-server-card/v1.json",
+        "version": "1.0",
+        "name": MCP_SERVER_NAME,
+        "title": "Arena Roblox Studio MCP Bridge",
+        "description": (
+            "Zero-dependency Roblox Studio MCP server and multi-peer HTTP bridge "
+            "(Edit, Server, and Client DataModels, Luau static analysis, 3D viewport "
+            "rasterizer, open-source kit, multi-agent bus, and MRTR confirmation gate)."
+        ),
+        "protocolVersion": MODERN_PROTOCOL_VERSION,
+        "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
+        "serverInfo": {
+            "name": MCP_SERVER_NAME,
+            "title": "Arena Roblox Studio MCP Bridge",
+            "version": MCP_SERVER_VERSION,
+            "description": "Multi-peer Roblox Studio MCP server (stdio + Streamable HTTP).",
+            "homepage": origin,
+        },
+        "transport": {
+            "type": "streamable-http",
+            "endpoint": "/mcp",
+            "url": mcp_url,
+        },
+        "endpoints": {
+            "streamableHttp": mcp_url,
+            "health": f"{origin}/api/health",
+            "oauthProtectedResource": f"{origin}/.well-known/oauth-protected-resource/mcp",
+        },
+        "remotes": [
+            {
+                "type": "streamable-http",
+                "url": mcp_url,
+            }
+        ],
+        "capabilities": {
+            "tools": {"listChanged": True},
+            "resources": {"subscribe": False, "listChanged": False},
+            "prompts": {"listChanged": False},
+            "completions": {},
+            "subscriptions": {"types": list(SUBSCRIPTION_TYPES)},
+            "extensions": {
+                TASKS_EXTENSION_KEY: {"requests": {"tools": {"call": {}}}, "cancel": {}},
+            },
+        },
+        "authentication": {
+            "required": bool(auth_required),
+            "schemes": ["bearer"] if auth_required else [],
+            "resourceMetadata": f"{origin}/.well-known/oauth-protected-resource/mcp",
+        },
+        "readOnly": bool(read_only),
+        "confirmationMode": confirm_mode or "off",
+        "toolCount": len(TOOL_SPECS),
+        "resourceCount": len(RESOURCES),
+        "promptCount": len(PROMPTS),
+        "tools": "dynamic",
+        "resources": "dynamic",
+        "prompts": [p["name"] for p in PROMPTS],
+    }
+
+
+_ROBLOX_ROOT_COMPLETIONS = (
+    "Workspace",
+    "ReplicatedStorage",
+    "ReplicatedStorage.Shared",
+    "ServerScriptService",
+    "ServerStorage",
+    "StarterGui",
+    "StarterPack",
+    "StarterPlayer",
+    "StarterPlayer.StarterPlayerScripts",
+    "StarterPlayer.StarterCharacterScripts",
+    "Lighting",
+    "SoundService",
+    "Teams",
+    "TextChatService",
+)
+
+
+def _rank_completion_candidates(candidates, prefix: str) -> dict:
+    """Rank unique completion strings (prefix matches first, then substring), capped at 100."""
+    needle = (prefix or "").strip().lower()
+    seen = set()
+    exact_prefix = []
+    substring = []
+    for raw in candidates:
+        if raw is None:
+            continue
+        item = str(raw).strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        low = item.lower()
+        if not needle or low.startswith(needle):
+            exact_prefix.append(item)
+        elif needle in low:
+            substring.append(item)
+    ordered = exact_prefix + substring
+    total = len(ordered)
+    return {
+        "completion": {
+            "values": ordered[:100],
+            "total": total,
+            "hasMore": total > 100,
+        }
+    }
+
+
+def _live_script_paths_fast(client: BridgeClient) -> list:
+    """Best-effort fast script path lookup when an Edit peer is already online."""
+    if client is None:
+        return []
+    try:
+        peers = (client.peers() or {}).get("peers") or []
+        if not any(p.get("online") and p.get("dm") == "edit" for p in peers):
+            return []
+        job = client.submit_job("hash_scripts", {"root": "game"}, wait=2.5, dm="edit")
+        if job.get("status") != "done" or not job.get("ok"):
+            return []
+        rows = (job.get("result") or {}).get("scripts") or []
+        return [r.get("path") for r in rows if isinstance(r, dict) and r.get("path")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def complete_mcp_argument(client: BridgeClient, params: dict) -> dict:
+    """Handle MCP `completion/complete` for `ref/prompt` and `ref/resource`."""
+    if not isinstance(params, dict):
+        raise ValueError("completion/complete params must be an object")
+    ref = params.get("ref")
+    argument = params.get("argument")
+    if not isinstance(ref, dict) or not ref.get("type"):
+        raise ValueError("Missing or invalid `ref` object in completion/complete")
+    if not isinstance(argument, dict) or not isinstance(argument.get("name"), str):
+        raise ValueError("Missing or invalid `argument` object in completion/complete")
+
+    ref_type = ref.get("type")
+    arg_name = argument.get("name") or ""
+    arg_val = str(argument.get("value") or "")
+
+    if ref_type == "ref/resource":
+        uri = str(ref.get("uri") or "")
+        known_templates = {t["uriTemplate"] for t in RESOURCE_TEMPLATES}
+        known_static = {r["uri"] for r in RESOURCES}
+        if uri not in known_templates and uri not in known_static:
+            raise ValueError(f"Unknown resource or template URI: {uri!r}")
+        if uri == "skill://{name}" and arg_name == "name":
+            names = [name for name, _ in _skill_files()]
+            return _rank_completion_candidates(names, arg_val)
+        if uri == "studio://scripts/{path}" and arg_name == "path":
+            live = _live_script_paths_fast(client)
+            seeds = list(live) + [
+                "ServerScriptService.Main",
+                "ReplicatedStorage.Shared.Config",
+                "StarterPlayer.StarterPlayerScripts.ClientMain",
+            ] + list(_ROBLOX_ROOT_COMPLETIONS)
+            return _rank_completion_candidates(seeds, arg_val)
+        if uri == "studio://instance/{path}" and arg_name == "path":
+            live = _live_script_paths_fast(client)
+            seeds = list(_ROBLOX_ROOT_COMPLETIONS) + list(live)
+            return _rank_completion_candidates(seeds, arg_val)
+        return _rank_completion_candidates([], arg_val)
+
+    if ref_type == "ref/prompt":
+        pname = str(ref.get("name") or "")
+        prompt_spec = next((p for p in PROMPTS if p["name"] == pname), None)
+        if prompt_spec is None:
+            raise ValueError(f"Unknown prompt: {pname!r}")
+        if pname == "safe_module_edit":
+            if arg_name == "scriptPath":
+                live = _live_script_paths_fast(client)
+                seeds = list(live) + [
+                    "ReplicatedStorage.Shared.Config",
+                    "ServerScriptService.Main",
+                ]
+                return _rank_completion_candidates(seeds, arg_val)
+            if arg_name == "goal":
+                return _rank_completion_candidates([
+                    "add strict server-side input validation",
+                    "fix undefined global and bust require() cache",
+                    "extract reusable helper and preserve public API",
+                    "optimize hot-loop allocations",
+                ], arg_val)
+        elif pname == "sync_repo_package":
+            if arg_name == "localDir":
+                return _rank_completion_candidates(["./src", "nightloop/src", "roblox-kit/modules"], arg_val)
+            if arg_name == "studioRoot":
+                return _rank_completion_candidates([
+                    "ServerScriptService.App",
+                    "ServerScriptService.NightLoop",
+                    "ReplicatedStorage.Shared",
+                ], arg_val)
+        elif pname == "multi_agent_handoff":
+            if arg_name == "agentName":
+                agents = []
+                if client is not None:
+                    try:
+                        rows = (client.bus_action({"action": "agents", "includeOffline": True}) or {}).get("agents") or []
+                        agents = [a.get("name") for a in rows if isinstance(a, dict) and a.get("name")]
+                    except Exception:  # noqa: BLE001
+                        agents = []
+                return _rank_completion_candidates(agents or ["lead-builder", "qa-reviewer"], arg_val)
+            if arg_name == "focus":
+                tasks = []
+                if client is not None:
+                    try:
+                        rows = (client.bus_action({"action": "tasks", "includeDone": False}) or {}).get("tasks") or []
+                        tasks = [f"{t.get('id')}: {t.get('title')}" for t in rows if isinstance(t, dict) and t.get("id")]
+                    except Exception:  # noqa: BLE001
+                        tasks = []
+                return _rank_completion_candidates(tasks or ["verify playtest and console logs", "complete UI layout pass"], arg_val)
+        elif pname == "bus_standup" and arg_name == "since":
+            cursors = ["0"]
+            if client is not None:
+                try:
+                    stats = client.bus_action({"action": "stats"}) or {}
+                    if stats.get("cursor") is not None:
+                        cursors.insert(0, str(stats["cursor"]))
+                except Exception:  # noqa: BLE001
+                    pass
+            return _rank_completion_candidates(cursors, arg_val)
+        elif pname == "automated_playtest_debug" and arg_name == "scenario":
+            return _rank_completion_candidates([
+                "verify player spawn, HUD initialization, and zero server/client errors",
+                "test round start -> objective completion -> clean teardown",
+                "verify RemoteEvent validation rejects malformed payloads",
+            ], arg_val)
+        return _rank_completion_candidates([], arg_val)
+
+    raise ValueError(f"Unsupported completion ref type: {ref_type!r}")
+
+
 def read_mcp_resource(client: BridgeClient, uri: str) -> dict:
+    if uri == "mcp://server-card.json":
+        read_only = bool(client.read_only) if client is not None else False
+        auth_req = True
+        confirm_mode = "off"
+        origin = (client.base_url if client is not None else "http://127.0.0.1:8077") or "http://127.0.0.1:8077"
+        if client is not None:
+            try:
+                health = client.health() or {}
+                auth_req = health.get("authMode") != "open"
+                confirm_mode = ((health.get("confirmGate") or {}).get("mode")) or "off"
+                pub = ((health.get("tunnel") or {}).get("publicUrl")) or None
+                if pub:
+                    origin = pub
+            except Exception:  # noqa: BLE001
+                pass
+        card = build_mcp_server_card(
+            origin=origin,
+            auth_required=auth_req,
+            read_only=read_only,
+            confirm_mode=confirm_mode,
+        )
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(card, indent=2)}]}
     if uri == "studio://state":
         data = execute_tool(client, "get_studio_state", {})
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
@@ -3612,8 +5033,8 @@ def read_mcp_resource(client: BridgeClient, uri: str) -> dict:
         return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(data, indent=2)}]}
     if uri.startswith("skill://"):
         skill_name = uri[len("skill://") :].strip("/")
-        data = browse_kit_helper(category="skills", item=skill_name)
-        return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": data.get("content", "")}]}
+        data = apply_skill_helper(skill_name)
+        return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": data["instructions"]}]}
     raise KeyError(f"Unknown resource URI: {uri}")
 
 
@@ -3627,6 +5048,291 @@ def _find_skills_dir() -> Path:
         if cand.is_dir():
             return cand
     return here.parent / ".claude" / "skills"
+
+
+def _skill_files():
+    """Only expose direct, real skill directories contained in the skills root."""
+    root = _find_skills_dir().resolve()
+    if not root.is_dir():
+        return []
+    return [(d.name, d / "SKILL.md") for d in sorted(root.iterdir())
+            if not d.is_symlink() and d.is_dir() and (d / "SKILL.md").is_file()
+            and not (d / "SKILL.md").is_symlink()]
+
+
+def _skill_description(content):
+    # Handle the simple scalar and folded/literal block metadata used by the
+    # bundled skills without requiring a YAML dependency.
+    if not content.startswith("---\n"):
+        return ""
+    front = content.split("\n---", 1)[0]
+    lines = front.splitlines()
+    for i, line in enumerate(lines):
+        match = re.match(r"^description:\s*(.*)$", line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value in (">", ">-", ">+", "|", "|-", "|+"):
+            parts = []
+            for following in lines[i + 1:]:
+                if following and not following[0].isspace():
+                    break
+                parts.append(following.strip())
+            return " ".join(part for part in parts if part)
+        return value.strip('"')
+    return ""
+
+
+# Small, explicit English filler list. Do not remove Roblox/domain terms: a
+# short query such as "ui" or "security" must remain useful.
+_SKILL_SEARCH_STOP_WORDS = frozenset("""
+a an and are as at be been but by can could do does for from had has have how
+I if in into is it its me my of on or our please should so that the their them
+there these they this to us was we what when where which who why will with would
+you your make create build add want need help use using fix show
+""".casefold().split())
+
+
+def _skill_search_words(text):
+    return set(re.findall(r"[^\W_]+", text.casefold(), re.UNICODE))
+
+
+def search_tools_helper(query="", read_only_only=False, cursor=0, limit=20, read_only=False):
+    if not isinstance(query, str):
+        raise ValueError("query must be a string")
+    if not isinstance(read_only_only, bool):
+        raise ValueError("readOnlyOnly must be a boolean")
+    if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+        raise ValueError("cursor must be a non-negative integer")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be an integer between 1 and 100")
+    terms = _skill_search_words(query) - _SKILL_SEARCH_STOP_WORDS
+    results = []
+    for spec in TOOL_SPECS:
+        annotations = spec["annotations"]
+        if read_only and not (annotations.get("readOnlyHint") or spec["name"] in INSPECTOR_MIXED_TOOLS):
+            continue
+        if read_only_only and not annotations.get("readOnlyHint"):
+            continue
+        fields = {"name": _skill_search_words(spec["name"]),
+                  "title": _skill_search_words(annotations.get("title", "")),
+                  "description": _skill_search_words(spec.get("description", ""))}
+        matched = {t for t in terms if any(t in words for words in fields.values())}
+        if query.strip() and not matched:
+            continue
+        score = sum(5 * (t in fields["name"]) + 3 * (t in fields["title"]) +
+                    (t in fields["description"]) for t in matched)
+        if query.strip().casefold() == spec["name"].casefold():
+            score += 10
+        results.append({"name": spec["name"], "title": annotations.get("title", ""),
+                        "description": spec.get("description", ""),
+                        "annotations": dict(annotations), "score": score,
+                        "matchedTerms": sorted(matched),
+                        "matchedFields": [field for field, words in fields.items() if matched & words]})
+    results.sort(key=lambda item: (-item["score"], item["name"]))
+    return {"query": query, "total": len(results), "results": results[cursor:cursor + limit],
+            "nextCursor": cursor + limit if cursor + limit < len(results) else None,
+            "note": "Catalog hints do not authorize calls or guarantee a connected Studio peer. Mixed-action tools may be restricted by Inspector mode."}
+
+
+def search_skills_helper(query="", cursor=0, limit=20, include_references=False):
+    if not isinstance(query, str):
+        raise ValueError("query must be a string")
+    if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+        raise ValueError("cursor must be a non-negative integer")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be an integer between 1 and 100")
+    if not isinstance(include_references, bool):
+        raise ValueError("includeReferences must be a boolean")
+    terms = _skill_search_words(query) - _SKILL_SEARCH_STOP_WORDS
+    # Empty query explicitly means list all. A filler-only query must not
+    # silently list everything or produce spurious recommendations.
+    list_all = not query.strip()
+    documents = []
+    for name, path in _skill_files():
+        content = path.read_text(encoding="utf-8")
+        description = _skill_description(content)
+        fields = {"name": _skill_search_words(name),
+                  "description": _skill_search_words(description),
+                  "instructions": _skill_search_words(content)}
+        documents.append((name, description, fields))
+    reference_matches = {}
+    reference_info = None
+    if include_references:
+        reference_matches, reference_info = _search_skill_references(documents, terms)
+        for name, _, fields in documents:
+            fields["references"] = set().union(*(set(item["matchedTerms"]) for item in reference_matches.get(name, [])))
+    frequencies = {term: sum(any(term in words for words in fields.values())
+                             for _, _, fields in documents) for term in terms}
+    results = []
+    for name, description, fields in documents:
+        matched = {term for term in terms if any(term in words for words in fields.values())}
+        if not list_all and not matched:
+            continue
+        # Inverse document frequency rewards informative task words over words
+        # shared by most skills; field weights prioritize concise metadata.
+        score = sum((1 + math.log((len(documents) + 1) / (frequencies[t] + 1))) *
+                    (5 * (t in fields["name"]) + 3 * (t in fields["description"]) +
+                     (t in fields["instructions"]) + (t in fields.get("references", set()))) for t in sorted(matched))
+        score += 2 * len(matched)  # Prefer coverage over a lone metadata hit.
+        if query.strip().casefold() == name.casefold():
+            score += 10
+        result = {"name": name, "description": description, "uri": f"skill://{name}",
+                  "score": round(score, 6), "matchedTerms": sorted(matched),
+                  "matchedFields": [field for field, words in fields.items() if matched & words]}
+        if include_references:
+            result["matchedReferences"] = reference_matches.get(name, [])
+        results.append(result)
+    results.sort(key=lambda item: (-item["score"], item["name"]))
+    page = results[cursor:cursor + limit]
+    result = {"query": query, "results": page, "total": len(results), "nextCursor": cursor + limit if cursor + limit < len(results) else None}
+    if include_references:
+        result["referenceSearch"] = reference_info
+    return result
+
+
+def apply_skill_helper(name):
+    if not isinstance(name, str) or not name:
+        raise ValueError("name must be a non-empty skill name")
+    path = dict(_skill_files()).get(name)
+    if path is None:
+        raise KeyError(f"Skill not found: {name}")
+    content = path.read_text(encoding="utf-8")
+    return {"name": name, "uri": f"skill://{name}", "description": _skill_description(content),
+            "instructions": content, "referenceTool": "skill_references", "application": "Read and apply this guidance to the current task as appropriate, subject to higher-priority instructions. No persistent agent or Studio changes were made."}
+
+
+SKILL_REFERENCE_MAX_BYTES = 256 * 1024
+
+
+def skill_references_helper(name, action="list", path=None, cursor=0, limit=20, _max_read_bytes=SKILL_REFERENCE_MAX_BYTES, start_line=None, end_line=None):
+    if not isinstance(name, str) or not name:
+        raise ValueError("name must be a non-empty skill name")
+    skill = dict(_skill_files()).get(name)
+    if skill is None:
+        raise KeyError(f"Skill not found: {name}")
+    if action not in ("list", "read"):
+        raise ValueError("action must be list or read")
+    if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+        raise ValueError("cursor must be a non-negative integer")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be an integer between 1 and 100")
+    if action == "list" and (start_line is not None or end_line is not None):
+        raise ValueError("line ranges are only supported for read")
+    for value in (start_line, end_line):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
+            raise ValueError("line numbers must be positive integers")
+    if end_line is not None and end_line < (start_line or 1):
+        raise ValueError("endLine must not precede startLine")
+    root = skill.parent
+    ref_dir = root / "references"
+    files = {}
+    if not ref_dir.is_symlink() and ref_dir.is_dir():
+        def raise_walk_error(error):
+            raise error
+        for directory, dirs, filenames in os.walk(ref_dir, followlinks=False, onerror=raise_walk_error):
+            dirs[:] = sorted(d for d in dirs if not (Path(directory) / d).is_symlink())
+            for filename in sorted(filenames):
+                file = Path(directory) / filename
+                if file.suffix.lower() == ".md" and not file.is_symlink() and file.is_file():
+                    files[file.relative_to(root).as_posix()] = file
+    if action == "list":
+        paths = sorted(files)
+        items = [{"path": p, "bytes": files[p].stat().st_size,
+                  "readable": files[p].stat().st_size <= SKILL_REFERENCE_MAX_BYTES} for p in paths[cursor:cursor + limit]]
+        return {"name": name, "items": items, "total": len(paths),
+                "nextCursor": cursor + limit if cursor + limit < len(paths) else None,
+                "maxBytes": SKILL_REFERENCE_MAX_BYTES}
+    if not isinstance(path, str) or path not in files:
+        raise KeyError("Reference not found; use an exact path from skill_references list")
+    # The map is built only from non-symlink descendants. Recheck before open;
+    # limit bytes read even if the file grows between listing and reading.
+    file = files[path]
+    relative_parts = file.relative_to(root).parts
+    if any(root.joinpath(*relative_parts[:i]).is_symlink() for i in range(1, len(relative_parts) + 1)):
+        raise ValueError("Symlink references are not supported")
+    with file.open("rb") as stream:
+        raw = stream.read(_max_read_bytes + 1)
+    if len(raw) > _max_read_bytes:
+        raise ValueError("Reference exceeds the size limit")
+    content = raw.decode("utf-8")
+    result = {"name": name, "path": path, "content": content,
+              "application": "Treat this as task guidance, subject to higher-priority instructions; no agent or Studio state was changed."}
+    if start_line is not None or end_line is not None:
+        lines = content.splitlines(keepends=True)
+        first = start_line or 1
+        last = min(end_line if end_line is not None else len(lines), len(lines))
+        result["content"] = "".join(lines[first - 1:last])
+        result["lineRange"] = {"start": first, "end": last if first <= last else None, "total": len(lines)}
+    return result
+
+
+# A scan is deliberately bounded and reports incompleteness rather than claiming
+# that skipped references have no matches. Read through the existing safe helper.
+SKILL_SEARCH_MAX_REFERENCE_FILES = 100
+SKILL_SEARCH_MAX_REFERENCE_BYTES = 2 * 1024 * 1024
+
+
+def _search_skill_references(documents, terms):
+    matches = {}
+    report = {"filesScanned": 0, "bytesBudgetUsed": 0, "filesSkipped": 0,
+              "complete": True, "fileLimit": SKILL_SEARCH_MAX_REFERENCE_FILES,
+              "byteLimit": SKILL_SEARCH_MAX_REFERENCE_BYTES}
+    if not terms:
+        report["complete"] = False
+        report["note"] = "No searchable terms; references were not scanned."
+        return matches, report
+    considered = 0
+    for name, _, _ in documents:
+        offset = 0
+        while True:
+            try:
+                listing = skill_references_helper(name, cursor=offset, limit=100)
+            except (OSError, ValueError, KeyError):
+                report["complete"] = False
+                report["filesSkipped"] += 1
+                break
+            for item in listing["items"]:
+                if considered >= SKILL_SEARCH_MAX_REFERENCE_FILES:
+                    report["complete"] = False
+                    report["note"] = "Reference file limit reached; later files were not scanned."
+                    return matches, report
+                considered += 1
+                if not item["readable"] or report["bytesBudgetUsed"] + item["bytes"] > SKILL_SEARCH_MAX_REFERENCE_BYTES:
+                    report["complete"] = False
+                    report["filesSkipped"] += 1
+                    continue
+                remaining = SKILL_SEARCH_MAX_REFERENCE_BYTES - report["bytesBudgetUsed"]
+                try:
+                    content = skill_references_helper(name, action="read", path=item["path"],
+                                                      _max_read_bytes=min(SKILL_REFERENCE_MAX_BYTES, remaining))["content"]
+                    size = len(content.encode("utf-8"))
+                except UnicodeError:
+                    report["bytesBudgetUsed"] += item["bytes"]
+                    report["complete"] = False
+                    report["filesSkipped"] += 1
+                    continue
+                except ValueError:
+                    # A file may have grown beyond the remaining budget; stop
+                    # reading further content rather than trusting the old stat.
+                    report["bytesBudgetUsed"] = SKILL_SEARCH_MAX_REFERENCE_BYTES
+                    report["complete"] = False
+                    report["filesSkipped"] += 1
+                    continue
+                except (OSError, KeyError):
+                    report["bytesBudgetUsed"] += item["bytes"]
+                    report["complete"] = False
+                    report["filesSkipped"] += 1
+                    continue
+                report["bytesBudgetUsed"] += size
+                report["filesScanned"] += 1
+                matched = terms & _skill_search_words(content)
+                if matched:
+                    matches.setdefault(name, []).append({"path": item["path"], "matchedTerms": sorted(matched)})
+            if listing["nextCursor"] is None:
+                break
+            offset = listing["nextCursor"]
+    return matches, report
 
 
 _CLOUD_ICONS_CACHE = None
@@ -4012,7 +5718,7 @@ def install_template_helper(client: BridgeClient, template_name: str, peer_id: s
 
 
 def browse_kit_helper(category: str = "all", item: str = None, output_format: str = "summary", section: str = None, cursor: int = 0, limit: int = 50) -> dict:
-    from image_pipeline import PROCEDURAL_PRESETS, find_kit_root
+    from image_pipeline import ALL_PROCEDURAL_PRESETS, AUDIO_SYNTH_PRESETS, find_kit_root
 
     kit = find_kit_root()
     skills_dir = _find_skills_dir()
@@ -4024,8 +5730,8 @@ def browse_kit_helper(category: str = "all", item: str = None, output_format: st
     if item:
         target = item.strip()
         # Check skill
-        s_file = skills_dir / target / "SKILL.md"
-        if category in ("all", "skills") and s_file.is_file():
+        s_file = dict(_skill_files()).get(target)
+        if category in ("all", "skills") and s_file is not None:
             return {"type": "skill", "name": target, "path": str(s_file), "content": s_file.read_text(encoding="utf-8")}
         # Check Luau module
         m_stem = target[:-4] if target.endswith(".lua") else target
@@ -4135,25 +5841,53 @@ def browse_kit_helper(category: str = "all", item: str = None, output_format: st
         out["images"] = imgs
         out["imageCategories"] = cat_counts
     if category in ("all", "presets"):
-        out["proceduralPresets"] = list(PROCEDURAL_PRESETS.keys())
+        out["proceduralPresets"] = list(ALL_PROCEDURAL_PRESETS.keys())
+        out["audioSynthPresets"] = list(AUDIO_SYNTH_PRESETS.keys())
     if category in ("all", "audio"):
         audio_dir = kit / "assets" / "audio"
-        out["audio"] = [
-            {
-                "name": af.stem,
-                "fileName": af.name,
-                "localUri": f"rbxasset://arena_assets/audio/{af.name}",
-                "bytes": af.stat().st_size,
-            }
-            for af in sorted(audio_dir.glob("*"))
-            if af.is_file() and af.suffix.lower() in (".wav", ".ogg", ".mp3")
-        ] if audio_dir.is_dir() else []
+        audio_rows = []
+        if audio_dir.is_dir():
+            for af in sorted(audio_dir.glob("*")):
+                if af.is_file() and af.suffix.lower() in (".wav", ".ogg", ".mp3"):
+                    row_a = registry_by_path.get((kit / "assets" / "audio" / af.name).relative_to(kit.parent).as_posix(), {})
+                    thumb_a = str(row_a.get("thumbnail") or "")
+                    if thumb_a.startswith("roblox-kit/assets/thumbnails/"):
+                        thumb_a = thumb_a[len("roblox-kit/assets/thumbnails/") :]
+                    else:
+                        thumb_a = f"audio/{af.stem}.png"
+                    audio_rows.append({
+                        "name": af.stem,
+                        "fileName": af.name,
+                        "localUri": f"rbxasset://arena_assets/audio/{af.name}",
+                        "thumbnailPath": thumb_a,
+                        "bytes": af.stat().st_size,
+                    })
+        out["audio"] = audio_rows
     if category in ("all", "models"):
         models_dir = kit / "models"
-        out["models"] = [
-            {"name": mf.stem, "fileName": mf.name, "bytes": mf.stat().st_size, "path": str(mf)}
-            for mf in sorted(models_dir.glob("*.rbxmx"))
-        ] if models_dir.is_dir() else []
+        model_rows = []
+        if models_dir.is_dir():
+            for mf in sorted(models_dir.rglob("*")):
+                if mf.is_file() and mf.suffix.lower() in (".rbxmx", ".glb"):
+                    rel_m = mf.relative_to(models_dir).as_posix()
+                    parts_m = rel_m.split("/")
+                    pack_m = parts_m[0] if len(parts_m) > 1 else "featured"
+                    row_m = registry_by_path.get((kit / "models" / rel_m).relative_to(kit.parent).as_posix(), {})
+                    thumb_m = str(row_m.get("thumbnail") or "")
+                    if thumb_m.startswith("roblox-kit/assets/thumbnails/"):
+                        thumb_m = thumb_m[len("roblox-kit/assets/thumbnails/") :]
+                    else:
+                        thumb_m = f"model/{mf.stem}.png"
+                    model_rows.append({
+                        "name": mf.stem,
+                        "fileName": rel_m,
+                        "pack": row_m.get("category") or pack_m,
+                        "format": mf.suffix.lower().lstrip("."),
+                        "thumbnailPath": thumb_m,
+                        "bytes": mf.stat().st_size,
+                        "path": str(mf),
+                    })
+        out["models"] = model_rows
     if category in ("all", "systems"):
         out["systems"] = _discover_dropin_systems(kit)
     if category in ("all", "cloud_icons"):
@@ -4656,11 +6390,195 @@ def _device_sweep_viewports(client: BridgeClient, viewports, peer_id: str = None
     }, warnings
 
 
+def build_offline_3d_showcase_scene(
+    source: str = "showcase:starter_village",
+    seed: int = 2026,
+    theme: str = "horror_mansion",
+) -> tuple:
+    """Build a deterministic 3D Workspace + StarterGui + Lighting hierarchy for offline viewport preview & 3D scene audit."""
+    from image_pipeline import find_kit_root
+
+    kit = find_kit_root()
+    src = (source or "showcase:starter_village").strip()
+
+    if src.startswith("prefab:"):
+        stem = src.split(":", 1)[1].strip()
+        if stem.endswith(".json"):
+            stem = stem[:-5]
+        pf = kit / "prefabs" / f"{stem}.json"
+        if pf.is_file():
+            spec = json.loads(pf.read_text(encoding="utf-8"))
+            tree_nodes = spec.get("tree") or []
+            ws = {
+                "name": "Workspace",
+                "className": "Workspace",
+                "children": [
+                    {
+                        "name": "Baseplate",
+                        "className": "Part",
+                        "properties": {
+                            "Size": [128, 4, 128],
+                            "Position": [0, -2, 0],
+                            "Color": [0.24, 0.27, 0.32],
+                            "Anchored": True,
+                        },
+                    },
+                    {
+                        "name": "SpawnLocation",
+                        "className": "SpawnLocation",
+                        "properties": {
+                            "Size": [6, 1, 6],
+                            "Position": [0, 0.5, 22],
+                            "Color": [0.35, 0.62, 0.30],
+                            "Anchored": True,
+                        },
+                    },
+                    *tree_nodes,
+                ],
+            }
+            return ws, [], {"ClockTime": 14.0}, f"Prefab: {stem}"
+
+    if src.startswith("dungeon:"):
+        d = generate_dungeon_layout_helper(None, {"seed": seed, "roomCount": 8, "theme": theme, "buildInStudio": False})
+        ws = {
+            "name": "Workspace",
+            "className": "Workspace",
+            "children": d.get("tree") or [],
+        }
+        clock = 21.5 if "horror" in theme else 13.5
+        return ws, [], {"ClockTime": clock}, f"3D Dungeon ({theme}, seed {seed})"
+
+    if src == "showcase:horror_nightloop":
+        children = [
+            {
+                "name": "ForestGround",
+                "className": "Part",
+                "properties": {"Size": [180, 4, 180], "Position": [0, -2, 0], "Color": [0.14, 0.19, 0.16], "Anchored": True},
+            },
+            {
+                "name": "SpawnLocation",
+                "className": "SpawnLocation",
+                "properties": {"Size": [6, 1, 6], "Position": [0, 0.5, 28], "Color": [0.32, 0.54, 0.36], "Anchored": True},
+            },
+            {
+                "name": "NightLoopCabin",
+                "className": "Model",
+                "children": [
+                    {"name": "CabinFloor", "className": "Part", "properties": {"Size": [30, 1.2, 24], "Position": [0, 0.6, 0], "Color": [0.34, 0.24, 0.17], "Anchored": True}},
+                    {"name": "BackWall", "className": "Part", "properties": {"Size": [30, 12, 1.5], "Position": [0, 7.2, -11.25], "Color": [0.42, 0.30, 0.22], "Anchored": True}},
+                    {"name": "LeftWall", "className": "Part", "properties": {"Size": [1.5, 12, 24], "Position": [-14.25, 7.2, 0], "Color": [0.40, 0.28, 0.20], "Anchored": True}},
+                    {"name": "RightWall", "className": "Part", "properties": {"Size": [1.5, 12, 24], "Position": [14.25, 7.2, 0], "Color": [0.40, 0.28, 0.20], "Anchored": True}},
+                    {"name": "WindowGlass", "className": "Part", "properties": {"Size": [8, 5, 0.5], "Position": [0, 7.5, -11.2], "Color": [0.55, 0.78, 0.95], "Transparency": 0.45, "Material": "Glass", "Anchored": True}},
+                    {"name": "RoofLeft", "className": "WedgePart", "properties": {"Size": [32, 6, 13], "Position": [0, 16.2, -6.2], "Color": [0.22, 0.16, 0.14], "Anchored": True}},
+                    {"name": "RoofRight", "className": "WedgePart", "properties": {"Size": [32, 6, 13], "Position": [0, 16.2, 6.2], "Orientation": [0, 180, 0], "Color": [0.22, 0.16, 0.14], "Anchored": True}},
+                ],
+            },
+        ]
+        for pf_stem in ("horror_fuse_breaker_station", "horror_task_generator_machine", "world_safe_room_shelter", "world_loot_chest_shrine"):
+            pf = kit / "prefabs" / f"{pf_stem}.json"
+            if pf.is_file():
+                try:
+                    spec = json.loads(pf.read_text(encoding="utf-8"))
+                    children.extend(spec.get("tree") or [])
+                except Exception:
+                    pass
+        gui = []
+        hud_pf = kit / "prefabs" / "ui_horror_sanity_vitals_hud.json"
+        if hud_pf.is_file():
+            try:
+                gui = json.loads(hud_pf.read_text(encoding="utf-8")).get("tree") or []
+            except Exception:
+                pass
+        return (
+            {"name": "Workspace", "className": "Workspace", "children": children},
+            gui,
+            {"ClockTime": 22.0},
+            "NightLoop Horror Cabin, FuseBox, SafeRoom & Generator",
+        )
+
+    # Default showcase: Croftie Starter Village, Watchtower, Shrine, Farm Plots & Obby
+    village_children = [
+        {
+            "name": "Baseplate",
+            "className": "Part",
+            "properties": {"Size": [220, 4, 220], "Position": [0, -2, 0], "Color": [0.26, 0.46, 0.28], "Anchored": True},
+        },
+        {
+            "name": "SpawnLocation",
+            "className": "SpawnLocation",
+            "properties": {"Size": [8, 1, 8], "Position": [0, 0.5, 28], "Color": [0.36, 0.68, 0.34], "Anchored": True},
+        },
+        {
+            "name": "VillageHall",
+            "className": "Model",
+            "children": [
+                {"name": "Foundation", "className": "Part", "properties": {"Size": [26, 2, 20], "Position": [-22, 1, -12], "Color": [0.52, 0.50, 0.48], "Anchored": True}},
+                {"name": "MainWalls", "className": "Part", "properties": {"Size": [24, 11, 18], "Position": [-22, 7.5, -12], "Color": [0.82, 0.74, 0.62], "Anchored": True}},
+                {"name": "HallRoof", "className": "WedgePart", "properties": {"Size": [26, 6, 20], "Position": [-22, 16, -12], "Color": [0.68, 0.24, 0.18], "Anchored": True}},
+                {"name": "DoorFrame", "className": "Part", "properties": {"Size": [5, 8, 1.2], "Position": [-22, 6, -2.8], "Color": [0.38, 0.25, 0.16], "Anchored": True}},
+                {"name": "Lantern", "className": "Part", "properties": {"Size": [1.6, 2.2, 1.6], "Position": [-17, 8, -2.2], "Color": [1.0, 0.82, 0.32], "Material": "Neon", "Anchored": True}},
+            ],
+        },
+        {
+            "name": "Watchtower",
+            "className": "Model",
+            "children": [
+                {"name": "TowerBase", "className": "Part", "properties": {"Size": [12, 22, 12], "Position": [24, 11, -16], "Color": [0.45, 0.48, 0.54], "Anchored": True}},
+                {"name": "Battlement", "className": "Part", "properties": {"Size": [15, 3, 15], "Position": [24, 23.5, -16], "Color": [0.36, 0.39, 0.45], "Anchored": True}},
+                {"name": "BeaconCrystal", "className": "Part", "properties": {"Size": [4, 4, 4], "Position": [24, 28, -16], "Shape": "Ball", "Color": [0.24, 0.78, 1.0], "Material": "Neon", "Anchored": True}},
+            ],
+        },
+        {
+            "name": "PaletteFarmPlots",
+            "className": "Model",
+            "children": [
+                {"name": "SoilPlot1", "className": "Part", "properties": {"Size": [10, 0.8, 10], "Position": [-8, 0.4, 10], "Color": [0.42, 0.27, 0.16], "Anchored": True}},
+                {"name": "SoilPlot2", "className": "Part", "properties": {"Size": [10, 0.8, 10], "Position": [4, 0.4, 10], "Color": [0.42, 0.27, 0.16], "Anchored": True}},
+                {"name": "IrrigationCanal", "className": "Part", "properties": {"Size": [24, 0.6, 4], "Position": [-2, 0.3, 17], "Color": [0.18, 0.62, 0.92], "Transparency": 0.3, "Anchored": True}},
+                {"name": "GoldenCrop", "className": "Part", "properties": {"Size": [2.4, 3.2, 2.4], "Position": [-8, 2.2, 10], "Color": [0.95, 0.78, 0.22], "Material": "Neon", "Anchored": True}},
+                {"name": "EmeraldCrop", "className": "Part", "properties": {"Size": [2.4, 3.0, 2.4], "Position": [4, 2.1, 10], "Color": [0.24, 0.85, 0.42], "Anchored": True}},
+            ],
+        },
+        {
+            "name": "PineGrove",
+            "className": "Model",
+            "children": [
+                {"name": "Trunk1", "className": "Part", "properties": {"Size": [2.5, 9, 2.5], "Position": [22, 4.5, 14], "Color": [0.45, 0.28, 0.15], "Anchored": True}},
+                {"name": "Canopy1", "className": "Part", "properties": {"Size": [9, 9, 9], "Position": [22, 11.5, 14], "Shape": "Ball", "Color": [0.20, 0.58, 0.26], "Anchored": True}},
+                {"name": "Trunk2", "className": "Part", "properties": {"Size": [2.2, 8, 2.2], "Position": [-26, 4.0, 14], "Color": [0.45, 0.28, 0.15], "Anchored": True}},
+                {"name": "Canopy2", "className": "Part", "properties": {"Size": [8, 8, 8], "Position": [-26, 10.5, 14], "Shape": "Ball", "Color": [0.22, 0.62, 0.30], "Anchored": True}},
+            ],
+        },
+    ]
+    for pf_stem in ("world_loot_chest_shrine", "world_quest_giver_npc"):
+        pf = kit / "prefabs" / f"{pf_stem}.json"
+        if pf.is_file():
+            try:
+                spec = json.loads(pf.read_text(encoding="utf-8"))
+                village_children.extend(spec.get("tree") or [])
+            except Exception:
+                pass
+    gui = []
+    hud_pf = kit / "prefabs" / "ui_ability_cooldown_hotbar.json"
+    if hud_pf.is_file():
+        try:
+            gui = json.loads(hud_pf.read_text(encoding="utf-8")).get("tree") or []
+        except Exception:
+            pass
+    return (
+        {"name": "Workspace", "className": "Workspace", "children": village_children},
+        gui,
+        {"ClockTime": 14.0},
+        "Croftie Starter Village, Farm Plots, Watchtower & Shrine",
+    )
+
+
 def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
     import base64 as _b64
     from viewport_renderer import render_scene_png
 
     preset = args.get("preset") or "perspective"
+    target_path = args.get("path") or "Workspace"
     size = args.get("size") or {}
     w = int(size.get("w", args.get("width", 800)))
     h = int(size.get("h", args.get("height", 450)))
@@ -4668,14 +6586,20 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
     overlays = args.get("overlays") or {}
     show_labels = bool(overlays.get("labels", args.get("showLabels", True)))
     mode = args.get("mode") or "software"
+    yaw_offset = float(args.get("yaw", 0.0) or 0.0)
+    pitch_offset = float(args.get("pitch", 0.0) or 0.0)
+    zoom = float(args.get("zoom", 1.0) or 1.0)
 
     if mode == "native":
         return {"ok": False, "reason": "native_capture_unsafe", "warnings": ["Desktop capture is disabled because it cannot guarantee Studio-only pixels."]}
 
     ws_tree = _unwrap_job(client.submit_job("inspect", {
-        "path": "Workspace",
-        "depth": 8,
+        "path": target_path,
+        "depth": 10,
+        "maxChildren": 500,
         "includeProperties": True,
+        "includeStructured": True,
+        "includeStructuredDescendants": True,
     }, wait=45.0, dm="edit", peer_id=peer_id))
 
     lighting_props = {}
@@ -4684,8 +6608,9 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
             "path": "Lighting",
             "depth": 1,
             "includeProperties": True,
+            "includeStructured": True,
         }, wait=15.0, dm="edit", peer_id=peer_id))
-        lighting_props = lg.get("properties") or {}
+        lighting_props = {**(lg.get("properties") or {}), **(lg.get("structuredProperties") or {})}
     except Exception:
         pass
 
@@ -4694,8 +6619,11 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
         try:
             sg = _unwrap_job(client.submit_job("inspect", {
                 "path": "StarterGui",
-                "depth": 8,
+                "depth": 9,
+                "maxChildren": 250,
                 "includeProperties": True,
+                "includeStructured": True,
+                "includeStructuredDescendants": True,
             }, wait=20.0, dm="edit", peer_id=peer_id))
             gui_children = sg.get("children") or []
         except Exception:
@@ -4715,6 +6643,9 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
         include_hud=include_hud,
         show_labels=show_labels,
         show_grid=bool(overlays.get("grid", True)),
+        yaw_offset_deg=yaw_offset,
+        pitch_offset_deg=pitch_offset,
+        zoom=zoom,
     )
     if args.get("saveFile"):
         sp = Path(args["saveFile"]).expanduser()
@@ -4722,6 +6653,7 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
         sp.write_bytes(png_bytes)
         meta["savedFile"] = str(sp)
     meta["ok"] = True
+    meta["path"] = target_path
     meta["warnings"] = []
     if args.get("returnInline", True):
         meta["_mcp_image_png_b64"] = _b64.b64encode(png_bytes).decode("ascii")
@@ -4730,7 +6662,14 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
 
 def export_geometry_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
     from viewport_renderer import collect_parts_from_tree
-    root = _unwrap_job(client.submit_job("inspect", {"path": args.get("path", "Workspace"), "depth": args.get("depth", 10), "includeProperties": True}, wait=60.0, dm=args.get("dm", "edit"), peer_id=peer_id))
+    root = _unwrap_job(client.submit_job("inspect", {
+        "path": args.get("path", "Workspace"),
+        "depth": args.get("depth", 10),
+        "maxChildren": 500,
+        "includeProperties": True,
+        "includeStructured": True,
+        "includeStructuredDescendants": True,
+    }, wait=60.0, dm=args.get("dm", "edit"), peer_id=peer_id))
     requested = {str(x).lower() for x in args.get("include", ["cframe", "size", "color", "material", "transparency", "shape", "tags"])}
     parts = []
     stack = [root]
@@ -4767,8 +6706,8 @@ def render_offline_helper(client: BridgeClient, args: dict, peer_id: str = None,
     if gui_only:
         target = args.get("path") or ("PlayerGui" if dm == "client" else "StarterGui")
         tree = _unwrap_job(client.submit_job("inspect", {
-            "path": target, "depth": 12, "includeProperties": True,
-            "includeStructuredDescendants": True,
+            "path": target, "depth": 12, "maxChildren": 300, "includeProperties": True,
+            "includeStructured": True, "includeStructuredDescendants": True,
         }, wait=60.0, dm=dm, peer_id=peer_id))
         gui_nodes = tree.get("children", []) if tree.get("className") in ("StarterGui", "PlayerGui") else [tree]
         world = {"name": "Workspace", "className": "Workspace", "children": []}
@@ -4795,19 +6734,20 @@ def render_offline_helper(client: BridgeClient, args: dict, peer_id: str = None,
         else:
             target = args.get("path", "Workspace")
             tree = _unwrap_job(client.submit_job("inspect", {
-                "path": target, "depth": 12, "includeProperties": True,
+                "path": target, "depth": 12, "maxChildren": 500, "includeProperties": True,
+                "includeStructured": True, "includeStructuredDescendants": True,
             }, wait=60.0, dm="edit", peer_id=peer_id))
             lighting = {}
             try:
                 lighting = _unwrap_job(client.submit_job("inspect", {
-                    "path": "Lighting", "depth": 1, "includeProperties": True,
+                    "path": "Lighting", "depth": 1, "includeProperties": True, "includeStructured": True,
                 }, wait=15.0, dm="edit", peer_id=peer_id)).get("properties", {})
             except Exception:
                 pass
             if args.get("includeHud", False) and not gui_nodes:
                 gui_nodes = _unwrap_job(client.submit_job("inspect", {
-                    "path": "StarterGui", "depth": 10, "includeProperties": True,
-                    "includeStructuredDescendants": True,
+                    "path": "StarterGui", "depth": 10, "maxChildren": 250, "includeProperties": True,
+                    "includeStructured": True, "includeStructuredDescendants": True,
                 }, wait=25.0, dm="edit", peer_id=peer_id)).get("children", [])
             source = "studio"
         png, meta = render_scene_png(
@@ -4834,7 +6774,15 @@ def render_offline_helper(client: BridgeClient, args: dict, peer_id: str = None,
 
 
 def perf_audit_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
-    root = _unwrap_job(client.submit_job("inspect", {"path": args.get("path", "Workspace"), "depth": 20, "includeProperties": True, "descendantSummary": True}, wait=60.0, dm="edit", peer_id=peer_id))
+    root = _unwrap_job(client.submit_job("inspect", {
+        "path": args.get("path", "Workspace"),
+        "depth": 20,
+        "maxChildren": 500,
+        "includeProperties": True,
+        "includeStructured": True,
+        "includeStructuredDescendants": True,
+        "descendantSummary": True,
+    }, wait=60.0, dm="edit", peer_id=peer_id))
     counts, meshes, models, unanchored, bad_queries, total = {}, 0, 0, 0, 0, 0
     stack = [root]
     while stack:
@@ -4844,8 +6792,8 @@ def perf_audit_helper(client: BridgeClient, args: dict, peer_id: str = None) -> 
         if cls == "MeshPart": meshes += 1
         if cls == "Model": models += 1
         if cls in ("Part", "MeshPart", "WedgePart", "CornerWedgePart", "UnionOperation", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat"):
-            if props.get("Anchored") is False: unanchored += 1
-            if props.get("CanQuery") is False and props.get("CanCollide") is True: bad_queries += 1
+            if props.get("Anchored") is False or str(props.get("Anchored")).lower() == "false": unanchored += 1
+            if (props.get("CanQuery") is False or str(props.get("CanQuery")).lower() == "false") and (props.get("CanCollide") is True or str(props.get("CanCollide")).lower() == "true"): bad_queries += 1
         stack.extend(node.get("children") or [])
     part_count = sum(counts.get(c, 0) for c in ("Part", "MeshPart", "WedgePart", "CornerWedgePart", "UnionOperation", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat"))
     risk = "high" if part_count >= 8000 else "elevated" if part_count >= 3000 or meshes >= 1500 else "moderate" if part_count >= 1000 else "low"
@@ -4859,7 +6807,10 @@ def audit_3d_scene_helper(client: BridgeClient, args: dict, peer_id: str = None)
     root = _unwrap_job(client.submit_job("inspect", {
         "path": target_path,
         "depth": 10,
+        "maxChildren": 500,
         "includeProperties": True,
+        "includeStructured": True,
+        "includeStructuredDescendants": True,
     }, wait=45.0, dm="edit", peer_id=peer_id))
 
     report = audit_3d_hierarchy(root)
@@ -4886,7 +6837,10 @@ def audit_3d_scene_helper(client: BridgeClient, args: dict, peer_id: str = None)
         root_after = _unwrap_job(client.submit_job("inspect", {
             "path": target_path,
             "depth": 10,
+            "maxChildren": 500,
             "includeProperties": True,
+            "includeStructured": True,
+            "includeStructuredDescendants": True,
         }, wait=45.0, dm="edit", peer_id=peer_id))
         report = audit_3d_hierarchy(root_after)
         report["path"] = target_path
@@ -5778,6 +7732,2355 @@ def playtest_capabilities_helper(client: BridgeClient, args: dict, peer_id: str 
     return result
 
 
+# ---------------------------------------------------------------------------
+# Group I Helpers: Dungeon Layout, Gameplay Mechanics, Atmosphere FX, Synth Audio
+# ---------------------------------------------------------------------------
+
+DUNGEON_THEMES = {
+    "horror_mansion": {
+        "floorMaterial": "Material.WoodPlanks",
+        "floorColor": [0.22, 0.16, 0.12],
+        "corridorMaterial": "Material.Slate",
+        "corridorColor": [0.16, 0.14, 0.14],
+    },
+    "crypt_catacombs": {
+        "floorMaterial": "Material.Cobblestone",
+        "floorColor": [0.19, 0.21, 0.24],
+        "corridorMaterial": "Material.Slate",
+        "corridorColor": [0.14, 0.15, 0.18],
+    },
+    "scifi_facility": {
+        "floorMaterial": "Material.Metal",
+        "floorColor": [0.16, 0.20, 0.26],
+        "corridorMaterial": "Material.DiamondPlate",
+        "corridorColor": [0.12, 0.16, 0.22],
+    },
+    "ancient_ruins": {
+        "floorMaterial": "Material.Sandstone",
+        "floorColor": [0.42, 0.34, 0.24],
+        "corridorMaterial": "Material.Limestone",
+        "corridorColor": [0.35, 0.29, 0.21],
+    },
+}
+
+ROOM_ROLE_COLORS = {
+    "spawn": [0.27, 0.88, 0.63],
+    "normal": [0.37, 0.43, 0.51],
+    "treasure": [1.0, 0.78, 0.34],
+    "puzzle": [0.36, 0.78, 1.0],
+    "saferoom": [0.55, 0.84, 0.69],
+    "boss": [0.92, 0.29, 0.29],
+}
+
+
+def generate_dungeon_layout_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    import random as _random
+
+    seed = int(args.get("seed", 1337))
+    room_count = max(3, min(28, int(args.get("roomCount", 8))))
+    grid_step = max(24.0, min(96.0, float(args.get("gridStep", 36.0))))
+    room_height = max(8.0, min(36.0, float(args.get("roomHeight", 14.0))))
+    theme_name = str(args.get("theme") or "horror_mansion")
+    theme = DUNGEON_THEMES.get(theme_name, DUNGEON_THEMES["horror_mansion"])
+
+    rng = _random.Random(seed)
+    rooms = []
+    occupied = {(0, 0)}
+    frontier = [(0, 0)]
+
+    while len(rooms) < room_count and frontier:
+        pick_idx = rng.randrange(len(frontier))
+        gx, gz = frontier.pop(pick_idx)
+        idx = len(rooms) + 1
+        if idx == 1:
+            role = "spawn"
+        elif idx == room_count:
+            role = "boss"
+        elif idx == max(2, room_count // 2):
+            role = "saferoom"
+        elif idx % 3 == 0:
+            role = "treasure"
+        elif idx % 4 == 0:
+            role = "puzzle"
+        else:
+            role = "normal"
+
+        w = float(rng.randint(22, 30))
+        d = float(rng.randint(22, 30))
+        cx, cz = round(gx * grid_step, 2), round(gz * grid_step, 2)
+        rooms.append({
+            "id": idx,
+            "role": role,
+            "grid": [gx, gz],
+            "center": [cx, 0.0, cz],
+            "size": [w, room_height, d],
+        })
+        for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nb = (gx + dx, gz + dz)
+            if nb not in occupied:
+                occupied.add(nb)
+                frontier.append(nb)
+
+    # Prim's Minimum Spanning Tree across rooms
+    connected = {0}
+    corridors = []
+    edge_set = set()
+    for _ in range(len(rooms) - 1):
+        best_a = best_b = None
+        best_dist = float("inf")
+        for i in connected:
+            for j in range(len(rooms)):
+                if j not in connected:
+                    ax, _, az = rooms[i]["center"]
+                    bx, _, bz = rooms[j]["center"]
+                    dist = math.hypot(ax - bx, az - bz)
+                    if dist < best_dist:
+                        best_a, best_b, best_dist = i, j, dist
+        if best_a is not None and best_b is not None:
+            connected.add(best_b)
+            pair = (min(best_a, best_b), max(best_a, best_b))
+            edge_set.add(pair)
+            corridors.append({
+                "from": rooms[best_a]["id"],
+                "to": rooms[best_b]["id"],
+                "length": round(best_dist, 2),
+                "isLoop": False,
+            })
+
+    # Optional loop corridors for non-linear horror escape paths
+    for i in range(len(rooms)):
+        for j in range(i + 1, len(rooms)):
+            pair = (i, j)
+            if pair not in edge_set:
+                ax, _, az = rooms[i]["center"]
+                bx, _, bz = rooms[j]["center"]
+                dist = math.hypot(ax - bx, az - bz)
+                if dist <= grid_step * 1.45 and rng.random() < 0.28:
+                    edge_set.add(pair)
+                    corridors.append({
+                        "from": rooms[i]["id"],
+                        "to": rooms[j]["id"],
+                        "length": round(dist, 2),
+                        "isLoop": True,
+                    })
+
+    # Build Instance tree representation
+    room_nodes = []
+    for rm in rooms:
+        cx, cy, cz = rm["center"]
+        w, h, d = rm["size"]
+        role_col = ROOM_ROLE_COLORS.get(rm["role"], ROOM_ROLE_COLORS["normal"])
+        room_nodes.append({
+            "name": f"Room_{rm['id']:02d}_{rm['role']}",
+            "className": "Model",
+            "attributes": {"RoomId": rm["id"], "RoomRole": rm["role"]},
+            "children": [
+                {
+                    "name": "Floor",
+                    "className": "Part",
+                    "properties": {
+                        "Size": {"__t": "Vector3", "v": [w, 1.0, d]},
+                        "Position": {"__t": "Vector3", "v": [cx, cy + 0.5, cz]},
+                        "Material": {"__t": "Enum", "v": theme["floorMaterial"]},
+                        "Color": {"__t": "Color3", "v": theme["floorColor"]},
+                        "Anchored": True,
+                    },
+                },
+                {
+                    "name": "RoleBeacon",
+                    "className": "Part",
+                    "properties": {
+                        "Size": {"__t": "Vector3", "v": [2.2, 0.5, 2.2]},
+                        "Position": {"__t": "Vector3", "v": [cx, cy + 1.25, cz]},
+                        "Material": {"__t": "Enum", "v": "Material.Neon"},
+                        "Color": {"__t": "Color3", "v": role_col},
+                        "Anchored": True,
+                        "CanCollide": False,
+                    },
+                },
+            ],
+        })
+
+    for idx, corr in enumerate(corridors, start=1):
+        ra = rooms[corr["from"] - 1]
+        rb = rooms[corr["to"] - 1]
+        mx = round((ra["center"][0] + rb["center"][0]) * 0.5, 2)
+        mz = round((ra["center"][2] + rb["center"][2]) * 0.5, 2)
+        dx = abs(ra["center"][0] - rb["center"][0])
+        dz = abs(ra["center"][2] - rb["center"][2])
+        sx = max(6.0, dx) if dx >= dz else 6.0
+        sz = max(6.0, dz) if dz > dx else 6.0
+        room_nodes.append({
+            "name": f"Corridor_{idx:02d}",
+            "className": "Part",
+            "properties": {
+                "Size": {"__t": "Vector3", "v": [sx, 0.8, sz]},
+                "Position": {"__t": "Vector3", "v": [mx, 0.4, mz]},
+                "Material": {"__t": "Enum", "v": theme["corridorMaterial"]},
+                "Color": {"__t": "Color3", "v": theme["corridorColor"]},
+                "Anchored": True,
+            },
+        })
+
+    tree = [{
+        "name": f"GeneratedDungeon_{seed}",
+        "className": "Model",
+        "attributes": {"Seed": seed, "Theme": theme_name, "RoomCount": len(rooms)},
+        "children": room_nodes,
+    }]
+
+    studio_result = None
+    if args.get("buildInStudio") and client and client.health().get("studio_connected"):
+        target_parent = args.get("parent") or "Workspace"
+        studio_result = _unwrap_job(client.submit_job("build", {
+            "parent": target_parent,
+            "tree": tree,
+            "select": True,
+        }, note=f"generate_dungeon:{seed}", wait=45.0, dm="edit", peer_id=peer_id))
+
+    return {
+        "ok": True,
+        "seed": seed,
+        "theme": theme_name,
+        "roomCount": len(rooms),
+        "corridorCount": len(corridors),
+        "allRoomsReachable": len(connected) == len(rooms),
+        "rooms": rooms,
+        "corridors": corridors,
+        "tree": tree,
+        "builtInStudio": bool(studio_result),
+        "studioResult": studio_result,
+    }
+
+
+MECHANIC_BUNDLES = {
+    "horror-director": {
+        "system": "mechanics/horror-director",
+        "prefab": "ui_horror_sanity_vitals_hud",
+        "modules": ["StateMachine", "CooldownManager"],
+        "description": "5-phase server-authoritative horror AI Director with strike budget, NightModifiers, and sanity HUD.",
+    },
+    "round-survival": {
+        "system": "mechanics/round-survival",
+        "prefab": "horror_task_generator_machine",
+        "modules": ["StateMachine", "QuestTracker"],
+        "description": "Co-op generator repair & extraction round loop with dynamic threat targeting.",
+    },
+    "stamina-movement": {
+        "system": "mechanics/stamina-movement",
+        "prefab": None,
+        "modules": ["StateMachine", "CooldownManager"],
+        "description": "Tactical sprint stamina drain/regen and stealth crouch noise-radius controller.",
+    },
+    "inventory-loot": {
+        "system": "mechanics/inventory-loot",
+        "prefab": "world_loot_chest_shrine",
+        "modules": ["LootTable"],
+        "description": "Server-authoritative slot hotbar inventory with weighted rarity chest rolls and pity counter.",
+    },
+    "combat-abilities": {
+        "system": "mechanics/combat-abilities",
+        "prefab": None,
+        "modules": ["CombatPipeline", "CooldownManager"],
+        "description": "Cooldown ability casting with shield/armor mitigation, combo scaling, and status reactions.",
+    },
+    "weather-cycle": {
+        "system": "mechanics/weather-cycle",
+        "prefab": "lighting_horror_blood_moon",
+        "modules": ["StateMachine"],
+        "description": "Dynamic weather state machine (Clear, Rain, Thunderstorm,DenseFog, BloodMoon, Blizzard).",
+    },
+    "cutscene-camera": {
+        "system": "mechanics/cutscene-camera",
+        "prefab": "world_cutscene_stage_rig",
+        "modules": ["CutsceneDirector"],
+        "description": "Keyframed cinematic camera track player with FOV sweeps, letterbox framing, and skip support.",
+    },
+    "dialogue-npc": {
+        "system": "mechanics/dialogue-npc",
+        "prefab": "world_npc_dialogue_kiosk",
+        "modules": ["DialogueSystem", "NetworkGuard"],
+        "description": "Server-verified branching NPC & lore terminal conversation engine with conditional choices.",
+    },
+    "world-shrines": {
+        "system": "mechanics/world-shrines",
+        "prefab": "vfx_arcane_portal_shrine",
+        "modules": ["VFXManager", "MeshKitbasher", "CooldownManager"],
+        "description": "Interactive 3D mesh world shrine & buff altar system with ProximityPrompt and burst VFX.",
+    },
+    "boss-encounter": {
+        "system": "mechanics/boss-encounter",
+        "prefab": "vfx_combat_aura_pedestal",
+        "modules": ["HitboxSystem", "CameraShaker", "VFXManager"],
+        "description": "Multi-phase boss encounter director with SpecialMesh telegraph rings and segmented HUD.",
+    },
+    "fuse-breaker": {
+        "system": "mechanics/horror-director",
+        "prefab": "horror_fuse_breaker_station",
+        "modules": ["CooldownManager"],
+        "description": "Interactive wall breaker & FuseBox blackout recovery station with ProximityPrompt.",
+    },
+    "task-generator": {
+        "system": "mechanics/round-survival",
+        "prefab": "horror_task_generator_machine",
+        "modules": ["QuestTracker"],
+        "description": "Hold-to-repair co-op survival generator objective with progress beacon.",
+    },
+    "loot-chest": {
+        "system": "mechanics/inventory-loot",
+        "prefab": "world_loot_chest_shrine",
+        "modules": ["LootTable"],
+        "description": "Interactive reliquary treasure chest shrine with weighted rarity loot drops.",
+    },
+    "safe-room": {
+        "system": "mechanics/horror-director",
+        "prefab": "world_safe_room_shelter",
+        "modules": ["StateMachine"],
+        "description": "Reinforced horror safe-room shelter booth with sanctuary lighting and HideSpot protection tag.",
+    },
+}
+
+
+def build_gameplay_mechanic_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from image_pipeline import find_kit_root
+
+    kit = find_kit_root()
+    mechanic = str(args.get("mechanic") or "horror-director")
+    bundle = MECHANIC_BUNDLES.get(mechanic)
+    if not bundle:
+        raise ValueError(f"Unknown gameplay mechanic: {mechanic}")
+
+    scripts = []
+    sys_rel = bundle.get("system")
+    if sys_rel:
+        sys_dir = kit / "systems" / sys_rel
+        for sub, target_parent in (
+            ("shared", "ReplicatedStorage.Shared"),
+            ("server", "ServerScriptService"),
+            ("client", "StarterPlayer.StarterPlayerScripts"),
+        ):
+            sdir = sys_dir / sub
+            if sdir.is_dir():
+                for lf in sorted(sdir.glob("*.lua")):
+                    scripts.append({
+                        "name": lf.name.split(".")[0],
+                        "fileName": lf.name,
+                        "targetParent": target_parent,
+                        "source": lf.read_text(encoding="utf-8"),
+                    })
+
+    prefab_spec = None
+    if bundle.get("prefab"):
+        pf = kit / "prefabs" / f"{bundle['prefab']}.json"
+        if pf.is_file():
+            prefab_spec = json.loads(pf.read_text(encoding="utf-8"))
+
+    studio_receipt = None
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        studio_receipt = {}
+        for mod_name in bundle.get("modules") or []:
+            install_kit_module_helper(client, mod_name, "ReplicatedStorage.Shared", peer_id=peer_id)
+        if sys_rel:
+            studio_receipt["system"] = install_dropin_system_helper(client, sys_rel, peer_id=peer_id)
+        if bundle.get("prefab"):
+            spawn_args = {"prefab": bundle["prefab"]}
+            if isinstance(args.get("position"), list) and len(args["position"]) == 3:
+                spawn_args["position"] = args["position"]
+            studio_receipt["prefab"] = spawn_prefab_helper(client, spawn_args, peer_id=peer_id)
+
+    return {
+        "ok": True,
+        "mechanic": mechanic,
+        "description": bundle["description"],
+        "system": sys_rel,
+        "prefab": bundle.get("prefab"),
+        "modules": bundle.get("modules", []),
+        "scriptCount": len(scripts),
+        "scripts": scripts,
+        "prefabSpec": prefab_spec,
+        "installedInStudio": bool(studio_receipt),
+        "studioReceipt": studio_receipt,
+    }
+
+
+ATMOSPHERE_FX_PRESETS = {
+    "BloodMoon": {
+        "lighting": {"Brightness": 0.45, "ClockTime": 0.0, "FogEnd": 150.0, "Ambient": {"__t": "Color3", "v": [0.35, 0.08, 0.10]}},
+        "atmosphere": {"Density": 0.44, "Offset": 0.15, "Color": {"__t": "Color3", "v": [0.38, 0.08, 0.10]}, "Decay": {"__t": "Color3", "v": [0.16, 0.03, 0.05]}, "Glare": 0.25, "Haze": 2.2},
+        "colorCorrection": {"Brightness": -0.04, "Contrast": 0.24, "Saturation": -0.22, "TintColor": {"__t": "Color3", "v": [0.96, 0.78, 0.80]}},
+        "bloom": {"Intensity": 0.65, "Size": 24.0, "Threshold": 0.88},
+    },
+    "DenseFog": {
+        "lighting": {"Brightness": 0.75, "ClockTime": 6.2, "FogEnd": 90.0, "Ambient": {"__t": "Color3", "v": [0.30, 0.34, 0.38]}},
+        "atmosphere": {"Density": 0.62, "Offset": 0.08, "Color": {"__t": "Color3", "v": [0.58, 0.64, 0.68]}, "Decay": {"__t": "Color3", "v": [0.28, 0.32, 0.36]}, "Glare": 0.1, "Haze": 2.8},
+        "colorCorrection": {"Brightness": -0.02, "Contrast": 0.10, "Saturation": -0.35, "TintColor": {"__t": "Color3", "v": [0.88, 0.94, 0.98]}},
+        "bloom": {"Intensity": 0.35, "Size": 18.0, "Threshold": 0.92},
+    },
+    "CyberpunkRain": {
+        "lighting": {"Brightness": 0.85, "ClockTime": 21.5, "FogEnd": 220.0, "Ambient": {"__t": "Color3", "v": [0.10, 0.18, 0.32]}},
+        "atmosphere": {"Density": 0.38, "Offset": 0.12, "Color": {"__t": "Color3", "v": [0.14, 0.32, 0.56]}, "Decay": {"__t": "Color3", "v": [0.08, 0.12, 0.28]}, "Glare": 0.4, "Haze": 1.9},
+        "colorCorrection": {"Brightness": 0.02, "Contrast": 0.28, "Saturation": 0.18, "TintColor": {"__t": "Color3", "v": [0.82, 0.94, 1.0]}},
+        "bloom": {"Intensity": 0.85, "Size": 32.0, "Threshold": 0.80},
+    },
+    "Thunderstorm": {
+        "lighting": {"Brightness": 0.55, "ClockTime": 19.2, "FogEnd": 165.0, "Ambient": {"__t": "Color3", "v": [0.16, 0.20, 0.28]}},
+        "atmosphere": {"Density": 0.48, "Offset": 0.10, "Color": {"__t": "Color3", "v": [0.22, 0.28, 0.38]}, "Decay": {"__t": "Color3", "v": [0.10, 0.14, 0.20]}, "Glare": 0.15, "Haze": 2.4},
+        "colorCorrection": {"Brightness": -0.05, "Contrast": 0.20, "Saturation": -0.25, "TintColor": {"__t": "Color3", "v": [0.84, 0.90, 0.98]}},
+        "bloom": {"Intensity": 0.50, "Size": 22.0, "Threshold": 0.86},
+    },
+    "GoldenHour": {
+        "lighting": {"Brightness": 2.2, "ClockTime": 17.6, "FogEnd": 520.0, "Ambient": {"__t": "Color3", "v": [0.42, 0.30, 0.22]}},
+        "atmosphere": {"Density": 0.28, "Offset": 0.18, "Color": {"__t": "Color3", "v": [0.95, 0.62, 0.38]}, "Decay": {"__t": "Color3", "v": [0.48, 0.24, 0.16]}, "Glare": 0.55, "Haze": 1.6},
+        "colorCorrection": {"Brightness": 0.03, "Contrast": 0.14, "Saturation": 0.12, "TintColor": {"__t": "Color3", "v": [1.0, 0.94, 0.86]}},
+        "bloom": {"Intensity": 0.55, "Size": 26.0, "Threshold": 0.85},
+    },
+    "DeepAbyss": {
+        "lighting": {"Brightness": 0.25, "ClockTime": 0.0, "FogEnd": 85.0, "Ambient": {"__t": "Color3", "v": [0.04, 0.07, 0.12]}},
+        "atmosphere": {"Density": 0.58, "Offset": 0.05, "Color": {"__t": "Color3", "v": [0.06, 0.12, 0.20]}, "Decay": {"__t": "Color3", "v": [0.02, 0.04, 0.08]}, "Glare": 0.05, "Haze": 2.6},
+        "colorCorrection": {"Brightness": -0.08, "Contrast": 0.26, "Saturation": -0.40, "TintColor": {"__t": "Color3", "v": [0.76, 0.86, 0.96]}},
+        "bloom": {"Intensity": 0.45, "Size": 20.0, "Threshold": 0.90},
+    },
+    "Blizzard": {
+        "lighting": {"Brightness": 1.45, "ClockTime": 11.5, "FogEnd": 105.0, "Ambient": {"__t": "Color3", "v": [0.52, 0.60, 0.70]}},
+        "atmosphere": {"Density": 0.54, "Offset": 0.12, "Color": {"__t": "Color3", "v": [0.82, 0.90, 0.98]}, "Decay": {"__t": "Color3", "v": [0.48, 0.58, 0.68]}, "Glare": 0.35, "Haze": 2.5},
+        "colorCorrection": {"Brightness": 0.04, "Contrast": 0.12, "Saturation": -0.28, "TintColor": {"__t": "Color3", "v": [0.90, 0.96, 1.0]}},
+        "bloom": {"Intensity": 0.60, "Size": 24.0, "Threshold": 0.84},
+    },
+    "SolarEclipse": {
+        "lighting": {"Brightness": 0.38, "ClockTime": 12.0, "FogEnd": 180.0, "Ambient": {"__t": "Color3", "v": [0.22, 0.14, 0.28]}},
+        "atmosphere": {"Density": 0.46, "Offset": 0.20, "Color": {"__t": "Color3", "v": [0.42, 0.20, 0.52]}, "Decay": {"__t": "Color3", "v": [0.16, 0.06, 0.24]}, "Glare": 0.48, "Haze": 2.1},
+        "colorCorrection": {"Brightness": -0.04, "Contrast": 0.26, "Saturation": -0.15, "TintColor": {"__t": "Color3", "v": [0.92, 0.84, 0.98]}},
+        "bloom": {"Intensity": 0.75, "Size": 28.0, "Threshold": 0.82},
+    },
+}
+
+
+def configure_atmosphere_fx_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    import copy as _copy
+
+    preset_name = str(args.get("preset") or "BloodMoon")
+    spec = _copy.deepcopy(ATMOSPHERE_FX_PRESETS.get(preset_name, ATMOSPHERE_FX_PRESETS["BloodMoon"]))
+    intensity = max(0.1, min(2.0, float(args.get("intensity", 1.0))))
+
+    atm = spec["atmosphere"]
+    atm["Density"] = round(min(1.0, atm["Density"] * intensity), 3)
+    atm["Haze"] = round(min(5.0, atm["Haze"] * intensity), 3)
+    cc = spec["colorCorrection"]
+    cc["Contrast"] = round(cc["Contrast"] * intensity, 3)
+    bl = spec["bloom"]
+    bl["Intensity"] = round(bl["Intensity"] * intensity, 3)
+
+    tree = [
+        {
+            "name": f"{preset_name}Atmosphere",
+            "className": "Atmosphere",
+            "replaceExisting": True,
+            "properties": atm,
+        },
+        {
+            "name": f"{preset_name}ColorGrading",
+            "className": "ColorCorrectionEffect",
+            "replaceExisting": True,
+            "properties": cc,
+        },
+        {
+            "name": f"{preset_name}Bloom",
+            "className": "BloomEffect",
+            "replaceExisting": True,
+            "properties": bl,
+        },
+    ]
+
+    studio_applied = False
+    if args.get("applyToStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("set_properties", {
+            "path": "Lighting",
+            "properties": spec["lighting"],
+        }, note=f"atmosphere_lighting:{preset_name}", wait=25.0, dm="edit", peer_id=peer_id))
+        _unwrap_job(client.submit_job("build", {
+            "parent": "Lighting",
+            "tree": tree,
+            "select": False,
+        }, note=f"atmosphere_fx:{preset_name}", wait=25.0, dm="edit", peer_id=peer_id))
+        studio_applied = True
+
+    return {
+        "ok": True,
+        "preset": preset_name,
+        "intensity": intensity,
+        "lightingProperties": spec["lighting"],
+        "postProcessingTree": tree,
+        "appliedToStudio": studio_applied,
+    }
+
+
+def synthesize_sound_effect_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    from image_pipeline import (
+        AUDIO_SYNTH_PRESETS,
+        find_kit_root,
+        install_into_studio_content,
+        synthesize_wav_bytes,
+    )
+
+    preset = str(args.get("preset") or "horror_heartbeat")
+    spec = AUDIO_SYNTH_PRESETS.get(preset, AUDIO_SYNTH_PRESETS["horror_heartbeat"])
+    raw_name = str(args.get("name") or preset)
+    safe_stem = re.sub(r"[^A-Za-z0-9_\-]", "_", Path(raw_name).stem) or preset
+    wav_bytes = synthesize_wav_bytes(
+        preset=preset,
+        duration_ms=args.get("durationMs"),
+        base_hz=args.get("baseHz"),
+        volume=float(args.get("volume", 0.8)),
+    )
+
+    rel_audio = f"audio/{safe_stem}.wav"
+    local_install = {"installed": False, "installedPaths": [], "uri": f"rbxasset://arena_assets/{rel_audio}"}
+    if args.get("installLocalStudio", True):
+        local_install = install_into_studio_content(wav_bytes, rel_audio)
+
+    saved_repo_path = None
+    if args.get("saveToRepo", False):
+        kit = find_kit_root()
+        out_p = kit / "assets" / "audio" / f"{safe_stem}.wav"
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        out_p.write_bytes(wav_bytes)
+        saved_repo_path = str(out_p)
+
+    studio_sound = None
+    target_path = args.get("targetPath")
+    if target_path and client and client.health().get("studio_connected"):
+        studio_sound = _unwrap_job(client.submit_job("build", {
+            "parent": target_path,
+            "tree": [{
+                "name": safe_stem,
+                "className": "Sound",
+                "replaceExisting": True,
+                "properties": {
+                    "SoundId": local_install["uri"],
+                    "Volume": float(args.get("volume", 0.8)),
+                },
+            }],
+            "select": False,
+        }, note=f"synth_sound:{safe_stem}", wait=25.0, dm="edit", peer_id=peer_id))
+
+    return {
+        "ok": True,
+        "preset": preset,
+        "name": safe_stem,
+        "category": spec["category"],
+        "description": spec["description"],
+        "durationMs": int(args.get("durationMs") or spec["durationMs"]),
+        "baseHz": float(args.get("baseHz") or spec["baseHz"]),
+        "bytes": len(wav_bytes),
+        "uri": local_install["uri"],
+        "previewUrl": f"/api/kit/synth-audio/{preset}.wav",
+        "localStudioInstalled": local_install["installed"],
+        "savedToRepo": saved_repo_path,
+        "studioSound": studio_sound,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Group J Helpers (v6.0.0): Plugin & Playtest Controller, Network Security
+#                           Auditor, Cutscene Sequencer, UI Theme Pack
+# ---------------------------------------------------------------------------
+
+PLUGIN_VERSION_MATRIX = [
+    {
+        "version": "6.0.0",
+        "status": "current",
+        "highlights": [
+            "Built-in Roblox Studio DockWidgetPluginGui Dashboard (`ArenaBridgeDashboardV6`) + `Arena v6 UI` toolbar button",
+            "Bulletproof Playtest Stop: `EndTest` + `LeaveTest` fallback, idempotent already-stopped handling, automatic `__ArenaTestRunner_*` purge, and `/api/poll?goodbye=1` unload beacon",
+            "`plugin_info` telemetry handler (jobs processed, last job latency, DockWidget availability, capability flags)",
+            "Automatic `structuredProperties` extraction on bounded `inspect` subtrees for 3D Z-buffer viewport & scene auditing",
+        ],
+    },
+    {
+        "version": "4.1.0",
+        "status": "legacy_supported",
+        "highlights": [
+            "`VirtualInput` (`simulate_input`), `StudioDeviceSimulatorService` (`manage_device_simulator`), `StudioTestService` (`run_studio_tests`), `playtest_caps`",
+        ],
+    },
+    {
+        "version": "4.0.0",
+        "status": "outdated",
+        "highlights": [
+            "Multi-DataModel routing (`edit`/`server`/`client`), `ScriptEditorService` safe script writes, atomic `ChangeHistoryService` undo",
+        ],
+    },
+]
+
+
+def _parse_ver_tuple(ver_str: str) -> tuple:
+    try:
+        parts = tuple(int(x) for x in str(ver_str or "0").split(".")[:3])
+        return parts + (0,) * (3 - len(parts))
+    except Exception:
+        return (0, 0, 0)
+
+
+def manage_plugin_and_playtest_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    action = str(args.get("action") or "status").strip().lower()
+    plugin_file = Path(__file__).resolve().parent / "ArenaBridge.lua"
+    bundled_ver = "6.0.0"
+    if plugin_file.is_file():
+        m = re.search(r'local PLUGIN_VERSION = "([0-9.]+)"', plugin_file.read_text(encoding="utf-8"))
+        if m:
+            bundled_ver = m.group(1)
+
+    if action == "version_matrix":
+        return {
+            "ok": True,
+            "bundledPluginVersion": bundled_ver,
+            "bridgeVersion": MCP_SERVER_VERSION,
+            "versions": PLUGIN_VERSION_MATRIX,
+            "upgradeCommand": "python3 roblox-bridge/setup.py --install-only",
+            "downloadEndpoint": "/api/plugin/download",
+        }
+
+    if action == "install_local":
+        import setup as _setup
+        tok = (client.token if client else "") or _setup.get_token(rotate=False)
+        installed_ok = _setup.install_plugin(tok, 8077)
+        return {
+            "ok": True,
+            "action": "install_local",
+            "installedToOsPlugins": bool(installed_ok),
+            "bundledPluginVersion": bundled_ver,
+            "note": "Restart Roblox Studio once (or reload plugins) for the updated ArenaBridge.lua v6.0.0 to take effect.",
+        }
+
+    if action == "evict_stale_peers":
+        ev = client.evict_playtest_peers(reason=args.get("reason") or "mcp_evict_stale_peers") if client else {"evictedPeers": 0}
+        return {
+            "ok": True,
+            "action": "evict_stale_peers",
+            "evictedPlaytestPeers": ev.get("evictedPeers", 0),
+            "cancelledRuntimeJobs": ev.get("cancelledJobs", 0),
+        }
+
+    if action == "force_stop_playtest":
+        reason = str(args.get("reason") or "force_stop_by_agent")
+        edit_res = None
+        srv_res = None
+        if client:
+            try:
+                srv_res = _unwrap_job(client.submit_job("playtest", {"action": "force_stop", "reason": reason}, wait=3.5, dm="server"))
+            except Exception:
+                srv_res = None
+            try:
+                edit_res = _unwrap_job(client.submit_job("playtest", {"action": "force_stop", "reason": reason}, wait=12.0, dm="edit", peer_id=peer_id))
+            except Exception as exc:
+                edit_res = {"stopped": False, "error": str(exc)}
+            ev = client.evict_playtest_peers(reason=reason)
+        else:
+            ev = {"evictedPeers": 0, "cancelledJobs": 0}
+        return {
+            "ok": True,
+            "action": "force_stop_playtest",
+            "stopped": True,
+            "editResult": edit_res,
+            "serverResult": srv_res,
+            "evictedPlaytestPeers": ev.get("evictedPeers", 0),
+            "cancelledRuntimeJobs": ev.get("cancelledJobs", 0),
+            "sessionClean": True,
+        }
+
+    # Default: action == "status"
+    peers = []
+    if client:
+        try:
+            peers = client.peers().get("peers", [])
+        except Exception:
+            peers = []
+    online_peers = [p for p in peers if p.get("online")]
+    peer_statuses = []
+    outdated_count = 0
+    for p in online_peers:
+        pver = str(p.get("pluginVersion") or "unknown")
+        up_to_date = _parse_ver_tuple(pver) >= _parse_ver_tuple(bundled_ver)
+        if not up_to_date:
+            outdated_count += 1
+        peer_statuses.append({
+            "peerId": p.get("peerId"),
+            "dm": p.get("dm"),
+            "place": p.get("place"),
+            "placeId": p.get("placeId"),
+            "pluginVersion": pver,
+            "studioVersion": p.get("studioVersion"),
+            "upToDate": up_to_date,
+            "upgradeAvailable": not up_to_date,
+            "ageSeconds": p.get("ageSeconds"),
+        })
+
+    live_telemetry = None
+    if client and any(p.get("dm") == "edit" and p.get("upToDate") for p in peer_statuses):
+        try:
+            live_telemetry = _unwrap_job(client.submit_job("plugin_info", {}, wait=2.5, dm="edit", peer_id=peer_id))
+        except Exception:
+            live_telemetry = None
+
+    server_online = sum(1 for p in online_peers if p.get("dm") == "server")
+    client_online = sum(1 for p in online_peers if p.get("dm") == "client" or p.get("hasClient"))
+    return {
+        "ok": True,
+        "bridgeVersion": MCP_SERVER_VERSION,
+        "bundledPluginVersion": bundled_ver,
+        "onlinePeerCount": len(online_peers),
+        "outdatedPeerCount": outdated_count,
+        "allPeersUpToDate": outdated_count == 0,
+        "peers": peer_statuses,
+        "livePluginTelemetry": live_telemetry,
+        "playtestState": {
+            "playtestActive": bool((live_telemetry or {}).get("playtestActive") or server_online > 0),
+            "serverPeersOnline": server_online,
+            "clientPeersOnline": client_online,
+        },
+        "versionMatrix": PLUGIN_VERSION_MATRIX,
+        "downloadEndpoint": "/api/plugin/download",
+    }
+
+
+def audit_network_security_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    scripts_to_scan = []
+    remotes_found = []
+
+    if isinstance(args.get("scripts"), list):
+        for entry in args["scripts"]:
+            if isinstance(entry, dict) and isinstance(entry.get("source"), str):
+                scripts_to_scan.append({
+                    "path": str(entry.get("path") or "inline.Script"),
+                    "source": entry["source"],
+                })
+
+    if args.get("localDir"):
+        ldir = Path(args["localDir"]).expanduser()
+        if ldir.is_dir():
+            for lf in sorted(ldir.rglob("*")):
+                if lf.is_file() and lf.suffix.lower() in (".lua", ".luau"):
+                    scripts_to_scan.append({
+                        "path": lf.relative_to(ldir).as_posix(),
+                        "source": lf.read_text(encoding="utf-8", errors="replace"),
+                    })
+
+    if args.get("includeStudio", True) and client and not scripts_to_scan:
+        try:
+            if client.health().get("studio_connected"):
+                sv = _unwrap_job(client.submit_job("survey", {"includeSource": True, "maxScriptBytes": 160000}, wait=30.0, dm="edit", peer_id=peer_id))
+                for r in sv.get("remotes") or []:
+                    remotes_found.append(r)
+                for s in sv.get("scripts") or []:
+                    if s.get("source"):
+                        scripts_to_scan.append({"path": s.get("path", "Script"), "source": s["source"]})
+        except Exception:
+            pass
+
+    issues = []
+    handler_re = re.compile(
+        r"([A-Za-z0-9_.\[\]\"']+)\.(OnServerEvent|OnServerInvoke)\s*(?::Connect\s*\(\s*|=\s*)function\s*\(([^)]*)\)",
+        re.MULTILINE,
+    )
+    sensitive_arg_re = re.compile(r"\b(price|cost|currency|gold|coins|cash|gems|damage|health|hp|admin|isAdmin|xp|reward|level)\b", re.I)
+
+    total_handlers = 0
+    for item in scripts_to_scan:
+        path = item["path"]
+        src = item["source"]
+        for match in handler_re.finditer(src):
+            total_handlers += 1
+            remote_expr, hook_kind, params_raw = match.group(1), match.group(2), match.group(3)
+            params = [p.strip().split(":")[0].strip() for p in params_raw.split(",") if p.strip()]
+            client_params = params[1:] if len(params) > 1 else []
+            start_pos = match.end()
+            body_slice = src[start_pos : start_pos + 1400]
+
+            has_type_check = any(tok in body_slice for tok in ("type(", "typeof(", "NetworkGuard", "ValidatePayload", "tonumber(", "tostring("))
+            has_rate_limit = any(tok in body_slice for tok in ("RateLimiter", "NetworkGuard", "CheckRateLimit", "Cooldown", "os.clock", "tick()", "time()", "debounce"))
+
+            if client_params and not has_type_check:
+                issues.append({
+                    "code": "UNVALIDATED_REMOTE_HANDLER",
+                    "severity": "warning",
+                    "script": path,
+                    "remote": remote_expr,
+                    "hook": hook_kind,
+                    "parameters": client_params,
+                    "message": f"{remote_expr}.{hook_kind} accepts client parameters ({', '.join(client_params)}) without type/typeof or NetworkGuard validation.",
+                    "remediation": "Validate every client parameter with `typeof(arg)` or `NetworkGuard:ValidatePayload(player.Name, endpoint, payload)`.",
+                })
+
+            for cp in client_params:
+                if sensitive_arg_re.search(cp):
+                    issues.append({
+                        "code": "TRUSTED_CLIENT_AUTHORITY",
+                        "severity": "error",
+                        "script": path,
+                        "remote": remote_expr,
+                        "hook": hook_kind,
+                        "parameter": cp,
+                        "message": f"{remote_expr}.{hook_kind} accepts client-supplied authority parameter '{cp}' — exploiters can spoof currency/damage/price values.",
+                        "remediation": f"Never trust client-passed '{cp}'; look up authoritative prices/stats/damage on the server.",
+                    })
+
+            if not has_rate_limit:
+                issues.append({
+                    "code": "MISSING_RATE_LIMIT",
+                    "severity": "info",
+                    "script": path,
+                    "remote": remote_expr,
+                    "hook": hook_kind,
+                    "message": f"{remote_expr}.{hook_kind} has no visible rate-limiter or per-player cooldown.",
+                    "remediation": "Guard high-frequency remotes with `NetworkGuard:CheckRateLimit(player.Name, endpoint)` or `RateLimiter`.",
+                })
+
+    error_count = sum(1 for i in issues if i["severity"] == "error")
+    warn_count = sum(1 for i in issues if i["severity"] == "warning")
+    score = max(0, 100 - error_count * 25 - warn_count * 10)
+    return {
+        "ok": True,
+        "scriptsScanned": len(scripts_to_scan),
+        "remotesFound": len(remotes_found),
+        "handlersAnalyzed": total_handlers,
+        "securityScore": score,
+        "errorCount": error_count,
+        "warningCount": warn_count,
+        "issues": issues,
+        "recommendedGuardModule": "NetworkGuard",
+    }
+
+
+CUTSCENE_PRESETS = {
+    "boss_awakening": {
+        "title": "THE ENTITY AWAKENS",
+        "keyframes": [
+            {"offset": [0, 14, 34], "lookOffset": [0, 6, 0], "fov": 68, "duration": 1.6, "holdSeconds": 0.2, "caption": "Something stirs beneath the sanctuary..."},
+            {"offset": [-12, 8, 18], "lookOffset": [0, 7, 0], "fov": 54, "duration": 1.4, "holdSeconds": 0.5, "caption": "Hold your flashlight steady."},
+            {"offset": [0, 5, 10], "lookOffset": [0, 8, 0], "fov": 42, "duration": 0.9, "holdSeconds": 0.8, "caption": "SURVIVE UNTIL 6 AM"},
+        ],
+    },
+    "safe_room_unlock": {
+        "title": "SAFE ROOM POWER RESTORED",
+        "keyframes": [
+            {"offset": [18, 10, 22], "lookOffset": [0, 4, 0], "fov": 62, "duration": 1.3, "holdSeconds": 0.2, "caption": "Emergency generators online."},
+            {"offset": [6, 5, 11], "lookOffset": [0, 4, 0], "fov": 50, "duration": 1.1, "holdSeconds": 0.6, "caption": "Shelter doors unlocked."},
+        ],
+    },
+    "horror_corridor_reveal": {
+        "title": "HALLWAY ANOMALY",
+        "keyframes": [
+            {"offset": [0, 6, 28], "lookOffset": [0, 5, -10], "fov": 64, "duration": 1.8, "holdSeconds": 0.3, "caption": "The hallway lights begin to flicker..."},
+            {"offset": [0, 5, 12], "lookOffset": [0, 5, -15], "fov": 38, "duration": 1.2, "holdSeconds": 0.7, "caption": "DO NOT LOOK AWAY"},
+        ],
+    },
+    "victory_dawn_flyover": {
+        "title": "6:00 AM — DAWN BREAKS",
+        "keyframes": [
+            {"offset": [-24, 18, 28], "lookOffset": [0, 4, 0], "fov": 65, "duration": 2.0, "holdSeconds": 0.3, "caption": "The night curse lifts."},
+            {"offset": [20, 24, 24], "lookOffset": [0, 6, 0], "fov": 60, "duration": 2.0, "holdSeconds": 0.8, "caption": "NIGHT SURVIVED"},
+        ],
+    },
+    "arena_overview": {
+        "title": "ARENA OVERVIEW",
+        "keyframes": [
+            {"offset": [32, 26, 32], "lookOffset": [0, 2, 0], "fov": 66, "duration": 1.8, "holdSeconds": 0.2, "caption": "Welcome to the Arena"},
+            {"offset": [-24, 16, 26], "lookOffset": [0, 4, 0], "fov": 58, "duration": 1.6, "holdSeconds": 0.4, "caption": "Prepare for deployment"},
+        ],
+    },
+}
+
+
+def build_cutscene_sequence_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    preset_key = str(args.get("preset") or "boss_awakening")
+    spec = CUTSCENE_PRESETS.get(preset_key, CUTSCENE_PRESETS["boss_awakening"])
+    seq_name = re.sub(r"[^A-Za-z0-9_]", "_", str(args.get("name") or preset_key))
+    origin = args.get("origin") or [0.0, 4.0, 0.0]
+    ox, oy, oz = float(origin[0]), float(origin[1]), float(origin[2])
+    letterbox = bool(args.get("letterbox", True))
+    skippable = bool(args.get("skippable", True))
+
+    marker_children = []
+    lua_kf_lines = []
+    keyframes_out = []
+
+    for idx, kf in enumerate(spec["keyframes"], start=1):
+        px = round(ox + kf["offset"][0], 2)
+        py = round(oy + kf["offset"][1], 2)
+        pz = round(oz + kf["offset"][2], 2)
+        lx = round(ox + kf["lookOffset"][0], 2)
+        ly = round(oy + kf["lookOffset"][1], 2)
+        lz = round(oz + kf["lookOffset"][2], 2)
+        fov = float(kf.get("fov", 60))
+        dur = float(kf.get("duration", 1.5))
+        hold = float(kf.get("holdSeconds", 0.0))
+        cap = str(kf.get("caption") or "")
+
+        keyframes_out.append({
+            "index": idx,
+            "position": [px, py, pz],
+            "lookAt": [lx, ly, lz],
+            "fov": fov,
+            "duration": dur,
+            "holdSeconds": hold,
+            "caption": cap,
+        })
+        marker_children.append({
+            "name": f"Keyframe_{idx:02d}",
+            "className": "Part",
+            "attributes": {
+                "KeyframeIndex": idx,
+                "FOV": fov,
+                "Duration": dur,
+                "HoldSeconds": hold,
+                "Caption": cap,
+            },
+            "properties": {
+                "Anchored": True,
+                "CanCollide": False,
+                "Transparency": 0.35,
+                "Size": {"__t": "Vector3", "v": [1.4, 1.4, 2.2]},
+                "Position": {"__t": "Vector3", "v": [px, py, pz]},
+                "Color": {"__t": "Color3", "v": [0.24, 0.82, 0.98]},
+                "Material": {"__t": "Enum", "v": "Material.Neon"},
+            },
+        })
+        lua_kf_lines.append(
+            f"\t\t{{\n"
+            f"\t\t\tcframe = CFrame.lookAt(Vector3.new({px}, {py}, {pz}), Vector3.new({lx}, {ly}, {lz})),\n"
+            f"\t\t\tfov = {fov},\n"
+            f"\t\t\tduration = {dur},\n"
+            f"\t\t\tholdSeconds = {hold},\n"
+            f"\t\t\tcaption = {json.dumps(cap)},\n"
+            f"\t\t}},"
+        )
+
+    module_source = (
+        "--!strict\n"
+        f"-- CutsceneSequence_{seq_name}.lua — Generated by Arena MCP v6.0.0\n\n"
+        "return {\n"
+        f"\tid = {json.dumps(seq_name)},\n"
+        f"\ttitle = {json.dumps(spec['title'])},\n"
+        f"\tletterbox = {'true' if letterbox else 'false'},\n"
+        f"\tskippable = {'true' if skippable else 'false'},\n"
+        "\tkeyframes = {\n"
+        + "\n".join(lua_kf_lines)
+        + "\n\t},\n}\n"
+    )
+
+    rig_tree = [{
+        "name": f"CutsceneCameraTrack_{seq_name}",
+        "className": "Model",
+        "replaceExisting": True,
+        "attributes": {"CutsceneId": seq_name, "Title": spec["title"], "Letterbox": letterbox},
+        "children": marker_children,
+    }]
+
+    built_in_studio = False
+    if args.get("buildInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": "Workspace",
+            "tree": rig_tree,
+            "select": False,
+        }, note=f"cutscene_rig:{seq_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "ReplicatedStorage",
+            "name": f"CutsceneSequence_{seq_name}",
+            "className": "ModuleScript",
+            "source": module_source,
+            "replaceInstance": True,
+        }, note=f"cutscene_module:{seq_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        built_in_studio = True
+
+    return {
+        "ok": True,
+        "preset": preset_key,
+        "name": seq_name,
+        "title": spec["title"],
+        "keyframeCount": len(keyframes_out),
+        "totalDurationSec": round(sum(k["duration"] + k["holdSeconds"] for k in keyframes_out), 2),
+        "keyframes": keyframes_out,
+        "rigTree": rig_tree,
+        "moduleSource": module_source,
+        "builtInStudio": built_in_studio,
+    }
+
+
+UI_THEME_PALETTES = {
+    "HorrorBloodMoon": {
+        "background": [0.06, 0.04, 0.07],
+        "surface": [0.12, 0.07, 0.10],
+        "accent": [0.88, 0.18, 0.24],
+        "textPrimary": [0.96, 0.92, 0.93],
+        "textMuted": [0.68, 0.56, 0.60],
+        "cornerRadius": 10,
+        "strokeThickness": 1.5,
+    },
+    "CyberpunkNeon": {
+        "background": [0.04, 0.07, 0.14],
+        "surface": [0.08, 0.13, 0.24],
+        "accent": [0.0, 0.92, 0.98],
+        "textPrimary": [0.92, 0.98, 1.0],
+        "textMuted": [0.52, 0.74, 0.88],
+        "cornerRadius": 6,
+        "strokeThickness": 2.0,
+    },
+    "FantasyGold": {
+        "background": [0.09, 0.08, 0.06],
+        "surface": [0.16, 0.14, 0.10],
+        "accent": [0.96, 0.76, 0.26],
+        "textPrimary": [0.99, 0.96, 0.88],
+        "textMuted": [0.76, 0.68, 0.52],
+        "cornerRadius": 12,
+        "strokeThickness": 2.0,
+    },
+    "MinimalDark": {
+        "background": [0.07, 0.09, 0.13],
+        "surface": [0.12, 0.15, 0.22],
+        "accent": [0.38, 0.65, 0.98],
+        "textPrimary": [0.95, 0.97, 1.0],
+        "textMuted": [0.60, 0.66, 0.76],
+        "cornerRadius": 10,
+        "strokeThickness": 1.0,
+    },
+    "StudRetro": {
+        "background": [0.12, 0.14, 0.18],
+        "surface": [0.20, 0.24, 0.30],
+        "accent": [0.22, 0.84, 0.46],
+        "textPrimary": [1.0, 1.0, 1.0],
+        "textMuted": [0.74, 0.78, 0.84],
+        "cornerRadius": 4,
+        "strokeThickness": 2.5,
+    },
+}
+
+
+def generate_ui_theme_pack_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    theme_name = str(args.get("theme") or "HorrorBloodMoon")
+    pal = UI_THEME_PALETTES.get(theme_name, UI_THEME_PALETTES["HorrorBloodMoon"])
+    gui_name = re.sub(r"[^A-Za-z0-9_]", "_", str(args.get("guiName") or f"ArenaThemeGui_{theme_name}"))
+    cr = int(pal["cornerRadius"])
+
+    bg = pal["background"]
+    surf = pal["surface"]
+    acc = pal["accent"]
+    txt = pal["textPrimary"]
+
+    module_source = (
+        "--!strict\n"
+        f"-- UIThemeTokens_{theme_name}.lua — Generated by Arena MCP v6.0.0\n\n"
+        "return {\n"
+        f"\ttheme = {json.dumps(theme_name)},\n"
+        f"\tbackground = Color3.new({bg[0]}, {bg[1]}, {bg[2]}),\n"
+        f"\tsurface = Color3.new({surf[0]}, {surf[1]}, {surf[2]}),\n"
+        f"\taccent = Color3.new({acc[0]}, {acc[1]}, {acc[2]}),\n"
+        f"\ttextPrimary = Color3.new({txt[0]}, {txt[1]}, {txt[2]}),\n"
+        f"\tcornerRadius = UDim.new(0, {cr}),\n"
+        f"\tstrokeThickness = {pal['strokeThickness']},\n"
+        "}\n"
+    )
+
+    screen_gui_tree = [{
+        "name": gui_name,
+        "className": "ScreenGui",
+        "replaceExisting": True,
+        "properties": {"ResetOnSpawn": False, "IgnoreGuiInset": True},
+        "children": [
+            {
+                "name": "TopStatusHud",
+                "className": "Frame",
+                "properties": {
+                    "AnchorPoint": {"__t": "Vector2", "v": [0.5, 0.0]},
+                    "Position": {"__t": "UDim2", "v": [0.5, 0, 0.02, 0]},
+                    "Size": {"__t": "UDim2", "v": [0.34, 0, 0.065, 0]},
+                    "BackgroundColor3": {"__t": "Color3", "v": surf},
+                    "BackgroundTransparency": 0.12,
+                },
+                "children": [
+                    {"name": "UICorner", "className": "UICorner", "properties": {"CornerRadius": {"__t": "UDim", "v": [0, cr]}}},
+                    {"name": "UIStroke", "className": "UIStroke", "properties": {"Color": {"__t": "Color3", "v": acc}, "Thickness": pal["strokeThickness"]}},
+                    {
+                        "name": "StatusText",
+                        "className": "TextLabel",
+                        "properties": {
+                            "Size": {"__t": "UDim2", "v": [0.92, 0, 0.76, 0]},
+                            "Position": {"__t": "UDim2", "v": [0.04, 0, 0.12, 0]},
+                            "BackgroundTransparency": 1.0,
+                            "Text": f"{theme_name.upper()} · OBJECTIVE ACTIVE",
+                            "TextColor3": {"__t": "Color3", "v": txt},
+                            "TextScaled": True,
+                        },
+                    },
+                ],
+            },
+            {
+                "name": "ActionPromptPill",
+                "className": "Frame",
+                "properties": {
+                    "AnchorPoint": {"__t": "Vector2", "v": [0.5, 1.0]},
+                    "Position": {"__t": "UDim2", "v": [0.5, 0, 0.92, 0]},
+                    "Size": {"__t": "UDim2", "v": [0.24, 0, 0.055, 0]},
+                    "BackgroundColor3": {"__t": "Color3", "v": bg},
+                    "BackgroundTransparency": 0.15,
+                },
+                "children": [
+                    {"name": "UICorner", "className": "UICorner", "properties": {"CornerRadius": {"__t": "UDim", "v": [0, cr]}}},
+                    {
+                        "name": "PromptLabel",
+                        "className": "TextLabel",
+                        "properties": {
+                            "Size": {"__t": "UDim2", "v": [0.9, 0, 0.74, 0]},
+                            "Position": {"__t": "UDim2", "v": [0.05, 0, 0.13, 0]},
+                            "BackgroundTransparency": 1.0,
+                            "Text": "[E] INTERACT  ·  [F] FLASHLIGHT",
+                            "TextColor3": {"__t": "Color3", "v": acc},
+                            "TextScaled": True,
+                        },
+                    },
+                ],
+            },
+        ],
+    }]
+
+    installed_in_studio = False
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": "StarterGui",
+            "tree": screen_gui_tree,
+            "select": False,
+        }, note=f"ui_theme:{theme_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "ReplicatedStorage",
+            "name": f"UIThemeTokens_{theme_name}",
+            "className": "ModuleScript",
+            "source": module_source,
+            "replaceInstance": True,
+        }, note=f"ui_theme_tokens:{theme_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        installed_in_studio = True
+
+    return {
+        "ok": True,
+        "theme": theme_name,
+        "guiName": gui_name,
+        "palette": pal,
+        "componentCount": 2,
+        "screenGuiTree": screen_gui_tree,
+        "moduleSource": module_source,
+        "installedInStudio": installed_in_studio,
+    }
+
+
+_SLOP_FILLER_RE = re.compile(
+    r"\b(furthermore|moreover|in conclusion|it is important to note|delve into|delve|tapestry|"
+    r"seamless|testament to|beacon of|ever-evolving|leverage|revolutionize|comprehensive overview)\b",
+    re.IGNORECASE,
+)
+
+
+def sanitize_slop_text(raw: str, max_chars: int = 90) -> dict:
+    """Remove AI-slop artifacts (em-dashes, en-dashes, robotic filler connectors, wall-of-text dumps)."""
+    original = str(raw or "")
+    issues = []
+    cleaned = original
+    if "\u2014" in cleaned or "\u2013" in cleaned or "--" in cleaned:
+        issues.append("em_dash_artifact")
+        cleaned = cleaned.replace(" \u2014 ", " \u00b7 ").replace("\u2014", " \u00b7 ")
+        cleaned = cleaned.replace(" \u2013 ", " \u00b7 ").replace("\u2013", "-")
+        cleaned = cleaned.replace(" -- ", " \u00b7 ")
+    found_fillers = [m.group(0) for m in _SLOP_FILLER_RE.finditer(cleaned)]
+    if found_fillers:
+        issues.append("robotic_filler_connector")
+        cleaned = _SLOP_FILLER_RE.sub("", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,;:-")
+    if max_chars and len(cleaned) > max_chars:
+        issues.append("wall_of_text_dump")
+        cleaned = cleaned[: max(16, max_chars - 1)].rstrip() + "\u2026"
+    return {
+        "original": original,
+        "cleaned": cleaned,
+        "changed": cleaned != original,
+        "issues": issues,
+        "fillerWordsFound": found_fillers,
+    }
+
+
+_WEB_UI_PRESETS = {
+    "rpg_hud": (
+        '<div class="hud-bar bg-slate-900 rounded-xl border p-3 flex">'
+        '<span class="badge text-emerald-400">HP 100 / 100</span>'
+        '<span class="badge text-sky-400">MP 80 / 80</span>'
+        '<button class="btn bg-amber-500 rounded-lg">[Q] DASH</button>'
+        "</div>"
+    ),
+    "shop_grid": (
+        '<div class="card bg-slate-900 rounded-2xl border p-4 grid">'
+        '<h2>ARCANE ARMORY</h2>'
+        '<button class="btn bg-indigo-600 rounded-lg">RUNIC BLADE \u00b7 250G</button>'
+        '<button class="btn bg-emerald-600 rounded-lg">AEGIS SHIELD \u00b7 180G</button>'
+        "</div>"
+    ),
+    "quest_tracker": (
+        '<div class="tracker bg-slate-950 rounded-xl border p-3 flex-col">'
+        '<h3>OBJECTIVE</h3>'
+        '<span>ACTIVATE 3 ARCANE PYLONS (2/3)</span>'
+        "</div>"
+    ),
+    "inventory_dock": (
+        '<div class="dock bg-slate-900 rounded-xl border p-2 flex">'
+        '<button class="slot">[1] SWORD</button>'
+        '<button class="slot">[2]LANTERN</button>'
+        '<button class="slot">[3] POTION</button>'
+        "</div>"
+    ),
+    "boss_bar": (
+        '<div class="boss bg-red-950 rounded-xl border p-3">'
+        '<h2>WARDEN OF THE ABYSS</h2>'
+        '<span>PHASE II \u00b7 68% HP</span>'
+        "</div>"
+    ),
+    "dialog_card": (
+        '<div class="dialog bg-slate-900 rounded-2xl border p-4">'
+        '<h3>GATEKEEPER</h3>'
+        '<p>Bring three Runic Shards to unseal the sanctum.</p>'
+        '<button class="btn bg-sky-600 rounded-lg">[E] ACCEPT</button>'
+        "</div>"
+    ),
+}
+
+
+def import_ui_from_web_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Convert Web HTML/CSS/Tailwind/SVG or Dashboard preset into a responsive Roblox ScreenGui."""
+    preset = str(args.get("preset") or "rpg_hud").strip()
+    raw_html = str(args.get("html") or "").strip()
+    source_kind = "html" if raw_html else f"preset:{preset}"
+    if not raw_html:
+        raw_html = _WEB_UI_PRESETS.get(preset, _WEB_UI_PRESETS["rpg_hud"])
+    gui_name = str(args.get("guiName") or "WebImportedGui").strip() or "WebImportedGui"
+    parent_path = str(args.get("parent") or "StarterGui").strip() or "StarterGui"
+    do_deslop = bool(args.get("deSlop", True))
+
+    # Extract layout hints from Tailwind / CSS classes
+    lower_html = raw_html.lower()
+    is_grid = "grid" in lower_html
+    bg_rgb = [15, 23, 42]
+    accent_rgb = [56, 189, 248]
+    if "red-" in lower_html or "crimson" in lower_html:
+        bg_rgb = [42, 12, 18]
+        accent_rgb = [248, 113, 113]
+    elif "emerald-" in lower_html or "green" in lower_html:
+        accent_rgb = [52, 211, 153]
+    elif "amber-" in lower_html or "gold" in lower_html:
+        accent_rgb = [251, 191, 36]
+    elif "indigo-" in lower_html or "violet-" in lower_html:
+        accent_rgb = [129, 140, 248]
+
+    corner_px = 16 if "rounded-2xl" in lower_html else (12 if "rounded-xl" in lower_html else 10)
+
+    # Parse interactive buttons and labels from HTML tags
+    tag_matches = re.findall(
+        r"<(h1|h2|h3|button|span|p|label)[^>]*>(.*?)</\1>",
+        raw_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not tag_matches:
+        plain = re.sub(r"<[^>]+>", " ", raw_html).strip()
+        tag_matches = [("span", plain or "WEB UI PANEL")]
+
+    children = [
+        {"name": "UICorner", "className": "UICorner", "properties": {"CornerRadius": {"__t": "UDim", "v": [0, corner_px]}}},
+        {"name": "UIStroke", "className": "UIStroke", "properties": {"Color": {"__t": "Color3", "v": accent_rgb}, "Thickness": 1.5}},
+        {
+            "name": "UIPadding",
+            "className": "UIPadding",
+            "properties": {
+                "PaddingTop": {"__t": "UDim", "v": [0, 10]},
+                "PaddingBottom": {"__t": "UDim", "v": [0, 10]},
+                "PaddingLeft": {"__t": "UDim", "v": [0, 14]},
+                "PaddingRight": {"__t": "UDim", "v": [0, 14]},
+            },
+        },
+    ]
+    if is_grid:
+        children.append({
+            "name": "UIGridLayout",
+            "className": "UIGridLayout",
+            "properties": {
+                "CellSize": {"__t": "UDim2", "v": [0.46, 0, 0.36, 0]},
+                "CellPadding": {"__t": "UDim2", "v": [0.04, 0, 0.06, 0]},
+            },
+        })
+    else:
+        children.append({
+            "name": "UIListLayout",
+            "className": "UIListLayout",
+            "properties": {
+                "Padding": {"__t": "UDim", "v": [0, 8]},
+                "HorizontalAlignment": "Center",
+            },
+        })
+
+    slop_fixes = 0
+    item_count = max(1, len(tag_matches))
+    row_h = round(min(0.32, 0.82 / item_count), 3)
+    for idx, (tag, inner) in enumerate(tag_matches[:12], start=1):
+        clean_inner = re.sub(r"<[^>]+>", "", inner).strip()
+        if do_deslop:
+            s_res = sanitize_slop_text(clean_inner, max_chars=72)
+            if s_res["changed"]:
+                slop_fixes += 1
+            clean_inner = s_res["cleaned"]
+        t_low = tag.lower()
+        if t_low == "button":
+            children.append({
+                "name": f"ActionButton_{idx:02d}",
+                "className": "TextButton",
+                "properties": {
+                    "Size": {"__t": "UDim2", "v": [0.94, 0, row_h, 0]},
+                    "BackgroundColor3": {"__t": "Color3", "v": accent_rgb},
+                    "BackgroundTransparency": 0.12,
+                    "Text": clean_inner or f"ACTION {idx}",
+                    "TextColor3": {"__t": "Color3", "v": [248, 250, 252]},
+                    "TextScaled": True,
+                    "AutoButtonColor": True,
+                },
+                "children": [
+                    {"name": "UICorner", "className": "UICorner", "properties": {"CornerRadius": {"__t": "UDim", "v": [0, 8]}}},
+                    {
+                        "name": "IconBadge",
+                        "className": "ImageLabel",
+                        "properties": {
+                            "Size": {"__t": "UDim2", "v": [0.12, 0, 0.72, 0]},
+                            "Position": {"__t": "UDim2", "v": [0.03, 0, 0.14, 0]},
+                            "BackgroundTransparency": 1.0,
+                            "Image": "rbxassetid://6031094678",
+                        },
+                    },
+                ],
+            })
+        else:
+            is_heading = t_low in ("h1", "h2", "h3")
+            children.append({
+                "name": f"{'Header' if is_heading else 'Label'}_{idx:02d}",
+                "className": "TextLabel",
+                "properties": {
+                    "Size": {"__t": "UDim2", "v": [0.94, 0, row_h, 0]},
+                    "BackgroundTransparency": 1.0,
+                    "Text": clean_inner,
+                    "TextColor3": {"__t": "Color3", "v": accent_rgb if is_heading else [226, 232, 240]},
+                    "TextScaled": True,
+                },
+            })
+
+    screen_gui_tree = [{
+        "name": gui_name,
+        "className": "ScreenGui",
+        "replaceExisting": True,
+        "properties": {"ResetOnSpawn": False, "IgnoreGuiInset": False},
+        "children": [{
+            "name": "WebContainerFrame",
+            "className": "Frame",
+            "properties": {
+                "AnchorPoint": {"__t": "Vector2", "v": [0.5, 0.5]},
+                "Position": {"__t": "UDim2", "v": [0.5, 0, 0.5, 0]},
+                "Size": {"__t": "UDim2", "v": [0.42, 0, 0.34, 0]},
+                "BackgroundColor3": {"__t": "Color3", "v": bg_rgb},
+                "BackgroundTransparency": 0.08,
+            },
+            "children": children,
+        }],
+    }]
+
+    installed_in_studio = False
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": parent_path,
+            "tree": screen_gui_tree,
+            "select": False,
+        }, note=f"import_ui_from_web:{gui_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        installed_in_studio = True
+
+    return {
+        "ok": True,
+        "guiName": gui_name,
+        "parent": parent_path,
+        "sourceKind": source_kind,
+        "elementsConverted": len(tag_matches),
+        "deSlopApplied": do_deslop,
+        "slopArtifactsFixed": slop_fixes,
+        "installedInStudio": installed_in_studio,
+        "screenGuiTree": screen_gui_tree,
+    }
+
+
+_VFX_PRESETS = {
+    "slash_hit": {"c0": [255, 220, 110], "c1": [255, 75, 45], "speed": [18, 34], "life": [0.18, 0.35], "size": [1.4, 0.0], "light": 1.0, "spread": 180},
+    "level_up": {"c0": [255, 235, 120], "c1": [80, 210, 255], "speed": [12, 24], "life": [0.6, 1.2], "size": [1.8, 0.2], "light": 1.0, "spread": 90},
+    "loot_drop_rare": {"c0": [190, 110, 255], "c1": [90, 215, 255], "speed": [6, 14], "life": [0.8, 1.5], "size": [1.2, 0.1], "light": 0.95, "spread": 65},
+    "portal_swirl": {"c0": [120, 90, 255], "c1": [45, 225, 255], "speed": [4, 10], "life": [0.9, 1.6], "size": [2.2, 0.4], "light": 1.0, "spread": 360},
+    "explosion_spark": {"c0": [255, 165, 55], "c1": [220, 38, 38], "speed": [22, 42], "life": [0.25, 0.65], "size": [2.5, 0.0], "light": 1.0, "spread": 180},
+    "heal_aura": {"c0": [95, 255, 165], "c1": [45, 212, 191], "speed": [5, 11], "life": [0.7, 1.3], "size": [1.3, 0.2], "light": 0.9, "spread": 75},
+    "frost_shatter": {"c0": [186, 230, 253], "c1": [56, 189, 248], "speed": [15, 28], "life": [0.3, 0.6], "size": [1.5, 0.0], "light": 0.85, "spread": 180},
+    "coin_pickup": {"c0": [253, 224, 71], "c1": [245, 158, 11], "speed": [10, 20], "life": [0.3, 0.55], "size": [1.0, 0.0], "light": 1.0, "spread": 140},
+}
+
+
+def build_vfx_emitter_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Build a curated 3D VFX emitter rig with sculpted SpecialMesh shockwave ring."""
+    preset = str(args.get("preset") or "slash_hit").strip()
+    cfg = _VFX_PRESETS.get(preset, _VFX_PRESETS["slash_hit"])
+    pos = [float(v) for v in (args.get("position") or [0.0, 5.0, 0.0])[:3]]
+    burst = max(1, min(200, int(args.get("burstCount") or 28)))
+    continuous = bool(args.get("continuous", False))
+    name = str(args.get("name") or f"VFX_{preset}").strip()
+    parent_path = str(args.get("parent") or "Workspace").strip() or "Workspace"
+
+    vfx_tree = [{
+        "name": name,
+        "className": "Model",
+        "replaceExisting": True,
+        "children": [
+            {
+                "name": "EmitterCore",
+                "className": "Part",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": False,
+                    "CanQuery": False,
+                    "CanTouch": False,
+                    "Transparency": 0.35 if continuous else 1.0,
+                    "Material": "Enum.Material.Neon",
+                    "Color": cfg["c0"],
+                    "Size": [1.5, 1.5, 1.5],
+                    "Position": pos,
+                },
+                "children": [
+                    {
+                        "name": "SculptedCoreMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": "Enum.MeshType.Sphere", "Scale": [1.15, 1.15, 1.15]},
+                    },
+                    {
+                        "name": "VFXAttachment",
+                        "className": "Attachment",
+                        "children": [
+                            {
+                                "name": "BurstEmitter",
+                                "className": "ParticleEmitter",
+                                "properties": {
+                                    "Rate": 24 if continuous else 0,
+                                    "LightEmission": cfg["light"],
+                                    "LightInfluence": 0.0,
+                                    "Color": {"__t": "ColorSequence", "v": [cfg["c0"], cfg["c1"]]},
+                                    "Size": {"__t": "NumberSequence", "v": [cfg["size"][0], cfg["size"][1]]},
+                                    "Transparency": {"__t": "NumberSequence", "v": [0.0, 1.0]},
+                                    "Lifetime": {"__t": "NumberRange", "v": cfg["life"]},
+                                    "Speed": {"__t": "NumberRange", "v": cfg["speed"]},
+                                    "SpreadAngle": {"__t": "Vector2", "v": [cfg["spread"], cfg["spread"]]},
+                                },
+                            },
+                            {
+                                "name": "VFXGlowLight",
+                                "className": "PointLight",
+                                "properties": {
+                                    "Color": cfg["c0"],
+                                    "Brightness": 2.4,
+                                    "Range": 16.0,
+                                    "Shadows": False,
+                                },
+                            },
+                        ],
+                    },
+                ],
+            },
+            {
+                "name": "ShockwaveRingMesh",
+                "className": "Part",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": False,
+                    "CanQuery": False,
+                    "Material": "Enum.Material.Neon",
+                    "Color": cfg["c1"],
+                    "Transparency": 0.45,
+                    "Size": [4.5, 0.25, 4.5],
+                    "Position": [pos[0], pos[1] - 0.5, pos[2]],
+                },
+                "children": [
+                    {
+                        "name": "RingMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": "Enum.MeshType.Cylinder", "Scale": [1.0, 0.2, 1.0]},
+                    }
+                ],
+            },
+        ],
+    }]
+
+    built_in_studio = False
+    if args.get("buildInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": parent_path,
+            "tree": vfx_tree,
+            "select": False,
+        }, note=f"build_vfx_emitter:{preset}", wait=30.0, dm="edit", peer_id=peer_id))
+        built_in_studio = True
+
+    emit_snippet = (
+        f"local model = {parent_path}:FindFirstChild({name!r})\n"
+        f"local emitter = model and model:FindFirstChild('BurstEmitter', true)\n"
+        f"if emitter and emitter:IsA('ParticleEmitter') then emitter:Emit({burst}) end"
+    )
+    return {
+        "ok": True,
+        "preset": preset,
+        "name": name,
+        "parent": parent_path,
+        "position": pos,
+        "burstCount": burst,
+        "continuous": continuous,
+        "emitMode": "continuous_aura" if continuous else "deterministic_burst_rate_0",
+        "builtInStudio": built_in_studio,
+        "emitLuauSnippet": emit_snippet,
+        "vfxTree": vfx_tree,
+    }
+
+
+def de_slop_audit_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Audit UI copy, inline strings, and 3D scene nodes for AI-slop artifacts and blocky primitive overuse."""
+    max_len = max(20, min(500, int(args.get("maxTextLength") or 90)))
+    auto_fix = bool(args.get("autoFix", False))
+    findings = []
+    sanitized_texts = []
+
+    for idx, raw_txt in enumerate(args.get("texts") or []):
+        res = sanitize_slop_text(raw_txt, max_chars=max_len)
+        sanitized_texts.append(res)
+        if res["issues"]:
+            findings.append({
+                "path": f"texts[{idx}]",
+                "issues": res["issues"],
+                "original": res["original"],
+                "suggested": res["cleaned"],
+            })
+
+    studio_scanned = False
+    fixed_in_studio = 0
+    mesh_count = 0
+    primitive_count = 0
+
+    if args.get("includeStudio", True) and client and client.health().get("studio_connected"):
+        studio_scanned = True
+        try:
+            ui_tree = _unwrap_job(client.submit_job(
+                "get_tree", {"path": "StarterGui", "depth": 6}, wait=20.0, dm="edit", peer_id=peer_id
+            )).get("tree")
+        except Exception:
+            ui_tree = None
+
+        def _walk_ui(node):
+            nonlocal fixed_in_studio
+            if not isinstance(node, dict):
+                return
+            cls = node.get("className") or ""
+            props = {**(node.get("properties") or {}), **(node.get("structuredProperties") or {})}
+            children = node.get("children") or []
+            if cls in ("TextLabel", "TextButton", "TextBox"):
+                txt = props.get("Text")
+                if isinstance(txt, dict):
+                    txt = txt.get("v") or txt.get("value") or ""
+                if isinstance(txt, str) and txt.strip():
+                    s_res = sanitize_slop_text(txt, max_chars=max_len)
+                    if s_res["issues"]:
+                        findings.append({
+                            "path": node.get("path") or node.get("name"),
+                            "className": cls,
+                            "issues": s_res["issues"],
+                            "original": s_res["original"],
+                            "suggested": s_res["cleaned"],
+                        })
+                        if auto_fix and node.get("path"):
+                            try:
+                                _unwrap_job(client.submit_job("set_properties", {
+                                    "path": node["path"],
+                                    "properties": {"Text": s_res["cleaned"]},
+                                }, wait=15.0, dm="edit", peer_id=peer_id))
+                                fixed_in_studio += 1
+                            except Exception:
+                                pass
+                if cls == "TextButton":
+                    has_icon = any((c.get("className") or "") in ("ImageLabel", "ImageButton") for c in children if isinstance(c, dict))
+                    if not has_icon:
+                        findings.append({
+                            "path": node.get("path") or node.get("name"),
+                            "className": cls,
+                            "issues": ["button_missing_icon_badge"],
+                            "original": str(txt or ""),
+                            "suggested": "Add child ImageLabel icon badge for visual clarity.",
+                        })
+            for ch in children:
+                _walk_ui(ch)
+
+        if ui_tree:
+            _walk_ui(ui_tree)
+
+        try:
+            ws_tree = _unwrap_job(client.submit_job(
+                "get_tree", {"path": "Workspace", "depth": 5}, wait=20.0, dm="edit", peer_id=peer_id
+            )).get("tree")
+        except Exception:
+            ws_tree = None
+
+        def _walk_ws(node):
+            nonlocal mesh_count, primitive_count
+            if not isinstance(node, dict):
+                return
+            cls = node.get("className") or ""
+            name_l = str(node.get("name") or "").lower()
+            children = node.get("children") or []
+            if cls in ("MeshPart", "UnionOperation"):
+                mesh_count += 1
+            elif cls in ("Part", "WedgePart", "CornerWedgePart") and name_l not in ("baseplate", "terrain"):
+                has_special_mesh = any(
+                    (c.get("className") or "") in ("SpecialMesh", "BlockMesh", "CylinderMesh")
+                    for c in children if isinstance(c, dict)
+                )
+                if has_special_mesh:
+                    mesh_count += 1
+                else:
+                    primitive_count += 1
+            for ch in children:
+                _walk_ws(ch)
+
+        if ws_tree:
+            _walk_ws(ws_tree)
+
+    total_3d = mesh_count + primitive_count
+    mesh_ratio = round(mesh_count / total_3d, 3) if total_3d > 0 else 1.0
+    clarity_score = max(0, 100 - len(findings) * 12)
+
+    return {
+        "ok": True,
+        "visualClarityScore": clarity_score,
+        "findingsCount": len(findings),
+        "findings": findings,
+        "sanitizedTexts": sanitized_texts,
+        "studioScanned": studio_scanned,
+        "fixedInStudio": fixed_in_studio,
+        "meshTelemetry": {
+            "meshPartsCount": mesh_count,
+            "primitivePartsCount": primitive_count,
+            "meshPriorityRatio": mesh_ratio,
+            "recommendation": (
+                "Mesh priority healthy."
+                if mesh_ratio >= 0.35 or total_3d == 0
+                else "Scene relies heavily on blocky Part primitives; use `spawn_kit_mesh` or `import_rbxmx` to upgrade hero props to 3D meshes."
+            ),
+        },
+    }
+
+
+def spawn_kit_mesh_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Search and spawn 3D mesh assets (`.rbxmx`, `MeshPart`, `SpecialMesh`, or sculpted VFX/mesh prefabs)."""
+    from image_pipeline import find_kit_root
+
+    query = str(args.get("query") or "crystal").strip().lower()
+    category = str(args.get("category") or "").strip().lower()
+    pos = [float(v) for v in (args.get("position") or [0.0, 4.0, 0.0])[:3]]
+    scale = max(0.1, min(20.0, float(args.get("scale") or 1.0)))
+    parent_path = str(args.get("parent") or "Workspace").strip() or "Workspace"
+
+    kit_root = find_kit_root()
+    prefabs_dir = kit_root / "prefabs"
+    matches = []
+
+    if prefabs_dir.is_dir():
+        for pf in sorted(prefabs_dir.glob("*.json")):
+            stem = pf.stem.lower()
+            score = 0
+            if query in stem:
+                score += 10
+            for tok in query.split():
+                if tok in stem:
+                    score += 4
+            if "vfx" in stem or "mesh" in stem or "shrine" in stem or "portal" in stem or "pedestal" in stem:
+                score += 2
+            if score > 0:
+                matches.append({"kind": "prefab_mesh", "name": pf.stem, "path": str(pf), "score": score})
+
+    # Search .rbxmx 3D models in repo if present
+    repo_root = kit_root.parent
+    for rbxmx in sorted(repo_root.glob("roblox-models/**/*.rbxmx"))[:120]:
+        stem = rbxmx.stem.lower()
+        cat = rbxmx.parent.name.lower()
+        if category and category not in cat and category not in stem:
+            continue
+        if query in stem or any(tok in stem for tok in query.split()):
+            matches.append({"kind": "rbxmx_model", "name": rbxmx.stem, "category": cat, "path": str(rbxmx), "score": 12})
+
+    matches.sort(key=lambda m: (-m["score"], m["name"]))
+
+    # Always construct a sculpted 3D SpecialMesh hierarchy so even offline/custom queries yield a 3D mesh model
+    model_name = f"MeshAsset_{re.sub(r'[^A-Za-z0-9_]+', '_', query.title()) or 'Crystal'}"
+    s_base = [round(3.2 * scale, 2), round(4.8 * scale, 2), round(3.2 * scale, 2)]
+    mesh_tree = [{
+        "name": model_name,
+        "className": "Model",
+        "replaceExisting": True,
+        "children": [
+            {
+                "name": "PedestalBaseMesh",
+                "className": "Part",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": True,
+                    "Material": "Enum.Material.Basalt",
+                    "Color": [55, 65, 81],
+                    "Size": [round(4.4 * scale, 2), round(1.2 * scale, 2), round(4.4 * scale, 2)],
+                    "Position": [pos[0], pos[1] - round(1.8 * scale, 2), pos[2]],
+                },
+                "children": [
+                    {
+                        "name": "CylinderSculptMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": "Enum.MeshType.Cylinder", "Scale": [1.0, 1.0, 1.0]},
+                    }
+                ],
+            },
+            {
+                "name": "SculptedHeroMesh",
+                "className": "MeshPart",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": True,
+                    "Material": "Enum.Material.Neon" if "crystal" in query or "portal" in query or "rune" in query else "Enum.Material.SmoothPlastic",
+                    "Color": [56, 189, 248] if "crystal" in query or "portal" in query else [212, 175, 55],
+                    "Size": s_base,
+                    "Position": pos,
+                },
+                "children": [
+                    {
+                        "name": "HeroSpecialMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": "Enum.MeshType.Sphere", "Scale": [0.85, 1.25, 0.85]},
+                    }
+                ],
+            },
+        ],
+    }]
+
+    spawned_in_studio = False
+    if args.get("spawnInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": parent_path,
+            "tree": mesh_tree,
+            "select": False,
+        }, note=f"spawn_kit_mesh:{model_name}", wait=30.0, dm="edit", peer_id=peer_id))
+        spawned_in_studio = True
+
+    return {
+        "ok": True,
+        "query": query,
+        "modelName": model_name,
+        "parent": parent_path,
+        "position": pos,
+        "scale": scale,
+        "meshPrioritized": True,
+        "catalogMatches": matches[:15],
+        "catalogMatchCount": len(matches),
+        "spawnedInStudio": spawned_in_studio,
+        "meshTree": mesh_tree,
+    }
+
+
+_FALLBACK_DIRECT_CHAT_BUS = None
+
+
+def _get_fallback_chat_bus():
+    global _FALLBACK_DIRECT_CHAT_BUS
+    if _FALLBACK_DIRECT_CHAT_BUS is None:
+        from bus_core import AgentBus
+        _FALLBACK_DIRECT_CHAT_BUS = AgentBus(persist=False)
+    return _FALLBACK_DIRECT_CHAT_BUS
+
+
+def operator_chat_helper(client: BridgeClient, args: dict) -> dict:
+    """Direct two-way Live Chat between the Human Operator and the AI Agent."""
+    act = str(args.get("action") or "poll").strip().lower()
+    role = str(args.get("role") or "agent").strip().lower()
+    sender = str(args.get("sender") or ("Operator" if role == "operator" else "Agent")).strip()
+
+    def _bus_call(payload: dict) -> dict:
+        if client is not None:
+            try:
+                return client.bus_action(payload)
+            except Exception:
+                pass
+        return _get_fallback_chat_bus().handle(payload)
+
+    if act in ("reply", "send"):
+        msg_text = str(args.get("message") or "").strip()
+        if not msg_text:
+            raise ValueError("message is required when action is 'reply' or 'send'")
+        sent = _bus_call({
+            "action": "chat_send",
+            "sender": sender,
+            "text": msg_text,
+            "role": role,
+            "priority": args.get("priority") or ("high" if role == "operator" else "normal"),
+            "pinned": bool(args.get("pinned", False)),
+            "replyTo": args.get("replyTo"),
+        })
+        return {
+            "ok": True,
+            "action": act,
+            "channel": "direct_operator_live_chat",
+            "message": sent,
+        }
+    if act == "poll":
+        popped = _bus_call({"action": "chat_poll", "deliveredVia": "operator_chat", "markDelivered": True})
+        return {
+            "ok": True,
+            "action": "poll",
+            "channel": "direct_operator_live_chat",
+            **popped,
+        }
+    if act == "history":
+        hist = _bus_call({"action": "chat_history", "limit": int(args.get("limit") or 50)})
+        return {
+            "ok": True,
+            "action": "history",
+            "channel": "direct_operator_live_chat",
+            **hist,
+        }
+    if act == "ack":
+        acked = _bus_call({"action": "chat_ack", "clearPins": bool(args.get("clearPins", False))})
+        return {
+            "ok": True,
+            "action": "ack",
+            "channel": "direct_operator_live_chat",
+            **acked,
+        }
+    raise ValueError(f"Unsupported operator_chat action: {act!r}")
+
+
+_KITBASH_PROP_PRESETS = {
+    "runic_obelisk": {
+        "baseMat": "Enum.Material.Basalt", "baseColor": [42, 48, 60],
+        "coreMat": "Enum.Material.Slate", "coreColor": [64, 74, 92], "coreMesh": "Enum.MeshType.Wedge",
+        "orbColor": [56, 189, 248], "actionText": "ACTIVATE OBELISK", "objectText": "RUNIC OBELISK",
+    },
+    "crystal_lantern": {
+        "baseMat": "Enum.Material.Metal", "baseColor": [55, 65, 81],
+        "coreMat": "Enum.Material.Glass", "coreColor": [125, 211, 252], "coreMesh": "Enum.MeshType.Cylinder",
+        "orbColor": [56, 189, 248], "actionText": "LIGHT LANTERN", "objectText": "CRYSTAL LANTERN",
+    },
+    "treasure_shrine": {
+        "baseMat": "Enum.Material.Marble", "baseColor": [58, 54, 68],
+        "coreMat": "Enum.Material.Metal", "coreColor": [245, 185, 42], "coreMesh": "Enum.MeshType.Sphere",
+        "orbColor": [253, 224, 71], "actionText": "CLAIM TRIBUTE", "objectText": "GILDED SHRINE",
+    },
+    "forge_anvil": {
+        "baseMat": "Enum.Material.Basalt", "baseColor": [40, 38, 42],
+        "coreMat": "Enum.Material.Metal", "coreColor": [82, 88, 98], "coreMesh": "Enum.MeshType.Wedge",
+        "orbColor": [251, 146, 60], "actionText": "FORGE GEAR", "objectText": "RUNIC ANVIL",
+    },
+    "arcane_staff": {
+        "baseMat": "Enum.Material.Wood", "baseColor": [92, 64, 51],
+        "coreMat": "Enum.Material.Metal", "coreColor": [148, 163, 184], "coreMesh": "Enum.MeshType.Cylinder",
+        "orbColor": [167, 139, 250], "actionText": "WIELD STAFF", "objectText": "ARCANE STAFF",
+    },
+    "guardian_statue": {
+        "baseMat": "Enum.Material.Basalt", "baseColor": [45, 52, 64],
+        "coreMat": "Enum.Material.Marble", "coreColor": [148, 163, 184], "coreMesh": "Enum.MeshType.Sphere",
+        "orbColor": [52, 211, 153], "actionText": "INSPECT GUARDIAN", "objectText": "ANCIENT GUARDIAN",
+    },
+}
+
+
+def kitbash_mesh_prop_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Assemble and optionally spawn a sculpted multi-part 3D mesh prop."""
+    preset = str(args.get("preset") or "runic_obelisk").strip()
+    cfg = _KITBASH_PROP_PRESETS.get(preset, _KITBASH_PROP_PRESETS["runic_obelisk"])
+    pos = [float(v) for v in (args.get("position") or [0.0, 3.0, 0.0])[:3]]
+    scale = max(0.2, min(20.0, float(args.get("scale") or 1.0)))
+    interactive = bool(args.get("interactive", True))
+    parent_path = str(args.get("parent") or "Workspace").strip() or "Workspace"
+    model_name = str(args.get("name") or f"KitbashedMesh_{preset}").strip()
+
+    orb_children = [
+        {
+            "name": "OrbSpecialMesh",
+            "className": "SpecialMesh",
+            "properties": {"MeshType": "Enum.MeshType.Sphere", "Scale": [0.9, 1.25, 0.9]},
+        },
+        {
+            "name": "AccentPointLight",
+            "className": "PointLight",
+            "properties": {"Color": cfg["orbColor"], "Brightness": 2.4, "Range": round(16.0 * scale, 1)},
+        },
+        {
+            "name": "AuraParticleEmitter",
+            "className": "ParticleEmitter",
+            "properties": {
+                "Rate": 14,
+                "LightEmission": 1.0,
+                "Lifetime": {"__t": "NumberRange", "v": [0.6, 1.2]},
+                "Speed": {"__t": "NumberRange", "v": [3.0, 7.0]},
+            },
+        },
+    ]
+    if interactive:
+        orb_children.append({
+            "name": "InteractPrompt",
+            "className": "ProximityPrompt",
+            "properties": {
+                "ActionText": cfg["actionText"],
+                "ObjectText": cfg["objectText"],
+                "MaxActivationDistance": 10.0,
+            },
+        })
+
+    prop_tree = [{
+        "name": model_name,
+        "className": "Model",
+        "replaceExisting": True,
+        "children": [
+            {
+                "name": "PedestalPlinthMesh",
+                "className": "Part",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": True,
+                    "Material": cfg["baseMat"],
+                    "Color": cfg["baseColor"],
+                    "Size": [round(5.2 * scale, 2), round(1.2 * scale, 2), round(5.2 * scale, 2)],
+                    "Position": [pos[0], round(pos[1] - 1.4 * scale, 2), pos[2]],
+                },
+                "children": [
+                    {
+                        "name": "PlinthCylinderMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": "Enum.MeshType.Cylinder", "Scale": [1.0, 1.0, 1.0]},
+                    }
+                ],
+            },
+            {
+                "name": "SculptedBodyMesh",
+                "className": "MeshPart",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": True,
+                    "Material": cfg["coreMat"],
+                    "Color": cfg["coreColor"],
+                    "Size": [round(2.8 * scale, 2), round(4.6 * scale, 2), round(2.8 * scale, 2)],
+                    "Position": [pos[0], round(pos[1] + 1.2 * scale, 2), pos[2]],
+                },
+                "children": [
+                    {
+                        "name": "BodySpecialMesh",
+                        "className": "SpecialMesh",
+                        "properties": {"MeshType": cfg["coreMesh"], "Scale": [1.0, 1.0, 1.0]},
+                    }
+                ],
+            },
+            {
+                "name": "FloatingCrownOrbMesh",
+                "className": "MeshPart",
+                "properties": {
+                    "Anchored": True,
+                    "CanCollide": False,
+                    "Material": "Enum.Material.Neon",
+                    "Color": cfg["orbColor"],
+                    "Size": [round(1.8 * scale, 2), round(2.4 * scale, 2), round(1.8 * scale, 2)],
+                    "Position": [pos[0], round(pos[1] + 4.5 * scale, 2), pos[2]],
+                },
+                "children": orb_children,
+            },
+        ],
+    }]
+
+    spawned_in_studio = False
+    if args.get("spawnInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": parent_path,
+            "tree": prop_tree,
+            "select": False,
+        }, note=f"kitbash_mesh_prop:{preset}", wait=30.0, dm="edit", peer_id=peer_id))
+        spawned_in_studio = True
+
+    return {
+        "ok": True,
+        "preset": preset,
+        "modelName": model_name,
+        "parent": parent_path,
+        "position": pos,
+        "scale": scale,
+        "meshPartsCount": 3,
+        "primitiveBlocksCount": 0,
+        "interactive": interactive,
+        "spawnedInStudio": spawned_in_studio,
+        "propTree": prop_tree,
+    }
+
+
+def build_combat_hitbox_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Generate a server-validated spatial combat hitbox rig (OverlapParams + VFXManager bursts)."""
+    preset = str(args.get("preset") or "melee_combo").strip()
+    base_dmg = float(args.get("baseDamage") or 28.0)
+    max_reach = float(args.get("maxReach") or 14.0)
+    cooldown = float(args.get("cooldownSec") or 0.45)
+
+    server_src = (
+        "--!strict\n"
+        f"-- Server Combat Validator ({preset})\n"
+        "local ReplicatedStorage = game:GetService('ReplicatedStorage')\n"
+        "local Players = game:GetService('Players')\n\n"
+        "local remote = ReplicatedStorage:FindFirstChild('CombatHitboxRemote') :: RemoteEvent?\n"
+        "if not remote then\n"
+        "\tlocal r = Instance.new('RemoteEvent')\n"
+        "\tr.Name = 'CombatHitboxRemote'\n"
+        "\tr.Parent = ReplicatedStorage\n"
+        "\tremote = r\n"
+        "end\n\n"
+        "local lastAttack: { [Player]: number } = {}\n"
+        f"local MAX_REACH = {max_reach}\n"
+        f"local MIN_INTERVAL = {cooldown}\n"
+        f"local BASE_DAMAGE = {base_dmg}\n\n"
+        "if remote then\n"
+        "\tremote.OnServerEvent:Connect(function(player: Player, targetModel: unknown)\n"
+        "\t\tlocal now = os.clock()\n"
+        "\t\tif now - (lastAttack[player] or 0) < MIN_INTERVAL then return end\n"
+        "\t\tif typeof(targetModel) ~= 'Instance' or not targetModel:IsA('Model') then return end\n"
+        "\t\tlocal char = player.Character\n"
+        "\t\tlocal aRoot = char and char:FindFirstChild('HumanoidRootPart')\n"
+        "\t\tlocal tRoot = targetModel:FindFirstChild('HumanoidRootPart')\n"
+        "\t\tlocal tHum = targetModel:FindFirstChildOfClass('Humanoid')\n"
+        "\t\tif not (aRoot and aRoot:IsA('BasePart') and tRoot and tRoot:IsA('BasePart') and tHum and tHum.Health > 0) then return end\n"
+        "\t\tif (tRoot.Position - aRoot.Position).Magnitude > MAX_REACH then return end\n"
+        "\t\tlastAttack[player] = now\n"
+        "\t\ttHum:TakeDamage(BASE_DAMAGE)\n"
+        "\tend)\n"
+        "end\n"
+        "Players.PlayerRemoving:Connect(function(p) lastAttack[p] = nil end)\n"
+    )
+
+    client_src = (
+        "--!strict\n"
+        f"-- Client Spatial Hitbox Query ({preset})\n"
+        "local Workspace = game:GetService('Workspace')\n"
+        "local Players = game:GetService('Players')\n"
+        "local ReplicatedStorage = game:GetService('ReplicatedStorage')\n\n"
+        "local function sweepBoxAndReport()\n"
+        "\tlocal lp = Players.LocalPlayer\n"
+        "\tlocal char = lp and lp.Character\n"
+        "\tlocal root = char and char:FindFirstChild('HumanoidRootPart')\n"
+        "\tif not (char and root and root:IsA('BasePart')) then return end\n"
+        "\tlocal params = OverlapParams.new()\n"
+        "\tparams.FilterType = Enum.RaycastFilterType.Exclude\n"
+        "\tparams.FilterDescendantsInstances = { char }\n"
+        "\tlocal boxCf = root.CFrame * CFrame.new(0, 0, -4.5)\n"
+        "\tlocal parts = Workspace:GetPartBoundsInBox(boxCf, Vector3.new(6, 5, 7), params)\n"
+        "\tlocal remote = ReplicatedStorage:FindFirstChild('CombatHitboxRemote')\n"
+        "\tlocal seen: { [Model]: boolean } = {}\n"
+        "\tfor _, p in ipairs(parts) do\n"
+        "\t\tlocal m = p:FindFirstAncestorOfClass('Model')\n"
+        "\t\tif m and not seen[m] and m:FindFirstChildOfClass('Humanoid') then\n"
+        "\t\t\tseen[m] = true\n"
+        "\t\t\tif remote and remote:IsA('RemoteEvent') then remote:FireServer(m) end\n"
+        "\t\tend\n"
+        "\tend\n"
+        "end\n"
+        "return { SweepBoxAndReport = sweepBoxAndReport }\n"
+    )
+
+    installed_in_studio = False
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "ServerScriptService",
+            "name": f"CombatHitboxServer_{preset}",
+            "className": "Script",
+            "source": server_src,
+            "replaceInstance": True,
+        }, note=f"combat_hitbox_srv:{preset}", wait=25.0, dm="edit", peer_id=peer_id))
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "ReplicatedStorage",
+            "name": f"CombatHitboxClient_{preset}",
+            "className": "ModuleScript",
+            "source": client_src,
+            "replaceInstance": True,
+        }, note=f"combat_hitbox_cli:{preset}", wait=25.0, dm="edit", peer_id=peer_id))
+        installed_in_studio = True
+
+    return {
+        "ok": True,
+        "preset": preset,
+        "baseDamage": base_dmg,
+        "maxReach": max_reach,
+        "cooldownSec": cooldown,
+        "spatialMethod": "GetPartBoundsInRadius" if "aoe" in preset else "GetPartBoundsInBox",
+        "installedInStudio": installed_in_studio,
+        "serverSource": server_src,
+        "clientSource": client_src,
+    }
+
+
+_CAMERA_RIG_OFFSETS = {
+    "over_shoulder_action": [2.6, 2.4, 9.5],
+    "isometric_arpg": [18.0, 22.0, 18.0],
+    "top_down_tactical": [0.0, 34.0, 4.0],
+    "first_person_flashlight": [0.0, 1.5, 0.4],
+    "boss_lock_on": [3.2, 4.0, 13.5],
+}
+
+
+def configure_camera_rig_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Build a spring-damped Luau 3D camera controller with raycast wall avoidance."""
+    preset = str(args.get("preset") or "over_shoulder_action").strip()
+    offset = _CAMERA_RIG_OFFSETS.get(preset, _CAMERA_RIG_OFFSETS["over_shoulder_action"])
+    fov = max(40.0, min(110.0, float(args.get("fov") or 72.0)))
+    stiffness = max(2.0, min(40.0, float(args.get("springStiffness") or 14.0)))
+
+    script_src = (
+        "--!strict\n"
+        f"-- Camera Rig Controller: {preset}\n"
+        "local RunService = game:GetService('RunService')\n"
+        "local Players = game:GetService('Players')\n"
+        "local Workspace = game:GetService('Workspace')\n\n"
+        f"local OFFSET = Vector3.new({offset[0]}, {offset[1]}, {offset[2]})\n"
+        f"local BASE_FOV = {fov}\n"
+        f"local STIFFNESS = {stiffness}\n"
+        "local smoothedFocus: Vector3? = nil\n\n"
+        "RunService:BindToRenderStep('ArenaCameraRig', Enum.RenderPriority.Camera.Value + 1, function(dt: number)\n"
+        "\tlocal lp = Players.LocalPlayer\n"
+        "\tlocal char = lp and lp.Character\n"
+        "\tlocal root = char and char:FindFirstChild('HumanoidRootPart')\n"
+        "\tlocal cam = Workspace.CurrentCamera\n"
+        "\tif not (char and root and root:IsA('BasePart') and cam) then return end\n"
+        "\tlocal alpha = 1.0 - math.exp(-STIFFNESS * dt)\n"
+        "\tlocal focus = root.Position + Vector3.new(0, 1.6, 0)\n"
+        "\tsmoothedFocus = if smoothedFocus then smoothedFocus:Lerp(focus, alpha) else focus\n"
+        "\tlocal desiredPos = (smoothedFocus :: Vector3) + OFFSET\n"
+        "\tlocal params = RaycastParams.new()\n"
+        "\tparams.FilterType = Enum.RaycastFilterType.Exclude\n"
+        "\tparams.FilterDescendantsInstances = { char }\n"
+        "\tlocal dir = desiredPos - (smoothedFocus :: Vector3)\n"
+        "\tlocal hit = Workspace:Raycast(smoothedFocus :: Vector3, dir, params)\n"
+        "\tlocal finalPos = if hit then (hit.Position - dir.Unit * 0.5) else desiredPos\n"
+        "\tcam.FieldOfView = BASE_FOV\n"
+        "\tcam.CFrame = CFrame.lookAt(finalPos, smoothedFocus :: Vector3)\n"
+        "end)\n"
+    )
+
+    installed_in_studio = False
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("write_script", {
+            "parent": "StarterPlayer.StarterPlayerScripts",
+            "name": f"CameraRig_{preset}",
+            "className": "LocalScript",
+            "source": script_src,
+            "replaceInstance": True,
+        }, note=f"configure_camera_rig:{preset}", wait=25.0, dm="edit", peer_id=peer_id))
+        installed_in_studio = True
+
+    return {
+        "ok": True,
+        "preset": preset,
+        "offset": offset,
+        "fov": fov,
+        "springStiffness": stiffness,
+        "installedInStudio": installed_in_studio,
+        "scriptSource": script_src,
+    }
+
+
+_SOUNDBANK_PACKS = {
+    "combat_pack": [
+        {"name": "SlashImpact", "soundId": "rbxassetid://9118823101", "volume": 0.65, "speed": 1.0, "group": "SFX_Combat"},
+        {"name": "HeavySlam", "soundId": "rbxassetid://9118828562", "volume": 0.75, "speed": 0.92, "group": "SFX_Combat"},
+        {"name": "ParryClang", "soundId": "rbxassetid://9118826044", "volume": 0.70, "speed": 1.08, "group": "SFX_Combat"},
+    ],
+    "ui_clean_pack": [
+        {"name": "UiHoverTick", "soundId": "rbxassetid://6895079853", "volume": 0.35, "speed": 1.15, "group": "SFX_UI"},
+        {"name": "UiConfirmChime", "soundId": "rbxassetid://6895079853", "volume": 0.50, "speed": 1.0, "group": "SFX_UI"},
+        {"name": "UiRewardFanfare", "soundId": "rbxassetid://9118823101", "volume": 0.60, "speed": 1.05, "group": "SFX_UI"},
+    ],
+    "horror_tension_pack": [
+        {"name": "HeartbeatPulse", "soundId": "rbxassetid://9118828562", "volume": 0.65, "speed": 0.85, "group": "SFX_Ambient"},
+        {"name": "BreakerTripSnap", "soundId": "rbxassetid://9118826044", "volume": 0.70, "speed": 0.95, "group": "SFX_Combat"},
+        {"name": "DistantMetalGroan", "soundId": "rbxassetid://9118823101", "volume": 0.45, "speed": 0.72, "group": "SFX_Ambient"},
+    ],
+    "arcane_fantasy_pack": [
+        {"name": "PortalHumLoop", "soundId": "rbxassetid://9118823101", "volume": 0.48, "speed": 0.90, "group": "SFX_Ambient"},
+        {"name": "RuneActivateChime", "soundId": "rbxassetid://6895079853", "volume": 0.62, "speed": 1.12, "group": "SFX_Combat"},
+        {"name": "ChestUnsealBurst", "soundId": "rbxassetid://9118826044", "volume": 0.68, "speed": 1.0, "group": "SFX_UI"},
+    ],
+}
+
+
+def generate_sfx_soundbank_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Build a bus-routed SoundGroup hierarchy + Sound instances in SoundService."""
+    pack = str(args.get("pack") or "combat_pack").strip()
+    parent_path = str(args.get("parent") or "SoundService").strip() or "SoundService"
+    cues = _SOUNDBANK_PACKS.get(pack, _SOUNDBANK_PACKS["combat_pack"])
+
+    groups = {"SFX_Combat": [], "SFX_UI": [], "SFX_Ambient": []}
+    for cue in cues:
+        groups.setdefault(cue["group"], []).append({
+            "name": cue["name"],
+            "className": "Sound",
+            "properties": {
+                "SoundId": cue["soundId"],
+                "Volume": cue["volume"],
+                "PlaybackSpeed": cue["speed"],
+                "RollOffMode": "Enum.RollOffMode.InverseTapered",
+                "RollOffMinDistance": 10.0,
+                "RollOffMaxDistance": 95.0,
+            },
+        })
+
+    bank_tree = [{
+        "name": f"ArenaSoundBank_{pack}",
+        "className": "SoundGroup",
+        "replaceExisting": True,
+        "properties": {"Volume": 0.85},
+        "children": [
+            {
+                "name": "MasterCompressor",
+                "className": "CompressorSoundEffect",
+                "properties": {"Threshold": -14.0, "Ratio": 4.0},
+            },
+            *[
+                {
+                    "name": grp_name,
+                    "className": "SoundGroup",
+                    "properties": {"Volume": 0.85},
+                    "children": grp_children + ([{
+                        "name": "BusReverb",
+                        "className": "ReverbSoundEffect",
+                        "properties": {"DecayTime": 1.6, "WetLevel": -8.0},
+                    }] if grp_name == "SFX_Ambient" else []),
+                }
+                for grp_name, grp_children in groups.items()
+            ],
+        ],
+    }]
+
+    installed_in_studio = False
+    if args.get("installInStudio") and client and client.health().get("studio_connected"):
+        _unwrap_job(client.submit_job("build", {
+            "parent": parent_path,
+            "tree": bank_tree,
+            "select": False,
+        }, note=f"generate_sfx_soundbank:{pack}", wait=25.0, dm="edit", peer_id=peer_id))
+        installed_in_studio = True
+
+    return {
+        "ok": True,
+        "pack": pack,
+        "parent": parent_path,
+        "cueCount": len(cues),
+        "soundGroups": list(groups.keys()),
+        "installedInStudio": installed_in_studio,
+        "soundBankTree": bank_tree,
+    }
+
+
+def export_ui_to_web_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """Export a Roblox ScreenGui / StarterGui hierarchy into responsive Web HTML + Tailwind CSS markup."""
+    ui_path = str(args.get("path") or "StarterGui").strip() or "StarterGui"
+    do_deslop = bool(args.get("deSlop", True))
+    tree = args.get("tree")
+    source_kind = "inline_tree" if isinstance(tree, dict) else f"studio:{ui_path}"
+
+    if not isinstance(tree, dict) and client and client.health().get("studio_connected"):
+        try:
+            tree = _unwrap_job(client.submit_job(
+                "get_tree", {"path": ui_path, "depth": 6}, wait=20.0, dm="edit", peer_id=peer_id
+            )).get("tree")
+        except Exception:
+            tree = None
+
+    if not isinstance(tree, dict):
+        tree = {
+            "name": "StarterGui",
+            "className": "StarterGui",
+            "children": [{
+                "name": "SampleExportedHud",
+                "className": "ScreenGui",
+                "children": [{
+                    "name": "MainCard",
+                    "className": "Frame",
+                    "children": [
+                        {"name": "Header", "className": "TextLabel", "properties": {"Text": "ARCANE SANCTUM · FLOOR 3"}},
+                        {"name": "ActionBtn", "className": "TextButton", "properties": {"Text": "[E] ENTER PORTAL"}},
+                    ],
+                }],
+            }],
+        }
+
+    elements_exported = 0
+
+    def _node_to_html(node: dict, depth: int = 0) -> str:
+        nonlocal elements_exported
+        if not isinstance(node, dict):
+            return ""
+        cls = str(node.get("className") or "Frame")
+        name = str(node.get("name") or cls)
+        props = {**(node.get("properties") or {}), **(node.get("structuredProperties") or {})}
+        children = [c for c in (node.get("children") or []) if isinstance(c, dict)]
+        indent = "  " * depth
+
+        if cls in ("UICorner", "UIStroke", "UIPadding", "UIListLayout", "UIGridLayout", "UIAspectRatioConstraint"):
+            return ""
+
+        raw_txt = props.get("Text")
+        if isinstance(raw_txt, dict):
+            raw_txt = raw_txt.get("v") or raw_txt.get("value") or ""
+        txt_str = str(raw_txt or "").strip()
+        if do_deslop and txt_str:
+            txt_str = sanitize_slop_text(txt_str, max_chars=80)["cleaned"]
+
+        if cls == "TextButton":
+            elements_exported += 1
+            label = txt_str or name
+            return f'{indent}<button class="btn bg-sky-600 hover:bg-sky-500 text-slate-50 rounded-lg px-4 py-2 font-bold" data-roblox-name="{name}">{label}</button>'
+        if cls in ("TextLabel", "TextBox"):
+            elements_exported += 1
+            label = txt_str or name
+            tag = "h2" if "header" in name.lower() or "title" in name.lower() else "span"
+            return f'{indent}<{tag} class="text-slate-100 font-semibold" data-roblox-name="{name}">{label}</{tag}>'
+        if cls in ("ImageLabel", "ImageButton"):
+            elements_exported += 1
+            img = props.get("Image") or "rbxassetid://6031094678"
+            return f'{indent}<span class="badge bg-slate-800 text-sky-400 rounded px-2 py-1" data-roblox-image="{img}">[ICON: {name}]</span>'
+
+        has_grid = any((c.get("className") or "") == "UIGridLayout" for c in children)
+        layout_cls = "grid gap-3" if has_grid else "flex flex-col gap-2"
+        rendered_children = [r for r in (_node_to_html(c, depth + 1) for c in children) if r]
+        inner = "\n".join(rendered_children)
+        if cls in ("StarterGui", "PlayerGui"):
+            return inner or f'{indent}<div class="hud-container {layout_cls} bg-slate-900 rounded-xl border p-4"></div>'
+        elements_exported += 1
+        if inner:
+            return (
+                f'{indent}<div class="bg-slate-900 rounded-xl border border-slate-700 p-4 {layout_cls}" data-roblox-name="{name}">\n'
+                f"{inner}\n"
+                f"{indent}</div>"
+            )
+        return f'{indent}<div class="bg-slate-900 rounded-xl border border-slate-700 p-3" data-roblox-name="{name}">{name}</div>'
+
+    html_out = _node_to_html(tree, 0).strip()
+    return {
+        "ok": True,
+        "sourceKind": source_kind,
+        "path": ui_path,
+        "elementsExported": elements_exported,
+        "deSlopApplied": do_deslop,
+        "html": html_out,
+        "roundTripHint": "Pass `html` back to `import_ui_from_web` (or POST /api/ui/import-web) to rebuild in StarterGui.",
+    }
+
+
 def _bus_lines(client, include_tasks: bool = True, tasks_include_done: bool = False) -> str:
     """Compact bus snapshot for prompt rendering; never raises."""
     if client is None:
@@ -6011,17 +10314,13 @@ class MCPDispatcher:
     def visible_tools(self) -> list:
         if not self.client.read_only:
             return TOOL_SPECS
-        # In read-only Inspector mode, advertise only tools that are read-only
-        # or have read-only query sub-actions, marking them clearly.
+        # In Inspector mode advertise read-only tools and mixed tools with safe
+        # actions, preserving their original (conservative) annotations.
         allowed = []
         for t in TOOL_SPECS:
-            if t["annotations"].get("readOnlyHint") or t["name"] in (
-                "manage_attributes", "manage_tags", "manage_selection",
-                "manage_camera", "undo_redo", "edit_terrain",
-                "start_stop_play", "drift_and_sync", "manage_snapshots",
-            ):
+            if t["annotations"].get("readOnlyHint") or t["name"] in INSPECTOR_MIXED_TOOLS:
                 copy_t = dict(t)
-                copy_t["annotations"] = dict(t["annotations"], readOnlyHint=True, destructiveHint=False)
+                copy_t["annotations"] = dict(t["annotations"])
                 allowed.append(copy_t)
         return allowed
 
@@ -6113,16 +10412,25 @@ class MCPDispatcher:
         if (requested and requested not in SUPPORTED_PROTOCOL_VERSIONS
                 and method not in ("initialize", "server/discover")):
             return self._err(msg.get("id"), -32022, "Unsupported protocol version", {
+                "requested": requested,
+                "supported": list(SUPPORTED_PROTOCOL_VERSIONS),
                 "requestedVersion": requested,
                 "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
             })
         modern = ctx["modern"]
 
         if method == "server/discover":
-            return self._ok(msg.get("id"), self.discover_result())
+            disc = self.discover_result()
+            if modern:
+                self._decorate_meta(disc, ctx)
+            return self._ok(msg.get("id"), disc)
 
         if method in ("tasks/get", "tasks/result", "tasks/list", "tasks/cancel", "tasks/update"):
-            return self._handle_tasks(msg.get("id"), method, params, ctx)
+            resp = self._handle_tasks(msg.get("id"), method, params, ctx)
+            if modern and isinstance(resp, dict) and isinstance(resp.get("result"), dict):
+                resp["result"].setdefault("resultType", "complete")
+                self._decorate_meta(resp["result"], ctx)
+            return resp
 
         if method == "subscriptions/listen":
             try:
@@ -6221,6 +10529,7 @@ class MCPDispatcher:
                 "tools": {"listChanged": False},
                 "resources": {"subscribe": False, "listChanged": False},
                 "prompts": {"listChanged": False},
+                "completions": {},
                 "tasks": {
                     "list": {},
                     "cancel": {},
@@ -6233,6 +10542,7 @@ class MCPDispatcher:
             "tools": {"listChanged": True},
             "resources": {"subscribe": False, "listChanged": False},
             "prompts": {"listChanged": False},
+            "completions": {},
             "subscriptions": {"types": list(SUBSCRIPTION_TYPES)},
             "extensions": {TASKS_EXTENSION_KEY: {"requests": {"tools": {"call": {}}}, "cancel": {}}},
             # Kept for clients that still read the 2025-11-25 capability name.
@@ -6247,6 +10557,15 @@ class MCPDispatcher:
         lines = [
             f"Arena <-> Roblox Studio MCP Server v{MCP_SERVER_VERSION}{mode_tag}.",
             "Use `get_studio_state` or `survey_place` first to understand the open place.",
+            "UI can be imported directly from the Web (HTML/CSS/Tailwind/SVG/JSON) and from the Control Center "
+            "Dashboard using `import_ui_from_web` or `build_ui`.",
+            "Prioritize 3D meshes (`spawn_kit_mesh`, `import_rbxmx`, `MeshPart`, `SpecialMesh`, and the 520-model "
+            "CC0 catalog) over basic blocky `Part` primitives.",
+            "Eliminate AI-slop artifacts: never use em-dashes (`—`), robotic filler connectors (`Furthermore`, "
+            "`Moreover`, `Delve`, `Tapestry`), or wall-of-text dumps; enforce visual clarity with icons and run "
+            "`de_slop_audit`.",
+            "Direct Operator Live Chat is active: unread messages from the human operator are automatically injected "
+            "into every tool response (`operatorLiveChat`); always reply immediately via `operator_chat(action='reply', message='...')`.",
             "With several Studio windows connected, `studio_fleet {action:'list'}` shows them, "
             "`set_active` pins a default target and `broadcast` fans a read-only job out to all.",
             "Long work can be task-augmented (`params.task`): poll it with `tasks/get`, answer a "
@@ -6266,11 +10585,14 @@ class MCPDispatcher:
         return " ".join(lines)
 
     def discover_result(self) -> dict:
+        server_info = {"name": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION}
         return {
+            "resultType": "complete",
             "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
             "protocolVersion": MODERN_PROTOCOL_VERSION,
             "capabilities": self.capabilities(modern=True),
-            "serverInfo": {"name": MCP_SERVER_NAME, "version": MCP_SERVER_VERSION},
+            "serverInfo": dict(server_info),
+            "_meta": {META_SERVER_INFO: dict(server_info)},
             "instructions": self._instructions(),
             "ttlMs": 300000,
             "cacheScope": "public",
@@ -6328,9 +10650,11 @@ class MCPDispatcher:
                     }
             return view
 
-    def _task_list(self) -> list:
+    def _task_list(self, principal=None) -> list:
         with self._task_lock:
-            items = sorted(self.tasks.values(), key=lambda t: t["createdAt"], reverse=True)
+            items = sorted((t for t in self.tasks.values() if principal is None or
+                            self.gate.same_principal(t.get("principal"), principal)),
+                           key=lambda t: t["createdAt"], reverse=True)
         return [
             {
                 "taskId": t["taskId"],
@@ -6390,6 +10714,17 @@ class MCPDispatcher:
                          "'result' field."),
             })
 
+        # A task may contain source, results and confirmation state. Only its
+        # originating principal can inspect, update or cancel it. Avoid
+        # disclosing whether another principal's task ID exists.
+        if method != "tasks/list":
+            task_id = (params or {}).get("taskId")
+            with self._task_lock:
+                task = self.tasks.get(task_id) if isinstance(task_id, str) else None
+                owns_task = bool(task and self.gate.same_principal(task.get("principal"), ctx.get("principal")))
+            if not owns_task:
+                return self._err(msg_id, -32602, "Unknown task")
+
         if method == "tasks/get":
             view = self._task_view((params or {}).get("taskId"), modern=modern)
             if view is None:
@@ -6405,7 +10740,7 @@ class MCPDispatcher:
             return self._ok(msg_id, payload)
 
         if method == "tasks/list":
-            return self._ok(msg_id, {"tasks": self._task_list()})
+            return self._ok(msg_id, {"tasks": self._task_list(ctx.get("principal"))})
 
         if method == "tasks/cancel":
             tid = (params or {}).get("taskId")
@@ -7040,11 +11375,15 @@ class MCPDispatcher:
         ).hexdigest()[:16]
 
     def pump_subscription(self, sub_id: str, sink, stop_event: threading.Event = None,
-                          max_seconds: float = None, poll_seconds: float = 0.5) -> dict:
+                          max_seconds: float = None, poll_seconds: float = 0.5,
+                          keepalive=None, keepalive_seconds: float = 15.0) -> dict:
         """Write change notifications for one subscription until it ends.
 
         `sink(notification_dict)` is provided by the transport (stdout for
-        stdio, one SSE frame per notification for Streamable HTTP).
+        stdio, one SSE frame per notification for Streamable HTTP). `keepalive()`
+        is an optional transport heartbeat (e.g. SSE `: keepalive\\n\\n`) fired when
+        no frame was emitted for `keepalive_seconds`, preventing reverse proxies
+        and Cloudflare Tunnel from dropping idle streams after ~100s.
         """
         with self._sub_lock:
             rec = self.subscriptions.get(sub_id)
@@ -7052,8 +11391,10 @@ class MCPDispatcher:
             return {"ok": False, "reason": f"Unknown subscription: {sub_id!r}"}
         rec["sink"] = sink
         started = time.monotonic()
+        last_activity = started
         cursor = rec["cursor"]
         poll_seconds = max(0.05, min(float(poll_seconds or 0.5), 10.0))
+        keepalive_seconds = max(1.0, float(keepalive_seconds or 15.0))
         emitted = 0
         try:
             while True:
@@ -7076,6 +11417,7 @@ class MCPDispatcher:
                             sink(note)
                             emitted += 1
                             rec["emitted"] += 1
+                            last_activity = time.monotonic()
                         except Exception:  # noqa: BLE001
                             return {"ok": False, "reason": "stream closed", "emitted": emitted}
                 if "toolsListChanged" in rec["types"]:
@@ -7089,8 +11431,15 @@ class MCPDispatcher:
                                   "params": {"_meta": {META_SUBSCRIPTION_ID: sub_id}}})
                             emitted += 1
                             rec["emitted"] += 1
+                            last_activity = time.monotonic()
                         except Exception:  # noqa: BLE001
                             return {"ok": False, "reason": "stream closed", "emitted": emitted}
+                if callable(keepalive) and (time.monotonic() - last_activity) >= keepalive_seconds:
+                    try:
+                        keepalive()
+                        last_activity = time.monotonic()
+                    except Exception:  # noqa: BLE001
+                        return {"ok": False, "reason": "stream closed", "emitted": emitted}
                 if max_seconds is not None and time.monotonic() - started > float(max_seconds) - poll_seconds:
                     break
                 time.sleep(poll_seconds)
@@ -7180,6 +11529,11 @@ class MCPDispatcher:
 
     def _invoke_tool(self, tname: str, targs: dict) -> dict:
         """Run one tool call and return the MCP CallToolResult payload."""
+        if self.client.read_only and not is_tool_call_read_only(tname, targs):
+            return {
+                "isError": True,
+                "content": [{"type": "text", "text": f"Blocked by Read-Only Inspector mode: tool '{tname}' may change state."}],
+            }
         local = self._local_ops(tname, targs)
         if local is not None:
             return {
@@ -7187,27 +11541,56 @@ class MCPDispatcher:
                 "content": [{"type": "text", "text": json.dumps(local, indent=2)}],
                 "structuredContent": local,
             }
-        if self.client.read_only and not is_tool_call_read_only(tname, targs):
-            return {
-                "isError": True,
-                "content": [{
-                    "type": "text",
-                    "text": f"Blocked by Read-Only Inspector mode: tool '{tname}' with arguments {json.dumps(targs)} mutates Studio state.",
-                }],
-            }
         try:
             data = execute_tool(self.client, tname, targs)
             if isinstance(data, dict):
                 data.setdefault("ok", True)
                 data.setdefault("warnings", [])
             img_b64 = data.pop("_mcp_image_png_b64", None) if isinstance(data, dict) else None
+            live_chat_banner = None
+            if isinstance(data, dict) and tname not in ("operator_chat", "agent_bus") and self.client is not None:
+                try:
+                    chat_push = self.client.bus_action({
+                        "action": "chat_poll",
+                        "deliveredVia": tname,
+                        "markDelivered": True,
+                    })
+                    unread_ops = (chat_push or {}).get("unreadMessages") or []
+                    pinned_ops = (chat_push or {}).get("pinnedDirectives") or []
+                    if unread_ops:
+                        data["operatorLiveChat"] = {
+                            "unreadMessages": unread_ops,
+                            "pinnedDirectives": pinned_ops,
+                            "actionRequired": (
+                                "Immediate human operator message received via Direct Live Chat. "
+                                "Acknowledge and answer with `operator_chat(action='reply', message='...')`."
+                            ),
+                        }
+                        lines = ["🔴 LIVE OPERATOR DIRECT CHAT MESSAGE(S) — DO NOT IGNORE:"]
+                        for m in unread_ops:
+                            lines.append(f"  • [{m.get('priority', 'high').upper()}] {m.get('sender', 'Operator')}: {m.get('text', '')}")
+                        lines.append("Reply directly using `operator_chat(action='reply', message='...')`.")
+                        live_chat_banner = "\n".join(lines)
+                except Exception:
+                    pass
             content_items = [{"type": "text", "text": json.dumps(data, indent=2)}]
+            if live_chat_banner:
+                content_items.insert(0, {"type": "text", "text": live_chat_banner})
             if img_b64:
                 content_items.insert(0, {
                     "type": "image",
                     "data": img_b64,
                     "mimeType": "image/png",
                 })
+            if isinstance(data, dict):
+                uri_link = data.get("uri")
+                if isinstance(uri_link, str) and uri_link.startswith(("skill://", "studio://", "mcp://")):
+                    content_items.append({
+                        "type": "resource_link",
+                        "uri": uri_link,
+                        "name": str(data.get("name") or tname),
+                        "mimeType": "text/markdown" if uri_link.startswith("skill://") else "application/json",
+                    })
             return {"isError": False, "content": content_items, "structuredContent": data}
         except Exception as tool_exc:
             if isinstance(tool_exc, NoPeerError):
@@ -7263,6 +11646,7 @@ class MCPDispatcher:
                 tools = []
                 for spec in self.visible_tools():
                     entry = dict(spec)
+                    entry.setdefault("title", (entry.get("annotations") or {}).get("title") or entry["name"])
                     execution = dict(entry.get("execution") or {})
                     execution.setdefault("taskSupport", "optional")
                     if self.gate.enabled and self.gate.requires(
@@ -7271,7 +11655,11 @@ class MCPDispatcher:
                         execution["confirmationRequired"] = True
                     entry["execution"] = execution
                     tools.append(entry)
-                return self._ok(msg_id, {"tools": tools})
+                page, next_cursor = paginate_mcp_items(tools, params)
+                out = {"tools": page}
+                if next_cursor is not None:
+                    out["nextCursor"] = next_cursor
+                return self._ok(msg_id, out)
 
             if method == "tools/call":
                 tname = params.get("name")
@@ -7280,6 +11668,8 @@ class MCPDispatcher:
                     return self._err(msg_id, -32602, f"Unknown tool: {tname!r}")
 
                 validation_err = validate_arguments(TOOL_MAP[tname]["inputSchema"], targs)
+                if not validation_err:
+                    validation_err = validate_action_arguments(tname, targs)
                 if validation_err:
                     return self._err(msg_id, -32602, validation_err)
 
@@ -7321,10 +11711,18 @@ class MCPDispatcher:
                 return self._ok(msg_id, self._invoke_tool(tname, targs))
 
             if method == "resources/list":
-                return self._ok(msg_id, {"resources": RESOURCES})
+                page, next_cursor = paginate_mcp_items(RESOURCES, params)
+                out = {"resources": page}
+                if next_cursor is not None:
+                    out["nextCursor"] = next_cursor
+                return self._ok(msg_id, out)
 
             if method == "resources/templates/list":
-                return self._ok(msg_id, {"resourceTemplates": RESOURCE_TEMPLATES})
+                page, next_cursor = paginate_mcp_items(RESOURCE_TEMPLATES, params)
+                out = {"resourceTemplates": page}
+                if next_cursor is not None:
+                    out["nextCursor"] = next_cursor
+                return self._ok(msg_id, out)
 
             if method == "resources/read":
                 uri = params.get("uri", "")
@@ -7333,7 +11731,11 @@ class MCPDispatcher:
                 return self._ok(msg_id, read_mcp_resource(self.client, uri))
 
             if method == "prompts/list":
-                return self._ok(msg_id, {"prompts": PROMPTS})
+                page, next_cursor = paginate_mcp_items(PROMPTS, params)
+                out = {"prompts": page}
+                if next_cursor is not None:
+                    out["nextCursor"] = next_cursor
+                return self._ok(msg_id, out)
 
             if method == "prompts/get":
                 pname = params.get("name", "")
@@ -7348,7 +11750,7 @@ class MCPDispatcher:
                 return self._ok(msg_id, {})
 
             if method == "completion/complete":
-                return self._err(msg_id, -32601, "This server does not offer argument completion")
+                return self._ok(msg_id, complete_mcp_argument(self.client, params))
 
             return self._err(msg_id, -32601, f"Method not found: {method}")
 

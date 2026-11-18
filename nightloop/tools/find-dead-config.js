@@ -53,11 +53,17 @@ function parseArgs(argv) {
 	}
 	if (!out.files.length) {
 		const vitriolConfigRoot = path.join(out.src, 'ReplicatedStorage', 'Vitriol', 'Config');
+		const nightloopConfigs = [
+			path.join(out.src, 'Config.luau'),
+			path.join(out.src, 'Config.lua'),
+		].filter((p) => fs.existsSync(p));
 		if (fs.existsSync(vitriolConfigRoot) && fs.statSync(vitriolConfigRoot).isDirectory()) {
 			out.files = fs.readdirSync(vitriolConfigRoot)
-				.filter((name) => name.endsWith('.luau'))
+				.filter((name) => name.endsWith('.luau') || name.endsWith('.lua'))
 				.sort()
 				.map((name) => path.join(vitriolConfigRoot, name));
+		} else if (nightloopConfigs.length) {
+			out.files = nightloopConfigs;
 		} else {
 			out.files = legacyDefaults;
 		}
@@ -149,8 +155,11 @@ function collectAllTokens(files) {
 }
 
 function build(cli) {
-	// Gather all .luau files in the repo for the "is it read anywhere" check.
-	const allFiles = luau.collectLuauFiles(cli.src).map((f) => path.resolve(f));
+	// Gather all .luau/.lua files in the repo (including sibling client/ when present)
+	// for the "is it read anywhere" check.
+	const siblingClient = path.join(path.dirname(cli.src), 'client');
+	const scanRoots = fs.existsSync(siblingClient) ? [cli.src, siblingClient] : [cli.src];
+	const allFiles = [...new Set(scanRoots.flatMap((r) => luau.collectLuauFiles(r)).map((f) => path.resolve(f)))];
 	const allTokens = collectAllTokens(allFiles);
 
 	const reports = [];

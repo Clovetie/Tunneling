@@ -1,0 +1,87 @@
+{
+  "name": "mesh_forge_anvil_station",
+  "category": "vfx_mesh",
+  "description": "3D mesh blacksmith forge & anvil station built with sculpted SpecialMesh geometry, ember ParticleEmitter, and warm forge PointLight.",
+  "targetParent": "Workspace",
+  "tree": [
+    {
+      "name": "ForgeAnvilStation",
+      "className": "Model",
+      "replaceExisting": true,
+      "children": [
+        {
+          "name": "HearthBaseMesh",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": true,
+            "Material": "Enum.Material.Basalt",
+            "Color": [40, 38, 42],
+            "Size": [6.0, 1.2, 6.0],
+            "Position": [0, 0.6, 0]
+          },
+          "children": [
+            {
+              "name": "HearthCylinderMesh",
+              "className": "SpecialMesh",
+              "properties": {
+                "MeshType": "Enum.MeshType.Cylinder",
+                "Scale": [1.0, 1.0, 1.0]
+              }
+            }
+          ]
+        },
+        {
+          "name": "SculptedAnvilHornMesh",
+          "className": "MeshPart",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": true,
+            "Material": "Enum.Material.Metal",
+            "Color": [82, 88, 98],
+            "Size": [3.8, 2.2, 1.8],
+            "Position": [0, 2.3, 0]
+          },
+          "children": [
+            {
+              "name": "AnvilSpecialMesh",
+              "className": "SpecialMesh",
+              "properties": {
+                "MeshType": "Enum.MeshType.Wedge",
+                "Scale": [1.0, 1.0, 1.0]
+              }
+            },
+            {
+              "name": "ForgePrompt",
+              "className": "ProximityPrompt",
+              "properties": {
+                "ActionText": "FORGE UPGRADE",
+                "ObjectText": "RUNIC ANVIL",
+                "MaxActivationDistance": 10.0
+              }
+            },
+            {
+              "name": "EmberSparksEmitter",
+              "className": "ParticleEmitter",
+              "properties": {
+                "Rate": 18,
+                "LightEmission": 1.0,
+                "Lifetime": { "__t": "NumberRange", "v": [0.4, 0.9] },
+                "Speed": { "__t": "NumberRange", "v": [6.0, 14.0] }
+              }
+            },
+            {
+              "name": "ForgeGlowLight",
+              "className": "PointLight",
+              "properties": {
+                "Color": [251, 146, 60],
+                "Brightness": 2.5,
+                "Range": 16.0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

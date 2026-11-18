@@ -1,0 +1,72 @@
+{
+  "name": "world_loot_chest_shrine",
+  "category": "mechanics",
+  "description": "Ornate weighted-loot treasure chest on a carved stone pedestal with golden PointLight and ProximityPrompt.",
+  "defaultParent": "Workspace",
+  "tree": [
+    {
+      "name": "LootChestShrine",
+      "className": "Model",
+      "tags": ["LootChest", "InteractiveObjective"],
+      "attributes": { "LootTier": "Epic", "Opened": false },
+      "children": [
+        {
+          "name": "StonePedestal",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [6, 1.2, 5] },
+            "Position": { "__t": "Vector3", "v": [0, 0.6, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Slate" },
+            "Color": { "__t": "Color3", "v": [0.22, 0.24, 0.28] },
+            "Anchored": true
+          }
+        },
+        {
+          "name": "ChestBody",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [3.6, 2.2, 2.4] },
+            "Position": { "__t": "Vector3", "v": [0, 2.3, 0] },
+            "Material": { "__t": "Enum", "v": "Material.WoodPlanks" },
+            "Color": { "__t": "Color3", "v": [0.46, 0.28, 0.14] },
+            "Anchored": true
+          },
+          "children": [
+            {
+              "name": "OpenChestPrompt",
+              "className": "ProximityPrompt",
+              "properties": {
+                "ActionText": "Roll Loot Chest",
+                "ObjectText": "Ancient Reliquary",
+                "HoldDuration": 0.75,
+                "MaxActivationDistance": 10
+              }
+            }
+          ]
+        },
+        {
+          "name": "GoldTrim",
+          "className": "Part",
+          "properties": {
+            "Size": { "__t": "Vector3", "v": [3.8, 0.4, 2.6] },
+            "Position": { "__t": "Vector3", "v": [0, 3.5, 0] },
+            "Material": { "__t": "Enum", "v": "Material.Neon" },
+            "Color": { "__t": "Color3", "v": [1.0, 0.82, 0.28] },
+            "Anchored": true
+          },
+          "children": [
+            {
+              "name": "TreasureGlow",
+              "className": "PointLight",
+              "properties": {
+                "Brightness": 2.2,
+                "Range": 16,
+                "Color": { "__t": "Color3", "v": [1.0, 0.84, 0.35] }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

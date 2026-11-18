@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
 setup.py — One command to install, configure, and run the Arena <-> Roblox
-Studio Bridge & MCP Server (v5.4.0).
+Studio Bridge & MCP Server (v6.0.0).
 
 What it does:
   1. Creates or reuses a shared secret in bridge.token — and if bridge.token is
      missing (e.g. a freshly extracted branch ZIP!), automatically recovers the
      active token from an already-installed ArenaBridge.lua in your Studio
      Plugins directory so you NEVER hit HTTP 401 token mismatches!
-  2. Writes ArenaBridge.lua v4.1.0 into your OS Roblox Studio Plugins folder with
+  2. Writes ArenaBridge.lua v6.0.0 into your OS Roblox Studio Plugins folder with
      the port + token baked in (leaving the tracked repo source file clean).
-  3. Starts server.py v5.4.0 on :8077 (serving Studio polling, REST CLI, Web
+  3. Starts server.py v6.0.0 on :8077 (serving Studio polling, REST CLI, Web
      Dashboard, AND Streamable HTTP MCP at http://127.0.0.1:8077/mcp).
   4. Optionally writes .mcp.json (`--write-mcp`) for Claude Code / Cursor / VS Code
      and/or opens a supervised cloudflared/ngrok tunnel (`--tunnel`).
@@ -118,32 +118,40 @@ def recover_existing_installed_token(explicit_dir=None) -> str:
     return ""
 
 
+def _write_token_file(token: str):
+    TOKEN_FILE.write_text(token, encoding="utf-8")
+    try:
+        os.chmod(TOKEN_FILE, 0o600)
+    except OSError:
+        pass
+
+
 def get_token(rotate: bool = False, explicit_dir=None, preferred_port: int = 8077) -> str:
     if TOKEN_FILE.is_file() and not rotate:
         token = TOKEN_FILE.read_text(encoding="utf-8").strip()
         if token:
+            try:
+                os.chmod(TOKEN_FILE, 0o600)
+            except OSError:
+                pass
             return token
 
     if not rotate:
         env_tok = os.environ.get("BRIDGE_TOKEN", "").strip()
         if env_tok and env_tok != PLACEHOLDER_TOKEN:
-            TOKEN_FILE.write_text(env_tok, encoding="utf-8")
+            _write_token_file(env_tok)
             return env_tok
 
         recovered = recover_existing_installed_token(explicit_dir=explicit_dir)
         if recovered:
-            TOKEN_FILE.write_text(recovered, encoding="utf-8")
+            _write_token_file(recovered)
             live = _token_works_against_running_server(recovered, preferred_port)
             extra = " (verified against running server)" if live else ""
             say(f"  recovered active token from installed ArenaBridge.lua -> bridge.token{extra}", GREEN)
             return recovered
 
     token = secrets.token_hex(12)
-    TOKEN_FILE.write_text(token, encoding="utf-8")
-    try:
-        os.chmod(TOKEN_FILE, 0o600)
-    except OSError:
-        pass
+    _write_token_file(token)
     return token
 
 
@@ -172,7 +180,7 @@ def install_plugin(token: str, port: int, explicit_dir=None) -> bool:
             target_dir.mkdir(parents=True, exist_ok=True)
             target = target_dir / "ArenaBridge.lua"
             target.write_text(source, encoding="utf-8")
-            say(f"  plugin v4.1.0 installed -> {target}", GREEN)
+            say(f"  plugin v6.0.0 installed -> {target}", GREEN)
             return True
         except OSError as exc:
             say(f"  could not write to {target_dir} ({exc})", YELLOW)
@@ -180,19 +188,35 @@ def install_plugin(token: str, port: int, explicit_dir=None) -> bool:
     DIST.mkdir(exist_ok=True)
     target = DIST / "ArenaBridge.lua"
     target.write_text(source, encoding="utf-8")
-    say(f"  plugin v4.1.0 written -> {target}", YELLOW)
+    say(f"  plugin v6.0.0 written -> {target}", YELLOW)
     say("  copy it into Studio's plugins folder:", YELLOW)
     say("    Studio -> Plugins tab -> Plugins Folder", DIM)
     return False
 
 
-def build_mcp_json_config(port: int, read_only: bool = False) -> dict:
+def build_mcp_json_config(
+    port: int,
+    read_only: bool = False,
+    transport: str = "stdio",
+    public_url: str = None,
+    token: str = None,
+) -> dict:
+    server_key = "roblox-studio-inspector" if read_only else "roblox-studio"
+    if (transport or "stdio").lower() == "http":
+        base = (public_url or f"http://127.0.0.1:{port}").rstrip("/")
+        entry = {
+            "type": "http",
+            "url": f"{base}/mcp",
+        }
+        if token:
+            entry["headers"] = {"Authorization": f"Bearer {token}"}
+        return {"mcpServers": {server_key: entry}}
+
     mcp_script = str((HERE / "mcp_server.py").resolve())
     py_exe = sys.executable or "python"
     args = [mcp_script, "--port", str(port)]
     if read_only:
         args.append("--read-only")
-    server_key = "roblox-studio-inspector" if read_only else "roblox-studio"
     return {
         "mcpServers": {
             server_key: {
@@ -206,8 +230,21 @@ def build_mcp_json_config(port: int, read_only: bool = False) -> dict:
     }
 
 
-def write_mcp_config(dest_path: Path, port: int, read_only: bool = False) -> Path:
-    cfg = build_mcp_json_config(port=port, read_only=read_only)
+def write_mcp_config(
+    dest_path: Path,
+    port: int,
+    read_only: bool = False,
+    transport: str = "stdio",
+    public_url: str = None,
+    token: str = None,
+) -> Path:
+    cfg = build_mcp_json_config(
+        port=port,
+        read_only=read_only,
+        transport=transport,
+        public_url=public_url,
+        token=token,
+    )
     if dest_path.is_dir():
         dest_file = dest_path / ".mcp.json"
     else:
@@ -317,10 +354,10 @@ def shutdown(*_):
 # ---------------------------------------------------------------------------
 
 def describe_launch(server_cmd, supervised_tunnel: bool, tunnel_flavor: str,
-                    public_url: str, port: int):
+                    public_url: str, port: int, tunnel_protocol: str = "auto"):
     """The `--dry-run` plan, as (line, colour) pairs — also unit-tested directly."""
     tunnel_state = (
-        f"supervised {tunnel_flavor}" if supervised_tunnel
+        f"supervised {tunnel_flavor} (protocol={tunnel_protocol})" if supervised_tunnel
         else (f"external {public_url}" if public_url
               else "not requested (add --tunnel or --public-url)")
     )
@@ -339,6 +376,9 @@ def main():
     ap.add_argument("--tunnel", action="store_true", help="Expose bridge + /mcp via a supervised cloudflared/ngrok tunnel")
     ap.add_argument("--tunnel-flavor", default="auto", choices=["auto", "cloudflared", "ngrok"],
                     help="Tunnel provider (default: auto-detect)")
+    ap.add_argument("--tunnel-protocol", default=os.environ.get("BRIDGE_TUNNEL_PROTOCOL", "auto"),
+                    choices=["auto", "http2", "quic"],
+                    help="Cloudflare tunnel edge transport (auto falls back from quic to http2 when UDP is blocked)")
     ap.add_argument("--tunnel-token", default=None,
                     help="Cloudflare named-tunnel token (stable hostname instead of a random quick-tunnel URL)")
     ap.add_argument("--tunnel-name", default=None,
@@ -359,21 +399,34 @@ def main():
         default=None,
         help="Write MCP client config (.mcp.json) into directory or file path",
     )
+    ap.add_argument(
+        "--mcp-transport",
+        default="stdio",
+        choices=["stdio", "http"],
+        help="Transport written by --write-mcp (stdio spawns mcp_server.py; http writes Streamable HTTP URL + Bearer header)",
+    )
     args = ap.parse_args()
 
     signal.signal(signal.SIGINT, shutdown)
 
-    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v5.4.0{OFF}")
+    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v6.0.0{OFF}")
     token = get_token(rotate=args.rotate, explicit_dir=args.plugins_dir, preferred_port=args.port)
     say(f"  token: {CYAN}{token}{OFF}  {DIM}(stored in bridge.token){OFF}")
 
     install_plugin(token, args.port, args.plugins_dir)
 
     if args.write_mcp is not None:
-        write_mcp_config(Path(args.write_mcp).resolve(), port=args.port, read_only=args.read_only)
+        write_mcp_config(
+            Path(args.write_mcp).resolve(),
+            port=args.port,
+            read_only=args.read_only,
+            transport=args.mcp_transport,
+            public_url=args.public_url,
+            token=token if args.mcp_transport == "http" else None,
+        )
 
     if args.install_only:
-        say("\nPlugin v4.1.0 installed. Restart Roblox Studio once if updating or rotating token.", GREEN)
+        say("\nPlugin v6.0.0 installed. Restart Roblox Studio once if updating or rotating token.", GREEN)
         say(f"MCP stdio command:  python \"{HERE / 'mcp_server.py'}\"\n", DIM)
         return
 
@@ -409,6 +462,7 @@ def main():
     if args.tunnel:
         server_cmd.append("--tunnel")
         server_cmd.extend(["--tunnel-flavor", args.tunnel_flavor])
+        server_cmd.extend(["--tunnel-protocol", args.tunnel_protocol])
         if args.tunnel_token:
             server_cmd.extend(["--tunnel-token", args.tunnel_token])
         if args.tunnel_name:
@@ -419,7 +473,7 @@ def main():
     if args.dry_run:
         print()
         for line, color in describe_launch(server_cmd, supervised_tunnel, args.tunnel_flavor,
-                                           args.public_url, args.port):
+                                           args.public_url, args.port, args.tunnel_protocol):
             say(line, color)
         return 0
 

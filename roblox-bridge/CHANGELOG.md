@@ -2,6 +2,63 @@
 
 All notable changes for the Roblox Studio bridge are documented here.
 
+## 6.0.0 — Studio Plugin v6 (`ArenaBridge.lua` DockWidget UI + Bulletproof Playtest Stop), 90 MCP Tools, Network Security Auditor, Cutscene Sequencer, and V6 Control Center Overhaul
+
+### Added
+- **Roblox Studio Plugin v6 (`ArenaBridge.lua v6.0.0`)**:
+  - **Built-in Roblox Studio `DockWidgetPluginGui` Dashboard (`ArenaBridgeDashboardV6`)** + `Arena v6 UI` toolbar toggle button showing live connection status, DataModel role (`edit` / `server` / `client`), Place name/ID, jobs processed/failed counters, last job latency, and 3 in-Studio action buttons (`Force Stop Playtest`, `Clean Temp Runners`, `Reconnect Now`).
+  - **Bulletproof Playtest Closing (`handlers["playtest"]`)**:
+    - Supports `stop`, `force_stop`, and `cleanup` actions.
+    - Attempts `StudioTestService:EndTest(...)` and falls back to `StudioTestService:CanLeaveTest()` + `StudioTestService:LeaveTest()` when Studio is inside a manual F5/F8 playtest or server DataModel.
+    - Treats "No test is currently running" / already-stopped states as idempotent success (`stopped = true, alreadyStopped = true`) instead of failing.
+    - Self-heals stale `activePlaytestRunning` locks by cross-checking `RunService:IsEdit()` and automatically purges leftover `__ArenaTestRunner_*` temporary `ServerScriptService` scripts via `cleanupTempRunners()`.
+  - **Instant Play Peer Eviction (`plugin.Unloading` + `/api/poll?goodbye=1` + `evict_playtest_peers()`)**:
+    - When Studio closes a Play Solo / Run session, `plugin.Unloading` sends a `/api/poll?goodbye=1` beacon; `server.py` immediately marks `server`/`client` peers offline (`lastPoll = 0`) and cancels any queued runtime jobs so `get_studio_state` / `list_studios` never show ghost playtest peers.
+  - **`plugin_info` Job Type**: Returns live in-Studio telemetry (`pluginVersion`, `jobsProcessed`, `jobsFailed`, `lastJobType`, `lastJobMs`, `dashboardAvailable`, `capabilities`).
+- **4 New V6 MCP Tools (bringing `TOOL_SPECS` to 90 tools)**:
+  - `manage_plugin_and_playtest`: Inspect connected Studio peer plugin versions (`v6.0.0` vs older `v4.0.0`/`v4.1.0`), query live in-Studio `plugin_info`, install `ArenaBridge.lua v6.0.0` locally, or run `force_stop_playtest` / `evict_stale_peers`.
+  - `audit_network_security`: Scan Studio or local Luau scripts for unvalidated `.OnServerEvent` / `.OnServerInvoke` handlers, client-trusted authority parameters (`price`, `currency`, `damage`, `admin`), and missing rate limits, returning a 0–100 `securityScore` and `NetworkGuard` remediations.
+  - `build_cutscene_sequence`: Generate keyframed 3D camera cutscene tracks (`boss_awakening`, `safe_room_unlock`, `horror_corridor_reveal`, `victory_dawn_flyover`, `arena_overview`) with 3D waypoint rigs and `CutsceneDirector` Luau modules.
+  - `generate_ui_theme_pack`: Generate multi-device responsive `ScreenGui` theme packs (`HorrorBloodMoon`, `CyberpunkNeon`, `FantasyGold`, `MinimalDark`, `StudRetro`) + `UIThemeTokens` Luau modules.
+- **Expanded `roblox-kit/` Library (28 Modules, 22 Systems, 30 Prefabs)**:
+  - Added 3 new Luau modules (`CutsceneDirector.lua`, `NetworkGuard.lua`, `DialogueSystem.lua`), 2 new drop-in mechanics systems (`mechanics/cutscene-camera`, `mechanics/dialogue-npc`), and 4 new 3D/UI prefabs (`horror_security_camera_rig`, `world_cutscene_stage_rig`, `world_npc_dialogue_kiosk`, `ui_dialogue_cinematic_box`).
+- **V6 Control Center UI Overhaul (`server.py`)**:
+  - Added `GET|POST /api/plugin-status`, `GET /api/plugin/download` (serves pre-baked `ArenaBridge.lua v6.0.0` with active bridge URL and token), and `POST /api/playtest/force-stop`.
+  - Added the **Studio Plugin & Playtest v6 (`#tab-plugin`)** tab, top-bar **⏹ Force Stop Playtest** & **⬇ Plugin v6.0.0** buttons, and automatic per-peer plugin version badges (`v6.0.0 ✓` vs `v4.0.0 ⚠`).
+
+## 5.5.0 — MCP 2026-07-28 & `.well-known` discovery completeness, Cloudflare QUIC→HTTP/2 tunnel resilience, and HTTP security hardening
+
+### Added
+- **Zero-auth `.well-known` discovery endpoints**:
+  - **SEP-1649 MCP Server Cards** at `GET /.well-known/mcp/server-card.json` and `GET /.well-known/mcp.json`, plus the `mcp://server-card.json` MCP resource (12th registered resource).
+  - **RFC 9728 OAuth 2.0 Protected Resource Metadata** at `GET /.well-known/oauth-protected-resource/mcp` and `GET /.well-known/oauth-protected-resource`, paired with RFC 9728 `WWW-Authenticate: Bearer ... resource_metadata="..."` headers on `401` and `error="insufficient_scope"` on `403`.
+- **MCP protocol & ergonomics upgrades (`mcp_core.py`, `server.py`)**:
+  - **`completion/complete` + `completions` capability** across modern and legacy eras for prompt arguments (`task_id`, `agent_id`, `focus`, `mode`, `root`) and resource templates (`skill://{name}`).
+  - **SEP-2243 Base64 header codec (`=?base64?...?=`)** (`encode_mcp_header_value` / `decode_mcp_header_value`) and strict Streamable HTTP validation (`HTTP 400` + `-32020`) for `Mcp-Method`, `Mcp-Name`, and `MCP-Protocol-Version` vs `_meta["io.modelcontextprotocol/protocolVersion"]` mismatches; `HTTP 400` on `-32022` unsupported protocol versions; `405 Method Not Allowed` for `DELETE /mcp` and `GET /mcp` SSE in stateless `2026-07-28`.
+  - **Cursor pagination** (`cursor` / `nextCursor`) on `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list`; human-readable `title` fields across tools, resources, resource templates, and prompts; `resource_link` blocks appended to `apply_skill`, `skill_references`, and `manage_snapshots` responses.
+- **Cloudflare Tunnel transport resilience (`tunnel_manager.py`, `setup.py`, `arena_studio.py`)**:
+  - `--tunnel-protocol auto|http2|quic` (`BRIDGE_TUNNEL_PROTOCOL`) with automatic `quic` → `http2` fallback when outbound UDP `:7844` is blocked.
+  - Named Cloudflare tunnel edge-registration detection (`Registered tunnel connection` / `Connection ... registered`) when `--public-url` is supplied alongside `--tunnel-token`.
+  - Strict public `/api/health` verification (`HTTP 200` + JSON `{"ok": true}`), on-demand `probe` (`POST /api/tunnel {"action":"probe"}`, `arena_studio.py tunnel probe`, `bridge_ops(action="tunnel_probe")`), and separation of active `publicUrl` from persisted `lastKnownUrl` while stopped.
+  - Immediate `: connected\n\n` SSE byte flush and 15-second `: keepalive\n\n` heartbeats on `/mcp` subscriptions and `/api/events` (plus `Last-Event-ID` resume and `Cache-Control: no-cache, no-transform`) so Cloudflare proxies never buffer or idle-drop streams.
+- **HTTP security guards**:
+  - Browser `Origin` validation (`403` on untrusted cross-origin requests; configurable allowlist via `BRIDGE_ALLOWED_ORIGINS`), safe `Content-Length` parsing with `BRIDGE_MAX_BODY_BYTES` (`400` / `413`), `X-Content-Type-Options: nosniff`, expanded `Access-Control-Expose-Headers`, and `0o600` file permissions on `bridge.token` across all creation/recovery paths in `setup.py` plus `--mcp-transport http|stdio`.
+- **NightLoop horror survival expansion (`nightloop/src/`, `nightloop/client/`) & static analysis library (`nightloop/tools/lib/`)**:
+  - Implemented 4 new full horror survival entities (`Breathless.lua` miasma/oxygen suffocation zone, `TickingMan.lua` temporal freeze/movement detector, `Mimic.lua` shapeshifting shadow doppelganger, and `FuseBox.lua` interactive house breaker blackout system) plus `NightModifiers.lua` (`BloodMoon`, `DenseFog`, `Overcharged`, `GlassHouse`, `ChronosNight`, `Ironman`) wired into `Director.lua`, `Config.lua`, and `NightLoopClient.client.lua`.
+  - Added `paths.js`, `luau.js`, `luau-transform.js`, and `evaluate.js` modules and `luau-compile` fallback in `check-syntax.js` so `bash nightloop/tools/audit.sh` runs cleanly out of the box across all 23 server + 3 client/tool Luau files.
+- **Gameplay Mechanics, Procedural World & Audio Synthesis expansion (`mcp_core.py`, `image_pipeline.py`, `roblox-kit/`)**:
+  - Added 4 new MCP tools (bringing `TOOL_SPECS` to **86** tools): `generate_dungeon_layout` (seeded 3D room & corridor layout via Prim's MST + escape loops), `build_gameplay_mechanic` (10 ready-to-install gameplay mechanic bundles), `configure_atmosphere_fx` (8 multi-layer Lighting + post-processing presets), and `synthesize_sound_effect` (12 procedural 16-bit mono PCM `.wav` horror & gameplay SFX).
+  - Expanded `roblox-kit/` with 6 new Luau gameplay modules (`StateMachine`, `CooldownManager`, `LootTable`, `QuestTracker`, `CombatPipeline`, `DungeonGenerator` -> **25** modules), 6 new drop-in gameplay systems under `roblox-kit/systems/mechanics/` (`horror-director`, `round-survival`, `stamina-movement`, `inventory-loot`, `combat-abilities`, `weather-cycle` -> **20** systems), 6 new prefabs (`horror_fuse_breaker_station`, `horror_task_generator_machine`, `world_safe_room_shelter`, `world_loot_chest_shrine`, `lighting_horror_blood_moon`, `ui_horror_sanity_vitals_hud` -> **26** prefabs), and 12 new procedural PNG shader presets (**38** total).
+- **Web Dashboard & Localhost Asset Library Overhaul (`server.py`)**:
+  - Added `GET /api/kit/catalog`, `GET /api/kit/assets`, `GET /api/kit/cloud-icons`, `GET /api/kit/thumbnail/<rel>`, `GET /api/kit/procedural/<preset>.png`, and `GET /api/kit/synth-audio/<preset>.wav`.
+  - Fixed `loadKitGallery()` (which previously called `browse_kit` with default `format="summary"`, returning empty arrays) and wired `saveToken()` / `applyHeaderToken()` to reload the Asset Library immediately; added interactive Gameplay Mechanics Builder, HTML5 Canvas 3D Dungeon Map Generator, Atmosphere FX Studio, Procedural WAV Soundboard, and Unified 4,320-Asset Registry Explorer with pagination and thumbnails.
+
+### Fixed
+- Fixed `UnboundLocalError` (`header_version`) when `POST /mcp` received malformed JSON (`-32700`).
+- Fixed `modern` (`2026-07-28`) `server/discover` and `tasks/*` envelopes (`resultType: "complete"`, `_meta["io.modelcontextprotocol/serverInfo"]`, `MCP-Protocol-Version` response header) and hardcoded `v4.0`/`v5.4.0` strings in the Web Dashboard.
+- Fixed `jobs/drill_studio_kill.py` (`reaped_total()` crash on list-typed `/api/metrics` `counters`, and `execute_luau` → `run_luau` job type) and `jobs/measure_tunnel_latency.py` (mapped MCP tool names to valid Studio job types and added `--transport mcp`).
+- Removed 12 untracked-experiment scratch JSON/Lua files from `roblox-bridge/`.
+
 ## 5.4.0 — the 2026-07-28 MCP era put to work, an opt-in confirmation gate, and Studio's real playtest APIs
 
 > v5.3 taught the bridge to *speak* the 2026-07-28 protocol. v5.4 uses the parts

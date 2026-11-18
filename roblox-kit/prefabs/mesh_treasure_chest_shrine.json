@@ -1,0 +1,88 @@
+{
+  "name": "mesh_treasure_chest_shrine",
+  "category": "vfx_mesh",
+  "description": "3D mesh-detailed gilded treasure chest on a sculpted stone dais with golden burst ParticleEmitter, PointLight, and ProximityPrompt.",
+  "targetParent": "Workspace",
+  "tree": [
+    {
+      "name": "TreasureChestShrine",
+      "className": "Model",
+      "replaceExisting": true,
+      "children": [
+        {
+          "name": "DaisPedestalMesh",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": true,
+            "Material": "Enum.Material.Marble",
+            "Color": [58, 54, 68],
+            "Size": [6.4, 1.2, 6.4],
+            "Position": [0, 0.6, 0]
+          },
+          "children": [
+            {
+              "name": "DaisCylinderMesh",
+              "className": "SpecialMesh",
+              "properties": {
+                "MeshType": "Enum.MeshType.Cylinder",
+                "Scale": [1.0, 1.0, 1.0]
+              }
+            }
+          ]
+        },
+        {
+          "name": "VaultedChestLidMesh",
+          "className": "MeshPart",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": true,
+            "Material": "Enum.Material.Metal",
+            "Color": [245, 185, 42],
+            "Size": [3.6, 2.4, 2.6],
+            "Position": [0, 2.4, 0]
+          },
+          "children": [
+            {
+              "name": "VaultedLidSpecialMesh",
+              "className": "SpecialMesh",
+              "properties": {
+                "MeshType": "Enum.MeshType.Sphere",
+                "Scale": [1.0, 0.85, 0.85]
+              }
+            },
+            {
+              "name": "OpenChestPrompt",
+              "className": "ProximityPrompt",
+              "properties": {
+                "ActionText": "OPEN CHEST",
+                "ObjectText": "GILDED CACHE",
+                "MaxActivationDistance": 10.0,
+                "HoldDuration": 0.35
+              }
+            },
+            {
+              "name": "GoldAuraLight",
+              "className": "PointLight",
+              "properties": {
+                "Color": [253, 224, 71],
+                "Brightness": 2.2,
+                "Range": 15.0
+              }
+            },
+            {
+              "name": "GoldBurstEmitter",
+              "className": "ParticleEmitter",
+              "properties": {
+                "Rate": 12,
+                "LightEmission": 1.0,
+                "Lifetime": { "__t": "NumberRange", "v": [0.5, 1.1] },
+                "Speed": { "__t": "NumberRange", "v": [4.0, 9.0] }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

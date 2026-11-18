@@ -1,0 +1,66 @@
+{
+  "name": "world_cutscene_stage_rig",
+  "category": "world",
+  "description": "Pre-aligned 3-keyframe cinematic camera track rig with focal pedestal and key/rim lighting.",
+  "defaultParent": "Workspace",
+  "tree": [
+    {
+      "name": "CutsceneStageRig",
+      "className": "Model",
+      "children": [
+        {
+          "name": "StagePedestal",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Shape": {"__t": "Enum", "v": "PartType.Cylinder"},
+            "Size": {"__t": "Vector3", "v": [1.5, 10.0, 10.0]},
+            "Position": {"__t": "Vector3", "v": [0, 0.75, 0]},
+            "Orientation": {"__t": "Vector3", "v": [0, 0, 90]},
+            "Color": {"__t": "Color3", "v": [0.22, 0.25, 0.32]},
+            "Material": {"__t": "Enum", "v": "Material.SmoothPlastic"}
+          }
+        },
+        {
+          "name": "Keyframe_01_Wide",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": false,
+            "Transparency": 0.4,
+            "Size": {"__t": "Vector3", "v": [1.2, 1.2, 2.0]},
+            "Position": {"__t": "Vector3", "v": [0, 8.0, 24.0]},
+            "Color": {"__t": "Color3", "v": [0.24, 0.82, 0.96]},
+            "Material": {"__t": "Enum", "v": "Material.Neon"}
+          }
+        },
+        {
+          "name": "Keyframe_02_Orbit",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": false,
+            "Transparency": 0.4,
+            "Size": {"__t": "Vector3", "v": [1.2, 1.2, 2.0]},
+            "Position": {"__t": "Vector3", "v": [-14.0, 6.0, 14.0]},
+            "Color": {"__t": "Color3", "v": [0.98, 0.75, 0.22]},
+            "Material": {"__t": "Enum", "v": "Material.Neon"}
+          }
+        },
+        {
+          "name": "Keyframe_03_CloseUp",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": false,
+            "Transparency": 0.4,
+            "Size": {"__t": "Vector3", "v": [1.2, 1.2, 2.0]},
+            "Position": {"__t": "Vector3", "v": [0, 4.5, 8.5]},
+            "Color": {"__t": "Color3", "v": [0.34, 0.92, 0.56]},
+            "Material": {"__t": "Enum", "v": "Material.Neon"}
+          }
+        }
+      ]
+    }
+  ]
+}

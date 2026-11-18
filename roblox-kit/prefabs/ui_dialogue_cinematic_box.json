@@ -1,0 +1,63 @@
+{
+  "name": "ui_dialogue_cinematic_box",
+  "category": "ui",
+  "description": "Cinematic letterboxed NPC dialogue & subtitle ScreenGui with speaker badge, typewriter body, and choice buttons.",
+  "defaultParent": "StarterGui",
+  "tree": [
+    {
+      "name": "CinematicDialogueGui",
+      "className": "ScreenGui",
+      "properties": {
+        "ResetOnSpawn": false,
+        "IgnoreGuiInset": true
+      },
+      "children": [
+        {
+          "name": "DialoguePanel",
+          "className": "Frame",
+          "properties": {
+            "AnchorPoint": {"__t": "Vector2", "v": [0.5, 1.0]},
+            "Position": {"__t": "UDim2", "v": [0.5, 0, 0.94, 0]},
+            "Size": {"__t": "UDim2", "v": [0.68, 0, 0.22, 0]},
+            "BackgroundColor3": {"__t": "Color3", "v": [0.06, 0.08, 0.13]},
+            "BackgroundTransparency": 0.12
+          },
+          "children": [
+            {
+              "name": "UICorner",
+              "className": "UICorner",
+              "properties": {
+                "CornerRadius": {"__t": "UDim", "v": [0, 12]}
+              }
+            },
+            {
+              "name": "SpeakerName",
+              "className": "TextLabel",
+              "properties": {
+                "Position": {"__t": "UDim2", "v": [0.03, 0, 0.08, 0]},
+                "Size": {"__t": "UDim2", "v": [0.4, 0, 0.22, 0]},
+                "BackgroundTransparency": 1.0,
+                "Text": "OLD CARETAKER",
+                "TextColor3": {"__t": "Color3", "v": [0.38, 0.85, 1.0]},
+                "TextScaled": true
+              }
+            },
+            {
+              "name": "DialogueBody",
+              "className": "TextLabel",
+              "properties": {
+                "Position": {"__t": "UDim2", "v": [0.03, 0, 0.34, 0]},
+                "Size": {"__t": "UDim2", "v": [0.94, 0, 0.54, 0]},
+                "BackgroundTransparency": 1.0,
+                "Text": "Keep your flashlight charged before midnight. The generator in Sector B is failing.",
+                "TextColor3": {"__t": "Color3", "v": [0.92, 0.95, 0.99]},
+                "TextWrapped": true,
+                "TextScaled": true
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

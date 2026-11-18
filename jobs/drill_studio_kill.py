@@ -43,10 +43,19 @@ def reaped_total(base, token):
         metrics = http_json(base, "/api/metrics", token=token)
     except Exception:  # noqa: BLE001
         return None
-    counters = metrics.get("counters") or {}
-    for key, value in counters.items():
-        if key.startswith("bridge_jobs_reaped_total"):
-            return value if isinstance(value, (int, float)) else (value.get("value") if isinstance(value, dict) else None)
+    counters = metrics.get("counters")
+    if isinstance(counters, list):
+        total = 0.0
+        for row in counters:
+            if isinstance(row, dict) and str(row.get("name") or "").startswith("bridge_jobs_reaped_total"):
+                val = row.get("value")
+                if isinstance(val, (int, float)):
+                    total += val
+        return int(total) if total == int(total) else total
+    if isinstance(counters, dict):
+        for key, value in counters.items():
+            if str(key).startswith("bridge_jobs_reaped_total"):
+                return value if isinstance(value, (int, float)) else (value.get("value") if isinstance(value, dict) else None)
     return 0
 
 
@@ -87,8 +96,9 @@ def main(argv=None):
     try:
         job, _ = None, None
         job = http_json(base, "/api/jobs", token=args.token, method="POST", body={
-            "type": "execute_luau",
-            "payload": {"code": DRILL_CODE, "dm": "edit"},
+            "type": "run_luau",
+            "payload": {"code": DRILL_CODE},
+            "dm": "edit",
             "wait": 0,
             "timeout": 600,
             "note": "drill_studio_kill",

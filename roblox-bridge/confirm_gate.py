@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 confirm_gate.py — human-in-the-loop confirmation for dangerous MCP tool calls
-(v5.4.0, stdlib-only).
+(v6.0.0, stdlib-only).
 
 Why this exists
 ---------------
@@ -50,7 +50,7 @@ import secrets
 import threading
 import time
 
-GATE_VERSION = "5.4.0"
+GATE_VERSION = "6.0.0"
 GATE_MODES = ("off", "destructive", "write", "all")
 
 #: What each mode actually gates. Reported in `status()` so an operator reading

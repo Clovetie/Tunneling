@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v5.4.0).
+arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v6.0.0).
 
 Supports every MCP tool and bridge operation from your terminal or HANDS MODE (`ab.ps1`),
 with strict UTF-8 handling on Windows, macOS, and Linux.
 
 Core commands:
-    python3 arena_studio.py health | peers | state | ping | watch
+    python3 arena_studio.py health | doctor | peers | state | ping | watch
     python3 arena_studio.py survey [--out survey.json]
     python3 arena_studio.py inspect [Workspace] [--depth 2] [--summary]
     python3 arena_studio.py search [query] [--root game] [--is-a BasePart] [--tag Spot]
@@ -29,7 +29,7 @@ v5 ops & multi-agent commands:
     python3 arena_studio.py approve cfm-91ab3f0c2d11 [--remember] [--note "pair-tested"]
     python3 arena_studio.py deny cfm-91ab3f0c2d11 --note "wrong place"
     python3 arena_studio.py subscriptions [--close sub-7c2f]
-    python3 arena_studio.py tunnel status|start|stop|restart
+    python3 arena_studio.py tunnel status|probe|start|stop|restart [--protocol auto|http2|quic]
     python3 arena_studio.py tokens list|create --label ci --role write --ttl 86400|revoke --id tok-123
     python3 arena_studio.py bus register --name "Gemini 4 Argon" --role partner
     python3 arena_studio.py bus agents|tasks|feed|export
@@ -181,6 +181,7 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("health")
+    sub.add_parser("doctor", help="diagnose bridge access and peer registry without sending Studio jobs or showing credentials")
     sub.add_parser("peers")
     sub.add_parser("state")
     sub.add_parser("ping")
@@ -486,7 +487,9 @@ def main() -> int:
     p.add_argument("--reason", default=None, help="Why the queue is paused (recorded in the audit log)")
 
     p = sub.add_parser("tunnel", help="supervised public tunnel (cloudflared/ngrok)")
-    p.add_argument("action", nargs="?", default="status", choices=["status", "start", "stop", "restart"])
+    p.add_argument("action", nargs="?", default="status", choices=["status", "probe", "start", "stop", "restart"])
+    p.add_argument("--protocol", default=None, choices=["auto", "http2", "quic"],
+                   help="Cloudflare tunnel edge transport (auto falls back to http2 when UDP is blocked)")
 
     p = sub.add_parser("tokens", help="scoped access tokens (read/write/admin) & rate limits")
     p.add_argument("action", nargs="?", default="list", choices=["list", "create", "revoke", "roles"])
@@ -538,6 +541,24 @@ def main() -> int:
     p.add_argument("--path", default="StarterGui")
     p.add_argument("--prefab", default=None)
 
+    p = sub.add_parser("chat", help="Direct Operator <-> Agent Live Chat (push-injected into agent tool loop)")
+    p.add_argument("action", nargs="?", default="history", choices=["send", "reply", "poll", "history", "ack"])
+    p.add_argument("--message", "-m", default="", help="Chat message text to send")
+    p.add_argument("--role", default="operator", choices=["operator", "agent"])
+    p.add_argument("--sender", default=None)
+    p.add_argument("--pin", action="store_true", help="Pin message as a standing operator directive")
+    p.add_argument("--limit", type=int, default=40)
+
+    p = sub.add_parser("import-web-ui", help="Import Web HTML/CSS/Tailwind or preset directly into StarterGui")
+    p.add_argument("--preset", default="rpg_hud", choices=["rpg_hud", "shop_grid", "quest_tracker", "inventory_dock", "boss_bar", "dialog_card"])
+    p.add_argument("--html", default="", help="Raw HTML/CSS/Tailwind string to convert")
+    p.add_argument("--name", default="WebImportedGui")
+    p.add_argument("--install", action="store_true", help="Build directly in StarterGui")
+
+    p = sub.add_parser("de-slop", help="Audit and eliminate AI-slop artifacts (em-dashes, filler words, text dumps)")
+    p.add_argument("--text", action="append", default=[], help="Inline text(s) to audit and sanitize")
+    p.add_argument("--fix", action="store_true", help="Auto-fix live Studio UI labels")
+
     args = ap.parse_args()
     client = BridgeClient(base_url=BASE, token=TOKEN)
 
@@ -558,6 +579,11 @@ def main() -> int:
         res = run_luau_check(path=args.target)
         print(json.dumps(res, indent=2, ensure_ascii=False))
         return 0 if res["ok"] else 1
+
+    if args.cmd == "doctor":
+        result = execute_tool(client, "diagnose_connection", {})
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result["status"] == "connected" else 1
 
     if args.cmd == "health":
         print(json.dumps(call("GET", "/api/health"), indent=2, ensure_ascii=False))
@@ -1112,7 +1138,10 @@ def main() -> int:
         if args.action == "status":
             print(json.dumps(call("GET", "/api/tunnel"), indent=2, ensure_ascii=False))
         else:
-            print(json.dumps(call("POST", "/api/tunnel", {"action": args.action}, timeout=120), indent=2, ensure_ascii=False))
+            payload = {"action": args.action}
+            if args.protocol:
+                payload["protocol"] = args.protocol
+            print(json.dumps(call("POST", "/api/tunnel", payload, timeout=120), indent=2, ensure_ascii=False))
         return 0
 
     if args.cmd == "tokens":
@@ -1219,6 +1248,39 @@ def main() -> int:
         return show_tool_output("import_place_rbxlx", client, "import_place_rbxlx", {
             "filePath": args.file,
             "stripScripts": args.strip_scripts,
+            "peerId": args.peer,
+        }, True, args.raw_json)
+
+    if args.cmd == "chat":
+        if args.action == "history":
+            print(json.dumps(call("GET", f"/api/chat?limit={args.limit}"), indent=2, ensure_ascii=False))
+            return 0
+        payload = {
+            "action": args.action,
+            "role": args.role,
+            "sender": args.sender or ("Operator" if args.role == "operator" else "Agent"),
+            "text": args.message,
+            "pinned": bool(args.pin),
+            "limit": args.limit,
+        }
+        print(json.dumps(call("POST", "/api/chat", payload), indent=2, ensure_ascii=False))
+        return 0
+
+    if args.cmd == "import-web-ui":
+        return show_tool_output("import_ui_from_web", client, "import_ui_from_web", {
+            "preset": args.preset,
+            "html": args.html,
+            "guiName": args.name,
+            "deSlop": True,
+            "installInStudio": bool(args.install),
+            "peerId": args.peer,
+        }, True, args.raw_json)
+
+    if args.cmd == "de-slop":
+        return show_tool_output("de_slop_audit", client, "de_slop_audit", {
+            "texts": args.text,
+            "includeStudio": True,
+            "autoFix": bool(args.fix),
             "peerId": args.peer,
         }, True, args.raw_json)
 

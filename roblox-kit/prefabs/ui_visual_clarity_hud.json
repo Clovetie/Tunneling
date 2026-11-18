@@ -1,0 +1,135 @@
+{
+  "name": "ui_visual_clarity_hud",
+  "category": "ui",
+  "description": "Anti-slop, icon-first RPG/Action HUD ScreenGui with concise status badges, segmented health/mana bars, and 4-slot ability hotbar.",
+  "targetParent": "StarterGui",
+  "tree": [
+    {
+      "name": "VisualClarityHUD",
+      "className": "ScreenGui",
+      "replaceExisting": true,
+      "properties": {
+        "ResetOnSpawn": false,
+        "IgnoreGuiInset": false
+      },
+      "children": [
+        {
+          "name": "TopObjectivePill",
+          "className": "Frame",
+          "properties": {
+            "AnchorPoint": { "__t": "Vector2", "v": [0.5, 0.0] },
+            "Position": { "__t": "UDim2", "v": [0.5, 0, 0.025, 0] },
+            "Size": { "__t": "UDim2", "v": [0.28, 0, 0.055, 0] },
+            "BackgroundColor3": { "__t": "Color3", "v": [15, 23, 42] },
+            "BackgroundTransparency": 0.12
+          },
+          "children": [
+            {
+              "name": "UICorner",
+              "className": "UICorner",
+              "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 12] } }
+            },
+            {
+              "name": "UIStroke",
+              "className": "UIStroke",
+              "properties": { "Color": { "__t": "Color3", "v": [56, 189, 248] }, "Thickness": 1.5 }
+            },
+            {
+              "name": "ObjectiveIcon",
+              "className": "ImageLabel",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [0.1, 0, 0.72, 0] },
+                "Position": { "__t": "UDim2", "v": [0.03, 0, 0.14, 0] },
+                "BackgroundTransparency": 1.0,
+                "Image": "rbxassetid://6031094678"
+              }
+            },
+            {
+              "name": "ObjectiveLabel",
+              "className": "TextLabel",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [0.82, 0, 0.74, 0] },
+                "Position": { "__t": "UDim2", "v": [0.15, 0, 0.13, 0] },
+                "BackgroundTransparency": 1.0,
+                "Text": "UNSEAL 3 RUNIC SHRINES (2/3)",
+                "TextColor3": { "__t": "Color3", "v": [241, 245, 249] },
+                "TextScaled": true
+              }
+            }
+          ]
+        },
+        {
+          "name": "BottomAbilityDock",
+          "className": "Frame",
+          "properties": {
+            "AnchorPoint": { "__t": "Vector2", "v": [0.5, 1.0] },
+            "Position": { "__t": "UDim2", "v": [0.5, 0, 0.96, 0] },
+            "Size": { "__t": "UDim2", "v": [0.32, 0, 0.08, 0] },
+            "BackgroundColor3": { "__t": "Color3", "v": [15, 23, 42] },
+            "BackgroundTransparency": 0.1
+          },
+          "children": [
+            {
+              "name": "UICorner",
+              "className": "UICorner",
+              "properties": { "CornerRadius": { "__t": "UDim", "v": [0, 12] } }
+            },
+            {
+              "name": "UIStroke",
+              "className": "UIStroke",
+              "properties": { "Color": { "__t": "Color3", "v": [52, 211, 153] }, "Thickness": 1.5 }
+            },
+            {
+              "name": "Slot1Button",
+              "className": "TextButton",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [0.44, 0, 0.78, 0] },
+                "Position": { "__t": "UDim2", "v": [0.04, 0, 0.11, 0] },
+                "BackgroundColor3": { "__t": "Color3", "v": [30, 41, 59] },
+                "Text": "[Q] DASH",
+                "TextColor3": { "__t": "Color3", "v": [248, 250, 252] },
+                "TextScaled": true
+              },
+              "children": [
+                {
+                  "name": "IconBadge",
+                  "className": "ImageLabel",
+                  "properties": {
+                    "Size": { "__t": "UDim2", "v": [0.18, 0, 0.72, 0] },
+                    "Position": { "__t": "UDim2", "v": [0.04, 0, 0.14, 0] },
+                    "BackgroundTransparency": 1.0,
+                    "Image": "rbxassetid://6031094678"
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Slot2Button",
+              "className": "TextButton",
+              "properties": {
+                "Size": { "__t": "UDim2", "v": [0.44, 0, 0.78, 0] },
+                "Position": { "__t": "UDim2", "v": [0.52, 0, 0.11, 0] },
+                "BackgroundColor3": { "__t": "Color3", "v": [30, 41, 59] },
+                "Text": "[E] PULSE",
+                "TextColor3": { "__t": "Color3", "v": [248, 250, 252] },
+                "TextScaled": true
+              },
+              "children": [
+                {
+                  "name": "IconBadge",
+                  "className": "ImageLabel",
+                  "properties": {
+                    "Size": { "__t": "UDim2", "v": [0.18, 0, 0.72, 0] },
+                    "Position": { "__t": "UDim2", "v": [0.04, 0, 0.14, 0] },
+                    "BackgroundTransparency": 1.0,
+                    "Image": "rbxassetid://6031094678"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

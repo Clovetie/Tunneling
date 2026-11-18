@@ -39,6 +39,14 @@ def _unwrap_vec(val, default):
         return [float(x) for x in val["v"]]
     if isinstance(val, list):
         return [float(x) for x in val]
+    if isinstance(val, str):
+        cleaned = val.strip().translate(str.maketrans("{}[]()", "      "))
+        parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+        if parts:
+            try:
+                return [float(x) for x in parts]
+            except (TypeError, ValueError):
+                pass
     return list(default)
 
 
@@ -70,7 +78,9 @@ def _has_absolute_measurements(nodes) -> bool:
         node = stack.pop()
         props = _properties(node)
         if all(k in props for k in ("AbsolutePosition", "AbsoluteSize")):
-            return True
+            asz = _unwrap_vec(props.get("AbsoluteSize"), [])
+            if len(asz) >= 2 and asz[0] > 0 and asz[1] > 0:
+                return True
         stack.extend(node.get("children") or [])
     return False
 
@@ -163,7 +173,7 @@ def audit_tree_on_viewport(tree: list, vw: float, vh: float, viewport_name: str 
         h = ph * sz[2] + sz[3] * eff_scale
         abs_size = _unwrap_vec(props.get("AbsoluteSize"), [])
         abs_pos = _unwrap_vec(props.get("AbsolutePosition"), [])
-        has_absolute = len(abs_size) >= 2 and len(abs_pos) >= 2 and abs_size[0] >= 0 and abs_size[1] >= 0
+        has_absolute = len(abs_size) >= 2 and len(abs_pos) >= 2 and abs_size[0] > 0 and abs_size[1] > 0
         if has_absolute:
             w, h = abs_size[0], abs_size[1]
         aspect_node = _find_child_class(node, "UIAspectRatioConstraint")

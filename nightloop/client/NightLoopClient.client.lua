@@ -275,8 +275,12 @@ stateRemote.OnClientEvent:Connect(function(state)
 
 	if state.phaseName ~= lastPhase then
 		lastPhase = state.phaseName
-		phase.Text = string.format("%s  ·  %d/%d",
-			state.phaseName, state.phaseIndex, state.phaseCount)
+		local modBadge = ""
+		if type(state.modifierTitles) == "table" and #state.modifierTitles > 0 then
+			modBadge = "  [" .. table.concat(state.modifierTitles, " · ") .. "]"
+		end
+		phase.Text = string.format("%s  ·  %d/%d%s",
+			state.phaseName, state.phaseIndex, state.phaseCount, modBadge)
 
 		flash.BackgroundTransparency = 0.55
 		TweenService:Create(flash, TweenInfo.new(1.1), {
@@ -420,7 +424,7 @@ cueRemote.OnClientEvent:Connect(function(cue)
 		return
 	end
 
-	if cue.kind == "monsterRepelled" then
+	if cue.kind == "monsterRepelled" or cue.kind == "tickingBanished" or cue.kind == "mimicBanished" then
 		flash.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 		flash.BackgroundTransparency = 0.82
 		TweenService:Create(flash, TweenInfo.new(0.45), {
@@ -429,5 +433,79 @@ cueRemote.OnClientEvent:Connect(function(cue)
 		task.delay(0.5, function()
 			flash.BackgroundColor3 = Color3.new(0, 0, 0)
 		end)
+		return
+	end
+
+	if cue.kind == "breathlessEnter" or cue.kind == "breathlessTick" then
+		local ox = math.clamp(tonumber(cue.oxygen) or 1, 0, 1)
+		flash.BackgroundColor3 = Color3.fromRGB(24, 95, 130)
+		flash.BackgroundTransparency = 0.4 + ox * 0.52
+		if ox < 0.45 then
+			showCard("", "MIASMA — EVACUATE OR FLASH THE ROOM", Color3.fromRGB(115, 210, 245), 1.5)
+		end
+		return
+	end
+
+	if cue.kind == "breathlessClear" then
+		TweenService:Create(flash, TweenInfo.new(0.5), {
+			BackgroundTransparency = 1,
+		}):Play()
+		task.delay(0.55, function()
+			flash.BackgroundColor3 = Color3.new(0, 0, 0)
+		end)
+		return
+	end
+
+	if cue.kind == "tickingWindup" then
+		fovKick(4, 0.04, 0.18)
+		if (tonumber(cue.ticksLeft) or 0) <= 2 then
+			showCard("", "THE CLOCK TICKS — PREPARE TO HOLD STILL", Color3.fromRGB(240, 200, 110), 1.2)
+		end
+		return
+	end
+
+	if cue.kind == "timeFreeze" then
+		fovKick(-8, 0.08, 0.35)
+		flash.BackgroundColor3 = Color3.fromRGB(190, 150, 60)
+		flash.BackgroundTransparency = 0.68
+		showCard("HOLD STILL", "do not move until time resumes", Color3.fromRGB(245, 215, 130), tonumber(cue.duration) or 2.2)
+		return
+	end
+
+	if cue.kind == "timeResume" then
+		TweenService:Create(flash, TweenInfo.new(0.4), {
+			BackgroundTransparency = 1,
+		}):Play()
+		task.delay(0.45, function()
+			flash.BackgroundColor3 = Color3.new(0, 0, 0)
+		end)
+		return
+	end
+
+	if cue.kind == "timeShatter" then
+		fovKick(24, 0.05, 0.7)
+		flash.BackgroundColor3 = Color3.fromRGB(140, 30, 45)
+		flash.BackgroundTransparency = 0.15
+		TweenService:Create(flash, TweenInfo.new(0.95), {
+			BackgroundTransparency = 1,
+		}):Play()
+		return
+	end
+
+	if cue.kind == "mimicGlitch" then
+		fovKick(16, 0.05, 0.4)
+		showCard("", cue.warning or "DECIEVE NOT THE SHADOW", Color3.fromRGB(240, 175, 70), 2.2)
+		return
+	end
+
+	if cue.kind == "powerOutage" then
+		fovKick(8, 0.08, 0.45)
+		showCard("POWER TRIPPED", "reset the FuseBox breaker or flash its core", Color3.fromRGB(255, 110, 95), 3.5)
+		return
+	end
+
+	if cue.kind == "powerRestored" then
+		fovKick(-4, 0.08, 0.3)
+		showCard("", "house power restored", Color3.fromRGB(120, 230, 175), 2.0)
 	end
 end)

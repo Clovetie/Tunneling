@@ -1,0 +1,42 @@
+{
+  "name": "lighting_horror_blood_moon",
+  "category": "lighting",
+  "description": "Crimson Blood Moon horror atmosphere preset with volumetric haze, high-contrast color grading, and subtle bloom.",
+  "defaultParent": "Lighting",
+  "tree": [
+    {
+      "name": "BloodMoonAtmosphere",
+      "className": "Atmosphere",
+      "replaceExisting": true,
+      "properties": {
+        "Density": 0.44,
+        "Offset": 0.15,
+        "Color": { "__t": "Color3", "v": [0.38, 0.08, 0.1] },
+        "Decay": { "__t": "Color3", "v": [0.16, 0.03, 0.05] },
+        "Glare": 0.25,
+        "Haze": 2.2
+      }
+    },
+    {
+      "name": "BloodMoonColorGrading",
+      "className": "ColorCorrectionEffect",
+      "replaceExisting": true,
+      "properties": {
+        "Brightness": -0.04,
+        "Contrast": 0.24,
+        "Saturation": -0.22,
+        "TintColor": { "__t": "Color3", "v": [0.96, 0.78, 0.8] }
+      }
+    },
+    {
+      "name": "BloodMoonBloom",
+      "className": "BloomEffect",
+      "replaceExisting": true,
+      "properties": {
+        "Intensity": 0.65,
+        "Size": 24,
+        "Threshold": 0.88
+      }
+    }
+  ]
+}

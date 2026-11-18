@@ -8,18 +8,18 @@ This repository provides a complete, zero-dependency **Model Context Protocol (M
 
 | Path | Purpose |
 |---|---|
-| `roblox-bridge/` | Primary MCP Server (`mcp_server.py`, `mcp_core.py`), HTTP Bridge & Visual Control Center UI (`server.py` v5.4.0), 3D Viewport + HUD Software Rasterizer (`viewport_renderer.py`), 3D Physics/Geometry Auditor (`scene_auditor.py`), Direct Image/Audio Engine (`image_pipeline.py`), `.rbxmx`/`.rbxlx` XML Pipeline (`rbxmx_pipeline.py`), Multi-Device UI Linter (`ui_linter.py`), Studio Plugin (`ArenaBridge.lua`), CLI (`arena_studio.py`, `ab.ps1`), Stateful Simulator (`mock_studio.py`), Test Suite (`test_bridge_mcp.py`), and the v5 Ops Platform (`tunnel_manager.py` supervised tunnel, `bus_core.py` multi-agent bus, `auth_core.py` scoped tokens, `telemetry.py` metrics/events/audit, multi-Studio fleet routing, dual-era MCP 2026-07-28 / tasks + the MRTR human-in-the-loop confirmation gate (`confirm_gate.py`) in `server.py` + `mcp_core.py` — see `docs/OPS.md`) |
+| `roblox-bridge/` | Primary MCP Server (`mcp_server.py`, `mcp_core.py`), HTTP Bridge & Visual Control Center UI (`server.py` v6.0.0), 3D Viewport + HUD Software Rasterizer (`viewport_renderer.py`), 3D Physics/Geometry Auditor (`scene_auditor.py`), Direct Image/Audio Engine (`image_pipeline.py`), `.rbxmx`/`.rbxlx` XML Pipeline (`rbxmx_pipeline.py`), Multi-Device UI Linter (`ui_linter.py`), Studio Plugin (`ArenaBridge.lua` v6.0.0), CLI (`arena_studio.py`, `ab.ps1`), Stateful Simulator (`mock_studio.py`), Test Suite (`test_bridge_mcp.py`), and the v5/v6 Ops Platform (`tunnel_manager.py` supervised tunnel with QUIC→HTTP/2 fallback, `bus_core.py` multi-agent bus, `auth_core.py` scoped tokens, `telemetry.py` metrics/events/audit, multi-Studio fleet routing, dual-era MCP 2026-07-28 / `.well-known` Server Card & RFC 9728 discovery / completions / tasks + the MRTR human-in-the-loop confirmation gate (`confirm_gate.py`) in `server.py` + `mcp_core.py` — see `docs/OPS.md`) |
 | `roblox-kit/assets/` | **4,320 licensed assets** recorded per file in `registry.json`: 3,705 raster images (including 300 six-face cube-map PNGs), 50 generated 8-bit LDR skies, 520 3D models (500 pinned Kenney CC0 GLB + 20 `.rbxmx`), and 45 CC0 WAVs. Per-file hashes, source/license, provenance, and thumbnails are checked by `tools/verify_licences.py`; paginated contact sheets are linked from `assets/contact-sheets/index.html`. |
 | `roblox-kit/modules/` | **19 compiler-verified Luau `ModuleScript`s** (`StudUI`, `StudMotion`, `CheckUIIcons` [1,022 glossy 3D icons], `ModernUI`, `WidgetKit`, `OverheadHUD`, `MinimapRadar`, `LucideIcons` [1,894 outline icons], `LucideFilledIcons` [1,895 filled icons], `SoundFX`, `FormatNumber`, `DataStoreSafe`, `Maid`, `Signal`, `NetGuard`, `TagBinder`, `SpringUI`, `StateStore`, `Assets`) |
 | `roblox-kit/systems/` | **14 production server+shared+client game systems** (`core/{data [ProfileStore], economy, format, remotes}`, `ui/kit`, `liveops/{badges, codes, group-rewards, playtime-gifts, social-prompts}`, `monetization/{gamepasses, offline-earnings, paid-random-items, receipts}`) installed via `install_dropin_system` |
 | `roblox-kit/templates/` | **6 complete 1-click UI screen & multi-script economy templates** (`full_stud_ui_suite`, `stud_shop_window`, `stud_hud_shell`, `stud_daily_rewards`, `stud_rebirth_window`, `stud_rarity_index`) installed via `install_template` |
 | `roblox-kit/prefabs/` & `models/` | **20 ready-to-spawn JSON prefabs** (`spawn_prefab`) + **20 standalone `.rbxmx` XML models and 500 licensed GLB source models** + full **`.rbxlx` place export/import** (`export_place_rbxlx` / `import_place_rbxlx`) |
-| `.claude/skills/` | **16 specialized Roblox Studio agent skills** (automatically exposed as `skill://<name>` MCP resources) |
+| `.claude/skills/` | **Bundled Roblox Studio agent skills** (automatically exposed as `skill://<name>` MCP resources) |
 | `THIRD_PARTY_LICENSES.md` | Full commercial-safe open-source attributions & license texts (CC0 1.0 Public Domain, MIT, ISC & Apache-2.0) |
 
 ---
 
-## 2. Core Capabilities Available to Agents (70 MCP Tools + CLI)
+## 2. Core Capabilities Available to Agents (MCP Tools + CLI)
 
 1. **Multimodal 3D Place + HUD Viewport Vision & 3D Scene Physics QA (`capture_viewport`, `render_offline`, `screenshot_gui`, `audit_3d_scene`)**:
    - Call **`capture_viewport`** (`perspective`, `iso_ne`, `iso_nw`, `top_blueprint`, `front`) for an `image/png` MCP block. Depending on the selected mode and available peer, it uses guarded native capture or the deterministic software renderer; `render_offline` also accepts an exported tree without a Studio peer.
@@ -29,15 +29,25 @@ This repository provides a complete, zero-dependency **Model Context Protocol (M
    - Run **`audit_ui_layout`** across **Desktop (`1920x1080`)**, **Tablet (`1024x768`)**, and **Mobile (`844x390`)**.
 3. **Standalone `.rbxlx` Place Authoring, Open Cloud API, 14 Drop-In Systems, Images, Audio & `.rbxmx` Models**:
    - Export or generate complete standalone `.rbxlx` place files (`export_place_rbxlx` / `import_place_rbxlx`), publish or query live DataStores/Messaging via `open_cloud_action`, and install any of 14 `ProfileStore`/LiveOps/Monetization systems (`install_dropin_system`). Use `search_assets` for offline, provenance-filtered search of the local registry; `import_image`, `import_audio`, and `import_rbxmx` send selected assets into Studio.
-4. **Full Place Exploration, Surgical Editing, Sync & Playtesting**:
+4. **Import UI Directly from the Web & Control Center Dashboard (`import_ui_from_web`, `/api/ui/import-web`, `build_ui`)**:
+   - Agents and operators can import UI directly from the Web (HTML/CSS/Tailwind markup, SVG, JSON specs, or template presets) and from the Control Center Dashboard into a responsive Roblox `ScreenGui` hierarchy (`Frame`, `UICorner`, `UIStroke`, `UIListLayout`, `UIGridLayout`, `UIPadding`, `ImageLabel`, `TextLabel`, `TextButton`) with automatic De-Slop sanitization.
+5. **3D Mesh Priority (`spawn_kit_mesh`, `import_rbxmx`, `MeshPart`, `SpecialMesh`, 520-Model CC0 Catalog)**:
+   - Always prioritize 3D meshes (`MeshPart`, `SpecialMesh`, `.rbxmx` models, and sculpted mesh prefabs) over basic blocky `Part` primitives.
+6. **De-Slop & Visual Clarity + Curated VFX/SFX Libraries (`de_slop_audit`, `build_vfx_emitter`, `synthesize_sound_effect`)**:
+   - Never use AI-slop artifacts (`—` em-dashes, robotic filler connectors like *Furthermore/Moreover/Delve/Tapestry*, or wall-of-text dumps). Run `de_slop_audit` to enforce visual clarity, concise HUD copy, and iconography. Use `build_vfx_emitter` and `VFXManager.lua` for deterministic `:Emit(n)` particle bursts and `synthesize_sound_effect` / `import_audio` for spatial SFX.
+7. **Direct Operator ↔ Agent Live Chat (`operator_chat`, `/api/chat`)**:
+   - Unlike `agent_bus` broadcasts that agents might overlook, messages sent by the human operator in the Control Center Direct Live Chat are **automatically injected into the agent's very next MCP tool response** (`operatorLiveChat`). Always reply immediately via `operator_chat(action='reply', message='...')`.
+8. **Full Place Exploration, Surgical Editing, Sync & Playtesting**:
    - Multi-DataModel targeting (`dm = "edit" | "server" | "client"`), `survey_place`, `search_game_tree`, `script_read`, `multi_edit`, `script_grep`, `luau_check`, `drift_and_sync`, `manage_snapshots`, and `run_playtest_scenario`.
 
 ---
 
 ## 3. Golden Engineering Rules for Every Agent Session
 
+Use `diagnose_connection` (or CLI `doctor`) to inspect bridge access and peer registry without submitting a Studio job. Its `connected` status is not proof of runtime capabilities. Use `search_tools` for offline catalog discovery; annotations are hints, not authorization or peer availability. For task-specific guidance, use `search_skills` with relevant keywords, then `apply_skill` with a result’s exact directory name. Read and apply the returned instructions where appropriate; the tool loads guidance into context rather than changing the agent or Studio. Both tools work without a Studio peer. Use `includeReferences=true` when relevant guidance may be in reference Markdown, check the scan completeness report, and use `skill_references` to read matched files; it does not execute them.
+
 1. **Ground truth first**: Call `get_studio_state` and `survey_place(includeSource=false)` before creating or editing instances.
-2. **Pre-flight every script**: Use `luau_check` before Studio writes. Syntax errors block mutation; if optional validation backends are unavailable, proceed only with the explicit fallback warning in the tool result.
+2. **Pre-flight every script**: Use `luau_check` before Studio writes and inspect `checksPerformed` and warnings; it never submits a Studio job. Missing tools mean checks were not performed. Write-capable tools have separate parser fallback behavior; syntax errors block those writes, while unavailable validation can produce a warning.
 3. **Persist edits in `dm="edit"`**: Edits made in `dm="server"` or `dm="client"` during Play Solo are runtime-only and disappear on Stop.
 4. **Bust cached `ModuleScript`s**: Pass `replaceInstance=true` when updating already-required `ModuleScript`s, or test isolated module logic with `require_fresh`.
 5. **Verify in Play Mode**: Run `run_playtest_scenario` and check `get_console_output` before finishing a feature.

@@ -1,0 +1,108 @@
+{
+  "name": "vfx_arcane_portal_shrine",
+  "category": "vfx",
+  "description": "3D mesh-detailed arcane portal gateway with SpecialMesh obelisks, swirling ParticleEmitter vortex, Beam energy link, and PointLight glow.",
+  "tree": [
+    {
+      "name": "ArcanePortalShrine",
+      "className": "Model",
+      "children": [
+        {
+          "name": "PortalBasePlinth",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Shape": {"__t": "Enum", "v": "PartType.Cylinder"},
+            "Size": {"__t": "Vector3", "v": [1.5, 14, 14]},
+            "CFrame": {"__t": "CFrame", "pos": [0, 0.75, 0], "rot": [0, 0, 90]},
+            "Material": {"__t": "Enum", "v": "Material.Basalt"},
+            "Color": {"__t": "Color3", "v": [0.16, 0.17, 0.22]}
+          }
+        },
+        {
+          "name": "LeftObeliskMesh",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Size": {"__t": "Vector3", "v": [2.2, 12, 2.2]},
+            "Position": {"__t": "Vector3", "v": [-5, 6.75, 0]},
+            "Material": {"__t": "Enum", "v": "Material.Slate"},
+            "Color": {"__t": "Color3", "v": [0.22, 0.24, 0.30]}
+          },
+          "children": [
+            {
+              "name": "SpecialMesh",
+              "className": "SpecialMesh",
+              "properties": {
+                "MeshType": {"__t": "Enum", "v": "MeshType.Wedge"},
+                "Scale": {"__t": "Vector3", "v": [1, 1.05, 1]}
+              }
+            }
+          ]
+        },
+        {
+          "name": "RightObeliskMesh",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "Size": {"__t": "Vector3", "v": [2.2, 12, 2.2]},
+            "Position": {"__t": "Vector3", "v": [5, 6.75, 0]},
+            "Material": {"__t": "Enum", "v": "Material.Slate"},
+            "Color": {"__t": "Color3", "v": [0.22, 0.24, 0.30]}
+          },
+          "children": [
+            {
+              "name": "SpecialMesh",
+              "className": "SpecialMesh",
+              "properties": {
+                "MeshType": {"__t": "Enum", "v": "MeshType.Wedge"},
+                "Scale": {"__t": "Vector3", "v": [1, 1.05, 1]}
+              }
+            }
+          ]
+        },
+        {
+          "name": "PortalVortexCore",
+          "className": "Part",
+          "properties": {
+            "Anchored": true,
+            "CanCollide": false,
+            "Transparency": 0.25,
+            "Size": {"__t": "Vector3", "v": [7.5, 9.5, 0.6]},
+            "Position": {"__t": "Vector3", "v": [0, 6.5, 0]},
+            "Material": {"__t": "Enum", "v": "Material.Neon"},
+            "Color": {"__t": "Color3", "v": [0.22, 0.78, 0.98]}
+          },
+          "children": [
+            {
+              "name": "SpecialMesh",
+              "className": "SpecialMesh",
+              "properties": {
+                "MeshType": {"__t": "Enum", "v": "MeshType.Sphere"}
+              }
+            },
+            {
+              "name": "VortexParticles",
+              "className": "ParticleEmitter",
+              "properties": {
+                "Rate": 28,
+                "LightEmission": 0.95,
+                "Speed": {"__t": "NumberRange", "v": [2, 6]},
+                "Lifetime": {"__t": "NumberRange", "v": [0.8, 1.6]}
+              }
+            },
+            {
+              "name": "PortalLight",
+              "className": "PointLight",
+              "properties": {
+                "Brightness": 2.4,
+                "Range": 24,
+                "Color": {"__t": "Color3", "v": [0.28, 0.82, 1.0]}
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
