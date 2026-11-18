@@ -2251,6 +2251,16 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         finally:
             record_tool_metric(name, time.monotonic() - started, passed)
 
+    def test_00_agent_team_status_is_discoverable_without_mutating_the_bus(self):
+        # The dedicated team tool is part of the registered MCP surface, but an
+        # idle status read must not create agent seats in an operator's Bus.
+        before = self.state.bus.stats()["agents"]
+        result = self.call_tool("agent_team", {"action": "status"})
+        self.assertTrue(result["ok"])
+        self.assertGreater(len(result["roster"]), 0)
+        self.assertIn("unknownTools", result["config"])
+        self.assertEqual(self.state.bus.stats()["agents"], before)
+
     def test_01_streamable_http_handshake_notifications_batches_and_auth(self):
         # Unauthorized without token -> 401
         req = urllib.request.Request(

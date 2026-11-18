@@ -138,6 +138,7 @@ local lastJobAt = 0
 local lastJobDurationMs = 0
 local dockWidgetAvailable = false
 local refreshDashboardUI: (() -> ())? = nil
+local agentTeamSummary: any = nil
 
 local function log(fmt: string, ...: any)
 	local msg = select("#", ...) > 0 and string.format(fmt, ...) or fmt
@@ -4146,7 +4147,20 @@ local function pollOnce()
 	local decodedOk, decoded = pcall(function()
 		return HttpService:JSONDecode(response.Body)
 	end)
-	if not decodedOk or not decoded.job then
+	if not decodedOk then
+		return
+	end
+
+	-- The server embeds a compact, secret-free orchestrator summary in every
+	-- poll response, even when there is no job to execute.
+	if decoded.agentTeam ~= nil then
+		agentTeamSummary = decoded.agentTeam
+	end
+	if refreshDashboardUI then
+		pcall(refreshDashboardUI)
+	end
+
+	if not decoded.job then
 		return
 	end
 
@@ -4224,9 +4238,9 @@ if DM_MODE == "edit" then
 			false,
 			false,
 			340,
-			360,
-			260,
-			260
+			410,
+			320,
+			320
 		)
 		local widget = plugin:CreateDockWidgetPluginGui("ArenaBridgeDashboardV6", info)
 		widget.Title = "Arena MCP Bridge v" .. PLUGIN_VERSION
@@ -4281,6 +4295,21 @@ if DM_MODE == "edit" then
 		local stopPlayBtn = makeBtn("Force Stop Playtest (EndTest + LeaveTest)", 222, Color3.fromRGB(185, 28, 28))
 		local cleanBtn = makeBtn("Clean Temp Test Runners", 262, Color3.fromRGB(51, 65, 85))
 
+		local teamLabel = Instance.new("TextLabel")
+		teamLabel.Name = "ArenaTeamSummary"
+		teamLabel.Size = UDim2.new(1, -24, 0, 92)
+		teamLabel.Position = UDim2.fromOffset(12, 302)
+		teamLabel.BackgroundColor3 = Color3.fromRGB(16, 24, 39)
+		teamLabel.BorderSizePixel = 0
+		teamLabel.Font = Enum.Font.Code
+		teamLabel.TextSize = 11
+		teamLabel.TextXAlignment = Enum.TextXAlignment.Left
+		teamLabel.TextYAlignment = Enum.TextYAlignment.Top
+		teamLabel.TextWrapped = true
+		teamLabel.TextColor3 = Color3.fromRGB(167, 139, 250)
+		teamLabel.Text = "ARENA TEAM · waiting for orchestrator status"
+		teamLabel.Parent = root
+
 		refreshDashboardUI = function()
 			local stText = if running then "ONLINE" else "PAUSED"
 			local ptText = if activePlaytestRunning or RunService:IsRunning() then "ACTIVE (RUNNING)" else "IDLE"
@@ -4294,6 +4323,21 @@ if DM_MODE == "edit" then
 			}, "\n")
 			toggleBtn.Text = if running then "Pause Bridge Polling" else "Connect Bridge Polling"
 			toggleBtn.BackgroundColor3 = if running then Color3.fromRGB(16, 185, 129) else Color3.fromRGB(37, 99, 235)
+			local team = agentTeamSummary
+			if type(team) == "table" then
+				local verifiedText = if team.verified == true then "YES" elseif team.verified == false then "NO" else "pending"
+				teamLabel.Text = table.concat({
+					"  ARENA TEAM  ·  " .. tostring(team.status or "idle") .. " / " .. tostring(team.phase or ""),
+					"  Objective:  " .. tostring(team.objective or ""),
+					"  Agents:     " .. tostring(team.agentsOnline or 0) .. "/" .. tostring(team.agentsTotal or 0) ..
+						"   Tasks: " .. tostring(team.tasksDone or 0) .. "/" .. tostring(team.tasksTotal or 0) ..
+						"   Approvals: " .. tostring(team.pendingApprovals or 0),
+					"  Active:     " .. tostring(team.activeTask or "idle"),
+					"  Verified:   " .. verifiedText,
+				}, "\n")
+			else
+				teamLabel.Text = "ARENA TEAM · waiting for orchestrator status"
+			end
 		end
 
 		toggleBtn.MouseButton1Click:Connect(function()

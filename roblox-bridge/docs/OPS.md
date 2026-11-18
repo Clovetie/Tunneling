@@ -2,6 +2,14 @@
 
 _Applies to bridge `6.0.0`._
 
+> **Dedicated multi-agent layer:** the `agent_team` MCP tool, `arena_team/`
+> orchestrator, `/api/orchestrator`, Control Center Tab 9 and the Studio
+> `agentTeam` poll summary layer on top of the existing Bus, ConfirmGate,
+> telemetry and tool pipeline. The current registered surface is **101 MCP
+> tools**; section 7 below preserves the v5 historical tool-count note. See
+> [`MULTI_AGENT_GUIDE.md`](MULTI_AGENT_GUIDE.md) and
+> [`MULTI_AGENT_ARCHITECTURE.md`](MULTI_AGENT_ARCHITECTURE.md).
+
 Everything in this document ships in `roblox-bridge/` and is **stdlib-only**
 (no pip installs). It layers on top of the v4 MCP + plugin bridge; nothing in the
 old workflow breaks.

@@ -216,6 +216,22 @@ CONFIRM_GATED_TOOLS = (
     "undo_redo",
 )
 
+#: Canonical `agent_team` action sets. These are shared by the MCP tool schema,
+#: read-only classification, REST scope checks and the orchestrator itself so
+#: the three surfaces cannot drift apart. Read actions never mutate state;
+#: write actions require a write-scoped token; admin actions are operator-only.
+AGENT_TEAM_READ_ACTIONS = frozenset({
+    "status", "roster", "config", "plan", "board", "feed", "logs", "approvals",
+    "confirmations", "report", "evidence", "studio", "stats", "projects",
+    "studio_summary", "tool_manifest",
+})
+AGENT_TEAM_WRITE_ACTIONS = frozenset({
+    "start_project", "pause", "resume", "cancel", "message", "approve", "deny",
+    "undo", "create_snapshot", "restore_snapshot", "run_task", "claim", "complete",
+})
+AGENT_TEAM_ADMIN_ACTIONS = frozenset({"configure", "reset"})
+AGENT_TEAM_ACTIONS = tuple(sorted(AGENT_TEAM_READ_ACTIONS | AGENT_TEAM_WRITE_ACTIONS | AGENT_TEAM_ADMIN_ACTIONS))
+
 #: `manage_device_simulator` actions, in the order the tool schema advertises
 #: them. The schema enum is derived from this tuple so the two cannot drift.
 DEVICE_SIMULATOR_ACTIONS = (
@@ -682,6 +698,20 @@ class BridgeClient:
         if self.direct_dispatch:
             return self.direct_dispatch("bus", payload)
         return self._http_request("POST", "/api/bus", payload, timeout=30.0)
+
+    def agent_team_action(self, payload: dict = None) -> dict:
+        """Reach the orchestrator in-process (embedded MCP) or over authenticated REST."""
+        payload = dict(payload or {})
+        if self.direct_dispatch:
+            ctx = current_call_context() or {}
+            payload["_callContext"] = {
+                "role": str(ctx.get("role") or "read")[:20],
+                "principal": str(ctx.get("principal") or "orchestrator")[:80],
+            }
+            return self.direct_dispatch("agent_team", payload)
+        # Never forward a client-supplied role to REST: the token decides it.
+        payload.pop("_callContext", None)
+        return self._http_request("POST", "/api/orchestrator", payload, timeout=120.0)
 
     def fleet_action(self, payload: dict = None) -> dict:
         payload = dict(payload or {})
@@ -3029,6 +3059,60 @@ TOOL_SPECS = [
         },
         "annotations": _ann("Export Roblox ScreenGui Hierarchy to Web HTML/Tailwind", read_only=True, destructive=False, idempotent=True),
     },
+    {
+        "name": "agent_team",
+        "description": (
+            "Arena multi-agent orchestration. Accept a project objective, coordinate a configurable "
+            "team of specialized agents through the existing Agent Bus, MCP tool pipeline, ConfirmGate "
+            "and telemetry, modify the live Edit DataModel, verify with playtests/console/viewport "
+            "evidence, and produce a report that states verified=true only with real receipts. "
+            "Read actions observe the roster, task board, feed, plan, logs, approvals, evidence and "
+            "report. Write actions start/pause/resume/cancel projects, answer confirmations, post "
+            "messages and request undo/recovery. Admin actions reload the team config. The bridge "
+            "token is never included in any result. See docs/MULTI_AGENT_GUIDE.md."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": list(AGENT_TEAM_ACTIONS), "default": "status",
+                           "description": "Orchestrator action. Read actions need mcp:read; write actions need mcp:write; configure/reset need mcp:admin."},
+                "projectId": {"type": "string", "description": "Optional project id; defaults to the current project."},
+                "objective": {"type": "string", "description": "Project objective for action=start_project (5..2000 characters)."},
+                "approvalMode": {"type": "string", "enum": ["plan", "each_write", "off"], "default": "plan",
+                                 "description": "plan = one project-wide approval; each_write = every write; off = admin-only unattended, audited."},
+                "allowUnattended": {"type": "boolean", "default": False,
+                                    "description": "Required with approvalMode=off and an admin token; explicitly authorizes unattended work."},
+                "requireStudio": {"type": "boolean", "default": True,
+                                  "description": "Refuse to start a write project when no live Studio Edit peer is connected."},
+                "peerId": {"type": "string", "description": "Pin Studio routing to this live peer."},
+                "requestId": {"type": "string", "description": "Confirmation requestId for approve/deny."},
+                "note": {"type": "string", "description": "Optional human note for approve/deny/message."},
+                "remember": {"type": "boolean", "default": False, "description": "Bounded confirmation allowance (approve only)."},
+                "message": {"type": "string", "description": "Body for action=message."},
+                "body": {"type": "string", "description": "Alias for message body."},
+                "subject": {"type": "string", "description": "Subject for action=message."},
+                "kind": {"type": "string", "description": "Bus message kind for action=message."},
+                "priority": {"type": "string", "description": "Bus message/task priority."},
+                "limit": {"type": "integer", "description": "Row limit for feed/logs/projects."},
+                "since": {"type": "integer", "description": "Bus event cursor for feed."},
+                "level": {"type": "string", "description": "Log level filter for logs."},
+                "taskKey": {"type": "string", "description": "Task key for run_task/claim/complete."},
+                "agentId": {"type": "string", "description": "Registered Bus agent id for claim/complete (defaults to the human operator seat)."},
+                "result": {"type": "string", "description": "Result text for complete."},
+                "steps": {"type": "integer", "description": "Undo steps for undo (1..5)."},
+                "snapshotId": {"type": "string", "description": "Snapshot id for restore_snapshot."},
+                "root": {"type": "string", "description": "Root path for create_snapshot."},
+                "label": {"type": "string", "description": "Label for create_snapshot."},
+                "configPath": {"type": "string", "description": "Filesystem path to a team JSON config for configure."},
+                "agents": {"type": "array", "items": {"type": "object"}, "description": "Inline agents array for configure."},
+                "settings": {"type": "object", "description": "Inline settings overrides for configure."},
+                "query": {"type": "string", "description": "Tool-name filter for tool_manifest."},
+                "force": {"type": "boolean", "description": "Bypass the short studio snapshot cache."},
+                "includeDone": {"type": "boolean", "description": "Include done Bus tasks on the board."},
+            },
+        },
+        "annotations": _ann("Arena Multi-Agent Team", read_only=False, destructive=False, idempotent=False),
+    },
 ]
 
 TOOL_MAP = {t["name"]: t for t in TOOL_SPECS}
@@ -3043,6 +3127,7 @@ INSPECTOR_MIXED_TOOLS = frozenset((
     "manage_plugin_and_playtest", "build_cutscene_sequence", "generate_ui_theme_pack",
     "import_ui_from_web", "build_vfx_emitter", "de_slop_audit", "spawn_kit_mesh", "operator_chat",
     "kitbash_mesh_prop", "build_combat_hitbox", "configure_camera_rig", "generate_sfx_soundbank",
+    "agent_team",
 ))
 
 
@@ -3143,6 +3228,8 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
         return True
     if name == "generate_sfx_soundbank" and not args.get("installInStudio"):
         return True
+    if name == "agent_team":
+        return str(args.get("action") or "status").strip().lower() in AGENT_TEAM_READ_ACTIONS
     return False
 
 
@@ -3532,6 +3619,8 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
         return client.bus_action(args)
     if name == "bridge_ops":
         return client.ops_action(args)
+    if name == "agent_team":
+        return client.agent_team_action(args)
 
     if name == "self_test":
         return run_bridge_self_test(client, include_studio_smoke=args.get("includeStudioSmoke", True), timeout=args.get("timeout", 180))
@@ -10398,6 +10487,7 @@ class MCPDispatcher:
             "logLevel": str(log_level).strip().lower() if isinstance(log_level, str) else None,
             "trace": trace,
             "principal": str(principal)[:80],
+            "role": str(meta.get("x-arena-role") or "read")[:20],
         }
 
     def _handle_one(self, msg: dict):
@@ -11003,6 +11093,11 @@ class MCPDispatcher:
         """Decide whether this `tools/call` may run. Returns None when it may."""
         gate = self.gate
         if not gate.enabled:
+            return None
+        if name == "agent_team":
+            # `agent_team` dispatches to the orchestrator, which opens its own
+            # project/plan/write confirmations in this same gate. Gating the
+            # dispatcher entry point would produce a circular double approval.
             return None
         spec = TOOL_MAP.get(name) or {}
         # Reading the queue AND answering it stay ungated: an approval is itself the

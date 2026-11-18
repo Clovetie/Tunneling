@@ -35,6 +35,9 @@ import uuid
 
 from confirm_gate import ConfirmGate, GateError, mode_from_env  # noqa: E402
 from mcp_core import (
+    AGENT_TEAM_ADMIN_ACTIONS,
+    AGENT_TEAM_READ_ACTIONS,
+    AGENT_TEAM_WRITE_ACTIONS,
     CONFIRM_GATED_TOOLS,
     BridgeClient,
     META_PROTOCOL_VERSION,
@@ -55,6 +58,7 @@ from auth_core import ROLE_RANK, TokenStore
 from bus_core import AgentBus
 from telemetry import Telemetry
 from tunnel_manager import TunnelManager
+from arena_team.orchestrator import Orchestrator  # noqa: E402
 
 VERSION = "6.0.0"
 PEER_ONLINE_WINDOW = 5.0  # play DataModel peers are transient; do not route work to stale peers
@@ -73,6 +77,16 @@ class BodyLimitError(ValueError):
 
 def _now() -> float:
     return time.time()
+
+
+def agent_team_required_role(action: str) -> str:
+    """One source of truth for REST /api/orchestrator scope classification."""
+    action = str(action or "status").strip().lower()
+    if action in AGENT_TEAM_ADMIN_ACTIONS:
+        return "admin"
+    if action in AGENT_TEAM_WRITE_ACTIONS:
+        return "write"
+    return "read"
 
 
 def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077") -> dict:
@@ -98,6 +112,8 @@ def build_agent_guide(state_snapshot: dict, origin: str = "http://127.0.0.1:8077
             "jobs": f"{origin}/api/jobs",
             "snapshots": f"{origin}/api/snapshots",
             "direct_chat": f"{origin}/api/chat",
+            "orchestrator": f"{origin}/api/orchestrator",
+            "orchestrator_mcp_tool": "agent_team",
             "import_web_ui": f"{origin}/api/ui/import-web",
             "export_web_ui": f"{origin}/api/ui/export-web",
             "agent_guide": f"{origin}/api/agent-guide",
@@ -307,6 +323,19 @@ class BridgeState:
         self._reaper_stop = threading.Event()
         self._reaper = threading.Thread(target=self._reap_loop, name="job-reaper", daemon=True)
         self._reaper.start()
+
+        # Dedicated multi-agent orchestration layer. It is constructed only after
+        # the Bus, gate, telemetry, fleet and MCP client exist; it reuses them.
+        self.orchestrator = Orchestrator(
+            bus=self.bus,
+            client=self.mcp_client,
+            telemetry=self.telemetry,
+            confirm_gate=self.confirm_gate,
+            state_dir=self.state_dir,
+            read_only=self.read_only,
+            fleet_snapshot=self.fleet_snapshot,
+            token=self.token,
+        )
 
         self.telemetry.events.emit("bridge.start", {
             "version": VERSION,
@@ -1421,6 +1450,14 @@ class BridgeState:
                                           body.get("level") or "info")
         if op == "bus":
             return self.bus.handle(body)
+        if op == "agent_team":
+            payload = dict(body or {})
+            call_ctx = payload.pop("_callContext", None) or {}
+            return self.orchestrator.handle(
+                payload,
+                role=str(call_ctx.get("role") or "read"),
+                principal=str(call_ctx.get("principal") or "orchestrator"),
+            )
         if op == "fleet":
             return self.fleet_action(body)
         if op == "broadcast":
@@ -2366,6 +2403,38 @@ def make_http_handler(state: BridgeState):
                 limit = self._int_qs(qs, "limit", 100, 1, 2000)
                 return self._send(200, state.telemetry.audit.tail(limit, (qs.get("action") or [None])[0]))
 
+            if path.startswith("/api/orchestrator/evidence/"):
+                if not self._require(qs, "read"):
+                    return
+                filename = path.rsplit("/", 1)[-1]
+                target = state.orchestrator.store.evidence_path(filename)
+                if not target.is_file():
+                    return self._send(404, {"error": "evidence file not found"})
+                try:
+                    return self._send(200, target.read_bytes(), "image/png")
+                except OSError:
+                    return self._send(404, {"error": "evidence file not readable"})
+
+            if path == "/api/orchestrator":
+                payload = {k: v[0] for k, v in qs.items() if k != "token"}
+                payload.pop("_callContext", None)
+                action = str(payload.get("action") or "status").strip().lower()
+                ctx = self._require(qs, agent_team_required_role(action))
+                if not ctx:
+                    return
+                try:
+                    result = state.orchestrator.handle(
+                        payload, role=ctx.get("role") or "read",
+                        principal=ctx.get("label") or ctx.get("id") or "operator",
+                    )
+                except PermissionError as exc:
+                    return self._send(403, {"error": state.orchestrator.redact(str(exc))})
+                except (ValueError, KeyError) as exc:
+                    return self._send(400, {"error": state.orchestrator.redact(str(exc))})
+                except Exception as exc:  # noqa: BLE001
+                    return self._send(500, {"error": state.orchestrator.redact(str(exc)[:400])})
+                return self._send(200, result)
+
             if path == "/api/bus":
                 payload = {k: v[0] for k, v in qs.items() if k != "token"}
                 payload.setdefault("action", "stats")
@@ -2457,14 +2526,20 @@ def make_http_handler(state: BridgeState):
                 if not self._require(qs, "write"):
                     return
                 peer_info = state.record_poll(qs)
+                try:
+                    team_summary = state.orchestrator.studio_summary()
+                except Exception:  # noqa: BLE001 — polling must never fail on UI state
+                    team_summary = {"active": False, "status": "unavailable"}
                 if peer_info.get("goodbye"):
-                    return self._send(200, {"ok": True, "goodbye": True, "job": None, "paused": state.queue_paused})
+                    return self._send(200, {"ok": True, "goodbye": True, "job": None,
+                                            "paused": state.queue_paused, "agentTeam": team_summary})
                 try:
                     wait_sec = max(0.0, min(float((qs.get("wait") or ["8.0"])[0] or 8.0), 15.0))
                 except (TypeError, ValueError):
                     wait_sec = 8.0
                 job = state.poll_for_job(peer_info, wait_seconds=wait_sec) if wait_sec > 0 else None
-                return self._send(200, {"job": job, "paused": state.queue_paused})
+                return self._send(200, {"job": job, "paused": state.queue_paused,
+                                        "agentTeam": team_summary})
 
             if path.startswith("/api/jobs/"):
                 if not self._require(qs, "read", allow_loopback=True):
@@ -2717,6 +2792,7 @@ def make_http_handler(state: BridgeState):
                         meta = {}
                         request["_meta"] = meta
                     meta["x-arena-principal"] = f"token:{ctx.get('id') or 'unknown'}"
+                    meta["x-arena-role"] = str(ctx.get("role") or "read")
                     if header_version:
                         meta.setdefault(META_PROTOCOL_VERSION, header_version)
 
@@ -2751,6 +2827,27 @@ def make_http_handler(state: BridgeState):
                 body = self._body()
             except BodyLimitError as exc:
                 return self._send(exc.status_code, {"error": exc.message})
+
+            if path == "/api/orchestrator":
+                payload = dict(body if isinstance(body, dict) else {})
+                payload.pop("_callContext", None)
+                action = str(payload.get("action") or "status").strip().lower()
+                ctx = self._require(qs, agent_team_required_role(action))
+                if not ctx:
+                    return
+                try:
+                    result = state.orchestrator.handle(
+                        payload, role=ctx.get("role") or "read",
+                        principal=ctx.get("label") or ctx.get("id") or "operator",
+                    )
+                except PermissionError as exc:
+                    return self._send(403, {"error": state.orchestrator.redact(str(exc))})
+                except (ValueError, KeyError) as exc:
+                    return self._send(400, {"error": state.orchestrator.redact(str(exc))})
+                except Exception as exc:  # noqa: BLE001
+                    return self._send(500, {"error": state.orchestrator.redact(str(exc)[:400])})
+                state.telemetry.metrics.inc("bridge_agent_team_actions_total", 1, {"action": action})
+                return self._send(200, result)
 
             # Enqueue job for Studio (requires write scope; admin when read-only
             # inspector mode is active, since that setting is a safety control).
@@ -3025,9 +3122,13 @@ def make_http_handler(state: BridgeState):
                 if is_tool_call_read_only(name, args):
                     return None
                 # Operator controls are admin-only on REST and remain so on MCP.
-                if ctx.get("role") == "write" and name != "bridge_ops":
+                admin_only = name == "bridge_ops" or (
+                    name == "agent_team"
+                    and str((args or {}).get("action") or "status").strip().lower() in AGENT_TEAM_ADMIN_ACTIONS
+                )
+                if ctx.get("role") == "write" and not admin_only:
                     return None
-                required = "admin" if name == "bridge_ops" else "write"
+                required = "admin" if admin_only else "write"
                 message = (
                     f"Blocked by token scope: token '{ctx.get('label')}' has role "
                     f"'{ctx.get('role')}', which cannot call mutating tool '{name}'. "
@@ -3267,6 +3368,23 @@ def dashboard_html() -> str:
  }
  html,body{max-width:100%;overflow-x:hidden}
  img,pre,input,textarea,select{max-width:100%}
+ .team-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:10px 0 16px}
+ .team-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px;min-height:74px}
+ .team-card .k{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+ .team-card .v{font-size:17px;font-weight:700;margin-top:4px;color:var(--txt)}
+ .team-row{display:flex;justify-content:space-between;gap:10px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.05);align-items:flex-start}
+ .team-row:last-child{border-bottom:0}
+ .team-pill{display:inline-block;border:1px solid var(--border2);border-radius:99px;padding:1px 8px;font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+ .team-pill.on{color:var(--green);border-color:rgba(69,224,160,.4);background:rgba(69,224,160,.1)}
+ .team-pill.off{color:var(--muted)}
+ .team-pill.warn{color:var(--amber);border-color:rgba(255,200,87,.4);background:rgba(255,200,87,.1)}
+ .team-pill.bad{color:var(--red);border-color:rgba(255,107,107,.4);background:rgba(255,107,107,.1)}
+ .team-agent{border-left:3px solid var(--accent)}
+ .team-scroll{max-height:260px;overflow:auto;background:#090d14;border:1px solid var(--border);border-radius:10px}
+ .team-scroll pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:11.5px}
+ .team-evidence{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+ .team-evidence img{width:100%;border-radius:8px;border:1px solid var(--border);display:block}
+ .team-muted{color:var(--muted);font-size:12px}
 </style></head><body>
 
 <header>
@@ -3317,6 +3435,7 @@ def dashboard_html() -> str:
   <button class="tab-btn" onclick="showTab('tips', this)">6. Helpful Tips &amp; Gotchas</button>
   <button class="tab-btn" onclick="showTab('ops', this)">7. Ops Console &amp; Agent Bus</button>
   <button class="tab-btn" onclick="showTab('plugin', this)">8. Studio Plugin &amp; Playtest v6</button>
+  <button class="tab-btn" onclick="showTab('team', this)">9. ARENA Multi-Agent Team</button>
 </nav>
 
 <main>
@@ -4026,6 +4145,121 @@ def dashboard_html() -> str:
       </div>
     </div>
   </section>
+
+  <!-- ==================== TAB 9: ARENA MULTI-AGENT TEAM ==================== -->
+  <section id="tab-team" class="tab-pane">
+    <div class="prompt-card" style="margin-bottom:14px">
+      <div class="prompt-head">
+        <div>
+          <h3>&#129302; ARENA — coordinated Studio development team</h3>
+          <div class="sub">Submit an objective, watch the configurable roster and leased task board, approve consequential changes, inspect viewport evidence and read the verified development report. All Studio work uses the existing annotated MCP tools through <code>execute_tool()</code>; no bridge token or raw MCP log is required here.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="sm primary" onclick="refreshArenaTeam()">&#8635; Refresh</button>
+          <button class="sm" onclick="teamVerifyAudit()">Verify audit chain</button>
+        </div>
+      </div>
+      <div id="team-status-note" class="team-muted">Waiting for orchestrator status…</div>
+    </div>
+
+    <div class="team-grid">
+      <div class="team-card"><div class="k">Project</div><div class="v" id="team-project-status">idle</div></div>
+      <div class="team-card"><div class="k">Studio</div><div class="v" id="team-studio-status">—</div></div>
+      <div class="team-card"><div class="k">Agents online</div><div class="v" id="team-agents-status">—</div></div>
+      <div class="team-card"><div class="k">Tasks done</div><div class="v" id="team-tasks-status">—</div></div>
+      <div class="team-card"><div class="k">Pending approvals</div><div class="v" id="team-approvals-status">—</div></div>
+      <div class="team-card"><div class="k">Final report</div><div class="v" id="team-verified-status">—</div></div>
+    </div>
+
+    <div class="two-col" style="margin-bottom:14px">
+      <div class="prompt-card">
+        <div class="prompt-head"><div><h3>Project objective &amp; controls</h3><div class="sub">The human remains the owner. Default <code>plan</code> mode requires approval of the project-wide change set before any agent writes.</div></div></div>
+        <div class="sub" id="team-objective-current">No active project.</div>
+        <textarea id="team-objective" placeholder="e.g. Build a crystal shrine area with a server-authoritative loot chest, responsive HUD and validated Luau systems" style="min-height:74px"></textarea>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0">
+          <select id="team-approval-mode" style="width:150px">
+            <option value="plan">Approve plan</option>
+            <option value="each_write">Approve each write</option>
+            <option value="off">Unattended (admin)</option>
+          </select>
+          <label class="team-muted" style="display:flex;gap:4px;align-items:center;cursor:pointer"><input type="checkbox" id="team-require-studio" checked> Require live Studio</label>
+          <button class="sm primary" onclick="teamStartProject()">Start project</button>
+          <button class="sm" onclick="teamProjectControl('pause')">Pause</button>
+          <button class="sm" onclick="teamProjectControl('resume')">Resume</button>
+          <button class="sm" onclick="teamProjectControl('cancel')">Cancel</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input id="team-message-input" placeholder="Message the team through the Agent Bus…" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')teamSendMessage()">
+          <button class="sm" onclick="teamSendMessage()">Send</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px">
+          <button class="sm" onclick="teamCreateSnapshot()">Create recovery snapshot</button>
+          <button class="sm" onclick="teamUndo()">Undo last job (approval)</button>
+          <input id="team-snapshot-id" placeholder="snapshotId" style="width:140px">
+          <button class="sm" onclick="teamRestoreSnapshot()">Restore (approval)</button>
+          <input id="team-config-path" placeholder="team config path (admin)" style="width:190px">
+          <button class="sm" onclick="teamConfigure()">Reload config</button>
+        </div>
+        <pre id="team-audit-out" class="team-muted" style="white-space:pre-wrap;max-height:90px;overflow:auto">Audit chain not checked yet.</pre>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head"><div><h3>Live Studio routing &amp; selection</h3><div class="sub">Persistent edits target <code>dm="edit"</code>; playtests target server/client DataModels.</div></div></div>
+        <div id="team-studio-details" class="team-scroll" style="padding:8px">Studio details loading…</div>
+      </div>
+    </div>
+
+    <div class="two-col" style="margin-bottom:14px">
+      <div class="prompt-card">
+        <div class="prompt-head"><div><h3>Agent roster &amp; activity</h3><div class="sub">Presence comes from the existing Agent Bus; each seat is independently configurable and replaceable.</div></div></div>
+        <div id="team-roster" class="team-scroll">Roster loading…</div>
+      </div>
+      <div class="prompt-card">
+        <div class="prompt-head"><div><h3>Current plan &amp; technical design</h3><div class="sub">Generated from the real place survey, with explicit component ownership and verification steps.</div></div></div>
+        <div id="team-plan" class="team-scroll" style="padding:8px">Plan loading…</div>
+      </div>
+    </div>
+
+    <div class="prompt-card" style="margin-bottom:14px">
+      <div class="prompt-head"><div><h3>Live task board &amp; dependencies</h3><div class="sub">Leases, dependencies, attempts, verification receipts and real errors. Failed tasks can be retried after the human inspects them.</div></div></div>
+      <div id="team-board" class="team-scroll">Task board loading…</div>
+    </div>
+
+    <div class="two-col" style="margin-bottom:14px">
+      <div class="prompt-card">
+        <div class="prompt-head"><div><h3>Communication feed</h3><div class="sub">Direct messages, broadcasts, handoffs and Bus events.</div></div></div>
+        <div id="team-feed" class="team-scroll">Feed loading…</div>
+      </div>
+      <div class="prompt-card">
+        <div class="prompt-head"><div><h3>Execution log &amp; progress timeline</h3><div class="sub">Structured orchestrator timeline — no raw MCP logs needed.</div></div></div>
+        <div id="team-logs" class="team-scroll">Logs loading…</div>
+      </div>
+    </div>
+
+    <div class="prompt-card" style="margin-bottom:14px">
+      <div class="prompt-head">
+        <div><h3>Human confirmation queue</h3><div class="sub">Approve or reject project-wide changes, destructive operations, publishing, external communications and per-write mode. Before/after source comparisons and undo receipts are shown below.</div></div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+        <input id="team-approval-note" placeholder="Optional decision note" style="flex:1;min-width:180px">
+        <span class="team-muted">Decisions are signed, one-use and written to the hash-chained audit log.</span>
+      </div>
+      <div id="team-approvals" class="team-scroll">No approvals yet.</div>
+    </div>
+
+    <div class="two-col" style="margin-bottom:14px">
+      <div class="prompt-card">
+        <div class="prompt-head"><div><h3>Viewport / screenshot evidence</h3><div class="sub">Authenticated PNG previews captured from the Edit DataModel. Failed captures are recorded as warnings, never as fake evidence.</div></div></div>
+        <div id="team-evidence" class="team-evidence"><div class="team-muted">No evidence yet.</div></div>
+      </div>
+      <div class="prompt-card">
+        <div class="prompt-head"><div><h3>Verified development report</h3><div class="sub"><code>verified=true</code> only when tasks, read-backs, playtest, console, evidence and audit chain all pass.</div></div></div>
+        <div style="margin-bottom:6px"><span class="team-pill off" id="team-report-badge">no report</span></div>
+        <pre id="team-report" class="team-scroll" style="padding:10px;max-height:320px;white-space:pre-wrap">Report not generated yet.</pre>
+      </div>
+    </div>
+  </section>
+
 </main>
 
 <div id="toast" class="toast">Copied to clipboard</div>
@@ -4097,7 +4331,7 @@ function saveToken(){
   storeToken(value); setToken(value); box.value = '';
   hideAuthBanner();
   toast('Token saved for this browser — reloading data…');
-  tick(); refreshOps(); refreshFleet(); refreshBus(); loadKitGallery(); refresh3DViewport(); run3DSceneAudit(false, false);
+  tick(); refreshOps(); refreshFleet(); refreshBus(); refreshArenaTeam(); loadKitGallery(); refresh3DViewport(); run3DSceneAudit(false, false);
 }
 function applyHeaderToken(){
   const box = document.getElementById('tok-input');
@@ -4106,7 +4340,7 @@ function applyHeaderToken(){
   storeToken(value); setToken(value);
   hideAuthBanner();
   toast('Header token applied — reloading data…');
-  tick(); refreshOps(); refreshFleet(); refreshBus(); loadKitGallery(); refresh3DViewport(); run3DSceneAudit(false, false);
+  tick(); refreshOps(); refreshFleet(); refreshBus(); refreshArenaTeam(); loadKitGallery(); refresh3DViewport(); run3DSceneAudit(false, false);
 }
 function showStaleBanner(runningVersion){
   const b = document.getElementById('stale-banner');
@@ -4152,6 +4386,7 @@ function showTab(name, btn){
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
   if(name === 'plugin') loadPluginDashboard();
+  if(name === 'team') refreshArenaTeam();
 }
 
 async function callMcp(toolName, argsObj){
@@ -6114,14 +6349,301 @@ async function importWebUiFromDashboard(installInStudio){
   }
 }
 
-initBoot().then(() => { tick(); refreshOps(); refreshBus(); refreshFleet(); refreshDirectChat();
+let TEAM_EVIDENCE_URLS = [];
+let TEAM_EVIDENCE_SIG = '';
+function teamEsc(v){
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function teamSafeId(v){ return String(v == null ? '' : v).replace(/[^A-Za-z0-9_\-]/g, ''); }
+function teamTime(ts){
+  const n = Number(ts || 0);
+  if(!isFinite(n) || n <= 0) return '—';
+  try { return new Date(n * 1000).toLocaleTimeString(); } catch(_){ return String(ts); }
+}
+function teamStatusClass(status){
+  const s = String(status || '').toLowerCase();
+  if(['done','completed','verified','online','approved','ok'].includes(s)) return 'on';
+  if(['failed','blocked','cancelled','denied','expired','error'].includes(s)) return 'bad';
+  if(['in_progress','running','awaiting_approval','pending','busy','paused','warn'].includes(s)) return 'warn';
+  return 'off';
+}
+function teamPill(text, status){
+  return `<span class="team-pill ${teamStatusClass(status || text)}">${teamEsc(text)}</span>`;
+}
+async function teamAction(payload, okMsg){
+  try {
+    const r = await opsJson('/api/orchestrator', {method:'POST', body:JSON.stringify(payload)});
+    if(okMsg) toast(okMsg);
+    await refreshArenaTeam();
+    return r;
+  } catch(err){
+    toast(err.message || String(err));
+    throw err;
+  }
+}
+async function refreshArenaTeam(){
+  const root = document.getElementById('tab-team');
+  if(!root) return;
+  try {
+    const s = await opsJson('/api/orchestrator?action=status');
+    renderTeamOverview(s);
+    renderTeamStudio(s);
+    renderTeamRoster(s);
+    renderTeamPlan(s);
+    renderTeamBoard(s);
+    renderTeamFeed(s);
+    renderTeamLogs(s);
+    renderTeamApprovals(s);
+    renderTeamReport(s);
+    await renderTeamEvidence(s.evidence || []);
+    const note = document.getElementById('team-status-note');
+    if(note) note.textContent = `Orchestrator v${teamEsc(s.version || '1')} · server time ${teamTime(s.serverTime)} · config ${teamEsc((s.config || {}).source || 'default')}`;
+  } catch(err){
+    const note = document.getElementById('team-status-note');
+    if(note) note.textContent = 'Orchestrator status unavailable: ' + String(err.message || err);
+  }
+}
+function renderTeamOverview(s){
+  const p = s.project || {};
+  const st = s.studio || {};
+  const counts = s.taskCounts || {};
+  const done = counts.done || 0;
+  const total = (s.plan && s.plan.tasks ? s.plan.tasks.length : 0);
+  const pending = (s.approvals && s.approvals.pendingCount) || 0;
+  const online = (s.roster || []).filter(a => a.online).length;
+  const report = s.report || {};
+  const set = (id, value) => { const el = document.getElementById(id); if(el) el.textContent = value; };
+  set('team-project-status', p.active ? `${p.status || 'active'} · ${p.phase || ''}` : 'idle');
+  set('team-studio-status', st.connected ? `connected · ${st.activeDataModel || 'edit'}` : 'offline');
+  set('team-agents-status', `${online}/${(s.roster || []).length}`);
+  set('team-tasks-status', `${done}/${total}`);
+  set('team-approvals-status', String(pending));
+  set('team-verified-status', report.verified === true ? 'verified' : (report.status || 'pending'));
+  const obj = document.getElementById('team-objective-current');
+  if(obj) obj.textContent = p.active ? `Active: ${p.objective || ''} (${p.id || ''})` : 'No active project.';
+}
+function renderTeamStudio(s){
+  const el = document.getElementById('team-studio-details');
+  if(!el) return;
+  const st = s.studio || {};
+  const sel = st.selection || {};
+  const peers = (st.peers || []).map(p =>
+    `<div class="team-row"><span>${teamEsc(p.peerId || 'peer')} ${teamPill(p.online ? 'online' : 'offline', p.online ? 'online' : 'offline')}</span><span class="team-muted">${teamEsc(p.dm || '')} · ${teamEsc(p.place || '')}</span></div>`).join('') || '<div class="team-muted">No registered peers.</div>';
+  const paths = (sel.paths || []).map(x => `<code>${teamEsc(x)}</code>`).join(', ') || 'none';
+  el.innerHTML = `
+    <div class="team-row"><strong>Connection</strong>${teamPill(st.connected ? 'connected' : 'offline', st.connected ? 'online' : 'offline')}</div>
+    <div class="team-row"><strong>Place</strong><span>${teamEsc(st.place || 'unknown')} · ${teamEsc(st.placeId || 0)}</span></div>
+    <div class="team-row"><strong>Active DataModel</strong><span><code>${teamEsc(st.activeDataModel || 'edit')}</code> · peer <code>${teamEsc(st.peerId || 'auto')}</code></span></div>
+    <div class="team-row"><strong>Selection</strong><span>${teamEsc(sel.count || 0)} selected · ${paths}</span></div>
+    <div class="team-row"><strong>Fleet</strong><span>${teamEsc(st.peerCount || 0)} online · pinned ${st.pinned ? 'yes' : 'no'}</span></div>
+    <div class="team-row"><strong>Read-only bridge</strong><span>${st.readOnly ? 'yes' : 'no'}</span></div>
+    <div style="padding:6px 10px"><div class="team-muted">Peers</div>${peers}</div>`;
+}
+function renderTeamRoster(s){
+  const el = document.getElementById('team-roster');
+  if(!el) return;
+  const stats = s.agentStats || {};
+  const rows = (s.roster || []).map(a => {
+    const act = a.activity || {};
+    const st = stats[a.key] || {};
+    const color = /^#[0-9a-fA-F]{3,8}$/.test(a.color || '') ? a.color : '#8fa0b4';
+    return `<div class="team-row team-agent" style="border-left-color:${color}">
+      <div><strong>${teamEsc(a.name)}</strong> <span class="team-muted">${teamEsc(a.role)}</span>
+        <div class="team-muted">${teamEsc(a.description || '')}</div>
+        <div style="margin-top:4px">${teamPill(a.online ? 'online' : 'offline', a.online ? 'online' : 'offline')}
+          ${teamPill(act.status || 'idle', act.status || 'idle')}
+          <span class="team-muted">${teamEsc(act.detail || (a.driverReason || ''))}</span></div>
+        <div class="team-muted">owned: ${(a.ownedPaths || []).length ? teamEsc((a.ownedPaths || []).join(', ')) : 'none (review/analysis only)'} · tools: ${(a.allowedTools || []).length}</div>
+      </div>
+      <div class="team-muted" style="text-align:right;white-space:nowrap">${teamEsc(st.tasksDone || 0)} done<br>${teamEsc(st.failures || 0)} failed<br>${teamEsc(st.toolCalls || 0)} calls</div>
+    </div>`;
+  }).join('');
+  const conflicts = (s.config && s.config.ownershipConflicts) || [];
+  const unknown = (s.config && s.config.unknownTools) || [];
+  el.innerHTML = rows + (conflicts.length ? `<div class="team-row"><span class="team-pill bad">ownership conflicts</span><span>${teamEsc(JSON.stringify(conflicts))}</span></div>` : '')
+    + (unknown.length ? `<div class="team-row"><span class="team-pill bad">unknown tools</span><span>${teamEsc(unknown.join(', '))}</span></div>` : '');
+}
+function renderTeamPlan(s){
+  const el = document.getElementById('team-plan');
+  if(!el) return;
+  const design = (s.plan && s.plan.design) || {};
+  const plan = s.plan || {};
+  const comps = (design.components || []).map(c => `<li><strong>${teamEsc(c.name)}</strong> — ${teamEsc(c.owner)} · ${teamEsc((c.paths || []).join(', ') || 'no exclusive write path')}</li>`).join('') || '<li>No design yet.</li>';
+  const verify = (design.verificationPlan || []).map(v => `<li>${teamEsc(v)}</li>`).join('') || '<li>Not generated yet.</li>';
+  const risks = (design.risks || []).map(v => `<li>${teamEsc(v)}</li>`).join('') || '<li>None listed.</li>';
+  el.innerHTML = `
+    <div class="team-row"><strong>Design</strong><span>${teamEsc(design.title || 'not generated')}</span></div>
+    <div class="team-row"><strong>Generator</strong><span>${teamEsc(plan.generator || design.generatedBy || '—')}</span></div>
+    <div class="team-row"><strong>Conflicts</strong><span>${(plan.conflicts || []).length ? teamEsc(JSON.stringify(plan.conflicts)) : 'none'}</span></div>
+    <div style="padding:8px 10px"><div class="team-muted">Owned components</div><ul style="margin:4px 0 8px 18px">${comps}</ul>
+      <div class="team-muted">Verification plan</div><ul style="margin:4px 0 8px 18px">${verify}</ul>
+      <div class="team-muted">Risks</div><ul style="margin:4px 0 0 18px">${risks}</ul></div>`;
+}
+function renderTeamBoard(s){
+  const el = document.getElementById('team-board');
+  if(!el) return;
+  const tasks = (s.plan && s.plan.tasks) || [];
+  if(!tasks.length){ el.innerHTML = '<div class="team-muted">No tasks yet. Start a project objective.</div>'; return; }
+  el.innerHTML = tasks.map(t => {
+    const key = teamSafeId(t.key);
+    const deps = (t.dependsOn || []).map(d => `<code>${teamEsc(d)}</code>`).join(', ') || 'none';
+    const ver = Object.keys(t.verification || {}).length;
+    const retry = ['failed','blocked','cancelled','todo'].includes(String(t.status || ''))
+      ? `<button class="sm" onclick="teamRetry('${key}')">Retry</button>` : '';
+    return `<div class="team-row">
+      <div><strong>${teamEsc(t.title)}</strong> <span class="team-muted">${teamEsc(t.key)} · ${teamEsc(t.agentKey)} · ${teamEsc(t.kind || '')}</span>
+        <div style="margin-top:3px">${teamPill(t.status || 'todo', t.status)} <span class="team-muted">attempt ${teamEsc(t.attempts || 0)} · ${ver} verification receipt(s) · deps ${deps}</span></div>
+        <div class="team-muted">${teamEsc(t.result || t.error || t.detail || '')}</div>
+      </div><div>${retry}</div></div>`;
+  }).join('');
+}
+function renderTeamFeed(s){
+  const el = document.getElementById('team-feed');
+  if(!el) return;
+  const msgs = (s.feed || []).slice(-25).reverse().map(m =>
+    `<div class="team-row"><div><strong>${teamEsc(m.from || 'system')}</strong> <span class="team-muted">${teamEsc(m.subject || m.kind || 'note')}</span>
+      <div>${teamEsc(m.body || m.message || '')}</div></div><span class="team-muted">${teamTime(m.ts)}</span></div>`).join('') || '<div class="team-muted">No messages yet.</div>';
+  const events = (s.events || []).slice(-20).reverse().map(e =>
+    `<div class="team-row"><span><code>${teamEsc(e.kind || 'event')}</code> ${teamEsc(JSON.stringify(e.data || e.detail || {}).slice(0,180))}</span><span class="team-muted">${teamTime(e.ts)}</span></div>`).join('');
+  el.innerHTML = `<div class="team-muted" style="padding:6px 10px">Agent Bus thread</div>${msgs}
+    <div class="team-muted" style="padding:6px 10px">Bus events</div>${events || '<div class="team-muted">No events yet.</div>'}`;
+}
+function renderTeamLogs(s){
+  const el = document.getElementById('team-logs');
+  if(!el) return;
+  const rows = (s.logs || []).slice(0, 120).map(l =>
+    `<div class="team-row"><div><code>${teamEsc(l.actor || 'system')}</code> · ${teamEsc(l.kind || 'log')}
+      <div>${teamEsc(l.message || '')}</div></div>
+      <span>${teamPill(l.level || 'info', l.level === 'error' ? 'failed' : (l.level === 'warn' ? 'warn' : 'done'))} <span class="team-muted">${teamTime(l.ts)}</span></span></div>`).join('');
+  el.innerHTML = rows || '<div class="team-muted">No execution logs yet.</div>';
+}
+function renderTeamApprovals(s){
+  const el = document.getElementById('team-approvals');
+  if(!el) return;
+  const a = s.approvals || {};
+  const pending = (a.pending || []).map(r => {
+    const id = teamSafeId(r.requestId);
+    const preview = r.argumentsPreview || {};
+    return `<div class="team-row"><div>
+        <strong>${teamEsc(r.tool || 'confirmation')}</strong> ${teamPill(r.state || 'pending', r.state || 'pending')}
+        <div class="team-muted">request <code>${teamEsc(r.requestId)}</code> · ${teamEsc(Math.round(r.secondsRemaining || 0))}s remaining</div>
+        <pre style="white-space:pre-wrap;font-size:11px;max-height:100px;overflow:auto">${teamEsc(JSON.stringify(preview, null, 2).slice(0,1200))}</pre>
+      </div><div style="white-space:nowrap">
+        <button class="sm primary" onclick="teamDecision('approve','${id}')">Approve</button>
+        <button class="sm" onclick="teamDecision('deny','${id}')">Reject</button>
+      </div></div>`;
+  }).join('') || '<div class="team-muted">No pending confirmations.</div>';
+  const history = (a.projectRequests || []).slice(0, 12).map(r => `
+    <div class="team-row"><div>
+      <strong>${teamEsc(r.tool || 'request')}</strong> ${teamPill(r.state || 'unknown', r.state)}
+      <div class="team-muted">${teamEsc(r.summary || '')} · ${teamTime(r.decidedAt || r.ts)} · ${teamEsc(r.note || '')}</div>
+      ${r.changePreview ? `<details><summary class="team-muted">Before / after comparison</summary><pre style="white-space:pre-wrap;font-size:11px;max-height:130px;overflow:auto">${teamEsc(r.changePreview)}</pre></details>` : ''}
+      ${r.undo ? `<div class="team-muted">Recovery: ${teamEsc(r.undo.method || '')}${r.undo.snapshotId ? ' · ' + teamEsc(r.undo.snapshotId) : ''}</div>` : ''}
+    </div></div>`).join('');
+  el.innerHTML = `<div class="team-muted" style="padding:6px 10px">Gate: ${teamEsc((a.gate || {}).mode || 'off')} · pending ${teamEsc(a.pendingCount || 0)}</div>${pending}
+    <div class="team-muted" style="padding:6px 10px">Decision history / change previews</div>${history || '<div class="team-muted">No project approvals yet.</div>'}`;
+}
+function renderTeamReport(s){
+  const pre = document.getElementById('team-report');
+  const badge = document.getElementById('team-report-badge');
+  const r = s.report || {};
+  if(pre) pre.textContent = r.markdown || 'Report not generated yet.';
+  if(badge){
+    badge.textContent = r.verified === true ? 'verified' : (r.status || 'no report');
+    badge.className = 'team-pill ' + teamStatusClass(r.verified === true ? 'verified' : (r.status || 'off'));
+  }
+}
+async function renderTeamEvidence(rows){
+  const el = document.getElementById('team-evidence');
+  if(!el) return;
+  const sig = rows.map(e => `${e.id}:${e.filename}`).join('|');
+  if(sig === TEAM_EVIDENCE_SIG) return;
+  TEAM_EVIDENCE_SIG = sig;
+  TEAM_EVIDENCE_URLS.forEach(u => { try { URL.revokeObjectURL(u); } catch(_){} });
+  TEAM_EVIDENCE_URLS = [];
+  if(!rows.length){ el.innerHTML = '<div class="team-muted">No evidence yet.</div>'; return; }
+  el.innerHTML = '<div class="team-muted">Loading authenticated previews…</div>';
+  const cards = await Promise.all(rows.slice(0, 8).map(async e => {
+    try {
+      const r = await apiFetch(e.url || `/api/orchestrator/evidence/${encodeURIComponent(e.filename)}`);
+      if(!r.ok) throw new Error('HTTP ' + r.status);
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      TEAM_EVIDENCE_URLS.push(url);
+      return `<div><img src="${url}" alt="${teamEsc(e.summary || e.filename)}"><div class="team-muted">${teamEsc(e.kind)} · ${teamEsc(e.summary || e.filename)}</div></div>`;
+    } catch(err){
+      return `<div class="team-muted">${teamEsc(e.filename)} unavailable: ${teamEsc(err.message || err)}</div>`;
+    }
+  }));
+  if(document.getElementById('team-evidence')) el.innerHTML = cards.join('');
+}
+async function teamStartProject(){
+  const objective = (document.getElementById('team-objective') || {}).value || '';
+  if(objective.trim().length < 5) return toast('Enter a project objective (at least 5 characters).');
+  const approvalMode = (document.getElementById('team-approval-mode') || {}).value || 'plan';
+  const requireStudio = Boolean((document.getElementById('team-require-studio') || {}).checked);
+  const payload = {action:'start_project', objective:objective.trim(), approvalMode, requireStudio};
+  if(approvalMode === 'off') payload.allowUnattended = true;
+  await teamAction(payload, 'Project started. Approve the plan in the confirmation queue when it appears.');
+}
+async function teamProjectControl(action){
+  if(action === 'cancel' && !window.confirm('Cancel this project and release active leases?')) return;
+  await teamAction({action}, `Project ${action} requested.`);
+}
+async function teamSendMessage(){
+  const input = document.getElementById('team-message-input');
+  const body = input ? input.value.trim() : '';
+  if(!body) return toast('Type a message first.');
+  if(input) input.value = '';
+  await teamAction({action:'message', body, subject:'Operator directive', kind:'note'}, 'Message posted to the Agent Bus.');
+}
+async function teamDecision(kind, requestId){
+  const note = (document.getElementById('team-approval-note') || {}).value || '';
+  await teamAction({action: kind === 'approve' ? 'approve' : 'deny', requestId, note:note.trim()},
+                   kind === 'approve' ? 'Approval recorded.' : 'Request rejected.');
+}
+async function teamRetry(taskKey){
+  await teamAction({action:'run_task', taskKey}, `Retrying ${taskKey}.`);
+}
+async function teamCreateSnapshot(){
+  await teamAction({action:'create_snapshot', root:'game', label:'Arena Team recovery point'}, 'Recovery snapshot created.');
+}
+async function teamUndo(){
+  await teamAction({action:'undo', steps:1}, 'Undo requested — approve the confirmation to apply it.');
+}
+async function teamRestoreSnapshot(){
+  const id = ((document.getElementById('team-snapshot-id') || {}).value || '').trim();
+  if(!id) return toast('Enter a snapshotId first (create a snapshot to get one).');
+  await teamAction({action:'restore_snapshot', snapshotId:id}, 'Restore requested — approve the confirmation to apply it.');
+}
+async function teamConfigure(){
+  const path = ((document.getElementById('team-config-path') || {}).value || '').trim();
+  const payload = {action:'configure'};
+  if(path) payload.configPath = path;
+  await teamAction(payload, 'Team configuration reloaded.');
+}
+async function teamVerifyAudit(){
+  const out = document.getElementById('team-audit-out');
+  if(out) out.textContent = 'Verifying hash-chained audit…';
+  try {
+    const r = await opsJson('/api/audit?verify=1');
+    if(out) out.textContent = `Audit chain ${r.ok ? 'intact' : 'BROKEN'}: ${r.entries != null ? r.entries : r.checked} entries · ${r.reason || r.head || ''}`;
+    toast(r.ok ? 'Audit chain intact.' : 'Audit chain verification failed.');
+  } catch(err){
+    if(out) out.textContent = 'Audit verification failed: ' + String(err.message || err);
+  }
+}
+
+initBoot().then(() => { tick(); refreshOps(); refreshBus(); refreshFleet(); refreshDirectChat(); refreshArenaTeam();
   setInterval(tick, 1500);
   setInterval(refreshFleet, 3000);
   setInterval(refreshDirectChat, 2500);
   setInterval(() => {
-    const active = document.getElementById('tab-ops').classList.contains('active');
-    if(active){ refreshOps(); refreshBus(); }
-  }, 4000);
+    const activeOps = document.getElementById('tab-ops').classList.contains('active');
+    const activeTeam = document.getElementById('tab-team').classList.contains('active');
+    if(activeOps){ refreshOps(); refreshBus(); }
+    if(activeTeam){ refreshArenaTeam(); }
+  }, 2500);
 });
 </script></body></html>"""
     return html.replace("__BRIDGE_VERSION__", VERSION)

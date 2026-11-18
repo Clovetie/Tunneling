@@ -3,11 +3,16 @@
 > **v6.0 note (2026-11-13):** the bridge and `ArenaBridge.lua` Studio plugin are now `6.0.0`: adds the in-Studio
 > `ArenaBridgeDashboardV6` `DockWidgetPluginGui` panel, bulletproof playtest closing (`EndTest` + `LeaveTest` fallback,
 > `__ArenaTestRunner_*` cleanup, dual `edit`+`server` stop routing, and `/api/poll?goodbye=1` instant ghost-peer
-> eviction), **95 MCP tools** (including `import_ui_from_web` for importing UI from the Web & Dashboard,
+> eviction), **101 MCP tools** (including `import_ui_from_web` for importing UI from the Web & Dashboard,
 > `de_slop_audit` for eliminating `—` em-dashes and text dumps, `spawn_kit_mesh` for 3D Mesh Priority over blocky
 > primitives, `build_vfx_emitter` for `:Emit(n)` particle bursts, and `operator_chat` for Direct Operator ↔ Agent
 > Live Chat push-injected into every tool call), 16 bundled skills (`.claude/skills/`), 29 Luau modules (`VFXManager`),
 > 32 prefabs, Control Center Tab 8 (`Studio Plugin & Playtest v6`), and sculpted 3D mesh viewport rendering.
+>
+> **v6 multi-agent note:** adds the `agent_team` MCP tool, `GET|POST /api/orchestrator`,
+> authenticated evidence route, Control Center Tab 9 and the compact `agentTeam`
+> DockWidget summary carried by `/api/poll`. See
+> [`roblox-bridge/docs/MULTI_AGENT_GUIDE.md`](roblox-bridge/docs/MULTI_AGENT_GUIDE.md).
 >
 > **v5.5 note (2026-11-13):** adds SEP-1649 `.well-known/mcp/server-card.json` & RFC 9728
 > `.well-known/oauth-protected-resource/mcp` discovery, SEP-2243 Base64 header validation, `completion/complete`,
