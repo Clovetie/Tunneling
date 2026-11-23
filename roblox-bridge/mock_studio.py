@@ -194,18 +194,36 @@ class MockWorld:
         clean = path.replace("/", ".")
         parts = [p for p in clean.split(".") if p]
         cur = self.root
-        for idx, seg in enumerate(parts):
+        idx = 0
+        while idx < len(parts):
+            seg = parts[idx]
             if idx == 0 and seg == "game":
+                idx += 1
                 continue
             if cur is self.root and seg == "workspace":
                 seg = "Workspace"
-            nxt = cur.find_child(seg)
+            # v6.1.0 (P1-B2): an instance name may itself contain a dot ("A.B",
+            # "Part 1.5", "UI.Shell"), which a dot-joined full name cannot express.
+            # Try the single segment first — every path that resolves today keeps
+            # resolving identically — then progressively longer joins of the
+            # remaining segments before giving up. Mirrors ArenaBridge.lua.
+            window = [seg] + parts[idx + 1:]
+            nxt = None
+            used = idx
+            for last in range(len(window)):
+                candidate = window[0] if last == 0 else ".".join(window[:last + 1])
+                nxt = cur.find_child(candidate)
+                if nxt is not None:
+                    used = idx + last
+                    break
             if nxt is None and cur is self.root:
                 # Auto-create requested service like game:GetService()
                 nxt = cur.add(MockNode(seg, seg))
+                used = idx
             if nxt is None:
                 return None
             cur = nxt
+            idx = used + 1
         return cur
 
     def must_resolve(self, path: str) -> MockNode:
@@ -522,6 +540,11 @@ class MockWorld:
                     spent += len(src)
                     out.append({
                         "path": n.full_name(),
+                        # v6.1.0 (P1-B2): the instance's own name and its parent
+                        # path, reported separately — a dotted `path` cannot be
+                        # split back apart when a name itself contains a dot.
+                        "name": n.name,
+                        "parent": n.parent.full_name() if n.parent else "game",
                         "className": n.class_name,
                         "bytes": len(src.encode("utf-8")),
                         "lines": src.count("\n") + 1,

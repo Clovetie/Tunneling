@@ -1149,6 +1149,140 @@ class TestV5OpsPlatform(unittest.TestCase):
         self.assertIn("timeout", state.jobs[stuck["id"]]["error"])
         self.assertTrue(stuck_evt.is_set())
 
+    def test_a_peer_crash_loop_is_capped_counted_and_audited(self):
+        """P1-B1: a payload that reliably kills the peer was requeued forever.
+
+        The orphan path incremented `attempts` and never compared it with
+        anything, so a `run_luau` that hard-crashed the place came back on every
+        sweep, each time consuming another peer, and every requeue looked like
+        progress in the queue view. The cap is `max(2, maxRetries + 2)` claims.
+        """
+        state = self.state
+        state.clear_queue()
+        job, evt = state.enqueue_job("run_luau", payload={"code": "while true do end"},
+                                     note="crashy", max_retries=1)
+        peer = state.record_poll({"peer": ["peer-crashy"], "dm": ["edit"], "place": ["p"],
+                                  "placeId": ["1"]})
+        cap = 3  # maxRetries(1) + 2
+        claims = 0
+        requeues = 0
+        result = {}
+        for _ in range(8):
+            # The peer comes back, takes the job, and dies: re-register it (which
+            # is what a reconnecting Studio does), claim, age the claim past the
+            # orphan threshold, then drop it offline and let the reaper look.
+            peer = state.record_poll({"peer": ["peer-crashy"], "dm": ["edit"], "place": ["p"],
+                                      "placeId": ["1"]})
+            claimed = state.poll_for_job(peer, wait_seconds=0.05)
+            if not claimed:
+                break
+            self.assertEqual(claimed["id"], job["id"])
+            claims += 1
+            with state.lock:
+                state.jobs[job["id"]]["claimed"] = time.time() - 60
+                for pid in list(state.peers):
+                    state.peers[pid]["lastPoll"] = 0
+            result = state.reap_jobs()
+            if state.jobs[job["id"]]["status"] == "error":
+                break
+            requeues += result.get("recovered", 0)
+
+        final = state.jobs[job["id"]]
+        self.assertEqual(final["status"], "error", f"the crash loop was not capped: {final}")
+        self.assertIn("peer_crash_loop", final["error"])
+        self.assertIn(str(cap), final["error"], "the message must say what the cap was")
+        self.assertFalse(final["ok"])
+        self.assertEqual(claims, cap, f"expected exactly {cap} peer claims, saw {claims}")
+        self.assertEqual(final["attempts"], cap, "`attempts` must count claims, nothing else")
+        self.assertEqual(final["requeues"], cap - 1, "one fewer recovery than claims")
+        self.assertTrue(evt.is_set(), "a waiter must be woken when the job fails")
+        self.assertEqual(result.get("crashLoops"), 1, result)
+        self.assertIn("job.crash_loop",
+                      [e["action"] for e in state.telemetry.audit.tail(60)["entries"]])
+        kinds = [e["kind"] for e in state.telemetry.events.since(0, 200).get("events") or []]
+        self.assertIn("job.crash_loop", kinds)
+
+        # A job with no retries configured still gets the floor of 2 claims, so a
+        # single flaky peer does not fail work that could have succeeded.
+        state.clear_queue()
+        plain, _ = state.enqueue_job("ping", note="no-retries")
+        for expected_status in ("queued", "error"):
+            peer = state.record_poll({"peer": ["peer-crashy"], "dm": ["edit"], "place": ["p"],
+                                      "placeId": ["1"]})
+            self.assertIsNotNone(state.poll_for_job(peer, wait_seconds=0.05),
+                                 "the floor of 2 claims was not offered")
+            with state.lock:
+                state.jobs[plain["id"]]["claimed"] = time.time() - 60
+                for pid in list(state.peers):
+                    state.peers[pid]["lastPoll"] = 0
+            state.reap_jobs()
+            self.assertEqual(state.jobs[plain["id"]]["status"], expected_status)
+        self.assertEqual(state.jobs[plain["id"]]["attempts"], 2)
+        self.assertIn("peer_crash_loop", state.jobs[plain["id"]]["error"])
+        state.clear_queue()
+
+    def test_fleet_state_survives_a_corrupt_file_and_a_crash_mid_write(self):
+        """P1-B4: `_save_fleet` used `write_text` on the live path, so a crash
+        mid-write left a truncated `fleet.json` that `_load_fleet` swallowed with
+        `except (OSError, ValueError): return` — pins and labels silently reset,
+        no diagnostic anywhere, and the next save overwrote the evidence."""
+        with tempfile.TemporaryDirectory(prefix="arena-v61-fleet-") as tmp:
+            state_dir = Path(tmp)
+
+            def state_with(**kw):
+                st = bridge_server.BridgeState(token="fleet-token", state_dir=state_dir, **kw)
+                self.addCleanup(st._reaper_stop.set)
+                return st
+
+            good = state_with()
+            good.studio_pin = "peer-A"
+            good.peer_labels = {"peer-A": "main place"}
+            good._save_fleet()
+            self.assertEqual(json.loads((state_dir / "fleet.json").read_text(encoding="utf-8")),
+                             {"pinned": "peer-A", "labels": {"peer-A": "main place"}})
+
+            reloaded = state_with()
+            self.assertEqual(reloaded.studio_pin, "peer-A")
+            self.assertEqual(reloaded.peer_labels, {"peer-A": "main place"})
+            self.assertIsNone(reloaded.fleet_load_warning)
+            self.assertIsNone(reloaded.fleet_snapshot()["fleetLoadWarning"])
+
+            # Exactly what a crash mid-write leaves behind.
+            truncated = '{"pinned": "peer-A", "lab'
+            (state_dir / "fleet.json").write_text(truncated, encoding="utf-8")
+            broken = state_with()
+            self.assertIsNone(broken.studio_pin, "defaults are used")
+            self.assertEqual(broken.peer_labels, {})
+            self.assertIn("unreadable", broken.fleet_load_warning or "")
+            self.assertIn("fleet.json", broken.fleet_snapshot()["fleetLoadWarning"] or "")
+            kept = sorted(state_dir.glob("fleet.json.corrupt-*"))
+            self.assertEqual(len(kept), 1, "the corrupt bytes must be kept, not overwritten")
+            self.assertEqual(kept[0].read_text(encoding="utf-8"), truncated)
+            self.assertFalse((state_dir / "fleet.json").exists(),
+                             "the unreadable file is moved aside, so the next save starts clean")
+            kinds = [e["kind"] for e in broken.telemetry.events.since(0, 200).get("events") or []]
+            self.assertIn("fleet.load_failed", kinds)
+
+            # A non-object payload is refused too, rather than half-applied.
+            (state_dir / "fleet.json").write_text("[1, 2, 3]", encoding="utf-8")
+            wrong_shape = state_with()
+            self.assertIn("expected a JSON object", wrong_shape.fleet_load_warning or "")
+            self.assertIsNone(wrong_shape.studio_pin)
+
+            # And the atomic write itself: a stale temp file from an interrupted
+            # save is never mistaken for the live one, and a successful save
+            # leaves no temp file behind.
+            (state_dir / "fleet.json").unlink(missing_ok=True)  # already quarantined above
+            (state_dir / "fleet.json.tmp").write_text("{ partial", encoding="utf-8")
+            after = state_with()
+            self.assertIsNone(after.fleet_load_warning, "a stale .tmp is not the live file")
+            after.studio_pin = "peer-B"
+            after._save_fleet()
+            self.assertEqual(json.loads((state_dir / "fleet.json").read_text(encoding="utf-8"))["pinned"],
+                             "peer-B")
+            self.assertFalse((state_dir / "fleet.json.tmp").exists(),
+                             "os.replace consumed the temp file")
+
     # -- observability ------------------------------------------------------
 
     def test_metrics_events_and_tamper_evident_audit(self):
@@ -3982,6 +4116,114 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
         )
         self.assertEqual(st_413, 413)
 
+    def test_chunked_and_expect_100_continue_bodies_are_refused_not_emptied(self):
+        """P1-B5: `_read_body_raw` returned `b""` whenever Content-Length was
+        missing, so a chunked POST reached the routes as `{}` — a confusing 400 on
+        some routes and a *silent no-op* on others. And `Expect: 100-continue` was
+        answered `100` unconditionally, so an oversized body was uploaded in full
+        before the cap rejected it."""
+        def raw_request(head: bytes, body: bytes = b"") -> str:
+            with socket.create_connection(("127.0.0.1", self.port), timeout=15) as sock:
+                sock.sendall(head + body)
+                blobs = []
+                while True:
+                    try:
+                        blob = sock.recv(65536)
+                    except (TimeoutError, OSError):
+                        break
+                    if not blob:
+                        break
+                    blobs.append(blob)
+                return b"".join(blobs).decode("utf-8", "replace")
+
+        auth = f"Authorization: Bearer {self.token}\r\n".encode("ascii")
+
+        # 1. A chunked body is refused with 411 and a message that names it.
+        head = (b"POST /api/jobs HTTP/1.1\r\nHost: 127.0.0.1\r\n" + auth +
+                b"Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n"
+                b"Connection: close\r\n\r\n")
+        chunk = b'{"type":"ping","note":"chunked-probe"}'
+        reply = raw_request(head, b"%x\r\n%s\r\n0\r\n\r\n" % (len(chunk), chunk))
+        self.assertIn("411", reply.split("\r\n", 1)[0], reply[:240])
+        self.assertIn("chunked", reply)
+        with self.state.lock:
+            self.assertEqual([j for j in self.state.jobs.values()
+                              if j.get("note") == "chunked-probe"], [],
+                             "a chunked body must never become a silent no-op job")
+
+        # 2. `Expect: 100-continue` over the cap is refused before the body.
+        oversized = json.dumps({"jsonrpc": "2.0", "id": "big", "method": "ping",
+                                "pad": "x" * 9000}).encode("utf-8")
+        head = (b"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n" + auth +
+                b"Content-Type: application/json\r\nExpect: 100-continue\r\n" +
+                b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(oversized))
+        reply = raw_request(head, oversized)
+        self.assertIn("413", reply.split("\r\n", 1)[0], reply[:240])
+
+        # 3. Under the cap the interim 100 still arrives, then the real answer.
+        payload = json.dumps({"jsonrpc": "2.0", "id": "e100", "method": "ping"}).encode("utf-8")
+        head = (b"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n" + auth +
+                b"Content-Type: application/json\r\nExpect: 100-continue\r\n" +
+                b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(payload))
+        reply = raw_request(head, payload)
+        self.assertIn("100 Continue", reply.split("\r\n", 1)[0], reply[:240])
+        self.assertIn("HTTP/1.1 200", reply, reply[:300])
+
+        # 4. A malformed Content-Length with Expect is a 400, not a guess.
+        head = (b"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\n" + auth +
+                b"Expect: 100-continue\r\nContent-Length: twelve\r\n"
+                b"Connection: close\r\n\r\n")
+        reply = raw_request(head)
+        self.assertIn("400", reply.split("\r\n", 1)[0], reply[:240])
+
+    def test_concurrent_requests_are_bounded_and_refused_with_503(self):
+        """P1-B5: `ThreadingHTTPServer` spawned a thread per connection with no
+        ceiling. Saturation is now refused immediately instead of growing without
+        bound — and the live server really is the bounded one."""
+        httpd = self.httpd
+        self.assertIsInstance(httpd, bridge_server.BoundedThreadingHTTPServer)
+        self.assertGreaterEqual(httpd.max_concurrent, 4)
+
+        class FakeSocket:
+            """Stands in for an accepted connection: `shutdown_request` closes it."""
+
+            def __init__(self):
+                self.sent = b""
+                self.closed = False
+
+            def sendall(self, blob):
+                self.sent += blob
+
+            def shutdown(self, _how):
+                pass
+
+            def close(self):
+                self.closed = True
+
+        drained = 0
+        try:
+            for _ in range(httpd.max_concurrent):
+                self.assertTrue(httpd._inflight.acquire(blocking=False),
+                                "the permit count does not match max_concurrent")
+                drained += 1
+            sock = FakeSocket()
+            before = httpd.rejected_connections
+            httpd.process_request(sock, ("203.0.113.7", 4242))
+            self.assertEqual(httpd.rejected_connections, before + 1)
+            self.assertIn(b"503 Service Unavailable", sock.sent)
+            self.assertIn(b"Retry-After: 1", sock.sent)
+            self.assertIn(b"concurrent-request limit", sock.sent)
+            self.assertTrue(sock.closed, "a refused connection must be closed, not left half-open")
+            kinds = [e["kind"] for e in self.state.telemetry.events.since(0, 200).get("events") or []]
+            self.assertIn("http.saturated", kinds)
+        finally:
+            for _ in range(drained):
+                httpd._inflight.release()
+
+        # And with a permit free, a real request is served again.
+        st, _, _ = self._raw_http("/api/health")
+        self.assertEqual(st, 200)
+
     def test_sep2243_base64_headers_stateless_405_and_version_errors(self):
         from mcp_core import decode_mcp_header_value, encode_mcp_header_value
 
@@ -5150,7 +5392,7 @@ class TestV61SecurityHardening(unittest.TestCase):
         self.assertFalse(self.state.consume_sse_ticket("not-a-ticket"))
 
     # -----------------------------------------------------------------------
-    # P0-S3 / P3-T3 — dashboard XSS and clickjacking
+    # P0-S3 — dashboard XSS and clickjacking
     # -----------------------------------------------------------------------
 
     def test_dashboard_and_static_assets_send_a_strict_csp(self):
@@ -5251,7 +5493,7 @@ class TestV61SecurityHardening(unittest.TestCase):
             self.assertIn("studioCard renders hostile peer/place data as inert markup", failed)
 
     # -----------------------------------------------------------------------
-    # P0-S4 / P3-T4 — path traversal, arbitrary writes, SSRF
+    # P0-S4 / P3-T3 — path traversal, arbitrary writes, SSRF
     # -----------------------------------------------------------------------
 
     def test_repo_asset_and_save_paths_cannot_leave_their_root(self):
@@ -5419,7 +5661,7 @@ class TestV61SecurityHardening(unittest.TestCase):
                          "http://127.0.0.1:8077/api/state")
 
     # -----------------------------------------------------------------------
-    # P0-S5 / P3-T5 — safe defaults
+    # P0-S5 — safe defaults
     # -----------------------------------------------------------------------
 
     def test_default_bind_is_loopback_and_public_binds_warn(self):
@@ -5533,7 +5775,7 @@ class TestV61SecurityHardening(unittest.TestCase):
                          "leftover token records must not re-open the bridge")
 
     # -----------------------------------------------------------------------
-    # P0-S6 / P3-T6 — kit catalogue policy, and the policy sets are live
+    # P0-S6 — kit catalogue policy, and the policy sets are live
     # -----------------------------------------------------------------------
 
     def test_kit_catalog_metadata_is_public_but_source_needs_read(self):
@@ -5644,6 +5886,317 @@ class TestV61SecurityHardening(unittest.TestCase):
             self.assertEqual(status, 200, f"{public_path} should stay public: {text[:140]}")
             self.assertNotIn(self.OWNER, text)
 
+
+
+class TestV61ManifestIntegrity(unittest.TestCase):
+    """P1-B3 / P3-T4 / P3-T6 — the asset manifest is regenerable, idempotent,
+    non-mutating under `check=True`, and agrees with the committed tree.
+
+    `update_repo_asset_manifest` used to write both of its files in place and to
+    raise `KeyError: 'relPath'` halfway through when a lock row had no path, which
+    left a partially applied manifest behind *after* the image was already on
+    disk. Both files are now replaced atomically, a pathless row is emitted with
+    an empty `relPath`, and every interpolated value is escaped as a Luau literal.
+    """
+
+    @staticmethod
+    def _png(size=4, rgba=(200, 30, 30, 255)):
+        from image_pipeline import encode_png_rgba
+        return encode_png_rgba(size, size, bytes(rgba) * (size * size))
+
+    def _kit(self, tmp):
+        kit = Path(tmp)
+        (kit / "assets" / "images" / "ui").mkdir(parents=True)
+        (kit / "modules").mkdir(parents=True)
+        return kit
+
+    def test_manifest_regeneration_is_byte_identical_and_only_writes_on_change(self):
+        from image_pipeline import update_repo_asset_manifest
+        with tempfile.TemporaryDirectory(prefix="arena-v61-manifest-") as tmp:
+            kit = self._kit(tmp)
+            (kit / "assets" / "images" / "ui" / "icon_a.png").write_bytes(self._png())
+            # A name with a space and a duplicate basename in another folder:
+            # both used to be able to alias one key and silently drop an asset.
+            (kit / "assets" / "images" / "vfx").mkdir()
+            (kit / "assets" / "images" / "vfx" / "icon a.png").write_bytes(self._png(6, (10, 200, 10, 255)))
+            lock = kit / "assets" / "asset-lock.json"
+            lua = kit / "modules" / "Assets.lua"
+
+            with mock.patch("image_pipeline.find_kit_root", return_value=kit):
+                first = update_repo_asset_manifest()
+                self.assertTrue(first["checked"] is False)
+                self.assertEqual(sorted(first["drift"]), ["Assets.lua", "asset-lock.json"])
+                self.assertEqual(first["written"], first["drift"], "the first run creates both files")
+                lock_bytes, lua_bytes = lock.read_bytes(), lua.read_bytes()
+                lock_mtime, lua_mtime = lock.stat().st_mtime_ns, lua.stat().st_mtime_ns
+
+                second = update_repo_asset_manifest()
+                self.assertEqual(second["drift"], [], "a second run with no change must be a no-op")
+                self.assertEqual(second["written"], [])
+                self.assertEqual(lock.read_bytes(), lock_bytes, "asset-lock.json is byte-identical")
+                self.assertEqual(lua.read_bytes(), lua_bytes, "Assets.lua is byte-identical")
+                self.assertEqual(lock.stat().st_mtime_ns, lock_mtime, "an unchanged file must not be rewritten")
+                self.assertEqual(lua.stat().st_mtime_ns, lua_mtime)
+                self.assertGreaterEqual(second["count"], 2)
+                # Two files that would alias on basename keep distinct keys.
+                self.assertEqual(len(second["images"]), second["count"])
+
+                # A new asset is drift, and `check=True` reports it without
+                # touching either file — which is what CI needs.
+                (kit / "assets" / "images" / "ui" / "icon_c.png").write_bytes(self._png(8, (20, 20, 220, 255)))
+                probe = update_repo_asset_manifest(check=True)
+                self.assertFalse(probe["ok"])
+                self.assertEqual(sorted(probe["drift"]), ["Assets.lua", "asset-lock.json"])
+                self.assertEqual(probe["written"], [], "check mode must not write")
+                self.assertTrue(probe["checked"])
+                self.assertEqual(lock.read_bytes(), lock_bytes, "check mode wrote to asset-lock.json")
+                self.assertEqual(lua.read_bytes(), lua_bytes, "check mode wrote to Assets.lua")
+                self.assertEqual(lock.stat().st_mtime_ns, lock_mtime)
+
+                applied = update_repo_asset_manifest()
+                self.assertEqual(sorted(applied["drift"]), ["Assets.lua", "asset-lock.json"])
+                self.assertGreaterEqual(applied["count"], 3)
+                self.assertTrue(update_repo_asset_manifest(check=True)["ok"],
+                                "after a real run the tree and the manifest agree")
+
+    def test_a_pathless_or_hostile_lock_row_cannot_break_regeneration(self):
+        from image_pipeline import update_repo_asset_manifest
+        with tempfile.TemporaryDirectory(prefix="arena-v61-manifest-") as tmp:
+            kit = self._kit(tmp)
+            (kit / "assets" / "images" / "ui" / "real.png").write_bytes(self._png())
+            lock = kit / "assets" / "asset-lock.json"
+            lock.write_text(json.dumps({
+                "version": 1,
+                "images": {
+                    # A row written before `relPath` existed: this is the KeyError.
+                    "legacy_row": {"key": "legacy_row", "bytes": 12, "width": 2, "height": 2},
+                    # A row whose key and URI would break out of a Luau literal.
+                    'bad"key': {"key": 'bad"key', "relPath": 'x", evil = "y',
+                                "localUri": 'rbxasset://a"b'},
+                },
+                "audio": {},
+            }, indent=2), encoding="utf-8")
+
+            with mock.patch("image_pipeline.find_kit_root", return_value=kit):
+                out = update_repo_asset_manifest()  # must not raise
+                lua = (kit / "modules" / "Assets.lua").read_text(encoding="utf-8")
+                self.assertIn("real =", lua)
+                # A row with no usable URI is left out rather than emitted as "".
+                self.assertNotIn("legacy_row", lua)
+                # The injected Luau must not survive as code, and no raw quote may
+                # break a literal open.
+                self.assertNotIn('evil = "y"', lua)
+                self.assertNotIn('bad"key', lua)
+                for line in lua.splitlines():
+                    body = line.strip()
+                    if not body.endswith('",') and not body.endswith('"'):
+                        continue  # a table row (`key = { ... }`), not a string literal
+                    value = body.rstrip(",").split("= ", 1)[1]
+                    self.assertTrue(len(value) >= 2 and value[0] == value[-1] == '"', body)
+                    # The only quote allowed inside a Luau literal is an escaped one.
+                    inner = value[1:-1]
+                    self.assertNotIn('"', inner.replace(chr(92) + chr(34), ""), body)
+                # The lock keeps the legacy row (it is data, not an error)…
+                after = json.loads(lock.read_text(encoding="utf-8"))
+                self.assertIn("legacy_row", after["images"])
+                self.assertEqual(after["images"].get("legacy_row", {}).get("bytes"), 12)
+                # …and a second run is still a no-op, so the odd row is stable.
+                self.assertEqual(update_repo_asset_manifest()["drift"], [])
+                self.assertEqual(out["count"], len(after["images"]))
+
+    def test_the_committed_kit_manifest_matches_the_tree(self):
+        """The reason `check=True` exists: a stale `asset-lock.json`/`Assets.lua`
+        is a CI failure, not something an operator discovers in Studio. This also
+        catches a test that writes into the real kit and forgets to clean up."""
+        from image_pipeline import update_repo_asset_manifest
+        result = update_repo_asset_manifest(check=True)
+        self.assertTrue(result["checked"])
+        self.assertEqual(result["drift"], [],
+                         f"committed manifest drifted from the tree: {result['drift']} "
+                         f"(run update_repo_asset_manifest() and commit, or remove the stray file)")
+        self.assertGreaterEqual(result["count"], 3700)
+        self.assertGreaterEqual(result["audioCount"], 45)
+
+
+class TestV61SnapshotRestore(unittest.TestCase):
+    """P1-B2 — `manage_snapshots(action='restore')` rebuilt every target by
+    splitting the snapshot's dotted path, so a script whose *own name* contains a
+    dot ("A.B", "Part 1.5", "UI.Shell") was written under an invented parent with
+    a truncated name, and the bare loop reported nothing when a write failed
+    mid-way. Restore now uses the parent/name the peer reported at snapshot time,
+    collects a per-script report, and honours `stopOnError`/`dryRun`.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = _free_port()
+        cls.token = "snap-restore-secret"
+        cls.base_url = f"http://127.0.0.1:{cls.port}"
+        cls.state_dir = tempfile.mkdtemp(prefix="arena-v61-snap-")
+        cls.httpd, cls.state = create_http_server(
+            host="127.0.0.1", port=cls.port, token=cls.token, state_dir=cls.state_dir)
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.stop_mock = threading.Event()
+        cls.mock_thread = threading.Thread(
+            target=run_mock_loop, args=(cls.base_url, cls.token, cls.stop_mock), daemon=True)
+        cls.mock_thread.start()
+        for _ in range(80):
+            if cls.state.direct_dispatch("health", {})["studio_connected"]:
+                break
+            threading.Event().wait(0.05)
+        cls.client = BridgeClient(base_url=cls.base_url, token=cls.token)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.stop_mock.set()
+        cls.state._reaper_stop.set()
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        shutil.rmtree(cls.state_dir, ignore_errors=True)
+
+    def tool(self, name: str, args: dict) -> dict:
+        return execute_tool(self.client, name, args)
+
+    def live_scripts(self, root: str) -> dict:
+        """`{full path: entry}` straight from the peer's own traversal — reading by
+        dotted path would be as ambiguous as the bug under test."""
+        job = self.client.submit_job("hash_scripts", {"root": root}, wait=30.0, dm="edit")
+        self.assertEqual(job.get("status"), "done", msg=json.dumps(job)[:600])
+        return {e["path"]: e for e in job["result"]["scripts"]}
+
+    def test_restore_keeps_dotted_names_and_their_real_parents(self):
+        built = self.tool("build_tree", {"parent": "ServerScriptService", "tree": [{
+            "name": "DotCase", "className": "Folder", "replaceExisting": True, "children": [
+                {"name": "A.B", "className": "ModuleScript", "source": "-- v1 dotted\nreturn 1\n"},
+                {"name": "X", "className": "Folder", "children": [
+                    {"name": "Part 1.5", "className": "ModuleScript", "source": "-- v1 spaced\nreturn 2\n"},
+                ]},
+            ],
+        }]})
+        self.assertEqual(built["count"], 1)
+
+        snap = self.tool("manage_snapshots", {
+            "action": "create", "root": "ServerScriptService.DotCase", "label": "dotcase"})
+        sid = snap["id"]
+
+        # 1. The snapshot itself records the name and parent the peer reported,
+        #    which is the only unambiguous form of a dotted full name.
+        got = self.tool("manage_snapshots", {"action": "get", "snapshotId": sid})
+        by_path = {e["path"]: e for e in got["scripts"]}
+        self.assertEqual(sorted(by_path), [
+            "ServerScriptService.DotCase.A.B",
+            "ServerScriptService.DotCase.X.Part 1.5",
+        ])
+        self.assertEqual(by_path["ServerScriptService.DotCase.A.B"]["name"], "A.B")
+        self.assertEqual(by_path["ServerScriptService.DotCase.A.B"]["parent"], "ServerScriptService.DotCase")
+        self.assertEqual(by_path["ServerScriptService.DotCase.X.Part 1.5"]["name"], "Part 1.5")
+        self.assertEqual(by_path["ServerScriptService.DotCase.X.Part 1.5"]["parent"],
+                         "ServerScriptService.DotCase.X")
+        v1_hashes = {p: e["hash"] for p, e in by_path.items()}
+
+        # 2. Break both scripts, then restore.
+        for parent, name in (("ServerScriptService.DotCase", "A.B"),
+                             ("ServerScriptService.DotCase.X", "Part 1.5")):
+            self.tool("write_script", {"parent": parent, "name": name, "className": "ModuleScript",
+                                       "source": "-- v2 broken\n", "validateSyntax": False})
+        broken = self.live_scripts("ServerScriptService.DotCase")
+        self.assertNotEqual(broken["ServerScriptService.DotCase.A.B"]["hash"],
+                            v1_hashes["ServerScriptService.DotCase.A.B"])
+
+        res = self.tool("manage_snapshots", {"action": "restore", "snapshotId": sid})
+        self.assertTrue(res["ok"], msg=json.dumps(res)[:800])
+        self.assertEqual(res["restoredCount"], 2)
+        self.assertEqual(res["failedCount"], 0)
+        self.assertEqual(res["notAttemptedCount"], 0)
+        self.assertEqual([(r["parent"], r["name"], r["legacySplit"]) for r in res["results"]],
+                         [("ServerScriptService.DotCase", "A.B", False),
+                          ("ServerScriptService.DotCase.X", "Part 1.5", False)])
+
+        # 3. Exact names, exact parents, v1 sources back — and no invented "A"/"B".
+        after = self.live_scripts("ServerScriptService.DotCase")
+        self.assertEqual(sorted(after), sorted(v1_hashes))
+        self.assertEqual({p: e["hash"] for p, e in after.items()}, v1_hashes)
+        self.assertEqual([e["name"] for e in after.values()], ["A.B", "Part 1.5"])
+        diff = self.tool("manage_snapshots", {"action": "diff", "snapshotId": sid})
+        self.assertEqual(diff["changes"], [], msg=json.dumps(diff)[:600])
+
+    def test_a_mid_restore_failure_is_reported_and_stopOnError_halts(self):
+        tree = [{"name": f"F{i}", "className": "Folder", "children": [
+            {"name": f"S{i}", "className": "ModuleScript", "source": f"-- v1 S{i}\nreturn {i}\n"}]}
+            for i in range(1, 6)]
+        self.tool("build_tree", {"parent": "ServerScriptService", "tree": [
+            {"name": "FailCase", "className": "Folder", "replaceExisting": True, "children": tree}]})
+        sid = self.tool("manage_snapshots", {
+            "action": "create", "root": "ServerScriptService.FailCase", "label": "failcase"})["id"]
+        order = [e["path"] for e in self.tool("manage_snapshots", {"action": "get", "snapshotId": sid})["scripts"]]
+        self.assertEqual(order, [f"ServerScriptService.FailCase.F{i}.S{i}" for i in range(1, 6)])
+
+        # Item 3 of 5 cannot be written: its parent folder is gone.
+        self.tool("delete_instance", {"paths": ["ServerScriptService.FailCase.F3"]})
+
+        res = self.tool("manage_snapshots", {"action": "restore", "snapshotId": sid})
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["restoredCount"], 2, msg=json.dumps(res)[:800])
+        self.assertEqual(res["failedCount"], 1)
+        self.assertEqual(res["notAttemptedCount"], 2)
+        self.assertEqual(len(res["results"]), 3, "nothing after the failure was attempted")
+        self.assertEqual([r["path"] for r in res["results"]], order[:3])
+        self.assertFalse(res["results"][2]["ok"])
+        self.assertIn("path not found", res["results"][2]["error"])
+        self.assertEqual(res["failed"], [order[2]])
+        self.assertEqual(res["notAttempted"], order[3:])
+        self.assertTrue(any("stopOnError" in w for w in res["warnings"]), res["warnings"])
+        live = self.live_scripts("ServerScriptService.FailCase")
+        self.assertNotIn(order[2], live)
+        self.assertIn(order[3], live, "S4 must be untouched, not half-written")
+
+        # stopOnError=false attempts the rest and still names the failure.
+        res_all = self.tool("manage_snapshots", {"action": "restore", "snapshotId": sid,
+                                                 "stopOnError": False})
+        self.assertEqual(res_all["restoredCount"], 4)
+        self.assertEqual(res_all["failedCount"], 1)
+        self.assertEqual(res_all["notAttemptedCount"], 0)
+        self.assertEqual(len(res_all["results"]), 5)
+        self.assertEqual([r["path"] for r in res_all["results"] if not r["ok"]], [order[2]])
+
+    def test_dry_run_restore_plans_without_writing_and_legacy_entries_are_flagged(self):
+        self.tool("build_tree", {"parent": "ServerScriptService", "tree": [
+            {"name": "DryCase", "className": "Folder", "replaceExisting": True, "children": [
+                {"name": "D1", "className": "ModuleScript", "source": "-- v1 dry\nreturn 1\n"}]}]})
+        sid = self.tool("manage_snapshots", {
+            "action": "create", "root": "ServerScriptService.DryCase", "label": "drycase"})["id"]
+        self.tool("write_script", {"parent": "ServerScriptService.DryCase", "name": "D1",
+                                   "className": "ModuleScript", "source": "-- v2 dry\n",
+                                   "validateSyntax": False})
+        v2 = self.live_scripts("ServerScriptService.DryCase")["ServerScriptService.DryCase.D1"]["hash"]
+
+        dry = self.tool("manage_snapshots", {"action": "restore", "snapshotId": sid, "dryRun": True})
+        self.assertTrue(dry["dryRun"])
+        self.assertEqual(dry["restoredCount"], 1)
+        self.assertEqual(dry["failedCount"], 0)
+        self.assertTrue(all(r["dryRun"] and r["ok"] for r in dry["results"]))
+        self.assertTrue(any("dryRun" in w for w in dry["warnings"]), dry["warnings"])
+        still = self.live_scripts("ServerScriptService.DryCase")["ServerScriptService.DryCase.D1"]["hash"]
+        self.assertEqual(still, v2, "dryRun wrote to Studio")
+
+        # A snapshot written before 6.1.0 carries no parent/name: the dotted split
+        # is still used, but the caller is told instead of finding out later.
+        legacy = self.client.snapshots_action("save", {
+            "root": "ServerScriptService.DryCase",
+            "label": "legacy",
+            "scripts": [{"path": "ServerScriptService.DryCase.D1", "className": "ModuleScript",
+                         "hash": "00000000", "bytes": 12, "source": "-- v1 dry\nreturn 1\n"}],
+        })
+        res = self.tool("manage_snapshots", {"action": "restore", "snapshotId": legacy["id"]})
+        self.assertTrue(res["ok"], msg=json.dumps(res)[:600])
+        self.assertEqual(res["restoredCount"], 1)
+        self.assertTrue(res["results"][0]["legacySplit"])
+        self.assertEqual((res["results"][0]["parent"], res["results"][0]["name"]),
+                         ("ServerScriptService.DryCase", "D1"))
+        self.assertTrue(any("predate 6.1.0" in w for w in res["warnings"]), res["warnings"])
+        back = self.live_scripts("ServerScriptService.DryCase")["ServerScriptService.DryCase.D1"]
+        self.assertNotEqual(back["hash"], v2, "the legacy restore did not write")
 
 
 if __name__ == "__main__":

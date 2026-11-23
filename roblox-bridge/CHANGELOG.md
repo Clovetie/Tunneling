@@ -104,8 +104,16 @@ All notable changes for the Roblox Studio bridge are documented here.
 - `test_bridge_mcp.py` gained `TestV61SecurityHardening` (25 tests) covering each P0 item
   end-to-end against a live server: gate parity across both transports, the credential sweep
   over every route, the path/URL confinement sweep over every file-shaped tool argument, the
-  CSP and static-asset policy, and the declared route policy. Suite total 117 → 142.
+  CSP and static-asset policy, and the declared route policy — plus `TestV61ManifestIntegrity`
+  and `TestV61SnapshotRestore` for the P1 reliability work below. Suite total 117 → 152.
 - Plugin version matrix gained a `6.1.0` "current" row; `6.0.0` moved to `legacy_supported`.
+- **Reliability surface (`P1`).** `reap_jobs()` now returns `{recovered, timedOut,
+  crashLoops}`; `fleet_snapshot()` gained `fleetLoadWarning`; `read_scripts` results gained
+  `name` and `parent` (plugin *and* mock peer); `manage_snapshots(action="restore")` gained
+  `stopOnError`/`dryRun` and returns `results`/`failedCount`/`notAttempted`;
+  `update_repo_asset_manifest()` gained `check=True` and returns `checked`/`drift`/`ok`/
+  `written`; new metric counters `bridge_jobs_crash_loop_total` and
+  `bridge_http_rejected_total`; new env knob `BRIDGE_MAX_CONCURRENT_REQUESTS`.
 
 ### Fixed
 - `BridgeState._gate_principal_ok()` did `from confirm_gate import same_principal`, but
@@ -116,6 +124,72 @@ All notable changes for the Roblox Studio bridge are documented here.
   before that field existed, which aborted the whole image import; such rows are now emitted
   with an empty `relPath`, and rows with neither a cloud nor a local URI are left out of
   `Assets.lua` instead of being emitted as `key = ""`.
+
+### Reliability (P1)
+- **A crashing peer could hold a job hostage forever (`P1-B1`).** `reap_jobs()` requeued an
+  orphaned job every time it saw one, with no ceiling: a Studio that claims a write and dies
+  on it — a place that crashes the plugin, a script that kills the peer — was requeued
+  forever, burning a claim cycle each time and never telling the caller anything. Orphan
+  recovery is now capped at `max(2, maxRetries + 2)` *claims*. Past the cap the job fails with
+  `peer_crash_loop after N attempts: peer X took the job and stopped responding each time
+  (cap M)`, its waiter is woken with that error instead of hanging until the client gives up,
+  and the outcome is emitted (`job.crash_loop`, level `error`), audited (actor `reaper`) and
+  counted (`bridge_jobs_crash_loop_total`). `reap_jobs()` returns
+  `{recovered, timedOut, crashLoops}`. The two job counters also have one owner each now:
+  `attempts` is incremented only on the claim path (`complete_job` had a dead
+  `attempts = int(job.get("attempts") or 0)` read that never wrote anything back) and
+  `requeues` counts recoveries only, so `requeues == attempts - 1` instead of drifting.
+- **A truncated `fleet.json` silently reset every pin and label (`P1-B4`).** `_save_fleet()`
+  wrote the live file in place, so a kill or a full disk mid-write left a partial file that
+  `_load_fleet()` swallowed with a bare `except: pass` — the next start came up with default
+  pins and no hint that an operator's routing choices had been lost. Saves now go to
+  `fleet.json.tmp` + `os.replace()`, loads distinguish "no file yet" from "unreadable", and an
+  unreadable file is quarantined as `fleet.json.corrupt-<unix ts>` rather than overwritten, so
+  the evidence survives. The condition is recorded on `fleet_load_warning`, returned as
+  `fleetLoadWarning` by `fleet_snapshot()`/`GET /api/fleet`, and emitted as `fleet.load_failed`
+  / `fleet.save_failed` warnings instead of disappearing.
+- **A chunked or oversized body was read as `b""` and dispatched as a no-op (`P1-B5`).**
+  `_read_body_raw()` returned empty bytes whenever `Content-Length` was absent, so a
+  `Transfer-Encoding: chunked` POST reached the routes as `{}`: `POST /api/jobs` answered a
+  confusing `400` about a missing `type`, and `POST /api/confirmations` without a `requestId`
+  silently did nothing at all — an approval that looks accepted and never happens. Chunked
+  bodies are now refused with `411` and a message that names the fix. `Expect:
+  100-continue` is answered only *after* the declared size is checked, so an oversized body is
+  rejected before it is uploaded instead of after, and a malformed `Content-Length` on such a
+  request is a `400` rather than a guess. Finally, `ThreadingHTTPServer` spawned a thread per
+  connection with no ceiling (and several SSE streams could be held open indefinitely), so
+  `BoundedThreadingHTTPServer` caps in-flight requests — default 64, override with
+  `BRIDGE_MAX_CONCURRENT_REQUESTS` or `create_http_server(max_concurrent_requests=…)` — and
+  refuses the excess immediately with `503` + `Retry-After: 1`, counting
+  `bridge_http_rejected_total` and emitting at most one `http.saturated` warning per second so
+  a flood cannot drown the event stream it is being reported to.
+- **The asset manifest was written in place, and only after the bytes it indexes (`P1-B3`).**
+  `asset-lock.json` and `modules/Assets.lua` were rewritten directly, so a crash between the
+  two — or the `KeyError` above — left a truncated manifest that the next import parsed as
+  empty and Studio `require`d as broken Luau; repo images and audio were written the same way,
+  so a half-written PNG could be indexed with a sha that did not match its bytes. Both manifest
+  files and every repo asset write now go through a sibling temp file plus `os.replace()`, the
+  asset bytes land before the manifest that describes them, and regeneration stays
+  write-only-on-change (an unchanged file is not even touched, so its mtime is stable).
+  `update_repo_asset_manifest(check=True)` computes both documents and reports
+  `drift`/`ok`/`written` without writing or creating anything; `python3 image_pipeline.py
+  --check` is that call as a CI gate and exits non-zero on drift.
+- **`manage_snapshots(action="restore")` mangled dotted names and swallowed partial failure
+  (`P1-B2`).** Restore rebuilt every target by splitting the snapshot's dot-joined path, so a
+  script whose *own name* contains a dot (`A.B`, `Part 1.5`, `UI.Shell`) was written under an
+  invented parent with a truncated name — and since each write was a separate job in a bare
+  loop, the first failure raised out of the tool with the place half-restored and no record of
+  which half. `read_scripts` now reports `name` and `parent` alongside `path` (in
+  `ArenaBridge.lua` and the mock peer), snapshots capture them, and restore writes to exactly
+  those; the dot-split survives only as a fallback for snapshots taken before 6.1.0 and is
+  flagged per row as `legacySplit` plus a warning that says so. Both peers' path `resolve()`
+  also re-joins segments when a single segment does not match, which is what makes a dotted
+  name addressable at all — a path that resolved before resolves identically. Every attempt is
+  collected into `results: [{path, parent, name, ok, error, legacySplit}]` with
+  `restoredCount`/`failedCount`/`notAttemptedCount`/`notAttempted`, `stopOnError` (default
+  `true`) halts at the first failure instead of grinding through 200 × 30 s timeouts against a
+  dead peer, and `dryRun` resolves every target and reports the plan without touching Studio
+  (and is classified read-only, like `find_and_replace_scripts(dryRun=true)`).
 
 ## 6.0.0 — Studio Plugin v6 (`ArenaBridge.lua` DockWidget UI + Bulletproof Playtest Stop), 90 MCP Tools, Network Security Auditor, Cutscene Sequencer, and V6 Control Center Overhaul
 

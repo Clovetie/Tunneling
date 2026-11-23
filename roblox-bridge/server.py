@@ -25,6 +25,7 @@ import argparse
 import gzip
 import ipaddress
 from collections import deque
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -335,6 +336,9 @@ class BridgeState:
         self._fleet_path = self.state_dir / "fleet.json"
         self.studio_pin = None
         self.peer_labels = {}
+        #: Set when `fleet.json` could not be read or written; surfaced on
+        #: `fleet_snapshot()` so a silently reset pin is visible (P1-B4).
+        self.fleet_load_warning = None
         self._load_fleet()
         # Maintenance switch: keep accepting work, stop handing it to Studio.
         self.queue_paused = False
@@ -465,10 +469,21 @@ class BridgeState:
         return {"paused": False, "queued": queued, "pausedSeconds": paused_for}
 
     def reap_jobs(self) -> dict:
-        """Fail timed-out jobs and re-queue work orphaned by a dead/absent peer."""
+        """Fail timed-out jobs and re-queue work orphaned by a dead/absent peer.
+
+        v6.1.0 (P1-B1): the orphan path re-queued *forever*. `attempts` was
+        incremented but never compared with anything, so a payload that reliably
+        kills the Studio peer (a `run_luau` that hard-crashes the place) came back
+        on every sweep, indefinitely — and every requeue looked like progress.
+        Orphan requeues are now capped at `max(2, maxRetries + 2)` *claims*; past
+        that the job fails as `peer_crash_loop`, is audited, and stops consuming
+        peers. `attempts` is owned solely by the claim path (`poll_for_job`) so it
+        means "times handed to a peer", and `requeues` counts sweep recoveries.
+        """
         now = _now()
         recovered = 0
         timed_out = 0
+        crash_loops = 0
         with self.lock:
             online = {p["peerId"] for p in self._active_peers_unlocked() if p["online"]}
             for job in list(self.jobs.values()):
@@ -479,10 +494,42 @@ class BridgeState:
                 owner = job.get("claimedBy")
                 orphaned = bool(owner) and owner not in online and (now - claimed) > 20.0
                 if orphaned:
+                    attempts = int(job.get("attempts") or 0)
+                    cap = max(2, int(job.get("maxRetries") or 0) + 2)
+                    if attempts >= cap:
+                        job["status"] = "error"
+                        job["ok"] = False
+                        job["error"] = (
+                            f"peer_crash_loop after {attempts} attempts: peer {owner} took the job "
+                            f"and stopped responding each time (cap {cap}). The payload is treated "
+                            f"as fatal to the peer; fix it or raise maxRetries."
+                        )
+                        job["finished"] = now
+                        job["claimedBy"] = None
+                        job["claimed"] = None
+                        job["duration_ms"] = round((now - (job.get("created") or now)) * 1000, 1)
+                        job["note"] = (job.get("note") or "") + f" [crash loop: peer {owner} died {attempts}×]"
+                        crash_loops += 1
+                        evt = self.job_events.get(job["id"])
+                        if evt:
+                            evt.set()
+                        self.telemetry.record_job(job)
+                        self.telemetry.events.emit("job.crash_loop", {
+                            "id": job["id"], "type": job["type"], "peer": owner,
+                            "attempts": attempts, "cap": cap,
+                        }, level="error")
+                        self.telemetry.audit.append(
+                            "job.crash_loop", actor="reaper", target=job["id"],
+                            detail={"type": job["type"], "peer": owner,
+                                    "attempts": attempts, "cap": cap}, outcome="error")
+                        continue
                     job["status"] = "queued"
                     job["claimedBy"] = None
                     job["claimed"] = None
-                    job["attempts"] = int(job.get("attempts") or 0) + 1
+                    # Counts *recoveries*, so it is always one behind `attempts`
+                    # for a job that eventually ran: the sweep that gives up on it
+                    # is a failure, not a requeue.
+                    job["requeues"] = int(job.get("requeues") or 0) + 1
                     job["note"] = (job.get("note") or "") + f" [requeued: peer {owner} went away]"
                     if job["id"] not in self.pending:
                         self.pending.append(job["id"])
@@ -504,7 +551,9 @@ class BridgeState:
                     self.telemetry.audit.append("job.timeout", actor="reaper", target=job["id"],
                                                 detail={"type": job["type"], "peer": owner}, outcome="error")
         self.telemetry.metrics.inc("bridge_jobs_reaped_total", recovered + timed_out)
-        return {"recovered": recovered, "timedOut": timed_out}
+        if crash_loops:
+            self.telemetry.metrics.inc("bridge_jobs_crash_loop_total", crash_loops)
+        return {"recovered": recovered, "timedOut": timed_out, "crashLoops": crash_loops}
 
     # -- SSE tickets (v6.1.0, P0-S2) ------------------------------------------
 
@@ -601,25 +650,68 @@ class BridgeState:
     # -- multi-studio fleet ---------------------------------------------------
 
     def _load_fleet(self):
+        """Read the pinned Studio and the peer labels.
+
+        v6.1.0 (P1-B4): a truncated or corrupt `fleet.json` was swallowed by
+        `except (OSError, ValueError): return`, which silently reset every pin and
+        label with no diagnostic — the operator's "active studio" just stopped
+        being active. The file is now written atomically (`_save_fleet`), and a
+        load that finds a file it cannot parse says so: a `warn` event, a
+        `fleetLoadWarning` on the snapshot, and the bad bytes moved aside as
+        `fleet.json.corrupt-<ts>` so they can be inspected instead of being
+        overwritten by the next save.
+        """
         try:
-            raw = json.loads(self._fleet_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            text = self._fleet_path.read_text(encoding="utf-8")
+        except OSError:
+            return  # no file yet — a first run has no pins and that is fine
+        raw = None
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                raw = parsed
+            else:
+                raise ValueError(f"expected a JSON object, got {type(parsed).__name__}")
+        except ValueError as exc:
+            self.fleet_load_warning = f"fleet.json is unreadable ({exc}); pins and labels were reset to defaults"
+            try:
+                quarantine = self._fleet_path.with_name(
+                    f"fleet.json.corrupt-{int(time.time())}")
+                os.replace(self._fleet_path, quarantine)
+                self.fleet_load_warning += f"; the old file was kept as {quarantine.name}"
+            except OSError:
+                pass
+            self.telemetry.events.emit("fleet.load_failed", {
+                "path": str(self._fleet_path), "error": str(exc)[:200],
+            }, level="warn")
             return
-        if isinstance(raw, dict):
-            self.studio_pin = raw.get("pinned") or None
-            labels = raw.get("labels")
-            if isinstance(labels, dict):
-                self.peer_labels = {str(k): str(v)[:60] for k, v in labels.items()}
+        self.studio_pin = raw.get("pinned") or None
+        labels = raw.get("labels")
+        if isinstance(labels, dict):
+            self.peer_labels = {str(k): str(v)[:60] for k, v in labels.items()}
 
     def _save_fleet(self):
+        """Write `fleet.json` atomically: temp file in the same directory, then
+        `os.replace`, so a crash mid-write cannot leave a truncated file that the
+        next start-up would (before v6.1.0) silently treat as "no pins"."""
+        payload = json.dumps({"pinned": self.studio_pin, "labels": self.peer_labels},
+                             ensure_ascii=False, indent=2)
+        temp = self._fleet_path.with_suffix(".json.tmp")
         try:
-            self._fleet_path.write_text(
-                json.dumps({"pinned": self.studio_pin, "labels": self.peer_labels},
-                           ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
+            self._fleet_path.parent.mkdir(parents=True, exist_ok=True)
+            temp.write_text(payload, encoding="utf-8")
+            os.replace(temp, self._fleet_path)
+        except OSError as exc:
+            # Pins are a convenience, not state a job depends on — but failing to
+            # persist them is not something to swallow silently any more.
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+            self.fleet_load_warning = f"fleet.json could not be written ({exc})"
+            self.telemetry.events.emit("fleet.save_failed", {
+                "path": str(self._fleet_path), "error": str(exc)[:200],
+            }, level="warn")
 
     def fleet_snapshot(self) -> dict:
         """One entry per Studio DataModel the bridge can talk to."""
@@ -675,6 +767,9 @@ class BridgeState:
             "pinOnline": pin_online,
             "routing": "pinned" if pin_online else "auto",
             "studios": studios,
+            # P1-B4: a pin that vanished because fleet.json was unreadable used to
+            # be indistinguishable from a pin nobody ever set.
+            "fleetLoadWarning": self.fleet_load_warning,
             "hint": (
                 "Target one with peerId on any tool, or POST /api/studios "
                 "{\"action\":\"set_active\",\"peerId\":\"...\"} to make it the default."
@@ -1368,7 +1463,12 @@ class BridgeState:
             if not ok and int(job.get("retries") or 0) < int(job.get("maxRetries") or 0) \
                     and self._is_transient_error(body, job):
                 job["retries"] = int(job.get("retries") or 0) + 1
-                job["attempts"] = int(job.get("attempts") or 0)
+                # v6.1.0 (P1-B1): this line used to read
+                # `job["attempts"] = int(job.get("attempts") or 0)` — it looked
+                # like an increment and was not, so `attempts` and `retries`
+                # drifted apart and any monitoring built on `attempts` lied.
+                # `attempts` belongs to the claim path alone (`poll_for_job`);
+                # `retries` counts transient re-answers. One owner per counter.
                 job["status"] = "queued"
                 job["claimedBy"] = None
                 job["claimed"] = None
@@ -2026,9 +2126,48 @@ def make_http_handler(state: BridgeState):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+        def handle_expect_100(self):
+            """Answer `Expect: 100-continue` *after* checking the declared size.
+
+            v6.1.0 (P1-B5): the base class answers `100 Continue` unconditionally,
+            so an oversized body was uploaded in full and only then rejected —
+            the 32 MB cap was enforced after the bytes had already arrived.
+            """
+            raw_len = self.headers.get("Content-Length")
+            try:
+                length = int(raw_len) if raw_len else 0
+            except ValueError:
+                self.send_error(400, f"Invalid Content-Length header: {raw_len!r}")
+                return False
+            if length < 0:
+                self.send_error(400, "Negative Content-Length header")
+                return False
+            if length > state.max_body_bytes:
+                self.send_error(
+                    413,
+                    f"Request body ({length} bytes) exceeds maximum allowed "
+                    f"({state.max_body_bytes} bytes)",
+                )
+                return False
+            self.log_request(code=100)
+            self.send_response_only(HTTPStatus.CONTINUE)
+            self.end_headers()
+            return True
+
         def _read_body_raw(self) -> bytes:
             raw_len = self.headers.get("Content-Length")
             if not raw_len:
+                # v6.1.0 (P1-B5): a chunked request has no Content-Length, and
+                # returning b"" made every route see `{}` — a confusing 400 on
+                # some routes and a *silent no-op* on others (`POST /api/jobs`
+                # with no type, an approve with no requestId). Say what is wrong
+                # instead of pretending the body was empty.
+                if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+                    raise BodyLimitError(
+                        411,
+                        "chunked Transfer-Encoding is not supported; send Content-Length "
+                        "(curl: use -d/--data-binary with a real file, not a pipe)",
+                    )
                 return b""
             try:
                 length = int(raw_len)
@@ -3559,6 +3698,110 @@ def load_token_default(explicit_token: str = None, allow_generate: bool = True,
     return ""
 
 
+#: Concurrent in-flight requests before a new connection is refused with 503.
+#: `ThreadingHTTPServer` spawns a thread per connection with no ceiling, so a
+#: burst (or a hostile page holding many slow streams) grew memory and thread
+#: count without bound. SSE streams count against this, which is why the default
+#: is generous rather than tiny — one operator's dashboard holds a handful.
+DEFAULT_MAX_CONCURRENT_REQUESTS = 64
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """`ThreadingHTTPServer` with a ceiling on in-flight requests (P1-B5).
+
+    Saturation is refused immediately with `503` + `Retry-After` rather than
+    queued, so an overloaded bridge stays responsive for the connections it
+    already accepted instead of hanging on accept().
+    """
+
+    daemon_threads = True
+
+    def __init__(self, *args, max_concurrent: int = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        raw = (max_concurrent if max_concurrent is not None
+               else os.environ.get("BRIDGE_MAX_CONCURRENT_REQUESTS"))
+        try:
+            self.max_concurrent = max(4, int(raw or DEFAULT_MAX_CONCURRENT_REQUESTS))
+        except (TypeError, ValueError):
+            self.max_concurrent = DEFAULT_MAX_CONCURRENT_REQUESTS
+        self._inflight = threading.Semaphore(self.max_concurrent)
+        self.rejected_connections = 0
+        self._last_saturation_event = 0.0
+
+    def process_request(self, request, client_address):
+        if not self._inflight.acquire(blocking=False):
+            self.rejected_connections += 1
+            self._report_saturation()
+            self._send_busy(request)
+            try:
+                self.shutdown_request(request)
+            except OSError:
+                pass
+            return
+        # Started by hand rather than via super() so a ThreadError cannot leak a
+        # semaphore permit (the base class swallows that case and returns).
+        started = False
+        try:
+            worker = threading.Thread(
+                target=self.process_request_thread,
+                args=(request, client_address),
+                name=f"bridge-http-{client_address[0]}",
+            )
+            worker.daemon = self.daemon_threads
+            worker.start()
+            started = True
+        except (threading.ThreadError, OSError):
+            self.handle_error(request, client_address)
+            try:
+                self.shutdown_request(request)
+            except OSError:
+                pass
+        finally:
+            if not started:
+                self._inflight.release()
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._inflight.release()
+
+    def _send_busy(self, request):
+        body = json.dumps({
+            "error": (f"bridge is at its concurrent-request limit "
+                      f"({self.max_concurrent} in flight); retry shortly"),
+            "retryAfter": 1,
+        }).encode("utf-8")
+        try:
+            request.sendall(
+                b"HTTP/1.1 503 Service Unavailable\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Retry-After: 1\r\n"
+                b"Connection: close\r\n"
+                b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n\r\n" + body)
+        except OSError:
+            pass
+
+    def _report_saturation(self):
+        """One event per second at most: saturation is worth seeing, and a flood
+        of it is exactly when the event stream must not be the thing that dies."""
+        state = getattr(self, "bridge_state", None)
+        if state is None:
+            return
+        now = time.time()
+        if now - self._last_saturation_event < 1.0:
+            return
+        self._last_saturation_event = now
+        try:
+            state.telemetry.events.emit("http.saturated", {
+                "limit": self.max_concurrent,
+                "rejectedTotal": self.rejected_connections,
+            }, level="warn")
+            state.telemetry.metrics.inc("bridge_http_rejected_total", 1)
+        except Exception:  # noqa: BLE001 - telemetry must never break serving
+            pass
+
+
 def create_http_server(
     host: str = "127.0.0.1",
     port: int = 8077,
@@ -3582,6 +3825,7 @@ def create_http_server(
     auto_task_ms: float = None,
     allowed_origins=None,
     max_body_bytes: int = None,
+    max_concurrent_requests: int = None,
     no_auth: bool = False,
     generate_token: bool = False,
 ):
@@ -3628,8 +3872,10 @@ def create_http_server(
         allowed_origins=allowed_origins,
         max_body_bytes=max_body_bytes,
     )
-    httpd = ThreadingHTTPServer((host, port), make_http_handler(state))
+    httpd = BoundedThreadingHTTPServer((host, port), make_http_handler(state),
+                                       max_concurrent=max_concurrent_requests)
     httpd.daemon_threads = True
+    # Set before serving: `_report_saturation` reads it off the server instance.
     httpd.bridge_state = state
     bound_port = httpd.server_address[1]
     state.tunnel.port = int(bound_port)

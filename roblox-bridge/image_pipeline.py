@@ -22,6 +22,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Dict, List, Optional, Tuple
@@ -1023,6 +1024,55 @@ def upload_open_cloud_image(
 # 4. Repo Asset Registry (`asset-lock.json` + Generated `Assets.lua`)
 # ============================================================================
 
+def _text_on_disk(path: Path) -> Optional[str]:
+    """Current text of `path`, or None when it is missing/unreadable."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write `text` to `path` via a sibling temp file plus `os.replace`.
+
+    v6.1.0 (P1-B3): `asset-lock.json` and `Assets.lua` were written in place, so
+    a crash (or the `KeyError` this module used to raise halfway through
+    regenerating them) could leave a truncated manifest that Studio `require`d or
+    the next import parsed as empty. `os.replace` is atomic on the same
+    filesystem, so readers see either the old file or the new one, never a mix.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f"{path.name}.tmp")
+    temp.write_text(text, encoding="utf-8")
+    try:
+        os.replace(temp, path)
+    except OSError:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """`_atomic_write_text` for binary payloads (the repo's image/audio assets).
+
+    The manifest indexes whatever is on disk, so a half-written PNG becomes a
+    registered asset with a wrong sha and a Studio that fails to load it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f"{path.name}.tmp")
+    temp.write_bytes(data)
+    try:
+        os.replace(temp, path)
+    except OSError:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def _luau_str_literal(value) -> str:
     """Render `value` as a Luau double-quoted string literal, quotes included.
 
@@ -1067,16 +1117,21 @@ def _slugify_rel_key(rel_path: str) -> str:
     return clean
 
 
-def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
+def update_repo_asset_manifest(entry: Optional[dict] = None, check: bool = False) -> dict:
     """Record or refresh all repo assets in `roblox-kit/assets/asset-lock.json`
     and regenerate `roblox-kit/modules/Assets.lua` cleanly.
+
+    With `check=True` nothing is written and nothing is created: the result
+    reports `drift` (which of the two files disagree with the tree) so CI can
+    fail on a stale manifest instead of an operator discovering it later.
     """
     kit = find_kit_root()
     assets_dir = kit / "assets"
     images_dir = assets_dir / "images"
     modules_dir = kit / "modules"
-    images_dir.mkdir(parents=True, exist_ok=True)
-    modules_dir.mkdir(parents=True, exist_ok=True)
+    if not check:
+        images_dir.mkdir(parents=True, exist_ok=True)
+        modules_dir.mkdir(parents=True, exist_ok=True)
 
     lock_path = assets_dir / "asset-lock.json"
     lock_data: dict = {"version": 1, "images": {}}
@@ -1161,8 +1216,9 @@ def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
                 }
 
     lock_text = json.dumps(lock_data, indent=2, sort_keys=True) + "\n"
-    if not lock_path.is_file() or lock_path.read_text(encoding="utf-8") != lock_text:
-        lock_path.write_text(lock_text, encoding="utf-8")
+    lock_drift = _text_on_disk(lock_path) != lock_text
+    if lock_drift and not check:
+        _atomic_write_text(lock_path, lock_text)
 
     # Emit clean zero-warning Luau `Assets.lua` module
     #
@@ -1224,8 +1280,15 @@ def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
 
     assets_lua_path = modules_dir / "Assets.lua"
     module_text = "\n".join(lines)
-    if not assets_lua_path.is_file() or assets_lua_path.read_text(encoding="utf-8") != module_text:
-        assets_lua_path.write_text(module_text, encoding="utf-8")
+    module_drift = _text_on_disk(assets_lua_path) != module_text
+    if module_drift and not check:
+        _atomic_write_text(assets_lua_path, module_text)
+
+    drift = []
+    if lock_drift:
+        drift.append("asset-lock.json")
+    if module_drift:
+        drift.append("Assets.lua")
     return {
         "lockFile": str(lock_path),
         "moduleFile": str(assets_lua_path),
@@ -1233,6 +1296,12 @@ def update_repo_asset_manifest(entry: Optional[dict] = None) -> dict:
         "audioCount": len(lock_data["audio"]),
         "images": lock_data["images"],
         "audio": lock_data["audio"],
+        # `check=True` reports instead of writing, so CI can assert the committed
+        # manifest matches the tree (P1-B3 / P3-T4 / P3-T6).
+        "checked": bool(check),
+        "drift": drift,
+        "ok": not drift,
+        "written": ([] if check else drift),
     }
 
 
@@ -1261,5 +1330,19 @@ def seed_builtin_repo_assets(force: bool = False) -> dict:
 
 
 if __name__ == "__main__":
+    # v6.1.0 (P1-B3): `python image_pipeline.py --check` verifies the committed
+    # manifest against the tree without writing anything, and exits non-zero on
+    # drift — the form CI can run, so a stale asset-lock.json is a build failure
+    # rather than something an operator finds in Studio.
+    if "--check" in sys.argv[1:]:
+        report = update_repo_asset_manifest(check=True)
+        print(json.dumps({
+            "checked": report["checked"],
+            "ok": report["ok"],
+            "drift": report["drift"],
+            "count": report["count"],
+            "audioCount": report["audioCount"],
+        }, indent=2))
+        raise SystemExit(0 if report["ok"] else 1)
     info = seed_builtin_repo_assets(force=True)
     print(json.dumps(info, indent=2))

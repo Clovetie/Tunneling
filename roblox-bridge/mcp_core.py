@@ -1994,7 +1994,7 @@ TOOL_SPECS = [
     },
     {
         "name": "manage_snapshots",
-        "description": "Create, list, inspect, or atomically restore in-memory multi-script snapshots stored on the bridge server before risky edits or refactors.",
+        "description": "Create, list, inspect, or restore multi-script snapshots stored on the bridge server before risky edits or refactors. Restore writes each script to the parent and name captured at snapshot time and returns a per-script report (`results`, `restoredCount`, `failedCount`, `notAttempted`); `stopOnError` (default true) halts at the first failure and `dryRun` resolves every target without writing.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2003,6 +2003,8 @@ TOOL_SPECS = [
                 "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional exact script paths or subtree roots to include; if set, root is ignored."},
                 "label": {"type": "string", "description": "Human-readable name/label for snapshot."},
                 "snapshotId": {"type": "string", "description": "Snapshot ID for 'get' or 'restore'."},
+                "stopOnError": {"type": "boolean", "default": True, "description": "action='restore': stop at the first script that fails to write (default) instead of continuing through the rest of the snapshot."},
+                "dryRun": {"type": "boolean", "default": False, "description": "action='restore': resolve every target parent/name and report what would be written, without touching Studio."},
                 "peerId": PEER_PROP,
             },
             "required": ["action"],
@@ -3423,6 +3425,11 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
         return True
     if name == "manage_snapshots" and args.get("action", "list") in ("list", "get", "diff"):
         return True
+    # v6.1.0 (P1-B2): a dry-run restore resolves every target and reports what it
+    # *would* write, so it reads Studio and changes nothing — same rule as
+    # `find_and_replace_scripts(dryRun=True)` above.
+    if name == "manage_snapshots" and args.get("action") == "restore" and args.get("dryRun") is True:
+        return True
     if name == "audit_3d_scene" and not args.get("autoFixUnanchored") and not args.get("snapFloating"):
         return True
     if name == "open_cloud_action" and args.get("action") in ("datastore_list", "datastore_get"):
@@ -3735,6 +3742,24 @@ def diagnose_connection_helper(client):
     return report
 
 
+def _snapshot_target(entry: dict) -> tuple:
+    """`(parent_path, instance_name, used_legacy_split)` for one snapshot entry.
+
+    v6.1.0 (P1-B2): snapshots taken by a 6.1.0 peer carry `parent` and `name`
+    exactly as the peer reported them, which is the only unambiguous source —
+    `path` is a dot-joined full name, so splitting it puts any script whose *own*
+    name contains a dot ("A.B", "Part 1.5", "UI.Shell") under an invented parent
+    and writes it under a truncated name. Snapshots from before 6.1.0 (and peers
+    older than 6.1.0) only have `path`, so the split survives as a fallback and is
+    flagged to the caller as `legacySplit`.
+    """
+    path = str(entry.get("path") or "")
+    parts = path.split(".")
+    name = entry.get("name") or (parts[-1] if parts else "")
+    parent = entry.get("parent") or (".".join(parts[:-1]) or "ServerScriptService")
+    return parent, name, not (entry.get("name") and entry.get("parent"))
+
+
 def create_snapshot_helper(client: BridgeClient, root: str = "game", label: str = None, peer_id: str = None, paths_filter: list = None) -> dict:
     hashes_job = _unwrap_job(client.submit_job("hash_scripts", {"root": root}, wait=45.0, peer_id=peer_id))
     selected_roots = [str(p).strip(".") for p in (paths_filter or []) if str(p).strip(".")]
@@ -3751,13 +3776,24 @@ def create_snapshot_helper(client: BridgeClient, root: str = "game", label: str 
         )
         for item in res.get("scripts", []):
             if "error" not in item:
-                scripts_data.append({
+                entry = {
                     "path": item["path"],
                     "className": item.get("className", "ModuleScript"),
                     "hash": item.get("hash") or fnv1a_hex(item.get("source", "")),
                     "bytes": item.get("bytes", len(item.get("source", ""))),
                     "source": item.get("source", ""),
-                })
+                }
+                # v6.1.0 (P1-B2): record the instance's own name and its parent
+                # path *as the peer reported them*. `path` is a dot-joined full
+                # name, so splitting it on restore invents a parent for any
+                # script whose name contains a dot ("A.B", "Part 1.5", "UI.Shell")
+                # and silently writes the source somewhere else. Peers older than
+                # 6.1.0 do not send these, and restore falls back to the split.
+                if item.get("name"):
+                    entry["name"] = item["name"]
+                if item.get("parent"):
+                    entry["parent"] = item["parent"]
+                scripts_data.append(entry)
     return client.snapshots_action("save", {
         "root": root,
         "label": label or f"snapshot:{root}",
@@ -4519,20 +4555,87 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
                 raise ValueError("snapshotId is required when action='restore'")
             snap = client.snapshots_action("get", {"id": args["snapshotId"]})
             scripts = snap.get("scripts", [])
+            # v6.1.0 (P1-B2): one job per script, but each outcome is collected
+            # instead of assumed. `stopOnError` defaults to true so a dead peer or
+            # a missing parent stops the run after the first failure rather than
+            # grinding through 200 x 30 s timeouts and leaving the place
+            # half-restored with no record of which half. (`batch_write` is not
+            # used here on purpose: it is all-or-nothing in the mock peer and
+            # aborts mid-chunk in the plugin, so it cannot produce a per-script
+            # report.) `dryRun` resolves every target and reports what *would* be
+            # written without touching Studio.
+            stop_on_error = bool(args.get("stopOnError", True))
+            dry_run = bool(args.get("dryRun", False))
+            results = []
             restored = []
+            failed = []
+            legacy_splits = []
+            attempted = 0
             for entry in scripts:
-                parts = entry["path"].split(".")
-                sname = parts[-1]
-                parent_path = ".".join(parts[:-1]) or "ServerScriptService"
-                _unwrap_job(client.submit_job("write_script", {
-                    "parent": parent_path,
-                    "name": sname,
-                    "className": entry.get("className", "ModuleScript"),
-                    "source": entry["source"],
-                    "replaceInstance": True,
-                }, wait=30.0, dm="edit", peer_id=peer_id))
-                restored.append(entry["path"])
-            return {"restoredSnapshot": args["snapshotId"], "restoredCount": len(restored), "paths": restored}
+                parent_path, sname, legacy = _snapshot_target(entry)
+                path = entry.get("path") or f"{parent_path}.{sname}"
+                if legacy:
+                    legacy_splits.append(path)
+                attempted += 1
+                row = {"path": path, "parent": parent_path, "name": sname,
+                       "legacySplit": legacy}
+                if dry_run:
+                    row.update({"ok": True, "dryRun": True,
+                                "bytes": len((entry.get("source") or "").encode("utf-8")),
+                                "className": entry.get("className", "ModuleScript")})
+                    results.append(row)
+                    restored.append(path)
+                    continue
+                try:
+                    _unwrap_job(client.submit_job("write_script", {
+                        "parent": parent_path,
+                        "name": sname,
+                        "className": entry.get("className", "ModuleScript"),
+                        "source": entry.get("source", ""),
+                        "replaceInstance": True,
+                    }, wait=30.0, dm="edit", peer_id=peer_id))
+                except Exception as exc:  # noqa: BLE001 - one bad script must not lose the report
+                    row.update({"ok": False, "error": str(exc) or type(exc).__name__})
+                    results.append(row)
+                    failed.append(path)
+                    if stop_on_error:
+                        break
+                else:
+                    row["ok"] = True
+                    results.append(row)
+                    restored.append(path)
+            not_attempted = [
+                (e.get("path") or "") for e in scripts[attempted:]
+            ] if attempted < len(scripts) else []
+            warnings = []
+            if legacy_splits:
+                warnings.append(
+                    f"{len(legacy_splits)} snapshot entr{'y' if len(legacy_splits) == 1 else 'ies'} "
+                    "predate 6.1.0 and carry no parent/name, so the dotted path was "
+                    "split to locate them; a script whose name contains a dot may "
+                    "land in the wrong parent. Re-snapshot with a 6.1.0 peer to fix."
+                )
+            if not_attempted:
+                warnings.append(
+                    f"stopped after the first failure (stopOnError=true): "
+                    f"{len(not_attempted)} script(s) were not attempted"
+                )
+            if dry_run:
+                warnings.append("dryRun=true: nothing was written to Studio")
+            return {
+                "ok": not failed,
+                "restoredSnapshot": args["snapshotId"],
+                "restoredCount": len(restored),
+                "failedCount": len(failed),
+                "notAttemptedCount": len(not_attempted),
+                "dryRun": dry_run,
+                "stopOnError": stop_on_error,
+                "paths": restored,
+                "failed": failed,
+                "notAttempted": not_attempted,
+                "results": results,
+                "warnings": warnings,
+            }
 
     if name == "search_tools":
         return search_tools_helper(args.get("query", ""), args.get("readOnlyOnly", False),
@@ -6422,7 +6525,12 @@ def install_dropin_system_helper(client: BridgeClient, system_arg: str, peer_id:
 
 def import_audio_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
     import base64 as _b64
-    from image_pipeline import find_kit_root, install_into_studio_content, update_repo_asset_manifest
+    from image_pipeline import (
+        _atomic_write_bytes,
+        find_kit_root,
+        install_into_studio_content,
+        update_repo_asset_manifest,
+    )
 
     kit = find_kit_root()
     audio_dir = kit / "assets" / "audio"
@@ -6441,7 +6549,7 @@ def import_audio_helper(client: BridgeClient, args: dict, peer_id: str = None) -
         ext = p.suffix.lower() or ".wav"
         stem = re.sub(r"[^A-Za-z0-9_\-]", "_", args.get("name") or p.stem) or "sfx"
         fname = f"{stem}{ext}"
-        (audio_dir / fname).write_bytes(raw)
+        _atomic_write_bytes(audio_dir / fname, raw)
     elif args.get("base64Data"):
         b64 = args["base64Data"].strip()
         if b64.startswith("data:"):
@@ -6449,7 +6557,7 @@ def import_audio_helper(client: BridgeClient, args: dict, peer_id: str = None) -
         raw = _b64.b64decode(b64)
         stem = re.sub(r"[^A-Za-z0-9_\-]", "_", args.get("name") or "imported_sfx") or "imported_sfx"
         fname = f"{stem}.wav"
-        (audio_dir / fname).write_bytes(raw)
+        _atomic_write_bytes(audio_dir / fname, raw)
     else:
         raise ValueError("Provide 'repoAudio', 'filePath', or 'base64Data'.")
 
@@ -7420,8 +7528,12 @@ def import_image_helper(client: BridgeClient, args: dict, peer_id: str = None) -
 
     repo_saved_path = None
     if args.get("saveToRepo", True):
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(raw_bytes)
+        # v6.1.0 (P1-B3): written atomically, and the manifest is updated only
+        # afterwards — so a crash between the two cannot leave a half-written PNG
+        # for the manifest to index (the manifest files are replaced atomically
+        # too, inside update_repo_asset_manifest).
+        from image_pipeline import _atomic_write_bytes
+        _atomic_write_bytes(out_path, raw_bytes)
         repo_saved_path = str(out_path)
 
     # 1. Install into local Roblox Studio `content/arena_assets/...` when Studio exists locally
@@ -7508,7 +7620,12 @@ def import_image_helper(client: BridgeClient, args: dict, peer_id: str = None) -
 
 
 def import_images_batch_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
-    from image_pipeline import find_kit_root, install_into_studio_content, update_repo_asset_manifest
+    from image_pipeline import (
+        _atomic_write_bytes,
+        find_kit_root,
+        install_into_studio_content,
+        update_repo_asset_manifest,
+    )
 
     kit = find_kit_root()
     images_dir = kit / "assets" / "images"
@@ -7537,8 +7654,7 @@ def import_images_batch_helper(client: BridgeClient, args: dict, peer_id: str = 
         except ValueError:
             rel = f"{subdir}/{f.name}"
             dest = images_dir / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(raw)
+            _atomic_write_bytes(dest, raw)
         inst = install_into_studio_content(raw, rel)
         items.append({"file": str(f), "relPath": rel, "uri": inst["uri"], "localInstalled": inst["installed"]})
 

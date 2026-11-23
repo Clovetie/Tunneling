@@ -216,28 +216,47 @@ local function resolve(path: string?): Instance?
 	end
 	local segments = splitPath(path)
 	local node: Instance = game
-	for idx, segment in ipairs(segments) do
+	local idx = 1
+	while idx <= #segments do
+		local segment = segments[idx]
+		local matched: Instance? = nil
+		local used = idx
 		if idx == 1 and segment == "game" then
-			node = game
+			matched = game
 		elseif node == game and (segment == "workspace" or segment == "Workspace") then
-			node = workspace
+			matched = workspace
 		else
-			local ok, child = pcall(function()
-				return (node :: any):FindFirstChild(segment)
-			end)
-			if (not ok or not child) and node == game then
+			-- v6.1.0 (P1-B2): an Instance name may itself contain a dot ("A.B",
+			-- "Part 1.5", "UI.Shell"), and a dot-joined full name cannot express
+			-- that. Try the single segment first, so every path that resolves today
+			-- resolves exactly as before, then progressively longer joins of the
+			-- remaining segments before giving up.
+			for last = idx, #segments do
+				local candidate = if last == idx then segment else table.concat(segments, ".", idx, last)
+				local ok, child = pcall(function()
+					return (node :: any):FindFirstChild(candidate)
+				end)
+				if ok and child then
+					matched = child
+					used = last
+					break
+				end
+			end
+			if not matched and node == game then
 				local okSvc, svc = pcall(function()
 					return game:GetService(segment :: any)
 				end)
 				if okSvc and svc then
-					child = svc
+					matched = svc
+					used = idx
 				end
 			end
-			if not child then
-				return nil
-			end
-			node = child
 		end
+		if not matched then
+			return nil
+		end
+		node = matched
+		idx = used + 1
 	end
 	return node
 end
@@ -1414,8 +1433,15 @@ handlers["read_scripts"] = function(p)
 			end
 			spent += #slice
 			local _, newlines = string.gsub(src, "\n", "\n")
+			-- v6.1.0 (P1-B2): report the instance's own name and its parent path
+			-- separately. `path` is a dot-joined full name, so a script called
+			-- "A.B" or "Part 1.5" cannot be split back apart by a consumer —
+			-- snapshot restore used to invent a parent and a name from it.
+			local par = inst.Parent
 			table.insert(out, {
 				path = fullName(inst),
+				name = inst.Name,
+				parent = if par then fullName(par) else "game",
 				className = inst.ClassName,
 				bytes = #src,
 				lines = newlines + 1,

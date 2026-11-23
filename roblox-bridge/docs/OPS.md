@@ -221,7 +221,12 @@ Via MCP:
 4. Otherwise `auto`: `edit` DataModels first, then any live peer.
 
 Pins and labels persist in `bridge_state/fleet.json`, so a restart does not
-forget which window you were working in.
+forget which window you were working in. The file is written atomically
+(`fleet.json.tmp` → `os.replace`), and a file that cannot be parsed is *not*
+silently replaced with defaults: it is moved aside as
+`fleet.json.corrupt-<unix ts>`, a warning is emitted (`fleet.load_failed`), and
+`GET /api/fleet` reports it as `fleetLoadWarning` so a reset pin is visible
+instead of looking like a choice nobody made.
 
 **Broadcast** (`studio_fleet {action:'broadcast'}`) fans one job out to every
 online Studio and returns per-peer `{ok, status, durationMs, result, error}`. It
@@ -253,6 +258,16 @@ python arena_studio.py tokens revoke --id tok-xxxxxxxx
 * Optional expiry (`ttlSeconds`).
 * Per-token token-bucket rate limit (`rateLimitPerSecond`, `burst`); over-limit
   requests get `429` with `Retry-After`.
+* **Request limits.** Bodies are capped by `BRIDGE_MAX_BODY_BYTES` /
+  `--max-body-bytes`: over the cap answers `413`, and a `Transfer-Encoding:
+  chunked` body answers `411` (the bridge reads `Content-Length`, so a chunked
+  body used to arrive as `{}` — a `400` about a missing field on some routes and
+  a *silent no-op* on others). `Expect: 100-continue` is honoured, but only after
+  the declared size is checked, so an oversized body is refused before it is
+  uploaded. Concurrency is capped too (default 64 in flight,
+  `BRIDGE_MAX_CONCURRENT_REQUESTS` or `create_http_server(max_concurrent_requests=…)`);
+  beyond it a new connection gets `503` + `Retry-After: 1` immediately, counted in
+  `bridge_http_rejected_total` with one `http.saturated` warning per second.
 * Every rejection is counted in `bridge_auth_rejections_total{code,path}`.
 * Token state lives in `bridge_state/tokens.json` (mode 600, gitignored).
 
@@ -274,6 +289,7 @@ curl -X POST -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/jso
 | Retries | `"maxRetries": 1..5`. Transient failures (peer disappeared, timeout, connection reset, explicit `"retryable": true` in the result) requeue the job instead of failing it. |
 | Timeouts | `"timeout": 60` seconds. The reaper fails stuck jobs and emits `job.timeout` into the audit chain. |
 | Orphan recovery | A job claimed by a peer that stopped polling for >20 s is requeued automatically (`bridge_jobs_reaped_total`, `job.requeued_orphan` event). |
+| Crash-loop cap | Orphan recovery is bounded: after `max(2, maxRetries + 2)` *claims* the job fails with `peer_crash_loop after N attempts…` instead of being requeued forever, its waiter is woken with that error, and the outcome is counted (`bridge_jobs_crash_loop_total`), emitted (`job.crash_loop`, level `error`) and audited (actor `reaper`). `reap_jobs()` reports `{recovered, timedOut, crashLoops}`. |
 | Cancellation | `POST /api/jobs/<id>/cancel`, queue-wide `POST /api/queue/clear` (admin). |
 | Maintenance pause | `POST /api/queue/pause {"reason":"asset import"}` (admin) stops *handing* jobs to Studio while new work keeps queueing; peers stay registered (`/api/poll` returns `{"job":null,"paused":true}` every 8 s). `POST /api/queue/resume` releases the held work and wakes waiting peers. MCP: `bridge_ops {"action":"queue_pause"\|"queue_resume"}`; dashboard: **Pause queue** button in the Ops Console; CLI `python arena_studio.py queue pause --reason "asset import"` / `queue resume` / `queue status`. Nothing is cancelled by a pause. |
 | Dead-peer handoff | `POST /api/bus {"action":"sweep"}` releases tasks leased by agents silent for `offlineSeconds` (default 900) so a live peer can claim them immediately; `POST /api/ops {"action":"sweep"}` and `bridge_ops {"action":"sweep"}` do the same. |
@@ -289,6 +305,7 @@ bridge_jobs_enqueued_total{type="write_script"}
 bridge_jobs_total{type="ping",dm="edit",outcome="ok"}
 bridge_job_duration_ms{...} p50/p90/p95/p99, count, sum
 bridge_job_retries_total, bridge_job_dedupe_total, bridge_jobs_reaped_total
+bridge_jobs_crash_loop_total, bridge_http_rejected_total
 bridge_queue_depth, bridge_peers_online, bridge_agents_online, bridge_tasks_open
 bridge_auth_rejections_total{code,path}, bridge_token_requests_total
 bridge_tunnel_online, bridge_queue_paused, bridge_sweeps_total
@@ -442,6 +459,8 @@ bridge_state/
 ├── audit.jsonl     # hash-chained audit (append-only)
 ├── tokens.json     # hashed scoped tokens (0600)
 ├── bus.json        # agents, messages, tasks
+├── fleet.json      # Studio pins & labels (atomic write; a bad file is kept as
+│                   #   fleet.json.corrupt-<ts> and reported as fleetLoadWarning)
 └── tunnel.json     # last known public URL
 ```
 
@@ -452,15 +471,28 @@ Override with `--state-dir` or `BRIDGE_STATE_DIR`.
 ## 9. Tests
 
 ```bash
-python3 -B roblox-bridge/test_bridge_mcp.py          # 64 tests
+python3 -B roblox-bridge/test_bridge_mcp.py          # 152 tests
 bash roblox-bridge/tools/check_globals.sh roblox-bridge   # undefined Luau globals
 python3 -B tools/verify_licences.py                  # kit asset licence manifest
+python3 roblox-bridge/image_pipeline.py --check      # committed asset manifest
+                                                     #   matches the tree (exit 1
+                                                     #   on drift, writes nothing)
+node roblox-bridge/tools/dashboard_harness.js        # dashboard XSS contract
 ```
 
 `.github/ci.yml` runs exactly those (plus a stdlib-only import audit and a
 doc/version consistency check) on Python 3.10, 3.12 and 3.13 — once it is moved
 into `.github/workflows/`, which needs the `workflows` permission on whatever
 identity pushes it (`git mv .github/ci.yml .github/workflows/ci.yml && git push`).
+
+v6.1 coverage added on top: the P0 security sweeps (gate parity on both
+transports, the credential sweep over every route, path/URL confinement over every
+file-shaped tool argument, CSP + static-asset policy, the declared route policy)
+and the P1 reliability items — a capped peer crash-loop, fleet state surviving a
+corrupt file and a crash mid-write, chunked/`Expect: 100-continue`/oversized
+bodies and the bounded worker pool, manifest regeneration that is byte-identical
+and refuses to write under `--check`, and snapshot restore keeping dotted
+instance names while reporting a partial failure.
 
 v5 / v5.1 / v5.2 / v5.3 coverage: scoped roles over HTTP and MCP, rate-limit 429s, bus presence/
 mailbox/lease expiry/handoff export, stale-agent sweeping, incremental
