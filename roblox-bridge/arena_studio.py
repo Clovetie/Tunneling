@@ -10,14 +10,14 @@ Core commands:
     python3 arena_studio.py survey [--out survey.json]
     python3 arena_studio.py inspect [Workspace] [--depth 2] [--summary]
     python3 arena_studio.py search [query] [--root game] [--is-a BasePart] [--tag Spot]
-    python3 arena_studio.py read ServerScriptService.NightLoop.Config [--start 1 --end 50]
-    python3 arena_studio.py script ServerScriptService.NightLoop Config Config.lua --class ModuleScript --replace
-    python3 arena_studio.py edit ServerScriptService.NightLoop.Config --old "ShowPhase = true" --new "ShowPhase = false" --replace
+    python3 arena_studio.py read ServerScriptService.GameSystems.Config [--start 1 --end 50]
+    python3 arena_studio.py script ServerScriptService.GameSystems Config Config.lua --class ModuleScript --replace
+    python3 arena_studio.py edit ServerScriptService.GameSystems.Config --old "ShowPhase = true" --new "ShowPhase = false" --replace
     python3 arena_studio.py grep "TurnSpeed" [--root ServerScriptService]
-    python3 arena_studio.py require-fresh ServerScriptService.NightLoop.Config --code "return MODULE.Hud"
-    python3 arena_studio.py check ../nightloop/src
-    python3 arena_studio.py drift ../nightloop/src ServerScriptService.NightLoop
-    python3 arena_studio.py sync  ../nightloop/src ServerScriptService.NightLoop
+    python3 arena_studio.py require-fresh ServerScriptService.GameSystems.Config --code "return MODULE.Hud"
+    python3 arena_studio.py check ../roblox-kit/modules
+    python3 arena_studio.py drift ../roblox-kit/modules ServerScriptService.GameSystems
+    python3 arena_studio.py sync  ../roblox-kit/modules ServerScriptService.GameSystems
     python3 arena_studio.py run "return {place = game.Name}" [--dm edit|server|client]
     python3 arena_studio.py runfile ../jobs/baseline_survey.lua
 

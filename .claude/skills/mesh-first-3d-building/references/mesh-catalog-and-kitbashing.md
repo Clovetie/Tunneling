@@ -5,7 +5,7 @@
 | Category | Example Queries for `spawn_kit_mesh` / `search_assets` | Ideal Use Cases |
 |---|---|---|
 | **Dungeon & Fantasy** | `torch`, `barrel`, `chest`, `column`, `altar`, `banner`, `trap`, `gate` | Dungeons, boss arenas, shrines, safe rooms |
-| **Horror & Graveyard** | `crypt`, `gravestone`, `coffin`, `lantern`, `candlestick`, `fence`, `dead_tree` | Horror cabins, cemeteries, NightLoop yards |
+| **Horror & Graveyard** | `crypt`, `gravestone`, `coffin`, `lantern`, `candlestick`, `fence`, `dead_tree` | horror cabins, cemeteries, overgrown yards |
 | **Furniture & Interior** | `chair`, `table`, `bookshelf`, `bed`, `cabinet`, `lamp`, `desk`, `rug` | Mansions, safe houses, roleplay interiors |
 | **Weapons & Combat** | `sword`, `shield`, `bow`, `axe`, `hammer`, `staff`, `dagger`, `blaster` | Combat loadouts, shop pedestals, loot drops |
 | **Nature & Foliage** | `pine`, `oak`, `rock`, `boulder`, `bush`, `mushroom`, `crystal`, `log` | Biomes, forests, caves, outdoor borders |

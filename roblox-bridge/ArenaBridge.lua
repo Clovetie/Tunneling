@@ -193,7 +193,7 @@ end
 ------------------------------------------------------------------------------
 -- Instance path helpers:
 -- Supports "game.Workspace.Folder.Part", "Workspace.Part", "workspace.Part",
--- "ServerScriptService/NightLoop/Config", and bracketed segments.
+-- "ServerScriptService/GameSystems/Config", and bracketed segments.
 ------------------------------------------------------------------------------
 
 local function splitPath(path: string): { string }

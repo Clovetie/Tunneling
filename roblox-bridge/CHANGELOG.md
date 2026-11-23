@@ -191,6 +191,54 @@ All notable changes for the Roblox Studio bridge are documented here.
   dead peer, and `dryRun` resolves every target and reports the plan without touching Studio
   (and is classified read-only, like `find_and_replace_scripts(dryRun=true)`).
 
+### Removed (P2 — NightLoop)
+- **`nightloop/` is gone**, with its in-repo copies and every reference: 125
+  tracked files, −37,441 lines. That is the reference horror-survival experience
+  (8 entities + 6 night modifiers), its static Luau analysis workbench
+  (`nightloop/tools/audit.sh`; the equivalent check that stays is
+  `bash roblox-bridge/tools/check_globals.sh <dir>`), the `roblox-bridge/nightloop/`
+  export mirror, `roblox-bridge/patches/` (four Place1 patch scripts plus their
+  `ORIGINAL_*` backups), and the twelve NightLoop-specific operator jobs in `jobs/`
+  (`baseline_survey`, `climb_check`, `drift_audit`, `hash_diagnostic`,
+  `night_watch`, `preview_climb`, `push_climb`, `set_config_flag`,
+  `set_whisperer_ids`, `whisperer_check`, `make_push.py`,
+  `repo_hashes_2026-10-07.txt`). The three general drills stay:
+  `jobs/{live_acceptance,drill_studio_kill,measure_tunnel_latency}.py`.
+  `roblox-bridge/tools/{render_posesheet.py,capture_poses.lua}` went with it — the
+  NightLoop monster rig was their only subject.
+  - 12,985 lines of that Python were a *third* divergent copy of the bridge
+    (v3.4.0 against 6.1.0), which is the reason to delete rather than archive:
+    three copies of `server.py` are three places to miss a security fix — the P0
+    work in this same release would otherwise have had to be applied twice more.
+    `roblox-bridge/` is now the only bridge.
+  - Kit content is untouched: `roblox-kit/systems/mechanics/horror-director/`, the
+    `horror_*` prefabs and `ui_horror_sanity_vitals_hud.json` are kit material, not
+    NightLoop. The horror showcase still renders — it was always hardcoded geometry
+    plus those kit prefabs, never a read of that tree — under its new canonical key
+    `showcase:horror_cabin`, labelled "Horror Cabin, FuseBox, SafeRoom &
+    Generator"; `showcase:horror_nightloop` stays as a deprecated alias so a saved
+    command keeps working.
+  - References were repointed, not just deleted: the Luau tool-binary search path
+    lost `nightloop/.tools/bin`; `drift_and_sync`'s examples, the completion
+    candidates, the `arena_studio.py` and `ab.ps1` usage lines now say
+    `roblox-kit/modules` and `ServerScriptService.GameSystems` (the container the
+    mock world actually builds) instead of `nightloop/src` and
+    `ServerScriptService.NightLoop`; `README.md` lost the NightLoop feature row, the
+    layout row and the `audit.sh` command, and the rows that stayed had their stale
+    counts corrected to what the tree holds — 100 tools, 33 modules, 24 systems, 36
+    prefabs, 20 `.rbxmx` models.
+- **`SESSION.md` is deleted** (P4-D5). It was a *tracked* file titled "live
+  connector credentials" holding machine-local paths, dead tunnel hostnames and a
+  NightLoop-era session journal — a credential-shaped file in Git history is a leak
+  surface whether or not a secret survived in it, and its own header claimed it was
+  gitignored while `CONNECT.md` recorded that it was not. `CONNECT.md` now points at
+  the canonical source, `roblox-bridge/bridge.token` (mode 0600, gitignored), and no
+  longer asks anyone to record session state in the repo. **If a token was ever
+  pasted into `SESSION.md`, run `python setup.py --rotate`** — deleting the file
+  does not remove it from history. `roblox-bridge/CHANGES.md` is kept, because
+  history is history, with a note that the `patches/ORIGINAL_*.lua` backups it cites
+  were removed and now live only in Git history.
+
 ## 6.0.0 — Studio Plugin v6 (`ArenaBridge.lua` DockWidget UI + Bulletproof Playtest Stop), 90 MCP Tools, Network Security Auditor, Cutscene Sequencer, and V6 Control Center Overhaul
 
 ### Added

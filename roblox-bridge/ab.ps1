@@ -8,9 +8,9 @@
 #   .\ab.ps1 health
 #   .\ab.ps1 ping
 #   .\ab.ps1 state
-#   .\ab.ps1 check ..\nightloop\src
-#   .\ab.ps1 drift ..\nightloop\src ServerScriptService.NightLoop
-#   .\ab.ps1 sync  ..\nightloop\src ServerScriptService.NightLoop
+#   .\ab.ps1 check ..\roblox-kit\modules
+#   .\ab.ps1 drift ..\roblox-kit\modules ServerScriptService.GameSystems
+#   .\ab.ps1 sync  ..\roblox-kit\modules ServerScriptService.GameSystems
 #   .\ab.ps1 runfile ..\jobs\baseline_survey.lua
 #   .\ab.ps1 ops                     # peers + queue + tunnel + agents + tasks
 #   .\ab.ps1 tunnel status

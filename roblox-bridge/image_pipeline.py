@@ -36,7 +36,7 @@ HERE = Path(__file__).resolve().parent
 
 def find_kit_root() -> Path:
     """Locate `<repo>/roblox-kit` regardless of whether running from
-    `roblox-bridge/` or `nightloop/bridge/`.
+    `roblox-bridge/`.
     """
     for cand in (HERE.parent / "roblox-kit", HERE.parent.parent / "roblox-kit"):
         if cand.exists():

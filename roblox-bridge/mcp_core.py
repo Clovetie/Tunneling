@@ -608,7 +608,7 @@ def _find_tool_binary(name: str):
     here = Path(__file__).resolve().parent
     directories = [
         here / "tools", here.parent / "tools", here.parent / "roblox-bridge" / "tools",
-        here.parent.parent / "roblox-bridge" / "tools", here.parent / "nightloop" / ".tools" / "bin",
+        here.parent.parent / "roblox-bridge" / "tools",
         here.parent / ".tools" / "bin",
     ]
     # Bundled Unix binaries are ELF/Linux; do not mistake them for native
@@ -1395,11 +1395,11 @@ TOOL_SPECS = [
     },
     {
         "name": "inspect_instance",
-        "description": "Inspect a specific Instance by dot/slash path (e.g. 'Workspace.Door' or 'ServerScriptService.NightLoop'). Returns readable properties (raw + typed), custom Attributes, CollectionService Tags, script hash/line count, child hierarchy up to depth, and optional descendant class breakdown.",
+        "description": "Inspect a specific Instance by dot/slash path (e.g. 'Workspace.Door' or 'ServerScriptService.GameSystems'). Returns readable properties (raw + typed), custom Attributes, CollectionService Tags, script hash/line count, child hierarchy up to depth, and optional descendant class breakdown.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "default": "game", "description": "Instance dot path, e.g. 'Workspace.Model' or 'ServerScriptService.NightLoop'."},
+                "path": {"type": "string", "default": "game", "description": "Instance dot path, e.g. 'Workspace.Model' or 'ServerScriptService.GameSystems'."},
                 "depth": {"type": "integer", "default": 2, "minimum": 0, "maximum": 10},
                 "maxChildren": {"type": "integer", "default": 100, "minimum": 1, "maximum": 500},
                 "descendantSummary": {"type": "boolean", "default": False, "description": "Include total count and class histogram of all descendants."},
@@ -1469,7 +1469,7 @@ TOOL_SPECS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Dot path to script, e.g. 'ServerScriptService.NightLoop.Config'."},
+                "path": {"type": "string", "description": "Dot path to script, e.g. 'ServerScriptService.GameSystems.Config'."},
                 "startLine": {"type": "integer", "minimum": 1, "description": "Optional 1-based start line."},
                 "endLine": {"type": "integer", "minimum": 1, "description": "Optional 1-based inclusive end line."},
                 "withLineNumbers": {"type": "boolean", "default": False},
@@ -1501,7 +1501,7 @@ TOOL_SPECS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "parent": {"type": "string", "description": "Parent dot path, e.g. 'ServerScriptService.NightLoop'."},
+                "parent": {"type": "string", "description": "Parent dot path, e.g. 'ServerScriptService.GameSystems'."},
                 "name": {"type": "string", "description": "Script instance name without extension."},
                 "className": {"type": "string", "enum": ["Script", "LocalScript", "ModuleScript"], "default": "ModuleScript"},
                 "source": {"type": "string", "description": "Complete Luau source code."},
@@ -1521,7 +1521,7 @@ TOOL_SPECS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Dot path to target script, e.g. 'ServerScriptService.NightLoop.Director'."},
+                "path": {"type": "string", "description": "Dot path to target script, e.g. 'ServerScriptService.GameSystems.Director'."},
                 "edits": {
                     "type": "array",
                     "minItems": 1,
@@ -1571,7 +1571,7 @@ TOOL_SPECS = [
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "Text or Lua pattern to search for across script sources."},
-                "root": {"type": "string", "description": "Optional subtree path filter, e.g. 'ServerScriptService.NightLoop'."},
+                "root": {"type": "string", "description": "Optional subtree path filter, e.g. 'ServerScriptService.GameSystems'."},
                 "isPattern": {"type": "boolean", "default": False, "description": "Interpret 'pattern' as a Lua string pattern instead of plain literal text."},
                 "caseSensitive": {"type": "boolean", "default": True},
                 "contextLines": {"type": "integer", "default": 1, "minimum": 0, "maximum": 10},
@@ -1591,7 +1591,7 @@ TOOL_SPECS = [
             "properties": {
                 "find": {"type": "string", "minLength": 1},
                 "replace": {"type": "string"},
-                "root": {"type": "string", "description": "Optional subtree scope, e.g. 'ServerScriptService.NightLoop'."},
+                "root": {"type": "string", "description": "Optional subtree scope, e.g. 'ServerScriptService.GameSystems'."},
                 "dryRun": {"type": "boolean", "default": False, "description": "Preview matches without modifying any scripts."},
                 "replaceInstance": {"type": "boolean", "default": False, "description": "Recreate modified ModuleScripts to bust require() cache."},
                 "dm": DM_PROP,
@@ -1621,7 +1621,7 @@ TOOL_SPECS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Dot path to ModuleScript, e.g. 'ServerScriptService.NightLoop.Config'."},
+                "path": {"type": "string", "description": "Dot path to ModuleScript, e.g. 'ServerScriptService.GameSystems.Config'."},
                 "packageRoot": {"type": "string", "description": "Optional ancestor package root folder to clone together (auto-detected if omitted)."},
                 "code": {"type": "string", "description": "Optional Luau probe body receiving (MODULE, MODULE_INSTANCE, PACKAGE_ROOT), e.g. 'return MODULE.Entities.WindowMonster'."},
                 "dm": DM_PROP,
@@ -1978,13 +1978,13 @@ TOOL_SPECS = [
     },
     {
         "name": "drift_and_sync",
-        "description": "Audit or sync a local Luau package folder (e.g. 'nightloop/src') against a live Studio container (e.g. 'ServerScriptService.NightLoop') using exact 53-bit-safe 32-bit FNV-1a hashes. Modes: 'check' (read-only diff report), 'push' (pre-checks syntax/globals, saves rollback snapshot, and replaces package atomically in one Ctrl+Z step busting ModuleScript caches), or 'pull' (exports Studio scripts to disk).",
+        "description": "Audit or sync a local Luau package folder (e.g. 'roblox-kit/modules') against a live Studio container (e.g. 'ServerScriptService.GameSystems') using exact 53-bit-safe 32-bit FNV-1a hashes. Modes: 'check' (read-only diff report), 'push' (pre-checks syntax/globals, saves rollback snapshot, and replaces package atomically in one Ctrl+Z step busting ModuleScript caches), or 'pull' (exports Studio scripts to disk).",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "mode": {"type": "string", "enum": ["check", "push", "pull"], "default": "check"},
-                "localDir": {"type": "string", "description": "Local directory path, e.g. 'nightloop/src'."},
-                "studioRoot": {"type": "string", "description": "Studio container path, e.g. 'ServerScriptService.NightLoop'."},
+                "localDir": {"type": "string", "description": "Local directory path, e.g. 'roblox-kit/modules'."},
+                "studioRoot": {"type": "string", "description": "Studio container path, e.g. 'ServerScriptService.GameSystems'."},
                 "skipCheck": {"type": "boolean", "default": False, "description": "Skip local luau_check gate before mode='push'."},
                 "peerId": PEER_PROP,
             },
@@ -5109,8 +5109,8 @@ PROMPTS = [
         "title": "Audit & Sync Local Luau Package",
         "description": "Audit repo <-> Studio drift with exact 32-bit FNV-1a hashes, pre-check all files for undefined globals, and push atomically.",
         "arguments": [
-            {"name": "localDir", "description": "Local source folder (e.g. nightloop/src)", "required": True},
-            {"name": "studioRoot", "description": "Studio container path (e.g. ServerScriptService.NightLoop)", "required": True},
+            {"name": "localDir", "description": "Local source folder (e.g. roblox-kit/modules)", "required": True},
+            {"name": "studioRoot", "description": "Studio container path (e.g. ServerScriptService.GameSystems)", "required": True},
         ],
     },
     {
@@ -5337,11 +5337,11 @@ def complete_mcp_argument(client: BridgeClient, params: dict) -> dict:
                 ], arg_val)
         elif pname == "sync_repo_package":
             if arg_name == "localDir":
-                return _rank_completion_candidates(["./src", "nightloop/src", "roblox-kit/modules"], arg_val)
+                return _rank_completion_candidates(["./src", "roblox-kit/modules", "roblox-kit/systems"], arg_val)
             if arg_name == "studioRoot":
                 return _rank_completion_candidates([
                     "ServerScriptService.App",
-                    "ServerScriptService.NightLoop",
+                    "ServerScriptService.GameSystems",
                     "ReplicatedStorage.Shared",
                 ], arg_val)
         elif pname == "multi_agent_handoff":
@@ -6884,7 +6884,11 @@ def build_offline_3d_showcase_scene(
         clock = 21.5 if "horror" in theme else 13.5
         return ws, [], {"ClockTime": clock}, f"3D Dungeon ({theme}, seed {seed})"
 
-    if src == "showcase:horror_nightloop":
+    # v6.1.0 (P2): the NightLoop tree is gone, but this showcase was always built
+    # from hardcoded geometry plus the kit's horror prefabs, so it stays. The
+    # canonical key is now `showcase:horror_cabin`; the old key is kept as a
+    # deprecated alias so an agent's saved command still renders.
+    if src in ("showcase:horror_cabin", "showcase:horror_nightloop"):
         children = [
             {
                 "name": "ForestGround",
@@ -6897,7 +6901,7 @@ def build_offline_3d_showcase_scene(
                 "properties": {"Size": [6, 1, 6], "Position": [0, 0.5, 28], "Color": [0.32, 0.54, 0.36], "Anchored": True},
             },
             {
-                "name": "NightLoopCabin",
+                "name": "HorrorCabin",
                 "className": "Model",
                 "children": [
                     {"name": "CabinFloor", "className": "Part", "properties": {"Size": [30, 1.2, 24], "Position": [0, 0.6, 0], "Color": [0.34, 0.24, 0.17], "Anchored": True}},
@@ -6929,7 +6933,7 @@ def build_offline_3d_showcase_scene(
             {"name": "Workspace", "className": "Workspace", "children": children},
             gui,
             {"ClockTime": 22.0},
-            "NightLoop Horror Cabin, FuseBox, SafeRoom & Generator",
+            "Horror Cabin, FuseBox, SafeRoom & Generator",
         )
 
     # Default showcase: Croftie Starter Village, Watchtower, Shrine, Farm Plots & Obby

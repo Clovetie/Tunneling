@@ -49,7 +49,7 @@ This v6.0.0 architecture incorporates verified patterns across the 2026 Roblox M
    - Reads active open editor buffers via `ScriptEditorService:GetEditorSource()` and writes via `ScriptEditorService:UpdateSourceAsync()` with CRLF→LF normalization (avoiding the 199,999-byte `Script.Source` limit, open-tab clobbering, and Live Scripting `\r\n` errors).
    - Solves Luau's `ModuleScript` instance `require()` caching via `replaceInstance: true` on writes/edits plus `require_fresh` sandbox evaluation.
    - Adds optimistic concurrency (`expectedHash` exact 53-bit-safe 32-bit FNV-1a) + server-side multi-script snapshots (`manage_snapshots`) + single `Ctrl+Z` `ChangeHistoryService` undo recordings.
-4. **Sidecar Safeguards (`gjlmotea/studio-sidecar-mcp` + NightLoop `AGENTS.md`)**:
+4. **Sidecar Safeguards (`gjlmotea/studio-sidecar-mcp`)**:
    - Offline pre-push `luau_check` for available local syntax and global checks; inspect `checksPerformed` and warnings for missing analysis.
    - One-command `drift_and_sync` (`check` / `push` / `pull`) between local Git folders and Studio containers.
    - Automatic embedded-script scanning & stripping (`stripScripts: true`) in `insert_asset` to prevent free-model backdoors.

@@ -41,13 +41,19 @@ to bottom, before touching anything connection-related. **Do not re-derive any
 of this** — every fact below was paid for with real debugging time and, where
 marked, verified against Roblox's official documentation.
 
-Credentials live in `SESSION.md` (repo root). They never live here.
+Credentials live in `roblox-bridge/bridge.token` on the operator's machine
+(mode 0600, gitignored). They never live in a tracked file — not here, and not
+in a session journal: the old root `SESSION.md` was deleted in v6.1.0 because a
+tracked file describing live credentials is a leak waiting to happen. Rotate with
+`python setup.py --rotate`.
 
 ---
 
 ## 0. The 30-second version
 
-1. Get `BRIDGE_URL` + `TOK` from `SESSION.md`.
+1. Get `BRIDGE_URL` from the operator (or `bridge_state/tunnel.json` /
+   `GET /api/state` for the last known URL) and `TOK` from
+   `roblox-bridge/bridge.token`.
 2. One call: `curl -s -m 15 "$BRIDGE_URL/api/state?token=$TOK"`
 3. Branch on the result:
    - **200, `studio_connected: true`** → connected. Work.
@@ -58,8 +64,7 @@ Credentials live in `SESSION.md` (repo root). They never live here.
      the tunnel (§5). **Do not fight it. Switch to HANDS MODE (§4).**
      Spend no more than ~5 minutes re-verifying this.
    - **TLS works but 404 / 502 / timeout** → the tunnel is dead (§6). Ask the
-     user to re-run `python setup.py --tunnel` and paste the new URL; update
-     `SESSION.md`.
+     user to re-run `python setup.py --tunnel` and paste the new URL.
    - **`{"error":"unauthorized"}`** → wrong token. The user's
      `roblox-bridge/bridge.token` is canonical.
 4. In HANDS MODE the user runs `.\ab.ps1 <command>` on their own PC — the
@@ -143,7 +148,7 @@ Server endpoints (all take `?token=*** the token):
 | `POST /api/jobs` | enqueue `{type, payload, note, wait}`; **blocks up to `wait` s (max 120)** and returns the job. Success: read `.result` — for `run_luau` the returned value is `.result.returned` (a string; if your Luau returns JSON, `jq` it). Failure: `.error`. |
 | `GET /api/jobs/<id>` · `GET /api/jobs` | job detail / history |
 
-Job types (full payloads in `nightloop/AGENTS.md`):
+Job types (full payloads in `roblox-bridge/docs/OPS.md`):
 `ping` · `run_luau` · `read_script` · `read_scripts` · `write_script` ·
 `build` · `delete` · `inspect` · `set_properties` · `selection` · `survey` ·
 `console`.
@@ -226,8 +231,8 @@ BRIDGE_TOKEN or put a bridge.token file next to ab.ps1.`
 ```
 
 Expect: `health` → `ok: true`, `studio_connected: true`; `ping` → `[ok]` with
-place/placeId/studio and (plugin v2) `"pluginVersion": "2.0"`; baseline → the
-JSON in `jobs/baseline_survey.lua`'s header (diff it against `nightloop/src`).
+place/placeId/studio and `pluginVersion` matching `roblox-bridge/ArenaBridge.lua`;
+baseline → `drift_and_sync {mode:'check'}` against the local package folder.
 
 ---
 
@@ -270,8 +275,7 @@ JSON in `jobs/baseline_survey.lua`'s header (diff it against `nightloop/src`).
   cd <their real roblox-bridge path>
   python setup.py --tunnel
   ```
-  Then paste the new `https://<words>.trycloudflare.com` URL to the agent →
-  update `SESSION.md`.
+  Then paste the new `https://<words>.trycloudflare.com` URL to the agent.
 - **Always give real paths.** A placeholder `cd path\to\roblox-bridge` was
   literally typed once.
 - `winget install cloudflared` does not update an already-open shell's PATH —
@@ -286,8 +290,8 @@ JSON in `jobs/baseline_survey.lua`'s header (diff it against `nightloop/src`).
 Install: `python setup.py --install-only` — re-bakes URL+token from
 `bridge.token` and installs to `%LOCALAPPDATA%\Roblox\Plugins\ArenaBridge.lua`
 (full `python setup.py --tunnel` does the same plus starts server+tunnel).
-Keep `roblox-bridge/ArenaBridge.lua` and `nightloop/bridge/ArenaBridge.lua`
-**in sync** (they were identical; diff before pushing).
+`roblox-bridge/ArenaBridge.lua` is the only copy of the plugin — the
+NightLoop bridge mirror is gone (v6.1.0), so there is nothing left to drift.
 
 **Token trap (bitten 2026-10-08):** `setup.py` run in a folder that has **no
 `bridge.token`** silently generates a *fresh* token, writes it there, and
@@ -330,11 +334,11 @@ Behaviour notes:
 
 ## 8. First five minutes — checklist for a new agent
 
-1. Read `SESSION.md` → this file → `nightloop/AGENTS.md` (workflow + traps).
+1. Read this file → `roblox-bridge/docs/OPS.md` → `AGENTS.md` (workflow + traps).
 2. `curl -s -m 15 "$BRIDGE_URL/api/state?token=$TOK"` → branch per §0.
 3. HANDS MODE: run the verification triad with the user (§4), get output.
-4. Baseline: compare `jobs/baseline_survey.lua` output against
-   `nightloop/src` — drift is the first thing to fix.
+4. Baseline: `drift_and_sync {mode:'check', localDir:'roblox-kit/modules',
+   studioRoot:'ServerScriptService.GameSystems'}` — drift is the first thing to fix.
 5. Every push follows the AGENTS.md workflow: write → `tools/luau-compile
    --binary` → `tools/check_globals.sh` → push → verify with `run_luau`
    returning JSON. Run `bash tools/fix-perms.sh` before the toolchain
@@ -358,9 +362,10 @@ Behaviour notes:
    `h = (h * 147 + h * 256 + (h % 256) * 16777216) % 4294967296` (intermediates
    < 2^41, exact in double). Rule of thumb: in any job, keep multiply products
    < 2^53.
-7. After work: update `SESSION.md` state; if the session is done, the user
-   rotates the token (`python setup.py --rotate`) and stops the local server
-   (or tunnel, if one is ever back).
+7. After work: if the session is done, the user rotates the token
+   (`python setup.py --rotate`) and stops the local server (or tunnel, if one is
+   ever back). Nothing in the repo records session state — `bridge_state/` is
+   gitignored runtime state, and the audit log is the record of what happened.
 
 ---
 
@@ -368,14 +373,12 @@ Behaviour notes:
 
 | path | what |
 |---|---|
-| `SESSION.md` (root) | live credentials + session state. **Tracked in this repo** (contrary to its own old header) — rotate the token when the session ends. |
 | `CONNECT.md` (root) | this file. |
-| `roblox-bridge/` | the user's working bridge dir: `server.py`, `setup.py`, `arena_studio.py`, `ArenaBridge.lua` (canonical), `ab.ps1` (HANDS MODE helper), `bridge.token`, `tools/` (luau binaries + `check_globals.sh` + `fix-perms.sh`). |
-| `roblox-bridge/tools/.selftest` | — (scratch, deleted after use) |
-| `nightloop/bridge/` | export-repo copy of the bridge (`ArenaBridge.lua`, `server.py`, `setup.py`, `arena_studio.py`, `ab.ps1`) — keep in sync with `roblox-bridge/`. |
-| `nightloop/src/` | the NightLoop game package (Rojo tree in `default.project.json` → `ServerScriptService.NightLoop` + `StarterPlayerScripts`). |
-| `jobs/` | paste-ready Luau jobs for HANDS MODE (`baseline_survey.lua` …). |
-| `nightloop/AGENTS.md` | workflow, traps, dead ends, security, entity status. |
+| `roblox-bridge/` | the bridge: `server.py`, `mcp_core.py`, `setup.py`, `arena_studio.py`, `ArenaBridge.lua` (the one canonical plugin), `ab.ps1` (HANDS MODE helper), `bridge.token`, `static/` (dashboard), `docs/OPS.md`, `tools/` (luau binaries + `check_globals.sh` + `fix-perms.sh` + `dashboard_harness.js`). |
+| `roblox-bridge/bridge_state/` | gitignored runtime state: `tokens.json`, `audit.jsonl`, `bus.json`, `fleet.json`, `tunnel.json`. |
+| `roblox-kit/` | the asset/module kit the bridge serves (`modules/`, `systems/`, `prefabs/`, `assets/` + `assets/asset-lock.json`). |
+| `jobs/` | paste-ready operator jobs for HANDS MODE (`live_acceptance.py`, `drill_studio_kill.py`, `measure_tunnel_latency.py`). |
+| `AGENTS.md` | workflow, traps, dead ends, security. |
 
 One-time HANDS MODE setup the user pastes into their `roblox-bridge` terminal
 (the agent should only have to ask for this once per machine):
@@ -425,9 +428,9 @@ mkdir jobs -ErrorAction SilentlyContinue
 
 ## 11. Historical v3.0 Upgrade Snapshot — Full MCP Server + Multi-DataModel Routing + Zero-Drift Sync (2026-10-23)
 
-> Historical v3.0 notes below describe that earlier state. The current v4.0.0 work is in `roblox-bridge/`; the `nightloop/bridge/` mirror was not synchronized as part of this upgrade.
+> Historical v3.0 notes below describe that earlier state. Everything current lives in `roblox-bridge/`; the NightLoop tree and its bridge mirror were deleted in v6.1.0.
 
-At that time, `roblox-bridge/` and `nightloop/bridge/` were upgraded identically to **v3.0** (`PLUGIN_VERSION = "3.0"`, `SERVER_VERSION = "3.0.0"`, zero external pip dependencies):
+At that time, `roblox-bridge/` (and the mirror that no longer exists) was upgraded to **v3.0** (`PLUGIN_VERSION = "3.0"`, `SERVER_VERSION = "3.0.0"`, zero external pip dependencies):
 
 ### What was added & fixed in v3.0
 

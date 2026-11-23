@@ -1,6 +1,12 @@
 # Changes applied to Place1 — 2026-10-07
 
-Originals backed up in `patches/ORIGINAL_*.lua`. Each job was one undo step in Studio.
+> **v6.1.0 note.** This is a historical record, kept as-is. The
+> `roblox-bridge/patches/ORIGINAL_*.lua` backups it refers to were deleted with
+> the rest of the NightLoop tree in v6.1.0, so the original script bodies now
+> live only in the place file and in this repo's Git history
+> (`git show 0878010:roblox-bridge/patches/ORIGINAL_WindowMonster.lua`).
+
+Originals were backed up in `patches/ORIGINAL_*.lua`. Each job was one undo step in Studio.
 
 ## 1. `Workspace.BASEmodel.PrimaryPart` → `HumanoidRootPart`
 

@@ -22,7 +22,7 @@ Tests:
      - Attributes & Tags (`manage_attributes`, `manage_tags`)
      - World (`manage_selection`, `manage_camera`, `undo_redo` real tree rollback!, `edit_terrain`,
        `insert_asset` script-stripping protection)
-     - Drift, Package Sync & Snapshots (`drift_and_sync` push/check/pull on real `nightloop/src`, `manage_snapshots` restore)
+     - Drift, Package Sync & Snapshots (`drift_and_sync` push/check/pull on a real Luau package folder, `manage_snapshots` restore)
   7. Read-Only Inspector mode server-side enforcement (both MCP tools/call AND REST `/api/jobs`)
   8. CLI (`arena_studio.py`) end-to-end execution including UTF-8 non-ASCII characters (`—`, `·`)
 """
@@ -4619,7 +4619,7 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
         self.assertTrue(any(iss["code"] == "UNANCHORED_PART" for iss in audit_rep["issues"]))
 
         # 5. Dashboard /api/kit/viewport-preview endpoint serves live & showcase 3D viewports
-        for src in ("studio:Workspace", "showcase:starter_village", "showcase:horror_nightloop", "dungeon:seeded", "prefab:world_safe_room_shelter"):
+        for src in ("studio:Workspace", "showcase:starter_village", "showcase:horror_cabin", "showcase:horror_nightloop", "dungeon:seeded", "prefab:world_safe_room_shelter"):
             code, raw_body, _ = self._raw_http(f"/api/kit/viewport-preview?source={src}&preset=iso_ne&width=360&height=220")
             body = json.loads(raw_body)
             self.assertEqual(code, 200, src)
@@ -5624,7 +5624,7 @@ class TestV61SecurityHardening(unittest.TestCase):
                 client, "audit_network_security", {"localDir": p, "includeStudio": False})),
             ("drift_and_sync", lambda p: execute_tool(
                 client, "drift_and_sync",
-                {"mode": "pull", "localDir": p, "studioRoot": "ServerScriptService.NightLoop"})),
+                {"mode": "pull", "localDir": p, "studioRoot": "ServerScriptService.GameSystems"})),
         ]
         for label, call in calls:
             for probe in read_probes + (str(write_probe), str(home)):
