@@ -1,6 +1,6 @@
 --!nonstrict
 --[[
-	ArenaBridge v6.0.0 — Roblox Studio local MCP & bridge plugin
+	ArenaBridge v6.1.0 — Roblox Studio local MCP & bridge plugin
 	Connects your open Studio place (Edit, Server, and Client DataModels) to the
 	bridge & Model Context Protocol (MCP) server running on your machine.
 
@@ -11,7 +11,7 @@
 	  3. Restart Studio once when installing or rotating tokens.
 	     v2+/v3+/v6+ auto-connects on DataModel load — no toolbar click needed.
 
-	Key v6.0.0 upgrades:
+	Key v6.1.0 / v6.0.0 upgrades:
 	  - Built-in Studio DockWidgetPluginGui Dashboard (`ArenaBridgeDashboardV6`):
 	    live connection badge, Peer ID, job counter, last job latency, playtest state,
 	    and one-click Connect/Pause, Force-Stop Playtest, and Temp Runner Cleanup.
@@ -46,7 +46,7 @@ local BRIDGE_URL = "http://127.0.0.1:8077"  -- the bridge on YOUR machine
 local BRIDGE_TOKEN = "arena-demo-7f3a"      -- must match the server's --token
 local POLL_INTERVAL = 0.5                   -- idle pause between long-polls
 local AUTO_CONNECT = true                   -- connect on load if bridge is up
-local PLUGIN_VERSION = "6.0.0"
+local PLUGIN_VERSION = "6.1.0"
 local CLIENT_RPC_NAME = "__ArenaBridgeClientRPC"
 ------------------------------------------------------------------------------
 
@@ -108,7 +108,7 @@ if DM_MODE == "edit" then
 	toolbar = plugin:CreateToolbar("Arena")
 	button = toolbar:CreateButton(
 		"ArenaBridge",
-		"Connect this place to your Arena / MCP agent (v6.0.0)",
+		"Connect this place to your Arena / MCP agent (v6.1.0)",
 		"",
 		"Arena MCP"
 	)
@@ -4214,7 +4214,7 @@ if button then
 end
 
 ------------------------------------------------------------------------------
--- v6.0.0 In-Studio DockWidgetPluginGui Dashboard & Playtest Controller
+-- v6.1.0 In-Studio DockWidgetPluginGui Dashboard & Playtest Controller
 ------------------------------------------------------------------------------
 
 if DM_MODE == "edit" then

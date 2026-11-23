@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
 setup.py — One command to install, configure, and run the Arena <-> Roblox
-Studio Bridge & MCP Server (v6.0.0).
+Studio Bridge & MCP Server (v6.1.0).
 
 What it does:
   1. Creates or reuses a shared secret in bridge.token — and if bridge.token is
      missing (e.g. a freshly extracted branch ZIP!), automatically recovers the
      active token from an already-installed ArenaBridge.lua in your Studio
      Plugins directory so you NEVER hit HTTP 401 token mismatches!
-  2. Writes ArenaBridge.lua v6.0.0 into your OS Roblox Studio Plugins folder with
+  2. Writes ArenaBridge.lua v6.1.0 into your OS Roblox Studio Plugins folder with
      the port + token baked in (leaving the tracked repo source file clean).
-  3. Starts server.py v6.0.0 on :8077 (serving Studio polling, REST CLI, Web
+  3. Starts server.py v6.1.0 on :8077 (serving Studio polling, REST CLI, Web
      Dashboard, AND Streamable HTTP MCP at http://127.0.0.1:8077/mcp).
   4. Optionally writes .mcp.json (`--write-mcp`) for Claude Code / Cursor / VS Code
      and/or opens a supervised cloudflared/ngrok tunnel (`--tunnel`).
@@ -43,7 +43,12 @@ HERE = Path(__file__).resolve().parent
 TOKEN_FILE = HERE / "bridge.token"
 PLUGIN_SRC = HERE / "ArenaBridge.lua"
 DIST = HERE / "dist"
-PLACEHOLDER_TOKEN = "arena-demo-7f3a"
+# v6.1.0 (P0-S5): the demo literal is defined exactly once, in auth_core.
+# Importing it (rather than copying it a fifth time) is what lets the bridge
+# *refuse* it: `TokenStore.authenticate` rejects PLACEHOLDER_TOKEN, so a
+# plugin baked with it can never talk to a real server.
+sys.path.insert(0, str(HERE))
+from auth_core import PLACEHOLDER_TOKEN  # noqa: E402
 
 TUNNEL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 BAKED_TOKEN_RE = re.compile(r'local BRIDGE_TOKEN = "([^"]*)"')
@@ -160,6 +165,13 @@ def get_token(rotate: bool = False, explicit_dir=None, preferred_port: int = 807
 # ---------------------------------------------------------------------------
 
 def install_plugin(token: str, port: int, explicit_dir=None) -> bool:
+    # v6.1.0 (P0-S5): fail loudly instead of baking a credential the server
+    # refuses. `TokenStore.authenticate` rejects PLACEHOLDER_TOKEN, so a plugin
+    # shipped with it can only ever 401 — a confusing dead end for the operator.
+    if not token or str(token).strip() == PLACEHOLDER_TOKEN:
+        say("  refusing to bake the demo placeholder token into the plugin.", RED)
+        say("  Run `python3 setup.py --rotate` to mint a real secret into bridge.token.", YELLOW)
+        raise SystemExit(2)
     source = PLUGIN_SRC.read_text(encoding="utf-8")
     source = re.sub(
         r'local BRIDGE_URL = "[^"]*"',
@@ -173,6 +185,9 @@ def install_plugin(token: str, port: int, explicit_dir=None) -> bool:
         source,
         count=1,
     )
+    baked = BAKED_TOKEN_RE.search(source)
+    if not baked or baked.group(1) != token:
+        raise SystemExit("internal error: the plugin token substitution did not take effect")
 
     target_dir = Path(explicit_dir) if explicit_dir else plugins_dir()
     if target_dir:
@@ -180,7 +195,7 @@ def install_plugin(token: str, port: int, explicit_dir=None) -> bool:
             target_dir.mkdir(parents=True, exist_ok=True)
             target = target_dir / "ArenaBridge.lua"
             target.write_text(source, encoding="utf-8")
-            say(f"  plugin v6.0.0 installed -> {target}", GREEN)
+            say(f"  plugin v6.1.0 installed -> {target}", GREEN)
             return True
         except OSError as exc:
             say(f"  could not write to {target_dir} ({exc})", YELLOW)
@@ -188,7 +203,7 @@ def install_plugin(token: str, port: int, explicit_dir=None) -> bool:
     DIST.mkdir(exist_ok=True)
     target = DIST / "ArenaBridge.lua"
     target.write_text(source, encoding="utf-8")
-    say(f"  plugin v6.0.0 written -> {target}", YELLOW)
+    say(f"  plugin v6.1.0 written -> {target}", YELLOW)
     say("  copy it into Studio's plugins folder:", YELLOW)
     say("    Studio -> Plugins tab -> Plugins Folder", DIM)
     return False
@@ -409,7 +424,7 @@ def main():
 
     signal.signal(signal.SIGINT, shutdown)
 
-    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v6.0.0{OFF}")
+    say(f"\n{BOLD}Arena <-> Roblox Studio MCP Bridge v6.1.0{OFF}")
     token = get_token(rotate=args.rotate, explicit_dir=args.plugins_dir, preferred_port=args.port)
     say(f"  token: {CYAN}{token}{OFF}  {DIM}(stored in bridge.token){OFF}")
 
@@ -426,7 +441,7 @@ def main():
         )
 
     if args.install_only:
-        say("\nPlugin v6.0.0 installed. Restart Roblox Studio once if updating or rotating token.", GREEN)
+        say("\nPlugin v6.1.0 installed. Restart Roblox Studio once if updating or rotating token.", GREEN)
         say(f"MCP stdio command:  python \"{HERE / 'mcp_server.py'}\"\n", DIM)
         return
 

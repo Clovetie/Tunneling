@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 confirm_gate.py — human-in-the-loop confirmation for dangerous MCP tool calls
-(v6.0.0, stdlib-only).
+(v6.1.0, stdlib-only).
 
 Why this exists
 ---------------
@@ -50,7 +50,7 @@ import secrets
 import threading
 import time
 
-GATE_VERSION = "6.0.0"
+GATE_VERSION = "6.1.0"
 GATE_MODES = ("off", "destructive", "write", "all")
 
 #: What each mode actually gates. Reported in `status()` so an operator reading
@@ -94,6 +94,24 @@ def mode_from_env(env=None):
     if value in ("all", "everything"):
         return "all"
     return value if value in GATE_MODES else "off"
+
+
+def client_answers_from_env(env=None) -> bool:
+    """May an MCP client answer its own confirmation? Default: no.
+
+    v6.1.0 (P0-S1): `elicitation_capable` is derived from per-request `_meta`
+    (`io.modelcontextprotocol/client-capabilities`), which the *caller* writes.
+    Accepting `inputResponses` from such a caller let an agent approve its own
+    `execute_luau` with two extra JSON fields — the gate would have been
+    decoration. Under MCP's own trust model the client is supposed to have
+    elicited a human, but this bridge cannot tell a host application from the
+    agent it is hosting, so the default is that a human answers out-of-band
+    (`arena_studio.py approve`, POST /api/confirmations, or the Ops console).
+    An operator who runs a trusted eliciting host can opt back in with
+    `BRIDGE_TRUST_CLIENT_ELICITATION=1`.
+    """
+    raw = (os.environ if env is None else env).get("BRIDGE_TRUST_CLIENT_ELICITATION")
+    return str(raw or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def canonical_digest(tool: str, arguments: dict) -> str:
@@ -237,8 +255,14 @@ class ConfirmGate:
         hook=None,
         destructive_tools=None,
         gated_tools=None,
+        trust_client_answers: bool = None,
     ):
         self.mode = mode if mode in GATE_MODES else mode_from_env()
+        #: See `client_answers_from_env`. None means "take the operator's
+        #: environment setting", which defaults to refusing client self-answers.
+        self.trust_client_answers = (client_answers_from_env()
+                                     if trust_client_answers is None
+                                     else bool(trust_client_answers))
         self.ttl_seconds = max(MIN_TTL_SECONDS, min(float(ttl_seconds or DEFAULT_TTL_SECONDS), MAX_TTL_SECONDS))
         self.allowance_seconds = max(0.0, min(float(allowance_seconds or 0), MAX_ALLOWANCE_SECONDS))
         self.hook = hook  # callable(kind: str, detail: dict) -> None
@@ -280,6 +304,8 @@ class ConfirmGate:
                 "gatedTools": (sorted(self.destructive_tools)
                                if self.mode == "destructive" else []),
                 "gateScope": GATE_SCOPES.get(self.mode, "nothing"),
+                # Reported so an operator can see who is allowed to say "yes".
+                "trustClientElicitation": self.trust_client_answers,
                 "destructiveToolCount": len(self.destructive_tools),
                 "pending": [rec.public() for rec in self._pending.values()],
                 "pendingCount": len(self._pending),
@@ -432,6 +458,14 @@ class ConfirmGate:
                 self._forget_unlocked(rec)
                 rec.event.set()
                 raise GateError("expired", "The confirmation window closed; re-issue the call.")
+            if source == "client" and not self.trust_client_answers:
+                raise GateError(
+                    "client_answers_disabled",
+                    "This bridge does not accept a client's own answer to a confirmation "
+                    "(BRIDGE_TRUST_CLIENT_ELICITATION is not set). An operator must approve "
+                    f"requestId {rec.id} with `arena_studio.py approve {rec.id}`, "
+                    "POST /api/confirmations, or the Ops console; then retry this call.",
+                )
             if source == "client" and self._principal_tag(rec.principal) != self._principal_tag(principal):
                 raise GateError("principal_mismatch",
                                 "requestState was issued to a different caller than the one retrying.")

@@ -25,8 +25,15 @@ import threading
 import time
 from pathlib import Path
 
-AUTH_VERSION = "6.0.0"
+AUTH_VERSION = "6.1.0"
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "bridge_state"
+
+#: The demo credential that ships inside `ArenaBridge.lua` so an unconfigured
+#: plugin still compiles. It is **not** a usable secret: `TokenStore.authenticate`
+#: refuses it, and `setup.py` refuses to bake a plugin with it. v6.1.0 (P0-S5)
+#: made this the single definition — it used to be copy-pasted into four files,
+#: and `server.py` authenticated it happily.
+PLACEHOLDER_TOKEN = "arena-demo-7f3a"
 
 ROLE_RANK = {"read": 1, "write": 2, "admin": 3}
 ROLE_DESCRIPTIONS = {
@@ -36,12 +43,88 @@ ROLE_DESCRIPTIONS = {
 }
 
 # Paths that require a specific role regardless of the HTTP method.
+# v6.1.0 (P0-S6): these two sets were dead code — nothing read them. They are now
+# the single written-down statement of route policy, consulted by
+# `server.py`'s `_route_scope()` on every request, so a new `/api/*` route that
+# forgets `_require(...)` still gets its declared scope enforced.
+#: Routes whose floor is `read`. Deliberately *not* listed here:
+#:   * `/api/kit/catalog` — its scope depends on the query (`item=`, `section=`,
+#:     `format=full` need `read`; bare metadata is public because the kit is CC0).
+#:     A blanket floor would either leak source or break the public gallery, so
+#:     the handler decides and `test_declared_route_policy_is_enforced` pins it.
+#:   * `/api/kit/image|audio|model|thumbnail|procedural|synth-audio|viewport-preview`
+#:     — traversal-safe binary serving that never calls `_require`.
 READ_ONLY_PATHS = {
-    "/api/health", "/api/state", "/api/peers", "/api/jobs", "/api/agent-guide",
+    "/api/state", "/api/peers", "/api/jobs", "/api/agent-guide",
     "/api/metrics", "/api/audit", "/api/events", "/api/ops", "/api/self-test",
-    "/api/plugin-status", "/api/plugin/download",
+    "/api/plugin-status", "/api/sse-ticket", "/api/subscriptions", "/api/bus",
+    "/api/snapshots", "/api/confirmations", "/api/tunnel",
 }
-ADMIN_PATHS = {"/api/tokens", "/api/audit/verify"}
+#: `/api/audit?verify=1` re-checks the audit hash chain and discloses nothing
+#: that `/api/audit` itself does not, so it stays a `read` action rather than
+#: getting its own admin path — a declaration for a route the server does not
+#: dispatch is worse than no declaration at all.
+ADMIN_PATHS = {"/api/tokens", "/api/plugin/download"}
+
+#: Routes that are public by design: they carry no credential and no secret.
+#: `/` and `/static/*` are the dashboard shell (its data comes from `/api/*`),
+#: `/.well-known/*` is MCP discovery, and `/api/health` is a liveness probe that
+#: the tunnel, CI and a browser can hit before any token exists. The two
+#: `/api/kit/*` search routes serve the CC0 asset/icon *index* (names, licences,
+#: sizes, thumbnails) and never call `_require`; the dashboard gallery renders
+#: from them before it has a token, so declaring a `read` floor there would have
+#: advertised a rule the handler does not enforce.
+PUBLIC_PATHS = {"/", "/static", "/api/health", "/.well-known",
+                "/api/kit/cloud-icons", "/api/kit/assets"}
+
+#: Routes whose floor depends on the query or on who is asking, so they declare
+#: nothing here and enforce it in the handler:
+#:   * `/api/kit/catalog` — `item=` or `section=` need `read` (that is where kit
+#:     *source* comes out); a category listing is name/path/bytes only and stays
+#:     public because the kit is CC0.
+#:   * `/api/local-boot` — always 200 so the page can render, but the credential
+#:     field is empty unless the caller is admin *and* local.
+#:   * `/api/kit/image|audio|model|thumbnail|procedural|synth-audio|viewport-preview`
+#:     — traversal-safe binary serving that never calls `_require`.
+#: `test_declared_route_policy_is_enforced_and_not_dead_code` walks every route
+#: in `TestV61SecurityHardening.ROUTES` as an anonymous cross-site caller and
+#: pins the declared floor, so a handler cannot drift away from this table.
+ROUTE_DECIDES_PATHS = {"/api/kit/catalog", "/api/kit/image", "/api/kit/audio",
+                       "/api/kit/thumbnail", "/api/kit/procedural",
+                       "/api/kit/synth-audio", "/api/kit/viewport-preview",
+                       "/api/local-boot", "/mcp"}
+
+
+def path_scope(path: str):
+    """Declared minimum role for `path`, or None when the route sets its own.
+
+    Longest-prefix match across all three policy sets, so `/api/jobs/<id>`
+    inherits `/api/jobs` and `/static/dashboard.js` inherits `/static`. A public
+    prefix wins outright: listing a route in both `PUBLIC_PATHS` and
+    `READ_ONLY_PATHS` used to make this function advertise a `read` floor the
+    handler never enforced, which is worse than either answer alone.
+
+    Used as a floor: a handler may require *more*, never less.
+    """
+    clean = (path or "/").split("?", 1)[0]
+
+    def _match(candidate: str) -> bool:
+        stripped = candidate.rstrip("/")
+        if not stripped:                 # "/" names the dashboard shell only
+            return clean in ("/", "")
+        return clean == candidate or clean == stripped or clean.startswith(stripped + "/")
+
+    if any(_match(candidate) for candidate in PUBLIC_PATHS):
+        return None
+    best = None
+    best_len = -1
+    for candidate in READ_ONLY_PATHS:
+        if _match(candidate) and len(candidate) > best_len:
+            best, best_len = "read", len(candidate)
+    for candidate in ADMIN_PATHS:
+        if _match(candidate) and len(candidate) > best_len:
+            best, best_len = "admin", len(candidate)
+    return best
 
 
 def _now() -> float:
@@ -154,6 +237,10 @@ class TokenStore:
     def authenticate(self, raw: str, consume_rate: bool = True):
         """Return (record, rate_info) or (None, None) when the token is invalid."""
         if not raw:
+            return None, None
+        # v6.1.0 (P0-S5): the demo literal that ships in ArenaBridge.lua is never
+        # a credential, even if an operator points --token at it by accident.
+        if raw.strip() == PLACEHOLDER_TOKEN:
             return None, None
         token_hash = _hash(raw)
         with self.lock:

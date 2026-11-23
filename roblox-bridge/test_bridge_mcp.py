@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test_bridge_mcp.py — Comprehensive automated test suite for the v6.0.0
+test_bridge_mcp.py — Comprehensive automated test suite for the v6.1.0
 Arena <-> Roblox Studio Bridge, CLI, and MCP Server (stdio + Streamable HTTP).
 
 Tests:
@@ -65,6 +65,30 @@ from viewport_renderer import _blit_scaled_rgba, render_scene_png  # noqa: E402
 from server import BridgeState, create_http_server  # noqa: E402
 import server as bridge_server  # noqa: E402
 import setup as bridge_setup  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Dashboard sources (v6.1.0, P4-D1)
+# ---------------------------------------------------------------------------
+# `dashboard_html()` used to inline ~3,000 lines of HTML/CSS/JS, so a test could
+# assert on the whole page in one string. The dashboard now lives in
+# `roblox-bridge/static/` and the served page only references it, so assertions
+# about behaviour read the three files and assertions about the served document
+# read `dashboard_html()`.
+
+DASHBOARD_SOURCES = ("index.html", "dashboard.css", "dashboard.js")
+
+
+def dashboard_source(name: str) -> str:
+    """One static dashboard file, with the version placeholder substituted."""
+    return (bridge_server.STATIC_DIR / name).read_text(encoding="utf-8").replace(
+        "__BRIDGE_VERSION__", bridge_server.VERSION
+    )
+
+
+def dashboard_bundle() -> str:
+    """All three static sources concatenated, for whole-page assertions."""
+    return "\n".join(dashboard_source(n) for n in DASHBOARD_SOURCES)
 
 
 class TestSkillDiscovery(unittest.TestCase):
@@ -669,11 +693,13 @@ class TestLocalizationAudit(unittest.TestCase):
 
 class TestConnectionDiagnostics(unittest.TestCase):
     def test_registry_only_reports_versions_and_redacts_untrusted_fields(self):
-        from mcp_core import diagnose_connection_helper, is_tool_call_read_only
+        from mcp_core import MCP_SERVER_VERSION, diagnose_connection_helper, is_tool_call_read_only
         client = mock.Mock()
         client.direct_dispatch = None
         client.read_only = True
-        client.health.return_value = {"ok": True, "version": "6.0.0", "authMode": "scoped", "read_only": False, "queuePaused": True}
+        # Derive the version from the module under test instead of hardcoding it:
+        # a release bump must not turn this into a false "older plugin" failure.
+        client.health.return_value = {"ok": True, "version": MCP_SERVER_VERSION, "authMode": "scoped", "read_only": False, "queuePaused": True}
         client.peers.return_value = {"peers": [
             {"online": True, "dm": "edit", "pluginVersion": "4.1", "peerId": "secret-peer"},
             {"online": True, "dm": "server", "hasClient": True, "pluginVersion": "2.0"},
@@ -693,7 +719,7 @@ class TestConnectionDiagnostics(unittest.TestCase):
         self.assertTrue({"older_plugin_reported", "unknown_plugin_version", "queue_paused"} <= codes)
         self.assertNotIn("secret", json.dumps(result))
         client.submit_job.assert_not_called()
-        client.peers.return_value = {"peers": [{"online": True, "dm": "edit", "pluginVersion": "6.0.0"}]}
+        client.peers.return_value = {"peers": [{"online": True, "dm": "edit", "pluginVersion": MCP_SERVER_VERSION}]}
         self.assertNotIn("older_plugin_reported", [x["code"] for x in diagnose_connection_helper(client)["checks"]])
         client.health.return_value["authMode"] = "open"
         self.assertEqual(diagnose_connection_helper(client)["readAccess"], "open")
@@ -901,7 +927,10 @@ class TestV5OpsPlatform(unittest.TestCase):
         from confirm_gate import ConfirmGate
         a = self.state.tokens.create("same-label", role="write", rate_limit=100, burst=100)
         b = self.state.tokens.create("same-label", role="write", rate_limit=100, burst=100)
-        gate = ConfirmGate(mode="write")
+        # Opted in deliberately: this test isolates *principal binding*, and the
+        # default refusal of client answers would otherwise mask it (that policy
+        # has its own test).
+        gate = ConfirmGate(mode="write", trust_client_answers=True)
         previous = self.state.mcp_dispatcher.gate
         self.state.mcp_dispatcher.gate = gate
         self.addCleanup(setattr, self.state.mcp_dispatcher, "gate", previous)
@@ -962,9 +991,22 @@ class TestV5OpsPlatform(unittest.TestCase):
             self.assertEqual(boot["bridgeDir"], "")
             for path in ("/api/agent-guide", "/api/jobs/" + job["id"]):
                 self.assertEqual(request(path, headers)[0], 401, (headers, path))
+        # v6.1.0 (P0-S2): being on loopback is no longer a credential. An
+        # unauthenticated local request still boots (200, so the dashboard can
+        # render its token banner) but gets no token; an admin one does.
         for headers in ({}, {"Origin": self.base, "Sec-Fetch-Site": "same-origin"}):
-            self.assertEqual(request("/api/local-boot", headers)[1]["token"], self.admin_token)
+            code, boot = request("/api/local-boot", headers)
+            self.assertEqual(code, 200)
+            self.assertTrue(boot["local"])
+            self.assertEqual(boot["token"], "")
+            self.assertTrue(boot["tokenWithheld"])
+            # Read-only discovery endpoints keep the loopback convenience (they
+            # carry no credential); the credential itself is what stopped being
+            # handed out.
             self.assertEqual(request("/api/agent-guide", headers)[0], 200)
+            authed = dict(headers, **{"X-Arena-Token": self.admin_token})
+            self.assertEqual(request("/api/local-boot", authed)[1]["token"], self.admin_token)
+            self.assertEqual(request("/api/agent-guide", authed)[0], 200)
 
     def test_kit_assets_cannot_escape_to_sibling_prefix_directory(self):
         from pathlib import Path
@@ -1227,7 +1269,7 @@ class TestV5OpsPlatform(unittest.TestCase):
     def test_ops_report_and_public_health_shape(self):
         status, health = self._req("/api/health")
         self.assertEqual(status, 200)
-        self.assertEqual(health["version"], "6.0.0")
+        self.assertEqual(health["version"], "6.1.0")
         self.assertIn("tunnel", health)
         self.assertIn("agents", health)
         status, ops = self._req("/api/ops", token=self.admin_token)
@@ -1348,23 +1390,29 @@ class TestV5OpsPlatform(unittest.TestCase):
         self.assertEqual(shown["name"], "studio.example.com")
 
     def test_dashboard_ops_tab_is_responsive_and_eventsource_reconnects(self):
-        from server import dashboard_html
+        # v6.1.0 (P4-D1): the page is a shell that references /static/; the
+        # behaviour lives in dashboard.css and dashboard.js.
         html = bridge_server.dashboard_html()
-        self.assertIn("copyMcpConfig", html)
-        self.assertIn("Copy MCP config (tunnel)", html)
-        self.assertIn("@media(max-width:720px)", html)
-        self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", html)
-        self.assertIn("Reconnecting (${Math.round(wait/1000)}s)", html)
-        self.assertIn("EV_DELAY * 2", html)
-        self.assertIn("overflow-x:hidden", html)
+        self.assertIn('<link rel="stylesheet" href="/static/dashboard.css?v=', html)
+        self.assertIn('<script src="/static/dashboard.js?v=', html)
+        self.assertNotIn("__BRIDGE_VERSION__", html)
+        # No inline script or handler can survive a `script-src 'self'` CSP, so
+        # none may be emitted: this is what keeps P0-S3 from regressing.
+        self.assertNotRegex(html, r"<script(?![^>]*\bsrc=)")
+        self.assertNotRegex(html, r"\son[a-z]+\s*=")
 
-        script = re.search(r"<script>(.*?)</script>", html, re.S)
-        self.assertIsNotNone(script)
+        bundle = dashboard_bundle()
+        for needle in ("copyMcpConfig", "Copy MCP config (tunnel)", "@media(max-width:720px)",
+                       "grid-template-columns:repeat(2,minmax(0,1fr))",
+                       "Reconnecting (${Math.round(wait/1000)}s)", "EV_DELAY * 2",
+                       "overflow-x:hidden"):
+            self.assertIn(needle, bundle, needle)
+
         node = shutil.which("node")
         if node:
             path = os.path.join(self.tmp, "dashboard.js")
             with open(path, "w", encoding="utf-8") as fh:
-                fh.write(script.group(1))
+                fh.write(dashboard_source("dashboard.js"))
             checked = subprocess.run([node, "--check", path], capture_output=True, text=True)
             self.assertEqual(checked.returncode, 0, checked.stderr)
 
@@ -1810,13 +1858,15 @@ class TestV5OpsPlatform(unittest.TestCase):
         self.assertEqual(tools["result"]["tools"][0]["execution"]["taskSupport"], "optional")
 
     def test_dashboard_fleet_strip_motion_and_health_fields(self):
-        html = self.state.dashboard_html() if hasattr(self.state, "dashboard_html") else None
-        if html is None:
-            from server import dashboard_html
-            html = bridge_server.dashboard_html()
+        # The markup, the styles and the behaviour live in three files now
+        # (P4-D1), so the whole-page assertions read the bundle.
+        html = bridge_server.dashboard_html()
+        for needle in ("fleet-bar", "fleet-chips"):
+            self.assertIn(needle, html)
+        bundle = dashboard_bundle()
         for needle in ("fleet-bar", "fleet-chips", "studio-card", "broadcastPing",
                        "prefers-reduced-motion", "animateValue", "paneIn", "brand"):
-            self.assertIn(needle, html)
+            self.assertIn(needle, bundle, needle)
         status, health = self._req("/api/health")
         self.assertEqual(status, 200)
         self.assertIn("studios", health)
@@ -1831,18 +1881,31 @@ class TestV5OpsPlatform(unittest.TestCase):
         instead of silently keeping stale numbers."""
         html = bridge_server.dashboard_html()
         self.assertIn("auth-banner", html)
-        self.assertIn("saveToken", html)
-        self.assertIn("apiFetch", html)
-        self.assertIn("PAGE_VERSION", html)
         self.assertNotIn("__BRIDGE_VERSION__", html)
-        self.assertIn(f'PAGE_VERSION = "{bridge_server.VERSION}"', html)
+        bundle = dashboard_bundle()
+        self.assertIn("saveToken", bundle)
+        self.assertIn("apiFetch", bundle)
+        self.assertIn("PAGE_VERSION", bundle)
+        self.assertIn(f'PAGE_VERSION = "{bridge_server.VERSION}"', bundle)
 
-        # Loopback: the token is handed out so the page authenticates itself.
+        # v6.1.0 (P0-S2): loopback no longer means "here is the owner token".
+        # An unauthenticated page still boots (so it can render the banner) but
+        # gets no credential; an admin caller does.
         req = urllib.request.Request(self.base + "/api/local-boot")
         with urllib.request.urlopen(req, timeout=15) as resp:
             boot = json.loads(resp.read().decode())
         self.assertTrue(boot["local"])
-        self.assertEqual(boot["token"], self.admin_token)
+        self.assertEqual(boot["token"], "")
+        self.assertTrue(boot["tokenRequired"])
+        self.assertTrue(boot["tokenWithheld"])
+        self.assertFalse(boot["authenticated"])
+        admin_req = urllib.request.Request(
+            self.base + "/api/local-boot",
+            headers={"X-Arena-Token": self.admin_token})
+        with urllib.request.urlopen(admin_req, timeout=15) as resp:
+            boot_admin = json.loads(resp.read().decode())
+        self.assertEqual(boot_admin["token"], self.admin_token)
+        self.assertTrue(boot_admin["authenticated"])
 
         # Tunnel / LAN: a forwarded client address is never loopback.
         proxied = urllib.request.Request(self.base + "/api/local-boot",
@@ -1866,13 +1929,39 @@ class TestV5OpsPlatform(unittest.TestCase):
             self.assertEqual(resp.status, 200)
 
     def test_dashboard_asset_library_and_kit_endpoints(self):
-        html = bridge_server.dashboard_html()
-        self.assertIn("/api/kit/catalog?category=all&format=full", html)
-        self.assertIn("format: 'full'", html)
-        self.assertIn("previewDungeonLayout", html)
-        self.assertIn("runMechanicBuilder", html)
+        bundle = dashboard_bundle()
+        self.assertIn("/api/kit/catalog?category=all&format=full", bundle)
+        self.assertIn("format: 'full'", bundle)
+        self.assertIn("previewDungeonLayout", bundle)
+        self.assertIn("runMechanicBuilder", bundle)
 
-        st_cat, cat = self._req("/api/kit/catalog?category=all&format=full")
+        # v6.1.0 (P0-S6): kit *source* needs `read`; the CC0 *metadata* index the
+        # gallery renders from stays public. `format=full` on a category is a
+        # listing (name/path/bytes), so it is the public half of that split.
+        st_open, open_cat = self._req("/api/kit/catalog?category=all&format=full")
+        self.assertEqual(st_open, 200, "the dashboard gallery must render before it has a token")
+        self.assertGreaterEqual(len(open_cat.get("images") or []), 3700)
+        self.assertGreaterEqual(len(open_cat.get("models") or []), 520)
+        self.assertGreaterEqual(len(open_cat.get("audio") or []), 45)
+        self.assertGreaterEqual(len(open_cat.get("modules") or []), 25)
+        self.assertGreaterEqual(len(open_cat.get("systems") or []), 20)
+        self.assertGreaterEqual(len(open_cat.get("prefabs") or []), 26)
+        self.assertEqual(len(open_cat.get("proceduralPresets") or []), 38)
+        self.assertEqual(len(open_cat.get("audioSynthSpecs") or []), 12)
+        self.assertNotIn("--!strict", json.dumps(open_cat)[:200000],
+                         "a public listing must not carry Luau source")
+
+        # The source half of the split stays behind `read`.
+        st_src, src_body = self._req("/api/kit/catalog?category=modules&item=NetworkGuard")
+        self.assertEqual(st_src, 401)
+        self.assertNotIn("NetworkGuard", json.dumps(src_body))
+        st_item, item = self._req("/api/kit/catalog?category=modules&item=NetworkGuard",
+                                  token=self.admin_token)
+        self.assertEqual(st_item, 200)
+        self.assertGreater(len(item.get("content") or ""), 500)
+
+        st_cat, cat = self._req("/api/kit/catalog?category=all&format=full",
+                                token=self.admin_token)
         self.assertEqual(st_cat, 200)
         self.assertGreaterEqual(len(cat.get("images") or []), 3700)
         self.assertGreaterEqual(len(cat.get("models") or []), 520)
@@ -2300,12 +2389,21 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             self.assertEqual(len(self_test_api["toolMatrix"]), len(TOOL_SPECS))
             self.assertTrue(all("durationSec" in row and row["calls"] > 0 for row in self_test_api["toolMatrix"]))
 
-        # JSON-RPC batch call works cleanly
-        st_b, batch_resp, _ = self.mcp_http([
+        # v6.1.0 (P0-S2): a credential in a query string is refused everywhere
+        # except the SSE stream, so `?token=` on /mcp no longer authenticates —
+        # it used to be one of the accepted auth modes and leaked into proxy and
+        # access logs. The batch itself is header-authenticated.
+        batch = [
             {"jsonrpc": "2.0", "id": "b1", "method": "ping"},
             {"jsonrpc": "2.0", "id": "b2", "method": "resources/list"},
             {"jsonrpc": "2.0", "id": "b3", "method": "prompts/list"},
-        ], auth_mode="query")
+        ]
+        with self.assertRaises(urllib.error.HTTPError) as query_auth:
+            self.mcp_http(batch, auth_mode="query")
+        self.assertEqual(query_auth.exception.code, 401)
+
+        # JSON-RPC batch call works cleanly
+        st_b, batch_resp, _ = self.mcp_http(batch)
         self.assertEqual(st_b, 200)
         self.assertEqual(len(batch_resp), 3)
         self.assertEqual(len(batch_resp[1]["result"]["resources"]), 12)
@@ -2324,7 +2422,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         done = self.call_tool("agent_bus", {"action": "task_complete", "taskId": task["id"], "agentId": reg["id"], "result": "ok"})
         self.assertEqual(done["status"], "done")
         ops = self.call_tool("bridge_ops", {"action": "status"})
-        self.assertEqual(ops["version"], "6.0.0")
+        self.assertEqual(ops["version"], "6.1.0")
         self.assertIn("tunnel", ops)
         metrics = self.call_tool("bridge_ops", {"action": "metrics"})
         self.assertIn("counters", metrics)
@@ -2343,7 +2441,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         peers = self.call_tool("list_studios")
         self.assertGreaterEqual(peers["onlineCount"], 1)
         ping = self.call_tool("ping_studio")
-        self.assertEqual(ping["pluginVersion"], "6.0.0")
+        self.assertEqual(ping["pluginVersion"], "6.1.0")
 
         # 2. Survey, Inspect, Search, Properties, Compare
         survey = self.call_tool("survey_place", {"includeSource": True})
@@ -2573,11 +2671,20 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             self.assertIn("Commands &amp; MCP Config", dash_html)
             self.assertIn("Helpful Tips &amp; Gotchas", dash_html)
 
+        # v6.1.0 (P0-S2): the boot payload is still served to an unauthenticated
+        # local page (so the dashboard can render and ask for a token), but the
+        # owner credential is only disclosed to an admin caller.
         with urllib.request.urlopen(f"{self.base_url}/api/local-boot", timeout=5) as boot_resp:
             boot_data = json.loads(boot_resp.read().decode("utf-8"))
             self.assertTrue(boot_data["local"])
-            self.assertEqual(boot_data["token"], self.token)
+            self.assertEqual(boot_data["token"], "")
+            self.assertTrue(boot_data["tokenWithheld"])
             self.assertEqual(len(boot_data["tools"]), len(TOOL_SPECS))
+        boot_req = urllib.request.Request(
+            f"{self.base_url}/api/local-boot",
+            headers={"Authorization": f"Bearer {self.token}"})
+        with urllib.request.urlopen(boot_req, timeout=5) as boot_resp2:
+            self.assertEqual(json.loads(boot_resp2.read().decode("utf-8"))["token"], self.token)
 
         with urllib.request.urlopen(f"{self.base_url}/api/agent-guide", timeout=5) as guide_resp:
             guide_data = json.loads(guide_resp.read().decode("utf-8"))
@@ -2843,10 +2950,10 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
 
         plg_res = self.call_tool("manage_plugin_and_playtest", {"action": "status"})
         self.assertTrue(plg_res["ok"])
-        self.assertEqual(plg_res["bundledPluginVersion"], "6.0.0")
+        self.assertEqual(plg_res["bundledPluginVersion"], "6.1.0")
         self.assertTrue(plg_res["allPeersUpToDate"])
         self.assertIsNotNone(plg_res["livePluginTelemetry"])
-        self.assertEqual(plg_res["livePluginTelemetry"]["pluginVersion"], "6.0.0")
+        self.assertEqual(plg_res["livePluginTelemetry"]["pluginVersion"], "6.1.0")
 
         net_res = self.call_tool("audit_network_security", {
             "scripts": [{
@@ -3233,6 +3340,14 @@ class TestV54ConfirmationGate(unittest.TestCase):
                 break
             threading.Event().wait(0.05)
         cls.dispatcher = cls.state.mcp_dispatcher
+        # v6.1.0 (P0-S1): a client's own `inputResponses` no longer satisfies the
+        # gate unless the operator opts in — the elicitation capability arrives in
+        # per-request `_meta` that the caller writes, so accepting it by default
+        # let an agent approve its own destructive call. This class tests the
+        # in-band MRTR mechanism itself, so it opts in. The default (refuse) and
+        # the reason the caller sees are pinned by
+        # TestV61SecurityHardening.test_a_client_cannot_answer_its_own_confirmation.
+        cls.state.confirm_gate.trust_client_answers = True
         cls.modern = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
         cls.caps = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
                     "io.modelcontextprotocol/clientCapabilities": {
@@ -3787,7 +3902,7 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
             self.assertEqual(hdrs.get("X-Content-Type-Options"), "nosniff")
             self.assertEqual(hdrs.get("Access-Control-Allow-Origin"), "*")
             card = json.loads(raw)
-            self.assertEqual(card["serverInfo"]["version"], "6.0.0")
+            self.assertEqual(card["serverInfo"]["version"], "6.1.0")
             self.assertIn("2026-07-28", card["supportedVersions"])
             self.assertTrue(card["authentication"]["required"])
             self.assertTrue(card["endpoints"]["streamableHttp"].endswith("/mcp"))
@@ -3896,7 +4011,7 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
         )
         self.assertEqual(st_card, 200)
         card_body = json.loads(json.loads(raw_card)["result"]["contents"][0]["text"])
-        self.assertEqual(card_body["serverInfo"]["version"], "6.0.0")
+        self.assertEqual(card_body["serverInfo"]["version"], "6.1.0")
 
         # Malformed =?base64?...?= sentinel -> 400 + -32020
         st_bad_b64, raw_bad_b64, _ = self._raw_http(
@@ -4085,7 +4200,7 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
         mgr_probe = TunnelManager(port=self.port, public_url=self.base_url, state_dir=state_dir)
         good_probe = mgr_probe.probe()
         self.assertTrue(good_probe["ok"])
-        self.assertEqual(good_probe["bridgeVersion"], "6.0.0")
+        self.assertEqual(good_probe["bridgeVersion"], "6.1.0")
 
     def test_setup_token_chmod_http_mcp_config_and_operator_scripts(self):
         import setup as bridge_setup
@@ -4272,16 +4387,37 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
             self.assertIn("audit", body, src)
 
     def test_v6_plugin_dashboard_and_playtest_stop_reliability(self):
-        # 1. Verify /api/plugin/download serves pre-baked ArenaBridge.lua v6.0.0 with token & DockWidget UI
+        # 1. Verify /api/plugin/download serves pre-baked ArenaBridge.lua v6.1.0 with a
+        #    *dedicated* token (never the owner credential) & DockWidget UI.
         st_dl, raw_dl, hdrs_dl = self._raw_http(
             "/api/plugin/download",
             headers={"Authorization": f"Bearer {self.token}"},
         )
         self.assertEqual(st_dl, 200)
         self.assertIn("ArenaBridge.lua", hdrs_dl.get("Content-Disposition", ""))
-        self.assertIn('local PLUGIN_VERSION = "6.0.0"', raw_dl)
+        self.assertIn('local PLUGIN_VERSION = "6.1.0"', raw_dl)
         self.assertIn("ArenaBridgeDashboardV6", raw_dl)
-        self.assertIn(self.token, raw_dl)
+        # v6.1.0 (P0-S2): the owner token must not appear anywhere in the download.
+        self.assertNotIn(self.token, raw_dl)
+        baked = re.search(r'local BRIDGE_TOKEN = "([^"]*)"', raw_dl)
+        self.assertIsNotNone(baked, "the plugin must still carry a usable credential")
+        self.assertTrue(baked.group(1).startswith("arb_"), baked.group(1)[:12])
+        # ...and that credential is a real, separately-revocable write token.
+        st_probe, _, _ = self._raw_http(
+            "/api/poll?peer=probe-peer&dm=edit&place=TestPlace&placeId=99&pv=6.1.0&wait=0",
+            headers={"Authorization": f"Bearer {baked.group(1)}"},
+        )
+        self.assertEqual(st_probe, 200, "the minted plugin token must authenticate")
+        minted = [r for r in self.state.tokens.list()["tokens"]
+                  if r["label"].startswith("plugin-download:")]
+        self.assertEqual(len(minted), 1)
+        self.assertEqual(minted[0]["role"], "write")
+        # A read-scoped token cannot download the plugin at all.
+        st_ro, raw_ro, _ = self._raw_http(
+            "/api/plugin/download", headers={"Authorization": f"Bearer {self.read_token}"}
+        )
+        self.assertEqual(st_ro, 403)
+        self.assertNotIn(self.token, raw_ro)
 
         # 2. Simulate an outdated v4.0.0 edit peer + a live server play peer, verify /api/plugin-status detects it
         self._raw_http(
@@ -4299,7 +4435,7 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
         self.assertEqual(st_ps, 200)
         ps = json.loads(raw_ps)
         self.assertTrue(ps["ok"])
-        self.assertEqual(ps["bundledPluginVersion"], "6.0.0")
+        self.assertEqual(ps["bundledPluginVersion"], "6.1.0")
         self.assertGreaterEqual(ps["outdatedPeerCount"], 1)
         self.assertTrue(ps["playtestState"]["playtestActive"])
 
@@ -4459,6 +4595,1055 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
         exp_body = json.loads(raw_exp)
         self.assertTrue(exp_body["ok"])
         self.assertIn("<button", exp_body["html"])
+
+
+class TestV61SecurityHardening(unittest.TestCase):
+    """v6.1.0 P0: the six findings from `handoff/NEXT-AGENT-6.1.md` §2.
+
+    Every assertion here was written against a *reproduced* failure (the §11
+    snippets), so each one names the bug it closes. Several are paired with a
+    negative control — the same check run against the pre-6.1.0 behaviour — so a
+    passing test cannot be vacuous.
+    """
+
+    OWNER = "owner-secret-6.1.0"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="arena-v61-")
+        cls.httpd, cls.state = create_http_server(
+            host="127.0.0.1", port=0, token=cls.OWNER, state_dir=cls.tmp,
+            require_confirm="all", confirm_ttl_seconds=120,
+        )
+        cls.port = cls.httpd.server_address[1]
+        cls.base = f"http://127.0.0.1:{cls.port}"
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.read_token = cls.state.tokens.create("reader", role="read", rate_limit=500, burst=500)["token"]
+        cls.write_token = cls.state.tokens.create("writer", role="write", rate_limit=500, burst=500)["token"]
+        cls.admin_token = cls.state.tokens.create("admin", role="admin", rate_limit=500, burst=500)["token"]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.state._reaper_stop.set()
+        cls.state.tunnel.stop()
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        gate = self.state.confirm_gate
+        with gate._lock:
+            gate._pending.clear()
+            gate._allowances.clear()
+            gate._decisions.clear()
+            gate._consumed.clear()
+
+    # -- helpers --------------------------------------------------------------
+
+    def raw(self, path, method="GET", body=None, token=None, extra_headers=None, timeout=15):
+        """(status, raw_text, headers) — never raises on an HTTP error status."""
+        headers = dict(extra_headers or {})
+        data = None
+        if body is not None:
+            data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
+            headers.setdefault("Content-Type", "application/json")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read().decode("utf-8", "replace"), dict(resp.headers)
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8", "replace"), dict(exc.headers)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            return -1, f"transport error: {exc}", {}
+
+    #: What a hostile web page looks like to `_is_local_convenience_request()`.
+    #: Sending it switches off the loopback read allowance, so whatever comes
+    #: back was granted by a credential — never by "you are on localhost".
+    CROSS_SITE = {"Sec-Fetch-Site": "cross-site"}
+
+    @staticmethod
+    def jsonrpc_envelope(body):
+        """Parse an MCP response, whether the server chose JSON or SSE.
+
+        `/mcp` answers `application/json` for a single `tools/call`, but the
+        Streamable HTTP transport is allowed to answer the same request as
+        `text/event-stream`, and a real client sends an Accept header that
+        permits both. Read the verdict either way instead of pinning the wire
+        format, so this suite tests the gate and not the framing.
+        """
+        text = (body or "").lstrip()
+        if text.startswith("{"):
+            return json.loads(text)
+        for line in body.splitlines():
+            line = line.strip()
+            if line.startswith("data:"):
+                payload = line[5:].strip()
+                if payload and payload != "[DONE]":
+                    try:
+                        return json.loads(payload)
+                    except ValueError:
+                        continue
+        raise AssertionError(f"no JSON-RPC envelope in response: {body[:240]!r}")
+
+    def approve(self, request_id):
+        """Answer a pending confirmation the way an operator does."""
+        status, body, _ = self.raw(
+            "/api/confirmations", method="POST", token=self.admin_token,
+            body={"action": "approve", "requestId": request_id, "note": "test-operator"},
+        )
+        self.assertEqual(status, 200, body)
+        self.assertTrue(json.loads(body)["ok"], body)
+
+    # -----------------------------------------------------------------------
+    # P0-S1 / P3-T1 — the gate covers both transports, identically
+    # -----------------------------------------------------------------------
+
+    #: (job kind, payload) pairs that are destructive or arbitrary-code
+    #: execution, and the MCP tool that must reach the same verdict.
+    GATED_WORK = [
+        ("run_luau", {"code": "print('pwned over REST')"}),
+        ("delete", {"paths": ["Workspace.Baseplate"]}),
+        ("write_script", {"parent": "ServerStorage", "name": "X", "className": "Script",
+                          "source": "return 1"}),
+        # `build_tree` takes an *array* of nodes — a bare dict is a -32602 at the
+        # MCP door, which would make the two-transport comparison vacuous.
+        ("build", {"tree": [{"name": "X", "className": "Folder"}]}),
+        ("playtest", {"action": "start_play"}),
+        ("virtual_input", {"steps": [{"action": "keydown", "key": "e"}]}),
+    ]
+
+    def test_rest_enqueue_cannot_bypass_the_confirmation_gate(self):
+        """Pre-6.1.0: `POST /api/jobs {"type":"run_luau"}` returned 201 with the
+        gate on, because `--require-confirm` only wrapped `tools/call`."""
+        for kind, payload in self.GATED_WORK:
+            status, body, _ = self.raw("/api/jobs", method="POST", token=self.write_token,
+                                       body={"type": kind, "payload": payload})
+            self.assertEqual(status, 403, f"{kind} was enqueued over REST: {body[:200]}")
+            detail = json.loads(body)
+            self.assertTrue(str(detail.get("requestId", "")).startswith("cfm-"),
+                            f"{kind}: 403 must carry the pending requestId, got {detail}")
+            self.assertIn("confirmation", detail["error"], detail["error"])
+            with self.state.lock:
+                self.assertEqual(len(self.state.jobs), 0, f"{kind} reached the queue")
+
+    def test_both_transports_reach_the_same_verdict_for_the_same_work(self):
+        """One decision, two doors: `/mcp` `tools/call` and `POST /api/jobs` must
+        agree for every gated tool, and both must unblock on one approval."""
+        from mcp_core import TOOL_MAP, job_tool_name, job_kind_is_read_only
+
+        modern = {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}
+        pairs = 0
+        for kind, payload in self.GATED_WORK:
+            tool = job_tool_name(kind)
+            self.assertIsNotNone(tool, f"{kind} has no tool mapping — it would fail closed silently")
+            self.assertIn(tool, TOOL_MAP, f"{tool} is not a registered tool")
+            self.assertFalse(job_kind_is_read_only(kind, payload), f"{kind} must count as a write")
+
+            # Door 1: MCP.
+            rpc = {"jsonrpc": "2.0", "id": f"mcp-{kind}", "method": "tools/call", "_meta": dict(modern),
+                   "params": {"name": tool, "arguments": payload}}
+            mcp_status, mcp_body, _ = self.raw("/mcp", method="POST", token=self.write_token,
+                                               body=rpc,
+                                               extra_headers={"Accept": "application/json, text/event-stream"})
+            self.assertEqual(mcp_status, 200, mcp_body[:300])
+            envelope = self.jsonrpc_envelope(mcp_body)
+            # A JSON-RPC `error` means the payload never reached the gate (bad
+            # arguments, unknown tool), which would make this comparison vacuous.
+            self.assertIn("result", envelope,
+                          f"{kind}: /mcp answered {envelope.get('error') or envelope}")
+            result = envelope["result"]
+            self.assertEqual(result.get("resultType"), "input_required", f"{tool}: {str(result)[:220]}")
+            self.assertEqual(result["structuredContent"]["reason"], "confirmation_required")
+            mcp_request = result["structuredContent"]["requestId"]
+
+            # Door 2: REST. Same kind+payload ⇒ an independent request, but the
+            # same verdict and the same tool name in the message.
+            rest_status, rest_body, _ = self.raw("/api/jobs", method="POST", token=self.write_token,
+                                                 body={"type": kind, "payload": payload})
+            self.assertEqual(rest_status, 403, rest_body[:300])
+            rest_detail = json.loads(rest_body)
+            self.assertIn(tool, rest_detail["error"], rest_detail["error"])
+            pairs += 1
+
+            # One operator approval unblocks the REST retry...
+            self.approve(rest_detail["requestId"])
+            status, body, _ = self.raw(
+                "/api/jobs", method="POST", token=self.write_token,
+                body={"type": kind, "payload": payload,
+                      "confirmation": {"requestId": rest_detail["requestId"]}},
+            )
+            self.assertIn(status, (200, 201), f"{kind} did not enqueue after approval: {body[:220]}")
+            with self.state.lock:
+                self.state.jobs.clear()
+                self.state.pending.clear()
+                self.state.history.clear()
+
+            # ...and the MCP call carries its own signed state, which the gate
+            # honours without a second operator round-trip.
+            retry = dict(rpc)
+            retry["id"] = f"mcp-{kind}-retry"
+            retry["params"] = dict(rpc["params"], requestState=result["requestState"],
+                                   inputResponses={"confirm": {"action": "accept",
+                                                               "content": {"decision": "approve"}}})
+            self.approve(mcp_request)
+            st2, body2, _ = self.raw("/mcp", method="POST", token=self.write_token, body=retry,
+                                     extra_headers={"Accept": "application/json, text/event-stream"})
+            self.assertEqual(st2, 200, body2[:300])
+            res2 = json.loads(body2)["result"]
+            self.assertNotEqual(res2.get("resultType"), "input_required", f"{tool} stayed gated: {str(res2)[:220]}")
+            with self.state.lock:
+                self.state.jobs.clear()
+                self.state.pending.clear()
+                self.state.history.clear()
+
+        self.assertEqual(pairs, len(self.GATED_WORK))
+
+    def test_arbitrary_code_execution_is_in_the_curated_destructive_set(self):
+        """`execute_luau` and `probe` carry `destructiveHint: true` but were not
+        members of `CONFIRM_GATED_TOOLS`, so mode `destructive` let them through."""
+        from mcp_core import CONFIRM_GATED_TOOLS, TOOL_MAP, job_tool_name
+        for name in ("run_luau", "execute_luau", "probe"):
+            self.assertIn(name, CONFIRM_GATED_TOOLS, name)
+        for name in ("execute_luau", "probe"):
+            self.assertTrue(TOOL_MAP[name]["annotations"]["destructiveHint"], name)
+        # Negative control in the mode the curated set actually governs. The
+        # fixture server runs `--require-confirm=all`, where `requires()` answers
+        # True for everything, so asserting "a read is free" against it would be
+        # vacuous — build the destructive gate the way `BridgeState.__init__`
+        # does and check that one.
+        from confirm_gate import ConfirmGate
+        destructive = ConfirmGate(mode="destructive", secret="unit-test-secret",
+                                  destructive_tools=CONFIRM_GATED_TOOLS)
+        for name in ("run_luau", "execute_luau", "probe"):
+            # `run_luau` is a job *kind*; the tool it dispatches to is
+            # `execute_luau`, and the gate keys on tool names.
+            tool = job_tool_name(name) or name
+            self.assertTrue(destructive.requires(tool, TOOL_MAP[tool]["annotations"], {"code": "print(1)"}),
+                            f"{name} slips through `--require-confirm=destructive`")
+        for name in ("ping_studio", "get_studio_state", "script_read"):
+            self.assertFalse(destructive.requires(name, TOOL_MAP[name]["annotations"], {}),
+                             f"{name} is a read and must not need a human in `destructive` mode")
+
+    def test_read_only_oracle_stays_the_single_source_of_truth(self):
+        """The REST path must ask `is_tool_call_read_only`, not a job-type list,
+        so an argument-level read (`action: "get"`) stays free in `write` mode."""
+        from mcp_core import is_tool_call_read_only, job_kind_is_read_only, job_tool_name
+        cases = [
+            ("attributes", {"action": "get", "paths": ["Workspace"]}, True),
+            ("attributes", {"action": "set", "paths": ["Workspace"], "attributes": {"a": 1}}, False),
+            ("camera", {"action": "get"}, True),
+            ("camera", {"action": "set", "fov": 80}, False),
+            ("history", {"action": "status"}, True),
+            ("history", {"action": "undo"}, False),
+            ("playtest", {"action": "status"}, True),
+            ("playtest", {"action": "start_play"}, False),
+            ("tags", {"action": "list_all"}, True),
+            ("tags", {"action": "add", "paths": ["Workspace"], "tag": "T"}, False),
+            ("device_simulator", {"action": "status"}, True),
+            ("device_simulator", {"action": "set_device", "device": "iPhone"}, False),
+            ("run_luau", {"code": "return 1"}, False),
+            ("ping", {}, True),
+            ("studio_state", {}, True),
+            ("get_tree", {"path": "StarterGui"}, True),
+            ("hash_scripts", {"root": "game"}, True),
+        ]
+        for kind, payload, expected in cases:
+            self.assertEqual(job_kind_is_read_only(kind, payload), expected, (kind, payload))
+            tool = job_tool_name(kind)
+            if tool:
+                self.assertEqual(is_tool_call_read_only(tool, payload), expected, (tool, payload))
+        # Unmapped kinds fail closed: a brand-new job type is a write until
+        # somebody says otherwise.
+        self.assertFalse(job_kind_is_read_only("brand_new_kind", {}))
+        self.assertIsNone(job_tool_name("brand_new_kind"))
+
+    def test_a_rest_caller_cannot_claim_the_dispatcher_cleared_the_gate(self):
+        """`gateCleared` is set only from the in-process call context; a body
+        field of the same name must not be able to skip the gate."""
+        status, body, _ = self.raw("/api/jobs", method="POST", token=self.write_token,
+                                   body={"type": "run_luau", "payload": {"code": "print(1)"},
+                                         "gateCleared": True, "principal": "owner"})
+        self.assertEqual(status, 403, body[:220])
+        self.assertIn("requestId", json.loads(body))
+        with self.state.lock:
+            self.assertEqual(len(self.state.jobs), 0)
+
+    def test_a_client_cannot_answer_its_own_confirmation(self):
+        """A human in the loop means a human, not the caller.
+
+        `elicitation_capable` is derived from per-request `_meta`
+        (`io.modelcontextprotocol/clientCapabilities`) — a field the *caller*
+        writes. Accepting `inputResponses` from a caller that declared the
+        capability let a prompt-injected agent approve its own `execute_luau`
+        with two extra JSON fields, which made the whole gate decoration.
+        """
+        from mcp_core import META_CLIENT_CAPABILITIES
+        modern = {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                  META_CLIENT_CAPABILITIES: {"elicitation": {}}}
+        code = "print('self-approved')"
+
+        def call(msg_id, **extra_params):
+            rpc = {"jsonrpc": "2.0", "id": msg_id, "method": "tools/call", "_meta": dict(modern),
+                   "params": dict({"name": "execute_luau", "arguments": {"code": code}}, **extra_params)}
+            status, body, _ = self.raw("/mcp", method="POST", token=self.write_token, body=rpc)
+            self.assertEqual(status, 200, body[:240])
+            envelope = self.jsonrpc_envelope(body)
+            self.assertIn("result", envelope, envelope.get("error"))
+            return envelope["result"]
+
+        first = call("self-1")
+        self.assertEqual(first["resultType"], "input_required", str(first)[:240])
+        state_token = first.get("requestState")
+        self.assertTrue(state_token, "a modern client is handed a requestState to echo")
+        request_id = first["structuredContent"]["requestId"]
+
+        # The bypass attempt: echo the state, declare elicitation, answer yes.
+        second = call("self-2", requestState=state_token,
+                      inputResponses={"confirm": {"decision": "approve"}})
+        self.assertEqual(second["resultType"], "input_required",
+                         f"the client approved its own call: {str(second)[:240]}")
+        self.assertEqual(second["structuredContent"]["reason"], "client_answers_disabled")
+        self.assertEqual(second["structuredContent"]["requestId"], request_id,
+                         "the original request must stay pending, not be re-minted")
+        self.assertIn("operator", json.dumps(second).lower())
+        with self.state.lock:
+            self.assertEqual(len(self.state.jobs), 0, "self-approved work reached the queue")
+
+        # The same request unblocks the moment a human answers it out-of-band.
+        self.approve(request_id)
+        status, body, _ = self.raw("/api/jobs", method="POST", token=self.write_token,
+                                   body={"type": "run_luau", "payload": {"code": code},
+                                         "confirmation": {"requestId": request_id}})
+        self.assertEqual(status, 201, body[:240])
+
+        # And the opt-in is real: an operator who runs a host that genuinely
+        # elicits keeps the in-band flow by setting the documented variable.
+        with self.state.lock:
+            self.state.jobs.clear()
+            self.state.history.clear()
+        with mock.patch.object(self.state.confirm_gate, "trust_client_answers", True):
+            trusted_first = call("self-3")
+            self.assertEqual(trusted_first["resultType"], "input_required")
+            trusted_second = call("self-4", requestState=trusted_first["requestState"],
+                                  inputResponses={"confirm": {"decision": "approve"}})
+            self.assertNotEqual(trusted_second.get("resultType"), "input_required",
+                                f"the opt-in did not restore the in-band flow: {str(trusted_second)[:240]}")
+            self.assertNotIn("confirmation_required", json.dumps(trusted_second))
+
+    # -----------------------------------------------------------------------
+    # P0-S2 / P3-T2 — no credential disclosure to a limited caller
+    # -----------------------------------------------------------------------
+
+    #: Every route the bridge serves, with a method and a body that reaches the
+    #: handler. Table-driven so a route added later is covered by construction —
+    #: `test_route_table_matches_the_server_source` fails if one is missing.
+    ROUTES = [
+        ("/", "GET", None),
+        ("/api/agent-guide", "GET", None),
+        ("/api/audit", "GET", None),
+        ("/api/audit?verify=1", "GET", None),
+        ("/api/bus", "GET", None),
+        ("/api/chat", "GET", None),
+        ("/api/confirmations", "GET", None),
+        ("/api/events?once=1", "GET", None),
+        ("/api/health", "GET", None),
+        ("/api/jobs", "GET", None),
+        ("/api/kit/assets", "GET", None),
+        ("/api/kit/catalog?category=modules", "GET", None),
+        ("/api/kit/catalog?category=modules&item=NetworkGuard", "GET", None),
+        ("/api/kit/cloud-icons?query=shield&limit=3", "GET", None),
+        # Smallest render the handler accepts: the sweep visits every route as
+        # anonymous, read and write, and this one draws a PNG each time.
+        ("/api/kit/viewport-preview?width=240&height=160", "GET", None),
+        ("/api/local-boot", "GET", None),
+        ("/api/metrics", "GET", None),
+        ("/api/ops", "GET", None),
+        ("/api/peers", "GET", None),
+        ("/api/plugin-status", "GET", None),
+        ("/api/plugin/download", "GET", None),
+        # The plugin's long-poll. `wait=0` keeps the sweep from blocking and
+        # `goodbye=1` makes the write-scoped visit unregister its probe peer
+        # instead of leaving a fake Studio behind for the next test.
+        ("/api/poll?peer=route-sweep&dm=edit&place=Sweep&placeId=1&pv=6.1.0&wait=0&goodbye=1",
+         "GET", None),
+        ("/api/self-test?includeStudioSmoke=false", "GET", None),
+        ("/api/snapshots", "GET", None),
+        ("/api/sse-ticket", "GET", None),
+        ("/api/state", "GET", None),
+        ("/api/studios", "GET", None),
+        ("/api/subscriptions", "GET", None),
+        ("/api/tunnel", "GET", None),
+        ("/.well-known/mcp/server-card.json", "GET", None),
+        ("/static/dashboard.js", "GET", None),
+        ("/static/index.html", "GET", None),
+        ("/api/bus", "POST", {"action": "status"}),
+        ("/api/chat", "POST", {"action": "poll"}),
+        ("/api/confirmations", "POST", {"action": "status"}),
+        ("/api/jobs", "POST", {"type": "ping"}),
+        ("/api/mcp/events", "POST", {"kind": "route_sweep", "detail": {"probe": True}}),
+        ("/api/playtest/force-stop", "POST", {"action": "evict_only", "reason": "route_sweep"}),
+        ("/api/queue/clear", "POST", {}),
+        ("/api/result", "POST", {"id": "route-sweep-nope", "ok": False, "error": "probe"}),
+        ("/api/snapshots", "POST", {"action": "list"}),
+        ("/api/studios", "POST", {"action": "list"}),
+        ("/api/subscriptions/close", "POST", {"id": "sub-none"}),
+        ("/api/tokens", "POST", {"action": "list"}),
+        ("/api/tunnel", "POST", {"action": "status"}),
+        ("/api/ui/export-web", "POST", {"tree": {"name": "Workspace"}}),
+        ("/api/ui/import-web", "POST", {"preset": "rpg_hud", "installInStudio": False}),
+        ("/mcp", "POST", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    ]
+
+    def test_route_table_matches_the_server_source(self):
+        """Guard for the sweep below: every `/api/*` and `/static/*` route the
+        server dispatches must appear in `ROUTES`, so a new route cannot escape
+        the disclosure check by being unlisted."""
+        src = (HERE / "server.py").read_text(encoding="utf-8")
+        literal = set(re.findall(r'if path == "(/[A-Za-z0-9._/\-]+)"', src))
+        literal |= set(re.findall(r'if path\.startswith\("(/[A-Za-z0-9._/\-]+)"\)', src))
+        # Prefix routes are covered by one representative member each.
+        prefix_roots = {"/api/jobs/", "/api/snapshots/", "/api/kit/image/", "/api/kit/audio/",
+                        "/api/kit/model/", "/api/kit/thumbnail/", "/api/kit/procedural/",
+                        "/api/kit/synth-audio/", "/static/"}
+        covered = set()
+        for path, _method, _body in self.ROUTES:
+            clean = path.split("?", 1)[0]
+            covered.add(clean)
+            for root in prefix_roots:
+                if clean.startswith(root):
+                    covered.add(root)
+        missing = sorted(p for p in literal
+                         if p not in covered
+                         and not any(p.startswith(root) for root in prefix_roots)
+                         and p not in prefix_roots)
+        self.assertEqual(missing, [], f"add these routes to TestV61SecurityHardening.ROUTES: {missing}")
+
+    def test_no_limited_caller_ever_sees_the_owner_credential(self):
+        """Sweep every route as (a) nobody, (b) read, (c) write. The owner token
+        must not appear in a body or a header for any of them. Pre-6.1.0,
+        `/api/plugin/download` and `/api/local-boot` both leaked it."""
+        offenders = []
+        for path, method, body in self.ROUTES:
+            for label, token in (("anonymous", None), ("read", self.read_token),
+                                 ("write", self.write_token)):
+                status, text, headers = self.raw(path, method=method, body=body, token=token)
+                if status == -1:
+                    continue  # refused at the transport level: nothing leaked
+                haystacks = [text] + [f"{k}: {v}" for k, v in headers.items()]
+                for hay in haystacks:
+                    if self.OWNER in hay:
+                        offenders.append((label, method, path, hay[:160]))
+        self.assertEqual(offenders, [], f"owner credential disclosed: {offenders}")
+
+    def test_plugin_download_is_admin_only_and_bakes_a_dedicated_token(self):
+        """Pre-6.1.0: read-scoped, and it baked `state.token` into the Lua."""
+        for label, token, want in (("anonymous", None, 401), ("read", self.read_token, 403),
+                                   ("write", self.write_token, 403), ("admin", self.admin_token, 200)):
+            status, body, headers = self.raw("/api/plugin/download", token=token)
+            self.assertEqual(status, want, f"{label}: {body[:160]}")
+            if want != 200:
+                self.assertNotIn(self.OWNER, body)
+                continue
+            self.assertIn("ArenaBridge.lua", headers.get("Content-Disposition", ""))
+            baked = re.search(r'local BRIDGE_TOKEN = "([^"]*)"', body)
+            self.assertIsNotNone(baked, "the download must still carry a usable credential")
+            self.assertNotEqual(baked.group(1), self.OWNER, "the owner token was baked into the plugin")
+            self.assertTrue(baked.group(1).startswith("arb_"), baked.group(1)[:12])
+            # It is a real, separately revocable write token.
+            rows = [r for r in self.state.tokens.list()["tokens"]
+                    if r["label"].startswith("plugin-download:")]
+            self.assertTrue(rows, "the mint must be recorded")
+            self.assertEqual(rows[-1]["role"], "write")
+            self.assertIsNotNone(rows[-1]["expires"], "the minted token must expire")
+            st, _, _ = self.raw("/api/poll?peer=mint-probe&dm=edit&place=P&placeId=1&pv=6.1.0&wait=0",
+                                token=baked.group(1))
+            self.assertEqual(st, 200, "the baked token must actually authenticate")
+            audit = json.dumps(self.state.telemetry.audit.tail(40))
+            self.assertIn("plugin-download", audit, "the mint must be auditable")
+
+    def test_local_boot_withholds_the_credential_from_a_limited_caller(self):
+        """Pre-6.1.0: any loopback request got `"token": "<owner>"`."""
+        for label, token in (("anonymous", None), ("read", self.read_token), ("write", self.write_token)):
+            status, body, _ = self.raw("/api/local-boot", token=token)
+            self.assertEqual(status, 200, f"{label}: the boot payload itself is not secret")
+            data = json.loads(body)
+            self.assertEqual(data["token"], "", f"{label} was handed a credential")
+            self.assertTrue(data["tokenRequired"])
+            self.assertTrue(data["tokenWithheld"], f"{label} should be told why")
+            self.assertEqual(len(data["tools"]), len(TOOL_SPECS), "the tool list must still render")
+        status, body, _ = self.raw("/api/local-boot", token=self.admin_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["token"], self.OWNER,
+                         "an admin caller may still self-fill the dashboard")
+
+    def test_query_string_credentials_are_refused_outside_the_plugin_routes(self):
+        """`?token=` leaked into proxy logs, browser history and Referer. It is
+        now accepted only where a header is impossible (the plugin's poll/result
+        and the ticketed SSE stream).
+
+        The loopback read allowance is switched off first, or a 200 proves
+        nothing about the query token: `_is_local_convenience_request()` hands an
+        anonymous localhost caller `read` on discovery routes. `Sec-Fetch-Site:
+        cross-site` is precisely how that helper recognises a hostile web page
+        talking to localhost, so with it sent, any 200 below can only have come
+        from the credential in the URL.
+        """
+        for path in ("/api/state", "/api/ops", "/api/jobs", "/api/tokens"):
+            status, body, _ = self.raw(f"{path}?token={urllib.parse.quote(self.OWNER)}",
+                                       extra_headers=self.CROSS_SITE)
+            self.assertIn(status, (401, 403), f"{path} still accepts ?token=: {status} {body[:140]}")
+            self.assertNotIn(self.OWNER, body)
+            # The same credential in a header still works from the same origin,
+            # so the rejection above is about *where* the secret travelled and
+            # not about the secret being wrong.
+            ok_status, ok_body, _ = self.raw(path, token=self.OWNER, extra_headers=self.CROSS_SITE)
+            self.assertEqual(ok_status, 200, f"{path} must accept a header credential: {ok_body[:160]}")
+
+        # `/api/local-boot` answers 200 for everybody by design — the dashboard
+        # has to render before it has a token — so the assertion is that the
+        # credential in the URL buys nothing.
+        status, body, _ = self.raw(f"/api/local-boot?token={urllib.parse.quote(self.OWNER)}",
+                                   extra_headers=self.CROSS_SITE)
+        self.assertEqual(status, 200, body[:160])
+        boot = json.loads(body)
+        self.assertEqual(boot["token"], "", "a URL credential must not unlock the owner token")
+        self.assertFalse(boot["authenticated"], "the query token was accepted")
+        self.assertTrue(boot["tokenWithheld"])
+
+        rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        status, body, _ = self.raw(f"/mcp?token={urllib.parse.quote(self.OWNER)}", method="POST", body=rpc,
+                                   extra_headers={"Accept": "application/json, text/event-stream",
+                                                  **self.CROSS_SITE})
+        self.assertEqual(status, 401, f"/mcp still accepts ?token=: {body[:160]}")
+        # The plugin routes keep working with a query token (RequestAsync cannot
+        # be relied on to send headers across Studio versions).
+        for path in ("/api/poll?peer=qt-probe&dm=edit&place=P&placeId=1&pv=6.1.0&wait=0",
+                     "/api/result"):
+            status, body, _ = self.raw(f"{path}&token={urllib.parse.quote(self.write_token)}"
+                                       if "?" in path else f"{path}?token={urllib.parse.quote(self.write_token)}",
+                                       method="POST" if path == "/api/result" else "GET",
+                                       body={"id": "nope", "ok": False, "error": "probe"}
+                                       if path == "/api/result" else None)
+            self.assertNotIn(status, (401, 403), f"{path} must keep accepting the plugin's query token: {body[:160]}")
+
+    def test_sse_ticket_is_single_use_and_cannot_reach_another_route(self):
+        """The dashboard's `EventSource` cannot set a header, so it redeems a
+        one-shot ticket instead of putting the owner token in the URL."""
+        status, body, _ = self.raw("/api/sse-ticket", token=self.read_token)
+        self.assertEqual(status, 200, body[:200])
+        ticket = json.loads(body)["ticket"]
+        self.assertGreaterEqual(len(ticket), 24, "the ticket must be unguessable")
+        st1, _, _ = self.raw(f"/api/events?once=1&ticket={urllib.parse.quote(ticket)}")
+        self.assertEqual(st1, 200, "the ticket must authenticate the stream once")
+        st2, _, _ = self.raw(f"/api/events?once=1&ticket={urllib.parse.quote(ticket)}")
+        self.assertEqual(st2, 401, "the ticket must be single-use")
+        for path in ("/api/state", "/api/ops", "/api/tokens", "/api/plugin/download"):
+            st, _, _ = self.raw(f"{path}?ticket={urllib.parse.quote(ticket)}")
+            self.assertIn(st, (401, 403), f"{path} accepted an SSE ticket")
+        # Minting a ticket needs a credential in the first place.
+        st, _, _ = self.raw("/api/sse-ticket")
+        self.assertIn(st, (401, 403), "an anonymous caller must not be able to mint a ticket")
+        self.assertFalse(self.state.consume_sse_ticket(""), "an empty ticket must not validate")
+        self.assertFalse(self.state.consume_sse_ticket("not-a-ticket"))
+
+    # -----------------------------------------------------------------------
+    # P0-S3 / P3-T3 — dashboard XSS and clickjacking
+    # -----------------------------------------------------------------------
+
+    def test_dashboard_and_static_assets_send_a_strict_csp(self):
+        for path, ctype in (("/", "text/html"), ("/static/index.html", "text/html"),
+                            ("/static/dashboard.js", "application/javascript"),
+                            ("/static/dashboard.css", "text/css")):
+            status, _body, headers = self.raw(path)
+            self.assertEqual(status, 200, path)
+            csp = headers.get("Content-Security-Policy", "")
+            self.assertTrue(csp, f"{path} sent no Content-Security-Policy")
+            self.assertIn("default-src 'self'", csp)
+            self.assertIn("script-src 'self'", csp)
+            self.assertNotIn("unsafe-inline", csp.split("script-src")[1].split(";")[0],
+                             f"{path}: script-src must not allow inline script")
+            self.assertIn("frame-ancestors 'none'", csp)
+            self.assertEqual(headers.get("X-Frame-Options"), "DENY", path)
+            self.assertEqual(headers.get("X-Content-Type-Options"), "nosniff", path)
+            self.assertEqual(headers.get("Referrer-Policy"), "no-referrer", path)
+            self.assertEqual(ctype, headers.get("Content-Type", "").split(";")[0].strip(), path)
+
+    def test_served_page_has_no_inline_script_or_handler(self):
+        """The CSP above is only honest if the page obeys it. Pre-6.1.0 the page
+        carried ~133 `onclick="fn('${esc(x)}')"` sites and one inline <script>."""
+        status, html, _ = self.raw("/")
+        self.assertEqual(status, 200)
+        self.assertNotRegex(html, r"<script(?![^>]*\bsrc=)", "an inline <script> would be CSP-blocked")
+        self.assertNotRegex(html, r"\son[a-z]+\s*=", "an inline handler would be CSP-blocked")
+        self.assertIn('<link rel="stylesheet" href="/static/dashboard.css?v=', html)
+        self.assertIn('<script src="/static/dashboard.js?v=', html)
+        self.assertIn(f"v{bridge_server.VERSION}", html)
+        self.assertNotIn("__BRIDGE_VERSION__", html)
+        self.assertGreater(html.count("data-act="), 100, "the delegated surface should be intact")
+
+    def test_static_route_serves_only_whitelisted_assets(self):
+        for path in ("/static/dashboard.js", "/static/dashboard.css", "/static/index.html"):
+            status, body, headers = self.raw(path)
+            self.assertEqual(status, 200, path)
+            self.assertGreater(len(body), 1000, path)
+            self.assertNotIn("__BRIDGE_VERSION__", body, f"{path} must be version-stamped")
+            self.assertIn("max-age", headers.get("Cache-Control", ""))
+        for path in ("/static/../../server.py", "/static/..%2fserver.py", "/static/bridge.token",
+                     "/static/nope.js", "/static/", "/static/index.html/../../mcp_core.py"):
+            status, body, _ = self.raw(path)
+            self.assertEqual(status, 404, f"{path} returned {status}")
+            self.assertNotIn("def make_http_handler", body, f"{path} served Python source")
+            self.assertNotIn(self.OWNER, body)
+
+    def test_dashboard_harness_proves_escaping_and_delegation(self):
+        """`tools/dashboard_harness.js` loads the real dashboard module in a stub
+        DOM and asserts `esc()`/`studioCard()`/`actData()` behaviour. Run with a
+        negative control so a green harness cannot be vacuous."""
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not installed; the harness cannot run")
+        good = subprocess.run([node, str(HERE / "tools" / "dashboard_harness.js"), "--json"],
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(good.returncode, 0, good.stdout[-3000:] + good.stderr[-1500:])
+        report = json.loads(good.stdout)
+        self.assertTrue(report["ok"])
+        names = {row["name"] for row in report["checks"]}
+        for needle in ("esc escapes the full attribute-breaking set",
+                       "studioCard renders hostile peer/place data as inert markup",
+                       "static/index.html has no inline handlers and no inline script",
+                       "every data-act resolves and every data-args parses"):
+            self.assertIn(needle, names)
+
+        # Negative control: restore the pre-6.1.0 `esc` and inline pin button in a
+        # throwaway copy and confirm the harness fails on it.
+        js = (HERE / "static" / "dashboard.js").read_text(encoding="utf-8")
+        # Swap the escaper's character class rather than a whole line, so the
+        # control keeps applying if the line is ever reformatted.
+        hardened_class = '/[&<>"\'`]/g'
+        self.assertIn(hardened_class, js,
+                      "the hardened esc() character class changed; update this negative control")
+        vulnerable = js.replace(hardened_class, "/[&<>]/g", 1)
+        vulnerable = vulnerable.replace(
+            "c => ESC_MAP[c]", "c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])", 1)
+        delegated_pin = "${actData('pinStudio', s.peerId)}"
+        self.assertIn(delegated_pin, vulnerable,
+                      "the pin button is no longer delegated; update this negative control")
+        vulnerable = vulnerable.replace(
+            delegated_pin, "onclick='pinStudio(${esc(JSON.stringify(s.peerId))})'", 1)
+        self.assertNotEqual(vulnerable, js, "the negative control did not apply; the harness is untested")
+        with tempfile.TemporaryDirectory(prefix="arena-v61-negctl-") as neg:
+            neg = Path(neg)
+            (neg / "static").mkdir()
+            (neg / "tools").mkdir()
+            (neg / "static" / "dashboard.js").write_text(vulnerable, encoding="utf-8")
+            shutil.copy(HERE / "static" / "index.html", neg / "static" / "index.html")
+            shutil.copy(HERE / "static" / "dashboard.css", neg / "static" / "dashboard.css")
+            shutil.copy(HERE / "tools" / "dashboard_harness.js", neg / "tools" / "dashboard_harness.js")
+            bad = subprocess.run([node, str(neg / "tools" / "dashboard_harness.js"), "--json"],
+                                 capture_output=True, text=True, timeout=120, cwd=str(neg))
+            self.assertEqual(bad.returncode, 1, "the harness passed on vulnerable code — it proves nothing")
+            neg_report = json.loads(bad.stdout)
+            failed = {row["name"] for row in neg_report["checks"] if row["status"] == "fail"}
+            self.assertIn("esc escapes the full attribute-breaking set", failed)
+            self.assertIn("studioCard renders hostile peer/place data as inert markup", failed)
+
+    # -----------------------------------------------------------------------
+    # P0-S4 / P3-T4 — path traversal, arbitrary writes, SSRF
+    # -----------------------------------------------------------------------
+
+    def test_repo_asset_and_save_paths_cannot_leave_their_root(self):
+        """Pre-6.1.0: `repoAsset: "../registry.json"` read 3.7 MB from outside
+        `assets/images/`, and `saveFile: "~/.arena_write_probe.png"` wrote to $HOME."""
+        from mcp_core import UnsafePathError, safe_import_path, safe_local_path
+        with tempfile.TemporaryDirectory(prefix="arena-v61-paths-") as tmp:
+            root = Path(tmp) / "images"
+            (root / "ui").mkdir(parents=True)
+            (root / "ui" / "ok.png").write_bytes(b"png")
+            (Path(tmp) / "registry.json").write_text('{"secret": true}', encoding="utf-8")
+            outside = Path(tmp) / "escape.png"
+
+            self.assertEqual(safe_local_path(root, "ui/ok.png"), (root / "ui" / "ok.png").resolve())
+            self.assertEqual(safe_local_path(root, "ui"), (root / "ui").resolve())
+            for bad in ("../registry.json", "../../etc/passwd", "/etc/passwd", "~/.arena_probe.png",
+                        "C:\\Windows\\win.ini", "\\?\\GLOBALROOT\\Device\\HarddiskVolume1\\x",
+                        "ui/../../registry.json", "", "   ", "ui\\x\x00.png"):
+                with self.assertRaises(UnsafePathError, msg=f"{bad!r} was accepted"):
+                    safe_local_path(root, bad)
+            with self.assertRaises(UnsafePathError):
+                safe_local_path(root, "ui/missing.png", must_exist=True, allow_dir=False)
+            # A symlink inside the root that points outside it must be refused.
+            try:
+                (root / "link.json").symlink_to(Path(tmp) / "registry.json")
+            except (OSError, NotImplementedError):
+                pass
+            else:
+                with self.assertRaises(UnsafePathError, msg="a symlink escaped the root"):
+                    safe_local_path(root, "link.json", must_exist=True, allow_dir=False)
+            self.assertFalse(outside.exists())
+
+            # Write-side: `saveFile`/`outputFile` are confined to import roots.
+            home_probe = Path.home() / ".arena_write_probe_v61.png"
+            for bad in (str(home_probe), "/etc/arena_probe.png", "~/.arena_probe.png",
+                        "/proc/self/environ"):
+                with self.assertRaises(UnsafePathError, msg=f"{bad!r} was accepted for writing"):
+                    safe_import_path(bad, must_exist=False, suffixes=(".png",))
+            self.assertFalse(home_probe.exists(), "import_image wrote outside the repo")
+            allowed = Path(tmp) / "render.png"
+            with mock.patch("mcp_core.import_roots", return_value=(Path(tmp).resolve(),)):
+                self.assertEqual(safe_import_path(str(allowed), must_exist=False,
+                                                  suffixes=(".png",)), allowed.resolve())
+                with self.assertRaises(UnsafePathError):
+                    safe_import_path(str(Path(tmp) / "x.exe"), must_exist=False, suffixes=(".png",))
+                with self.assertRaises(UnsafePathError):
+                    safe_import_path("/etc/passwd", must_exist=False, suffixes=(".png",))
+
+    def test_import_image_refuses_traversal_and_file_urls_end_to_end(self):
+        """The §11 repro, driven through the tool itself rather than the helper."""
+        from mcp_core import import_image_helper
+        client = mock.Mock()
+        client.health.return_value = {"studio_connected": False}
+        client.submit_job.return_value = {"ok": True, "result": {}}
+        with tempfile.TemporaryDirectory(prefix="arena-v61-kit-") as tmp:
+            kit = Path(tmp)
+            (kit / "assets" / "images").mkdir(parents=True)
+            (kit / "registry.json").write_text('{"rows": []}', encoding="utf-8")
+            home_probe = Path.home() / ".arena_write_probe_v61b.png"
+            with mock.patch("image_pipeline.find_kit_root", return_value=kit), \
+                    mock.patch("mcp_core.find_kit_root", return_value=kit, create=True):
+                for args in ({"repoAsset": "../registry.json"},
+                             {"repoAsset": "../../etc/passwd"},
+                             {"imageUrl": "file:///etc/hostname"},
+                             {"imageUrl": "http://127.0.0.1:8077/api/state"},
+                             {"imageUrl": "http://169.254.169.254/latest/meta-data/"},
+                             {"imageUrl": "data:text/plain,hello"},
+                             {"imageUrl": "ftp://example.com/x.png"},
+                             {"filePath": "/etc/passwd"}):
+                    with self.assertRaises(ValueError, msg=f"import_image accepted {args}"):
+                        import_image_helper(client, dict(args, saveToRepo=False, name="probe"))
+                self.assertFalse(home_probe.exists(), "import_image wrote to $HOME")
+                self.assertFalse((kit.parent / "arena_probe.png").exists())
+
+                # The write side is contained rather than refused: `saveSubdir`'s
+                # character filter drops `.`, so a traversal attempt degenerates
+                # to the default subfolder, and `safe_local_path` is the second
+                # line of defence. Either way the bytes must land inside
+                # assets/images/ and nowhere else.
+                images_dir = (kit / "assets" / "images").resolve()
+                for subdir in ("../../..", "../../../../etc", "..\\..\\windows", "ui/../../.."):
+                    out = import_image_helper(client, {"base64Data": "aGVsbG8=", "saveToRepo": True,
+                                                       "saveSubdir": subdir, "name": "probe"})
+                    saved = Path(out["savedToRepo"])
+                    self.assertIn(images_dir, saved.parents,
+                                  f"saveSubdir={subdir!r} wrote to {saved}")
+                    for manifest in (out.get("manifestUpdated") or "",):
+                        if manifest:
+                            self.assertIn(kit.resolve(), Path(manifest).parents, manifest)
+                escaped = [p for p in kit.parent.glob("*") if p.name.startswith("probe")]
+                self.assertEqual(escaped, [], f"import_image wrote outside the kit: {escaped}")
+                self.assertFalse(home_probe.exists())
+                # An argument the schema does not define must stay inert: there is
+                # no `saveFile`/`outputFile` sink for an agent to discover by
+                # guessing, and inventing one does not move the write elsewhere.
+                import_image_helper(client, {"proceduralPreset": "icon_coin", "name": "probe",
+                                             "saveToRepo": False, "saveFile": str(home_probe),
+                                             "outputFile": str(home_probe)})
+                self.assertFalse(home_probe.exists(), "an unknown argument became a write target")
+
+    def test_every_operator_supplied_file_argument_is_confined(self):
+        """P0-S4 is only real if it covers *every* file-shaped argument.
+
+        These six were the ones the first pass missed, and each is a different
+        kind of primitive: write anywhere (`agent_bus` export, `drift_and_sync`
+        pull), read anywhere (`luau_check`, `audit_network_security`,
+        `import_images_batch`), and read-then-exfiltrate (`open_cloud_action`
+        publish_place uploads whatever file it is handed).
+        """
+        home = Path.home()
+        client = mock.Mock()
+        client.health.return_value = {"studio_connected": False}
+        client.submit_job.return_value = {"ok": True, "result": {}}
+        write_probe = home / ".arena_write_probe_v61d.md"
+        read_probes = ("/etc/passwd", "/etc/hostname", str(home / ".bashrc"))
+
+        calls = [
+            ("agent_bus export", lambda p: AgentBus().handle({"action": "export", "path": p})),
+            ("luau_check", lambda p: run_luau_check(path=p)),
+            ("open_cloud_action", lambda p: execute_tool(
+                client, "open_cloud_action",
+                {"action": "publish_place", "universeId": 1, "placeId": 1, "apiKey": "k", "placeFile": p})),
+            ("import_images_batch", lambda p: execute_tool(
+                client, "import_images_batch", {"files": [p]})),
+            ("import_images_batch dir", lambda p: execute_tool(
+                client, "import_images_batch", {"directory": p})),
+            ("audit_network_security", lambda p: execute_tool(
+                client, "audit_network_security", {"localDir": p, "includeStudio": False})),
+            ("drift_and_sync", lambda p: execute_tool(
+                client, "drift_and_sync",
+                {"mode": "pull", "localDir": p, "studioRoot": "ServerScriptService.NightLoop"})),
+        ]
+        for label, call in calls:
+            for probe in read_probes + (str(write_probe), str(home)):
+                with self.assertRaises(ValueError, msg=f"{label} accepted {probe}"):
+                    call(probe)
+        self.assertFalse(write_probe.exists(), "agent_bus export wrote outside the import roots")
+
+        # And the legitimate use still works: an export into a temp dir, which is
+        # an import root, must land on disk exactly as before.
+        with tempfile.TemporaryDirectory(prefix="arena-v61-export-") as tmp:
+            target = Path(tmp) / "handoff.md"
+            out = AgentBus().handle({"action": "export", "path": str(target)})
+            self.assertEqual(Path(out["path"]), target)
+            self.assertTrue(target.is_file())
+            self.assertIn("Agent handoff brief", target.read_text(encoding="utf-8"))
+
+    def test_safe_url_blocks_every_non_http_scheme_and_local_target(self):
+        from mcp_core import UnsafeURLError, safe_url
+        for bad in ("file:///etc/hostname", "file://localhost/etc/passwd", "data:text/plain,x",
+                    "ftp://example.com/a.png", "gopher://127.0.0.1:6379/_INFO",
+                    "http://127.0.0.1:8077/api/state", "http://localhost:8077/",
+                    "http://[::1]:8077/", "http://169.254.169.254/latest/meta-data/",
+                    "http://10.0.0.5/internal", "http://192.168.1.1/", "http://metadata.google.internal/",
+                    "http://foo.localhost/", "https://", "//example.com/x", "", "   ",
+                    "C:\\Windows\\win.ini", "\\\\server\\share\\x.png",
+                    "http://example.com/\x00", "http://example.com/a\nb"):
+            with self.assertRaises(UnsafeURLError, msg=f"{bad!r} was accepted"):
+                safe_url(bad)
+        for good in ("https://example.com/a.png", "http://cdn.example.com/x/y.jpg?q=1",
+                     "https://tr.rbxcdn.com/abc.png"):
+            self.assertEqual(safe_url(good), good)
+        # Internal callers that legitimately talk to the bridge opt out explicitly.
+        self.assertEqual(safe_url("http://127.0.0.1:8077/api/state", block_private=False),
+                         "http://127.0.0.1:8077/api/state")
+
+    # -----------------------------------------------------------------------
+    # P0-S5 / P3-T5 — safe defaults
+    # -----------------------------------------------------------------------
+
+    def test_default_bind_is_loopback_and_public_binds_warn(self):
+        import inspect
+        from server import _bind_is_public, create_http_server
+        signature = inspect.signature(create_http_server)
+        self.assertEqual(signature.parameters["host"].default, "127.0.0.1",
+                         "create_http_server must default to loopback")
+        src = (HERE / "server.py").read_text(encoding="utf-8")
+        self.assertIn('ap.add_argument("--host", default=os.environ.get("BRIDGE_HOST", "127.0.0.1")', src)
+        for host in ("0.0.0.0", "::", "*", "", "10.0.0.5", "bridge.example.com"):
+            self.assertTrue(_bind_is_public(host), host)
+        for host in ("127.0.0.1", "::1", "localhost"):
+            self.assertFalse(_bind_is_public(host), host)
+        # A live server really is bound where we asked, and refuses a wider bind
+        # only by explicit request.
+        self.assertEqual(self.httpd.server_address[0], "127.0.0.1")
+        with mock.patch("server.print") as shout:
+            srv2, st2 = create_http_server(host="0.0.0.0", port=0, token="x" * 24,
+                                           state_dir=tempfile.mkdtemp(prefix="arena-v61-bind-"))
+            try:
+                warnings = " ".join(str(c.args[0]) for c in shout.call_args_list)
+                self.assertIn("WARNING: exposed on all interfaces", warnings)
+            finally:
+                st2._reaper_stop.set()
+                st2.tunnel.stop()
+                srv2.server_close()
+
+    def test_placeholder_token_is_refused_everywhere(self):
+        """Pre-6.1.0: `arena-demo-7f3a` shipped in four files and authenticated."""
+        import auth_core
+        from auth_core import PLACEHOLDER_TOKEN, TokenStore
+        from server import load_token_default
+        self.assertEqual(PLACEHOLDER_TOKEN, "arena-demo-7f3a")
+        store = TokenStore(Path(self.tmp) / "placeholder-tokens.json", primary_token=PLACEHOLDER_TOKEN)
+        self.assertEqual(store.authenticate(PLACEHOLDER_TOKEN), (None, None),
+                         "the demo literal must never authenticate")
+        self.assertEqual(store.authenticate(f" {PLACEHOLDER_TOKEN} "), (None, None))
+        self.assertIsNone(store.authenticate(PLACEHOLDER_TOKEN)[0])
+        for value in (PLACEHOLDER_TOKEN, f"BRIDGE_TOKEN={PLACEHOLDER_TOKEN}"):
+            with self.assertRaises(ValueError):
+                if value.startswith("BRIDGE_TOKEN="):
+                    with mock.patch.dict(os.environ, {"BRIDGE_TOKEN": PLACEHOLDER_TOKEN}, clear=False):
+                        load_token_default(None, allow_generate=False)
+                else:
+                    load_token_default(value, allow_generate=False)
+        with mock.patch.dict(os.environ, {"BRIDGE_TOKEN": PLACEHOLDER_TOKEN}, clear=False):
+            with self.assertRaises(ValueError):
+                load_token_default(None, allow_generate=False)
+        # One definition, no copies: the other modules import it.
+        for module in ("setup.py", "mock_studio.py", "arena_studio.py"):
+            text = (HERE / module).read_text(encoding="utf-8")
+            self.assertNotIn('PLACEHOLDER_TOKEN = "arena-demo-7f3a"', text,
+                             f"{module} re-defined the placeholder literal")
+            self.assertIn("PLACEHOLDER_TOKEN", text, f"{module} must import the shared constant")
+        self.assertEqual(len(re.findall(r'"arena-demo-7f3a"', auth_core.__file__ and
+                                        (HERE / "auth_core.py").read_text(encoding="utf-8"))), 1)
+        # setup.py refuses to bake a plugin with it.
+        import setup as bridge_setup
+        for bad in ("", PLACEHOLDER_TOKEN):
+            with self.assertRaises(SystemExit):
+                bridge_setup.install_plugin(bad, 8077, explicit_dir=self.tmp)
+
+    def test_first_run_generates_a_token_instead_of_open_admin(self):
+        """Pre-6.1.0: no `bridge.token` ⇒ `authenticate()` returned open *admin*."""
+        from server import load_token_default, mint_owner_token
+        with tempfile.TemporaryDirectory(prefix="arena-v61-token-") as tmp:
+            target = Path(tmp) / "bridge.token"
+            generated = mint_owner_token(target, verbose=False)
+            self.assertTrue(target.is_file())
+            self.assertEqual(target.read_text(encoding="utf-8").strip(), generated)
+            self.assertGreaterEqual(len(generated), 32, "the generated secret is too short")
+            mode = target.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600, f"bridge.token is {oct(mode)}, expected 0600")
+            # Idempotent-by-file: a second call with the file present reuses it.
+            with mock.patch("server.TOKEN_FILE", target):
+                self.assertEqual(load_token_default(None, allow_generate=False), generated)
+                self.assertEqual(load_token_default(None, allow_generate=True), generated)
+            missing = Path(tmp) / "nope" / "bridge.token"
+            with mock.patch("server.TOKEN_FILE", missing):
+                self.assertEqual(load_token_default(None, allow_generate=False), "",
+                                 "generation must be opt-in for embedded callers")
+                fresh = load_token_default(None, allow_generate=True, verbose=False)
+            self.assertGreaterEqual(len(fresh), 32)
+            self.assertTrue(missing.is_file())
+            self.assertEqual(missing.stat().st_mode & 0o777, 0o600)
+
+        # And the server that results from it is not open admin.
+        ctx, err = self.state.authenticate(None, is_loopback=True, required="admin")
+        self.assertIsNone(ctx)
+        self.assertIsNotNone(err, "an unauthenticated caller must not resolve to a context")
+        self.assertEqual(err["code"], 401)
+        # Open admin is reachable only by *asking* for it (`--no-auth`), which
+        # `create_http_server` implements as `resolved_token = ""` on a state dir
+        # with no token records. Note the fixture's own state dir is not that
+        # case: it has minted read/write/admin records, and a stale registry must
+        # not turn into an anonymous bypass either way.
+        with tempfile.TemporaryDirectory(prefix="arena-v61-noauth-") as bare:
+            open_state = bridge_server.BridgeState(token="", state_dir=Path(bare))
+            ctx_open, err_open = open_state.authenticate(None, is_loopback=True, required="admin")
+            self.assertIsNone(err_open)
+            self.assertEqual(ctx_open["id"], "open", "explicit --no-auth still works, and says so")
+            self.assertEqual(ctx_open["label"], "auth-disabled",
+                             "the open context must be identifiable in the audit log")
+
+        stale = bridge_server.BridgeState(token="", state_dir=self.tmp)
+        self.assertTrue(stale.tokens.records, "the fixture state dir should hold minted tokens")
+        ctx_stale, err_stale = stale.authenticate(None, is_loopback=True, required="read")
+        self.assertIsNone(ctx_stale)
+        self.assertEqual(err_stale["code"], 401,
+                         "leftover token records must not re-open the bridge")
+
+    # -----------------------------------------------------------------------
+    # P0-S6 / P3-T6 — kit catalogue policy, and the policy sets are live
+    # -----------------------------------------------------------------------
+
+    def test_kit_catalog_metadata_is_public_but_source_needs_read(self):
+        """Pre-6.1.0: `?item=NetworkGuard` returned 5,396 chars of module source
+        with no token, while every neighbouring `/api/*` route called `_require`.
+
+        The fix is a *split*, not a blanket gate: the kit is CC0 and the
+        dashboard gallery has to render before it holds a token, so a category
+        listing stays public — but a listing is name/path/bytes only. Source
+        comes out of `item=`/`section=`, and that needs `read`.
+        """
+        status, body, _ = self.raw("/api/kit/catalog?category=modules")
+        self.assertEqual(status, 200, "kit metadata is CC0 and stays public")
+        listing = json.loads(body)
+        modules = listing.get("modules") or []
+        self.assertTrue(modules, f"the public listing came back empty: {str(listing)[:200]}")
+        for row in modules[:5]:
+            self.assertEqual(sorted(k for k in row if k in ("content", "source", "code", "body")), [],
+                             f"a public listing row carried source: {sorted(row)}")
+        self.assertNotIn("local NetworkGuard", body)
+        self.assertNotIn("--!strict", body, "Luau source leaked into the public listing")
+
+        # `format=full` on a *category* is still a listing: no item, no source.
+        status, body, _ = self.raw("/api/kit/catalog?category=all&format=full")
+        self.assertEqual(status, 200, f"the inventory listing is metadata: {body[:160]}")
+        self.assertNotIn("--!strict", body)
+
+        status, body, _ = self.raw("/api/kit/catalog?category=modules&item=NetworkGuard")
+        self.assertEqual(status, 401, f"module source was served anonymously: {body[:160]}")
+        self.assertNotIn("NetworkGuard", body)
+
+        status, body, _ = self.raw("/api/kit/catalog?category=all&section=modules")
+        self.assertEqual(status, 401, f"a kit section was served anonymously: {body[:160]}")
+
+        status, body, _ = self.raw("/api/kit/catalog?category=modules&item=NetworkGuard",
+                                   token=self.read_token)
+        self.assertEqual(status, 200, body[:200])
+        data = json.loads(body)
+        self.assertEqual(data.get("name"), "NetworkGuard")
+        self.assertGreater(len(data.get("content") or ""), 500,
+                           f"a read caller must get the real source: {sorted(data)}")
+
+        status, body, _ = self.raw("/api/kit/catalog?category=all&section=modules",
+                                   token=self.read_token)
+        self.assertEqual(status, 200, body[:200])
+        self.assertEqual(json.loads(body).get("section"), "modules")
+
+    def test_declared_route_policy_is_enforced_and_not_dead_code(self):
+        """`READ_ONLY_PATHS`/`ADMIN_PATHS` were dead: nothing read them, and
+        `/api/plugin/download` sat in `READ_ONLY_PATHS` while handing out the
+        owner token. They are now a floor every request is raised to."""
+        import auth_core
+        from auth_core import path_scope
+        self.assertEqual(path_scope("/api/plugin/download"), "admin")
+        self.assertEqual(path_scope("/api/tokens"), "admin")
+        self.assertEqual(path_scope("/api/tokens/anything"), "admin")
+        self.assertEqual(path_scope("/api/state"), "read")
+        self.assertEqual(path_scope("/api/jobs/abc123"), "read")
+        self.assertIsNone(path_scope("/mcp"), "routes with no declaration keep their handler's scope")
+        self.assertNotIn("/api/plugin/download", auth_core.READ_ONLY_PATHS,
+                         "the download route mints a credential; it must not be declared read-only")
+        self.assertIn("/api/plugin/download", auth_core.ADMIN_PATHS)
+        src = (HERE / "server.py").read_text(encoding="utf-8")
+        self.assertIn("path_scope(", src, "server.py must consult the declared policy")
+        self.assertIn("def _route_scope", src)
+
+        # Behavioural proof: the declared admin floor wins over a handler that
+        # asks for less. `/api/plugin/download`'s handler asks for admin and
+        # `/api/tokens` is declared admin, so either path must refuse a write
+        # token — and `/api/state`, declared read, must refuse nobody at all.
+        for path, token, want in (("/api/plugin/download", self.write_token, 403),
+                                  ("/api/plugin/download", self.read_token, 403),
+                                  ("/api/tokens", self.write_token, 403),
+                                  ("/api/tokens", self.admin_token, 200),
+                                  ("/api/state", self.read_token, 200),
+                                  ("/api/state", None, 401)):
+            status, body, _ = self.raw(path, token=token)
+            self.assertEqual(status, want, f"{path}: got {status}, want {want} — {body[:160]}")
+
+        # Whole-surface proof, in the direction that matters. One rule covers
+        # declared and undeclared routes alike: anything outside the two written-
+        # down exception sets must reject an anonymous caller. The caller is
+        # marked cross-site so the loopback read allowance cannot mask a handler
+        # that forgot to call `_require` — that allowance is real and deliberate,
+        # but it is granted by a handler, never by this table.
+        public_ok = auth_core.PUBLIC_PATHS | auth_core.ROUTE_DECIDES_PATHS
+        drift = []
+        gated = 0
+        for route_path, method, body in self.ROUTES:
+            clean = route_path.split("?", 1)[0]
+            if any(clean == exc or clean.startswith(exc.rstrip("/") + "/")
+                   for exc in public_ok if exc != "/"):
+                continue
+            if clean == "/":
+                continue
+            gated += 1
+            status, text, _ = self.raw(route_path, method=method, body=body,
+                                       extra_headers=self.CROSS_SITE)
+            if status not in (401, 403, 429):
+                drift.append((method, route_path, path_scope(clean), status, text[:140]))
+        self.assertEqual(drift, [], "reachable anonymously without a credential")
+        self.assertGreaterEqual(gated, 30,
+                                f"only {gated} routes were checked — the exception lists grew")
+
+        # …and the exception lists are honest: they really are credential-free.
+        for public_path in ("/", "/api/health", "/api/local-boot", "/api/kit/catalog?category=modules"):
+            status, text, _ = self.raw(public_path, extra_headers=self.CROSS_SITE)
+            self.assertEqual(status, 200, f"{public_path} should stay public: {text[:140]}")
+            self.assertNotIn(self.OWNER, text)
+
 
 
 if __name__ == "__main__":

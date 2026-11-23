@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v6.0.0).
+arena_studio.py — Full-featured CLI for the Arena <-> Roblox Studio MCP Bridge (v6.1.0).
 
 Supports every MCP tool and bridge operation from your terminal or HANDS MODE (`ab.ps1`),
 with strict UTF-8 handling on Windows, macOS, and Linux.
@@ -48,6 +48,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from auth_core import PLACEHOLDER_TOKEN
 from mcp_core import BridgeClient, TOOL_SPECS, execute_tool, run_luau_check
 
 # Ensure Windows consoles never corrupt UTF-8 output with cp1252
@@ -68,7 +69,10 @@ def _resolve_token() -> str:
         txt = local_tok.read_text(encoding="utf-8").strip()
         if txt:
             return txt
-    return "arena-demo-7f3a"
+    # Last resort: the demo literal. `TokenStore.authenticate` refuses it
+    # (v6.1.0, P0-S5), so a CLI pointed at a real bridge with no credential
+    # gets a clean 401 instead of silently working with a shared secret.
+    return PLACEHOLDER_TOKEN
 
 
 BASE = os.environ.get("BRIDGE_URL", "http://127.0.0.1:8077").rstrip("/")
@@ -79,8 +83,10 @@ def call(method: str, path: str, payload=None, timeout: float = 140.0):
     url = f"{BASE}{path}"
     headers = {}
     if TOKEN:
+        # v6.1.0 (P0-S2): header-only. A credential in a query string leaks into
+        # proxy logs, browser history and Referer. The bridge stopped accepting
+        # `?token=` outside the SSE stream, so appending it is now dead weight.
         headers["X-Arena-Token"] = TOKEN
-        url += ("&" if "?" in url else "?") + f"token={TOKEN}"
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     if data is not None:
         headers["Content-Type"] = "application/json"
@@ -100,8 +106,10 @@ def call_text(method: str, path: str, payload=None, timeout: float = 60.0) -> st
     url = f"{BASE}{path}"
     headers = {}
     if TOKEN:
+        # v6.1.0 (P0-S2): header-only. A credential in a query string leaks into
+        # proxy logs, browser history and Referer. The bridge stopped accepting
+        # `?token=` outside the SSE stream, so appending it is now dead weight.
         headers["X-Arena-Token"] = TOKEN
-        url += ("&" if "?" in url else "?") + f"token={TOKEN}"
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     if data is not None:
         headers["Content-Type"] = "application/json"

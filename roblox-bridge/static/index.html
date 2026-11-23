@@ -1,0 +1,768 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Roblox Studio MCP, 3D Viewport Vision &amp; Open-Source Kit (v__BRIDGE_VERSION__)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/dashboard.css?v=__BRIDGE_VERSION__"></head><body>
+
+<header>
+  <h1><span class="logo" aria-hidden="true"></span><span class="brand">Roblox Studio MCP &amp; Bridge</span> <span class="sub">v__BRIDGE_VERSION__</span></h1>
+  <span id="status" class="pill off live">checking&hellip;</span>
+  <span id="fleet-badge" class="pill info-pill" style="display:none">0 studios</span>
+  <span id="ro-badge" class="pill ro" style="display:none">Read-Only Inspector</span>
+  <span id="place" class="pill info-pill" style="display:none"></span>
+  <button class="sm" data-act="runSelfTest">Run Self-Test</button>
+  <div class="spacer"></div>
+  <span class="sub">Token:</span>
+  <input id="tok-input" type="password" placeholder="auto-loaded on localhost" data-act="applyHeaderToken" data-act-on="change" style="width:185px;padding:4px 8px">
+  <button class="sm" data-act="toggleToken">Show</button>
+</header>
+
+<div class="fleet-bar" id="fleet-bar">
+  <span class="fleet-label"><span class="dot-live" id="fleet-dot"></span> Studios</span>
+  <div class="fleet-chips" id="fleet-chips"><span class="sub">Looking for connected Studio windows&hellip;</span></div>
+  <button class="sm danger" data-act="forceStopPlaytestUI" title="Force-stop any active or stuck Play Solo / Server Run session and evict ghost runtime peers">&#9209; Force Stop Playtest</button>
+  <button class="sm primary" data-act="downloadPluginFile" title="Download pre-configured ArenaBridge.lua v__BRIDGE_VERSION__">&#11015; Plugin v__BRIDGE_VERSION__</button>
+  <button class="sm" data-act="broadcastPing" title="Ping every online Studio and show per-peer latency">Broadcast ping</button>
+</div>
+
+<div id="auth-banner" class="banner">
+  <div class="grow">
+    <strong id="auth-title">This dashboard needs the bridge token</strong>
+    <div class="sub" id="auth-msg">Every <code>/api</code> call is authenticated. Opening the console from a
+      tunnel or LAN address cannot auto-load it — paste <code>bridge.token</code> (printed by setup.py).</div>
+  </div>
+  <input id="auth-token" type="password" placeholder="paste the token" autocomplete="off">
+  <button class="primary sm" data-act="saveToken">Use token</button>
+  <button class="sm" data-act="hideAuthBanner">Dismiss</button>
+</div>
+
+<div id="stale-banner" class="banner bad">
+  <div class="grow"><strong>This tab is from an older bridge version</strong>
+    <div class="sub" id="stale-msg">The bridge restarted with new code; reload to get the current UI.</div>
+  </div>
+  <button class="primary sm" data-act="reload">Reload</button>
+</div>
+
+<nav>
+  <button class="tab-btn active" data-act="showTab" data-args='["monitor"]' data-act-el>1. Live Monitor</button>
+  <button class="tab-btn" data-act="showTab" data-args='["kit"]' data-act-el>2. Image Importer &amp; Studio Kit</button>
+  <button class="tab-btn" data-act="showTab" data-args='["prompts"]' data-act-el>3. Next-Agent Handoff &amp; Prompts</button>
+  <button class="tab-btn" data-act="showTab" data-args='["commands"]' data-act-el>4. Commands &amp; MCP Config</button>
+  <button class="tab-btn" data-act="showTab" data-args='["playground"]' data-act-el>5. Live Tool &amp; Luau Runner</button>
+  <button class="tab-btn" data-act="showTab" data-args='["tips"]' data-act-el>6. Helpful Tips &amp; Gotchas</button>
+  <button class="tab-btn" data-act="showTab" data-args='["ops"]' data-act-el>7. Ops Console &amp; Agent Bus</button>
+  <button class="tab-btn" data-act="showTab" data-args='["plugin"]' data-act-el>8. Studio Plugin &amp; Playtest v6</button>
+</nav>
+
+<main>
+  <!-- ==================== TAB 1: LIVE MONITOR ==================== -->
+  <section id="tab-monitor" class="tab-pane active">
+    <div class="grid">
+      <div class="card"><div class="k">Studio Peers</div><div class="v" id="c-peers">0 online</div></div>
+      <div class="card"><div class="k">MCP Tools</div><div class="v" id="c-tools">—</div></div>
+      <div class="card"><div class="k">Queued</div><div class="v" id="c-queued">0</div></div>
+      <div class="card"><div class="k">Completed</div><div class="v" id="c-done">0</div></div>
+      <div class="card"><div class="k">Failed</div><div class="v" id="c-fail">0</div></div>
+      <div class="card"><div class="k">Saved Snapshots</div><div class="v" id="c-snaps">0</div></div>
+    </div>
+
+    <div class="toolbar">
+      <strong style="font-size:12.5px;margin-right:4px">Quick Actions:</strong>
+      <button class="primary sm" data-act="quickTool" data-args='["ping_studio", {}]'>Ping Studio</button>
+      <button class="sm" data-act="quickTool" data-args='["get_studio_state", {}]'>Studio State</button>
+      <button class="sm" data-act="quickTool" data-args='["survey_place", {"includeSource": false}]'>Survey Place</button>
+      <button class="sm" data-act="quickTool" data-args='["get_console_output", {"limit": 40}]'>Console Output</button>
+      <button class="sm" data-act="quickTool" data-args='["list_studios", {}]'>List Peers</button>
+      <button class="sm" data-act="quickTool" data-args='["undo_redo", {"action": "undo"}]'>Undo (Ctrl+Z)</button>
+      <button class="sm" data-act="quickTool" data-args='["undo_redo", {"action": "redo"}]'>Redo</button>
+      <button class="sm danger" data-act="forceStopPlaytestUI">&#9209; Stop Playtest</button>
+      <button class="sm" data-act="quickTool" data-args='["export_place_rbxlx", {"outputFile": "roblox-kit/models/StarterPlace.rbxlx"}]'>Export .rbxlx Place</button>
+      <div class="spacer"></div>
+      <button class="danger sm" data-act="clearQueue">Clear Queue</button>
+    </div>
+
+    <div class="two-col" style="margin-bottom:16px">
+      <div class="card">
+        <div class="prompt-head" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
+          <div>
+            <h2>Live 3D Place + HUD Viewport Vision</h2>
+            <div class="sub">Real-time Z-buffered 3D software rasterizer &amp; HUD compositor (exact same <code>image/png</code> vision stream multimodal AI agents receive from <code>capture_viewport</code>). Drag image to orbit, scroll to zoom.</div>
+          </div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap">
+            <button class="sm primary" id="cam-perspective" data-act="refresh3DViewport" data-args='["perspective"]'>Perspective</button>
+            <button class="sm" id="cam-iso_ne" data-act="refresh3DViewport" data-args='["iso_ne"]'>Iso NE</button>
+            <button class="sm" id="cam-iso_nw" data-act="refresh3DViewport" data-args='["iso_nw"]'>Iso NW</button>
+            <button class="sm" id="cam-top_blueprint" data-act="refresh3DViewport" data-args='["top_blueprint"]'>Top Blueprint</button>
+            <button class="sm" id="cam-front" data-act="refresh3DViewport" data-args='["front"]'>Front</button>
+            <button class="sm" data-act="toggle3DHud" id="btn-hud-toggle">HUD: OFF</button>
+            <button class="sm primary" data-act="toggle3DLabels" id="btn-labels-toggle">Labels: ON</button>
+            <button class="sm primary" data-act="toggle3DGrid" id="btn-grid-toggle">Grid: ON</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+          <select id="vp3d-source" data-act="onChange3DSource" data-act-on="change" style="flex:1;min-width:210px">
+            <option value="studio:Workspace">Live Studio: Workspace (auto-fallback if offline)</option>
+            <option value="showcase:starter_village">3D Showcase: Croftie Village, Farm Plots, Watchtower &amp; Shrine</option>
+            <option value="showcase:horror_nightloop">3D Showcase: NightLoop Horror Cabin, FuseBox, SafeRoom &amp; Generator</option>
+            <option value="dungeon:seeded">3D Procedural Dungeon (MST + Escape Loops)</option>
+            <option value="prefab:world_safe_room_shelter">3D Prefab: Safe-Room Sanctuary Shelter</option>
+            <option value="prefab:world_loot_chest_shrine">3D Prefab: Ancient Loot Chest Shrine</option>
+            <option value="prefab:horror_fuse_breaker_station">3D Prefab: Wall FuseBox Breaker Station</option>
+            <option value="prefab:horror_task_generator_machine">3D Prefab: Co-op Task Generator Machine</option>
+            <option value="prefab:world_obby_stage_pack">3D Prefab: Obby Stage Pack</option>
+            <option value="prefab:world_shop_pedestal_stall">3D Prefab: Shop Pedestal Stall</option>
+            <option value="prefab:world_quest_giver_npc">3D Prefab: Quest Giver NPC</option>
+          </select>
+          <div style="display:flex;gap:4px;flex-wrap:wrap">
+            <button class="sm" data-act="orbit3DCamera" data-args='[-25, 0, 1]' title="Orbit Left">&#10226;</button>
+            <button class="sm" data-act="orbit3DCamera" data-args='[25, 0, 1]' title="Orbit Right">&#10227;</button>
+            <button class="sm" data-act="orbit3DCamera" data-args='[0, 12, 1]' title="Pitch Up">&#8593;</button>
+            <button class="sm" data-act="orbit3DCamera" data-args='[0, -12, 1]' title="Pitch Down">&#8595;</button>
+            <button class="sm" data-act="orbit3DCamera" data-args='[0, 0, 0.8]' title="Zoom In">&#65291;</button>
+            <button class="sm" data-act="orbit3DCamera" data-args='[0, 0, 1.25]' title="Zoom Out">&#65293;</button>
+            <button class="sm" data-act="reset3DCamera" title="Reset Orbit/Zoom">Reset</button>
+          </div>
+        </div>
+        <div id="live-viewport-stage" style="background:#070a10;border:1px solid var(--border);border-radius:8px;overflow:hidden;text-align:center;position:relative;cursor:grab;user-select:none">
+          <img id="live-viewport-img" alt="Live 3D Place Viewport" draggable="false" style="width:100%;max-height:320px;object-fit:contain;display:block">
+        </div>
+        <div id="live-viewport-meta" class="sub" style="margin-top:6px">Rendering 3D viewport&hellip;</div>
+      </div>
+
+      <div class="card">
+        <div class="prompt-head" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
+          <div>
+            <h2>3D Scene, Physics &amp; Grounding Auditor</h2>
+            <div class="sub">Detects unanchored parts, floating geometry gaps, blocked spawns &amp; Z-fighting coplanar surfaces.</div>
+          </div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap">
+            <button class="sm primary" data-act="run3DSceneAudit" data-args='[false, false]'>Audit Scene</button>
+            <button class="sm" data-act="run3DSceneAudit" data-args='[true, true]'>Auto-Anchor &amp; Snap Fix</button>
+          </div>
+        </div>
+        <div id="scene-audit-summary" class="sub" style="margin-bottom:8px">Ready to audit <code>Workspace</code> geometry &amp; physics.</div>
+        <div id="scene-audit-list" style="display:flex;flex-direction:column;gap:6px;max-height:265px;overflow:auto"></div>
+      </div>
+    </div>
+
+    <div id="quick-out-wrap" class="card" style="display:none;margin-bottom:18px">
+      <div class="prompt-head">
+        <strong id="quick-out-title">Result</strong>
+        <div>
+          <button class="sm" data-act="copyQuickOut">Copy JSON</button>
+          <button class="sm" data-act="hideQuickOut">Close</button>
+        </div>
+      </div>
+      <pre id="quick-out" style="max-height:300px"></pre>
+    </div>
+
+    <h3>Connected Studio DataModel Peers</h3>
+    <table>
+      <thead><tr><th>Peer ID</th><th>DataModel</th><th>Place</th><th>Plugin</th><th>Client Bridge</th><th>State</th></tr></thead>
+      <tbody id="peer-rows"><tr><td colspan="6" class="empty">Waiting for Roblox Studio plugin to poll <code>/api/poll</code>&hellip;</td></tr></tbody>
+    </table>
+
+    <h3>Recent Jobs <span class="sub">(click any row to inspect full JSON result)</span></h3>
+    <table>
+      <thead><tr><th>Job ID</th><th>Type</th><th>DM</th><th>Latency</th><th>Note</th><th>Status</th><th>Preview</th></tr></thead>
+      <tbody id="rows"><tr><td colspan="7" class="empty">No jobs executed yet.</td></tr></tbody>
+    </table>
+  </section>
+
+  <!-- ==================== TAB 2: IMAGE IMPORTER & STUDIO KIT ==================== -->
+  <section id="tab-kit" class="tab-pane">
+    <div class="grid" style="margin-bottom:16px">
+      <div class="card"><div class="k">Licensed Registry</div><div class="v" id="kit-cnt-assets">4,320</div></div>
+      <div class="card"><div class="k">Cloud Icons</div><div class="v" id="kit-cnt-icons">4,811</div></div>
+      <div class="card"><div class="k">Luau Modules</div><div class="v" id="kit-cnt-modules">25</div></div>
+      <div class="card"><div class="k">Drop-In Systems</div><div class="v" id="kit-cnt-systems">20</div></div>
+      <div class="card"><div class="k">Prefabs</div><div class="v" id="kit-cnt-prefabs">26</div></div>
+      <div class="card"><div class="k">3D .rbxmx Models</div><div class="v" id="kit-cnt-models">520</div></div>
+    </div>
+
+    <!-- GAMEPLAY MECHANICS, PROCEDURAL DUNGEON & ATMOSPHERE WORKBENCH -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="prompt-head" style="flex-wrap:wrap;gap:10px;margin-bottom:10px">
+        <div>
+          <h2>Gameplay Mechanics, Procedural 3D Dungeon &amp; Atmosphere Workbench</h2>
+          <div class="sub">Assemble complete Server/Client gameplay mechanics, generate seeded 3D dungeons with MST + loop escape routes, tune multi-layer horror/weather atmospheres, and synthesize procedural PCM <code>.wav</code> sound effects.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="sm primary" data-act="previewDungeonLayout" data-args='[false]'>Generate Dungeon Map</button>
+          <button class="sm" data-act="previewDungeonLayout" data-args='[true]'>Build Dungeon in Studio</button>
+        </div>
+      </div>
+
+      <div class="two-col" style="margin-bottom:0">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="background:rgba(9,13,20,.65);border:1px solid var(--border);border-radius:10px;padding:10px">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+              <strong style="font-size:12.5px">1-Click Gameplay Mechanic Builder (<code>build_gameplay_mechanic</code>)</strong>
+              <div style="display:flex;gap:6px">
+                <button class="sm" data-act="runMechanicBuilder" data-args='[false]'>Inspect Bundle</button>
+                <button class="sm primary" data-act="runMechanicBuilder" data-args='[true]'>Install in Studio</button>
+              </div>
+            </div>
+            <select id="mechanic-select" data-act="runMechanicBuilder" data-act-on="change" data-args='[false]' style="width:100%;margin-bottom:6px">
+              <option value="horror-director">horror-director — 5-Phase AI Director + Strikes + NightModifiers + Sanity HUD</option>
+              <option value="round-survival">round-survival — Co-op Generator Repair &amp; Extraction Survival Loop</option>
+              <option value="stamina-movement">stamina-movement — Sprint Stamina Pool + Stealth Crouch Noise Controller</option>
+              <option value="inventory-loot">inventory-loot — Slot Hotbar Inventory + Weighted Rarity Loot Chests</option>
+              <option value="combat-abilities">combat-abilities — Cooldown Abilities + Shield/Armor Mitigation + Status FX</option>
+              <option value="weather-cycle">weather-cycle — Dynamic Weather State Machine (Rain, BloodMoon, Blizzard)</option>
+              <option value="fuse-breaker">fuse-breaker — Interactive Wall FuseBox Blackout Breaker Station</option>
+              <option value="task-generator">task-generator — Hold-to-Repair Co-op Generator Objective</option>
+              <option value="loot-chest">loot-chest — Ancient Reliquary Weighted Loot Chest Shrine</option>
+              <option value="safe-room">safe-room — Reinforced Horror Safe-Room Sanctuary Booth</option>
+            </select>
+            <div id="mechanic-meta" class="sub">Select any mechanic above to inspect its Server/Client/Shared Luau scripts, reusable modules, and prefab tree.</div>
+          </div>
+
+          <div style="background:rgba(9,13,20,.65);border:1px solid var(--border);border-radius:10px;padding:10px">
+            <strong style="font-size:12.5px;display:block;margin-bottom:6px">Atmosphere &amp; Weather Post-FX Studio (<code>configure_atmosphere_fx</code>)</strong>
+            <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px" id="atmo-preset-btns">
+              <button class="sm primary" data-act="applyAtmospherePreset" data-args='["BloodMoon", false]'>BloodMoon</button>
+              <button class="sm" data-act="applyAtmospherePreset" data-args='["DenseFog", false]'>DenseFog</button>
+              <button class="sm" data-act="applyAtmospherePreset" data-args='["CyberpunkRain", false]'>CyberpunkRain</button>
+              <button class="sm" data-act="applyAtmospherePreset" data-args='["Thunderstorm", false]'>Thunderstorm</button>
+              <button class="sm" data-act="applyAtmospherePreset" data-args='["GoldenHour", false]'>GoldenHour</button>
+              <button class="sm" data-act="applyAtmospherePreset" data-args='["DeepAbyss", false]'>DeepAbyss</button>
+              <button class="sm" data-act="applyAtmospherePreset" data-args='["Blizzard", false]'>Blizzard</button>
+              <button class="sm" data-act="applyAtmospherePreset" data-args='["SolarEclipse", false]'>SolarEclipse</button>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+              <span class="sub" id="atmo-meta">Preset: BloodMoon (Atmosphere + ColorCorrection + Bloom)</span>
+              <button class="sm primary" data-act="applyActiveAtmo">Apply to Studio Lighting</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="background:rgba(9,13,20,.65);border:1px solid var(--border);border-radius:10px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px">
+            <strong style="font-size:12.5px">Seeded 3D Dungeon / Mansion Graph (<code>generate_dungeon_layout</code>)</strong>
+            <div style="display:flex;gap:6px;align-items:center">
+              <input id="dungeon-seed" type="number" value="2026" style="width:78px;padding:4px 6px" title="Seed">
+              <input id="dungeon-rooms" type="number" min="4" max="24" value="10" style="width:62px;padding:4px 6px" title="Room Count">
+              <select id="dungeon-theme" data-act="previewDungeonLayout" data-act-on="change" data-args='[false]' style="width:140px;padding:4px 6px">
+                <option value="horror_mansion">horror_mansion</option>
+                <option value="crypt_catacombs">crypt_catacombs</option>
+                <option value="scifi_facility">scifi_facility</option>
+                <option value="ancient_ruins">ancient_ruins</option>
+              </select>
+            </div>
+          </div>
+          <canvas id="dungeon-canvas" width="520" height="185" style="width:100%;height:185px;background:#070a10;border:1px solid var(--border);border-radius:8px"></canvas>
+          <div id="dungeon-meta" class="sub">Legend: <span style="color:#45e0a0">&#9632; spawn</span> · <span style="color:#8dc6af">&#9632; saferoom</span> · <span style="color:#ffc857">&#9632; treasure</span> · <span style="color:#5cc8ff">&#9632; puzzle</span> · <span style="color:#eb4b4b">&#9632; boss</span> · dashed = loop escape corridor</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <h3>Direct Image Importer (Local File &rarr; Repo + Roblox Studio)</h3>
+        <div class="sub">Pick any <code>.png</code>, <code>.jpg</code>, or <code>.bmp</code>. Saves to <code>roblox-kit/assets/images/</code>, installs into Studio <code>content/arena_assets/</code> (<code>rbxasset://arena_assets/...</code>) + live <code>EditableImage</code>, updates <code>Assets.lua</code>, and applies to your target instance.</div>
+        <input type="file" id="img-file" accept=".png,.jpg,.jpeg,.bmp">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <input id="img-name" placeholder="Asset name (optional, e.g. shop_banner)">
+          <input id="img-target" placeholder="Target path (e.g. StarterGui or Workspace.Baseplate)" value="StarterGui">
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="img-mode">
+            <option value="screen_gui">Apply: StarterGui Preview (ScreenGui)</option>
+            <option value="decal">Apply: Decal on Part</option>
+            <option value="texture">Apply: Tiled Texture on Part</option>
+            <option value="billboard">Apply: Floating 3D BillboardGui</option>
+            <option value="surface_gui">Apply: 3D Poster SurfaceGui</option>
+            <option value="auto">Apply: Auto-detect from Target Class</option>
+          </select>
+          <button class="primary" data-act="uploadBrowserImage" style="white-space:nowrap">Import Image</button>
+        </div>
+        <pre id="img-import-out">Ready to import any image file directly into Roblox Studio.</pre>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>1-Click Full Stud UI &amp; Gameplay System Templates</h3>
+            <div class="sub">Installs <code>StudUI</code> / <code>ModernUI</code> + icons, builds live editable <code>ScreenGui</code>s in <code>StarterGui</code>, and wires controllers &amp; server economy.</div>
+          </div>
+          <button class="primary sm" data-act="installAllModules">Install All 25 Luau Modules</button>
+        </div>
+        <div id="template-list" style="display:flex;flex-direction:column;gap:7px"></div>
+        <pre id="kit-action-out">Click any template, system, prefab, audio clip, or module button to install straight into Studio.</pre>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="prompt-head" style="flex-wrap:wrap;gap:10px">
+        <div>
+          <h2>Multi-Device Live UI Preview &amp; Layout Linter (Desktop / Tablet / Mobile)</h2>
+          <div class="sub">Inspect exact pixel bounds, real PNG sprites, overflow warnings, <code>UIScale</code> responsiveness, and touch targets across <strong>1920&times;1080</strong>, <strong>1024&times;768</strong>, and <strong>844&times;390</strong>.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <select id="ui-audit-src" data-act="runUiPreviewAndAudit" data-act-on="change" style="width:240px">
+            <option value="prefab:ui_horror_sanity_vitals_hud">Prefab: ui_horror_sanity_vitals_hud</option>
+            <option value="prefab:ui_kenney_shop_window">Prefab: ui_kenney_shop_window</option>
+            <option value="prefab:ui_minimap_radar">Prefab: ui_minimap_radar</option>
+            <option value="prefab:ui_hotbar_abilities">Prefab: ui_hotbar_abilities</option>
+            <option value="prefab:ui_mobile_touch_pad">Prefab: ui_mobile_touch_pad</option>
+            <option value="prefab:ui_rank_up_banner">Prefab: ui_rank_up_banner</option>
+            <option value="prefab:ui_fantasy_quest_dialog">Prefab: ui_fantasy_quest_dialog</option>
+            <option value="prefab:ui_scifi_hud_visor">Prefab: ui_scifi_hud_visor</option>
+            <option value="prefab:ui_input_prompt_bar">Prefab: ui_input_prompt_bar</option>
+            <option value="prefab:hud_modern_shell">Prefab: hud_modern_shell</option>
+            <option value="studio:StarterGui">Live Studio: StarterGui</option>
+          </select>
+          <button class="sm primary" id="vp-btn-desktop" data-act="switchPreviewViewport" data-args='["desktop"]'>Desktop 1920&times;1080</button>
+          <button class="sm" id="vp-btn-tablet" data-act="switchPreviewViewport" data-args='["tablet"]'>Tablet 1024&times;768</button>
+          <button class="sm" id="vp-btn-mobile" data-act="switchPreviewViewport" data-args='["mobile"]'>Mobile 844&times;390</button>
+          <button class="sm" data-act="runUiPreviewAndAudit">Re-Audit</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:14px;margin-top:12px;align-items:start">
+        <div style="background:#070a10;border:1px solid var(--border);border-radius:10px;padding:12px;overflow:hidden">
+          <div id="ui-stage-meta" class="sub" style="margin-bottom:8px">Hover any rendered widget to inspect its path &amp; pixel bounds.</div>
+          <div id="ui-preview-stage" style="position:relative;margin:0 auto;background:radial-gradient(circle at 50% 35%, #1a2436, #0b0f17);border:1px dashed #334155;overflow:hidden;border-radius:6px"></div>
+        </div>
+        <div>
+          <h3 id="ui-issues-title">Layout Lint Report</h3>
+          <div id="ui-issues-list" style="display:flex;flex-direction:column;gap:6px;max-height:330px;overflow:auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="prompt-head" style="flex-wrap:wrap;gap:10px">
+        <div>
+          <h2>4,811 Cloud <code>rbxassetid://</code> Icons (1,022 Glossy 3D Stud + 1,894 Lucide Outline + 1,895 Lucide Filled)</h2>
+          <div class="sub">Zero-upload cloud icons for chunky simulator UIs (<code>Stud</code>) and sleek dark/minimalist UIs (<code>Lucide Outline</code> + <code>Lucide Filled</code> active states).</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;min-width:360px">
+          <button class="sm primary" id="pk-all" data-act="setIconPack" data-args='["all"]'>All (4,811)</button>
+          <button class="sm" id="pk-stud" data-act="setIconPack" data-args='["stud"]'>3D Stud (1,022)</button>
+          <button class="sm" id="pk-lucide" data-act="setIconPack" data-args='["lucide"]'>Lucide Outline (1,894)</button>
+          <button class="sm" id="pk-lucide_fill" data-act="setIconPack" data-args='["lucide_fill"]'>Lucide Filled (1,895)</button>
+          <input id="cloud-icon-q" placeholder="Search icons (shield, sword, heart, settings, coin, cat)..." data-act="searchCloudIconsUI" data-act-on="input" style="width:230px">
+        </div>
+      </div>
+      <div id="cloud-icon-cats" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
+      <div id="cloud-icon-results" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;margin-top:8px"></div>
+    </div>
+
+    <div class="two-col" style="margin-bottom:16px">
+      <div class="card">
+        <h2>45 CC0 Sound Effects + 12 Procedural Horror/Gameplay Synth SFX</h2>
+        <div class="sub" style="margin-bottom:8px">Click <strong>&#9654;</strong> to audition in browser or <strong>Send</strong> to install in <code>SoundService</code>.</div>
+        <audio id="sfx-player" style="display:none"></audio>
+        <div id="synth-audio-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px;margin-bottom:10px"></div>
+        <div id="audio-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:6px;max-height:260px;overflow:auto"></div>
+      </div>
+
+      <div class="card">
+        <h2>20 Drop-In Server/Client Game Systems (<code>roblox-kit/systems/</code>)</h2>
+        <div class="sub" style="margin-bottom:8px">Horror Director, Co-op Round Survival, Stamina/Stealth, Slot Inventory, Ability Combat, Dynamic Weather, LiveOps, Monetization &amp; ProfileStore Data.</div>
+        <div id="dropin-system-list" style="display:flex;flex-direction:column;gap:6px;max-height:360px;overflow:auto"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="prompt-head" style="flex-wrap:wrap;gap:10px">
+        <div>
+          <h2>Licensed Asset Library (4,320 registered · 3,705 images · 50 skies · 520 models · 45 audio)</h2>
+          <div class="sub">Browse source groups, local Studio URIs, SPDX licence, source, and provenance. Kenney assets are pinned CC0; generated skies are 8-bit LDR (not HDRI). GLB thumbnails are neutral placeholders, not model renders. Use <code>search_assets</code> for model/audio/provenance filters; Send imports the selected image directly into Studio.</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <button class="sm primary" id="atype-any" data-act="setRegistryAssetType" data-args='["any"]'>All (4,320)</button>
+          <button class="sm" id="atype-image" data-act="setRegistryAssetType" data-args='["image"]'>Images (3,705)</button>
+          <button class="sm" id="atype-sky" data-act="setRegistryAssetType" data-args='["sky"]'>Skies (50)</button>
+          <button class="sm" id="atype-model" data-act="setRegistryAssetType" data-args='["model"]'>3D Models (520)</button>
+          <button class="sm" id="atype-audio" data-act="setRegistryAssetType" data-args='["audio"]'>Audio (45)</button>
+          <input id="asset-search" placeholder="Filter licensed local assets..." data-act="renderFilteredAssets" data-act-on="input" style="width:210px">
+          <button class="sm" data-act="loadKitGallery">Refresh</button>
+        </div>
+      </div>
+      <div id="asset-pack-pills" style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0"></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:6px 0">
+        <span class="sub" id="asset-page-meta">Loading asset catalog&hellip;</span>
+        <div style="display:flex;gap:6px">
+          <button class="sm" id="asset-prev-btn" data-act="stepAssetPage" data-args='[-1]'>&larr; Prev</button>
+          <button class="sm" id="asset-next-btn" data-act="stepAssetPage" data-args='[1]'>Next &rarr;</button>
+        </div>
+      </div>
+      <div id="asset-gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:10px"></div>
+    </div>
+
+    <div class="two-col" style="margin-bottom:16px">
+      <div class="card">
+        <h2>38 Procedural Texture, VFX &amp; UI Icon Shaders (<code>image_pipeline.py</code>)</h2>
+        <div class="sub" style="margin-bottom:8px">Zero-dependency mathematical PNG shaders rendered on demand via <code>/api/kit/procedural/&lt;preset&gt;.png</code>.</div>
+        <div id="procedural-preset-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:8px;max-height:320px;overflow:auto"></div>
+      </div>
+
+      <div class="card">
+        <h2>25 Reusable Luau Gameplay &amp; UI Modules (<code>roblox-kit/modules/</code>)</h2>
+        <div class="sub" style="margin-bottom:8px">StateMachine, CooldownManager, LootTable, QuestTracker, CombatPipeline, DungeonGenerator, StudUI, ModernUI, Maid, Signal &amp; more.</div>
+        <div id="module-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:6px;max-height:320px;overflow:auto"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="prompt-head">
+        <div>
+          <h2>26 Prefabs &amp; Drag-and-Drop <code>.rbxmx</code> Models (<code>roblox-kit/prefabs/</code> &amp; <code>models/</code>)</h2>
+          <div class="sub">Spawn directly into Studio OR export any live Studio path to a standalone <code>.rbxmx</code> model file.</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input id="export-rbxmx-path" value="StarterGui" placeholder="Studio path to export" style="width:170px">
+          <button class="sm primary" data-act="exportLiveRbxmx">Export .rbxmx</button>
+        </div>
+      </div>
+      <div id="prefab-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:8px;margin-top:10px"></div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 3: NEXT-AGENT PROMPTS ==================== -->
+  <section id="tab-prompts" class="tab-pane">
+    <div class="card" style="margin-bottom:16px">
+      <div class="prompt-head" style="align-items:center;flex-wrap:wrap">
+        <div>
+          <h2 style="margin-bottom:2px">Next-Agent Handoff &amp; Generic Starter Prompts</h2>
+          <div class="sub">Auto-customized with your live Place name, local paths, and optional tunnel URL. Click <strong>Copy Prompt</strong> and paste straight into your next AI session.</div>
+        </div>
+        <div style="min-width:300px">
+          <input id="tunnel-url" placeholder="Optional public tunnel URL (e.g. https://some-random-words.trycloudflare.com)" data-act="renderPrompts" data-act-on="input">
+        </div>
+      </div>
+    </div>
+
+    <div class="two-col" id="prompt-grid"></div>
+  </section>
+
+  <!-- ==================== TAB 3: COMMANDS & MCP CONFIG ==================== -->
+  <section id="tab-commands" class="tab-pane">
+    <div class="two-col">
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div><h3>Claude Code / Codex CLI (One-Liner)</h3><div class="sub">Registers stdio MCP server with auto-attach to running bridge</div></div>
+          <button class="primary sm" data-act="copyById" data-args='["cfg-cli"]'>Copy</button>
+        </div>
+        <pre id="cfg-cli"></pre>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div><h3>Streamable HTTP MCP Config (Local or Tunnel)</h3><div class="sub">Direct HTTP JSON-RPC 2.0 endpoint on <code>POST /mcp</code></div></div>
+          <button class="primary sm" data-act="copyById" data-args='["cfg-http"]'>Copy</button>
+        </div>
+        <pre id="cfg-http"></pre>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div><h3><code>.mcp.json</code> / Cursor / Claude Desktop (Full Access)</h3><div class="sub">Full tool access (subject to authorization and peer availability) (multi-agent bus + tunnel ops + 3D viewport vision + 3D physics QA + .rbxlx + UI linter + LiveOps + sync)</div></div>
+          <button class="primary sm" data-act="copyById" data-args='["cfg-json"]'>Copy</button>
+        </div>
+        <pre id="cfg-json"></pre>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div><h3><code>.mcp.json</code> Read-Only Inspector Profile</h3><div class="sub">Blocks all mutating calls server-side for zero-risk exploration</div></div>
+          <button class="primary sm" data-act="copyById" data-args='["cfg-ro"]'>Copy</button>
+        </div>
+        <pre id="cfg-ro"></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Generic CLI Command Cheat Sheet (<code>.\ab.ps1</code> or <code>python arena_studio.py</code>)</h2>
+      <p class="sub" style="margin-top:0">Works identically for any Roblox place or repository. Replace sample paths like <code>./src</code> or <code>ServerScriptService.App</code> with your project's paths.</p>
+      <div id="cmd-list"></div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 4: LIVE TOOL & LUAU RUNNER ==================== -->
+  <section id="tab-playground" class="tab-pane">
+    <div class="two-col">
+      <div class="prompt-card">
+        <h3>Run Live Luau in Roblox Studio</h3>
+        <div class="sub">Executes inside a single undoable scope (or read-only probe) in your chosen DataModel.</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="luau-dm" style="width:210px">
+            <option value="edit">DataModel: edit (Place Editor)</option>
+            <option value="server">DataModel: server (Play Server)</option>
+            <option value="client">DataModel: client (Play Client)</option>
+          </select>
+          <button class="primary" data-act="runLiveLuau">Execute Luau</button>
+        </div>
+        <textarea id="luau-code">return {
+  placeName = game.Name,
+  placeId = game.PlaceId,
+  workspaceChildren = #workspace:GetChildren(),
+  services = { "Workspace", "ReplicatedStorage", "ServerScriptService" },
+}</textarea>
+        <pre id="luau-out">Output will appear here.</pre>
+      </div>
+
+      <div class="prompt-card">
+        <h3>Invoke MCP Tools Directly</h3>
+        <div class="sub" id="tool-desc">Select any MCP tool to inspect its fields and call it over <code>POST /mcp</code>.</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="tool-select" data-act="onSelectTool" data-act-on="change"></select>
+          <button class="primary" data-act="callSelectedTool">Call MCP Tool</button>
+        </div>
+        <textarea id="tool-args">{}</textarea>
+        <pre id="tool-out">Structured MCP output will appear here.</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 5: HELPFUL TIPS & GOTCHAS ==================== -->
+  <!-- ==================== TAB 7: OPS CONSOLE & AGENT BUS ==================== -->
+  <section id="tab-ops" class="tab-pane">
+    <div class="grid">
+      <div class="card"><div class="k">Tunnel</div><div class="v" id="ops-tunnel-state">stopped</div></div>
+      <div class="card"><div class="k">Public URL</div><div class="v" id="ops-tunnel-url" style="font-size:12.5px;word-break:break-all">&mdash;</div></div>
+      <div class="card"><div class="k">Agents Online</div><div class="v" id="ops-agents">0</div></div>
+      <div class="card"><div class="k">Open Tasks</div><div class="v" id="ops-tasks">0</div></div>
+      <div class="card"><div class="k">Queue Depth</div><div class="v" id="ops-queue">0</div></div>
+      <div class="card"><div class="k">Audit Entries</div><div class="v" id="ops-audit-count">0</div></div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-6px 0 14px">
+      <button class="sm" id="queue-toggle" data-act="toggleQueue">Pause queue</button>
+      <span class="sub" id="queue-state">Queue live</span>
+      <span class="sub" id="sweeper-state"></span>
+    </div>
+
+    <div class="prompt-card" style="margin-bottom:14px">
+      <div class="prompt-head">
+        <div><h3>Studio Fleet</h3>
+          <div class="sub">Every connected Studio window. <b>Pin</b> makes one the default target for
+            untargeted jobs (skipped automatically if that Studio closes); <b>Broadcast</b> runs a read-only
+            ping on all of them and reports per-peer latency. Any MCP tool also takes a <code>peerId</code>.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="sm" data-act="broadcastPing">Broadcast ping</button>
+          <button class="sm" data-act="unpinStudio">Clear pin</button>
+        </div>
+      </div>
+      <div id="fleet-detail"><span class="sub">No Studio windows connected yet.</span></div>
+      <div class="sub" id="fleet-note"></div>
+      <pre id="fleet-broadcast" style="max-height:170px;display:none"></pre>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div><h3>Public Tunnel (Supervised)</h3>
+            <div class="sub">Auto-restarts, scrapes the public URL, health-probes <code>/api/health</code>, and reconnects after failures. Works with <code>cloudflared</code> or <code>ngrok</code>.</div>
+          </div>
+          <span class="pill off" id="ops-tunnel-pill">stopped</span>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="primary sm" data-act="tunnelAction" data-args='["start"]'>Start Tunnel</button>
+          <button class="sm" data-act="tunnelAction" data-args='["restart"]'>Restart</button>
+          <button class="sm danger" data-act="tunnelAction" data-args='["stop"]'>Stop</button>
+          <button class="sm" data-act="copyTunnelUrl">Copy URL</button>
+          <button class="sm" data-act="copyMcpConfig">Copy MCP config (tunnel)</button>
+        </div>
+        <div class="sub" id="ops-tunnel-meta" style="margin-top:6px">Checking tunnel status&hellip;</div>
+        <div class="sub" id="ops-tunnel-lan" style="margin-top:4px"></div>
+        <pre id="ops-tunnel-log" style="max-height:150px">Tunnel log will appear here.</pre>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head"><div><h3>Join the Agent Bus</h3>
+          <div class="sub">Register this session so other agents (and humans) can see you, message you, and hand work over without collisions.</div></div></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <input id="bus-name" placeholder="Agent name (e.g. Gemini 4 Argon)" style="flex:1;min-width:190px">
+          <input id="bus-role" placeholder="role (builder / qa / reviewer)" style="width:190px">
+          <button class="primary sm" data-act="busRegister">Register</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+          <input id="bus-to" placeholder="to (blank = broadcast)" style="width:180px">
+          <input id="bus-subject" placeholder="subject" style="width:180px">
+        </div>
+        <textarea id="bus-body" placeholder="Message body&hellip; use this to coordinate edits, hand off work, or report a blocker." style="min-height:64px"></textarea>
+        <div style="display:flex;gap:6px">
+          <button class="sm primary" data-act="busPost">Post Message</button>
+          <button class="sm" data-act="refreshBus">Refresh Bus</button>
+          <button class="sm" data-act="busExport">Export Handoff</button>
+        </div>
+        <pre id="bus-out" style="max-height:110px">Bus output appears here.</pre>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <h3>Roster</h3>
+        <div id="bus-agents" class="sub">No agents registered yet.</div>
+      </div>
+      <div class="prompt-card">
+        <h3>Task Board</h3>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <input id="task-title" placeholder="New task title…" style="flex:1">
+          <select id="task-priority" style="width:110px">
+            <option value="normal">normal</option>
+            <option value="high">high</option>
+            <option value="critical">critical</option>
+            <option value="low">low</option>
+          </select>
+          <button class="primary sm" data-act="createTask">Add</button>
+          <button class="sm" data-act="sweepAgents" title="Release tasks held by agents that stopped reporting">Sweep</button>
+        </div>
+        <div id="bus-tasks" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto"></div>
+      </div>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <div class="prompt-head"><h3>Live Event Stream</h3>
+          <button class="sm" data-act="toggleEventStream" id="ev-btn">Connect</button></div>
+        <div class="sub">Server-Sent Events from every agent, job, tunnel action and audit write.</div>
+        <pre id="ev-feed" style="max-height:240px;overflow:auto">Not connected.</pre>
+      </div>
+      <div class="prompt-card">
+        <div class="prompt-head"><h3>Metrics &amp; Audit</h3>
+          <div style="display:flex;gap:6px">
+            <button class="sm" data-act="refreshMetrics">Metrics</button>
+            <button class="sm" data-act="verifyAudit">Verify Chain</button>
+          </div>
+        </div>
+        <pre id="ops-metrics" style="max-height:180px;overflow:auto">Metrics not loaded.</pre>
+        <div class="sub" id="ops-latency"></div>
+        <div class="sub" id="ops-audit-note"></div>
+        <pre id="ops-audit" style="max-height:150px;overflow:auto">Audit log not loaded.</pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-tips" class="tab-pane">
+    <div class="two-col" id="tips-grid"></div>
+  </section>
+
+  <!-- ==================== TAB 8: STUDIO PLUGIN & PLAYTEST V6 ==================== -->
+  <section id="tab-plugin" class="tab-pane">
+    <div class="grid" style="margin-bottom:14px">
+      <div class="card"><div class="k">Bundled Plugin</div><div class="v" id="plg-bundled-ver">v__BRIDGE_VERSION__</div></div>
+      <div class="card"><div class="k">Connected Peers</div><div class="v" id="plg-peer-cnt">0 online</div></div>
+      <div class="card"><div class="k">Version Status</div><div class="v" id="plg-compat-state">Checking&hellip;</div></div>
+      <div class="card"><div class="k">Playtest State</div><div class="v" id="plg-playtest-state">Idle</div></div>
+      <div class="card"><div class="k">In-Studio UI</div><div class="v" id="plg-dockwidget">DockWidget v6</div></div>
+      <div class="card"><div class="k">Plugin Jobs Run</div><div class="v" id="plg-jobs-run">0</div></div>
+    </div>
+
+    <div class="two-col" style="margin-bottom:16px">
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>Studio Plugin Version &amp; Fleet Upgrade Center (<code>ArenaBridge.lua v__BRIDGE_VERSION__</code>)</h3>
+            <div class="sub">Compares every connected Studio peer&rsquo;s <code>pluginVersion</code> against bundled <code>v__BRIDGE_VERSION__</code>. Includes the new in-Studio <code>ArenaBridgeDashboardV6</code> DockWidget panel, <code>plugin_info</code> telemetry, and <code>/api/poll?goodbye=1</code> instant peer eviction.</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="sm primary" data-act="downloadPluginFile">&#11015; Download ArenaBridge.lua v__BRIDGE_VERSION__</button>
+            <button class="sm" data-act="installLocalPluginUI">&#9881; Install to Local Studio</button>
+            <button class="sm" data-act="loadPluginDashboard">&#8635; Refresh</button>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>Peer ID</th><th>DM</th><th>Place</th><th>Reported Plugin</th><th>Status</th></tr></thead>
+          <tbody id="plg-peer-table"><tr><td colspan="5" class="empty">Loading peer plugin compatibility&hellip;</td></tr></tbody>
+        </table>
+        <div id="plg-telemetry-box" class="sub" style="margin-top:8px">In-Studio telemetry will appear here when an Edit peer is connected.</div>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>Playtest Lifecycle &amp; Emergency Stop Controller</h3>
+            <div class="sub">Solves stuck Play Solo / Server Run sessions: dispatches dual <code>edit</code> + <code>server</code> stop commands, runs <code>StudioTestService:EndTest</code> with <code>LeaveTest</code> fallback, purges leftover <code>__ArenaTestRunner_*</code> scripts, and immediately evicts ghost <code>server</code>/<code>client</code> peers.</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+          <button class="sm primary" data-act="quickTool" data-args='["start_stop_play", {"action": "start_play", "waitForPeer": true}]'>&#9654; Start Play Solo (F5)</button>
+          <button class="sm primary" data-act="quickTool" data-args='["start_stop_play", {"action": "start_run", "waitForPeer": true}]'>&#9654; Start Server Run (F8)</button>
+          <button class="sm danger" data-act="forceStopPlaytestUI">&#9209; Force Stop Playtest &amp; Clean Runners</button>
+          <button class="sm" data-act="evictGhostPeersUI">&#129529; Evict Ghost Play Peers</button>
+        </div>
+        <pre id="plg-action-out" style="max-height:190px">Ready. Click "Force Stop Playtest" anytime an automated playtest or Studio session stays open.</pre>
+      </div>
+    </div>
+
+    <div class="prompt-card" style="margin-bottom:14px">
+      <div class="prompt-head">
+        <div>
+          <h3>V6 Systems, Web UI Importer, Mesh-First &amp; De-Slop Quick-Launcher (100 Total MCP Tools)</h3>
+          <div class="sub">Test-drive the V6 tools (<code>import_ui_from_web</code>, <code>export_ui_to_web</code>, <code>de_slop_audit</code>, <code>spawn_kit_mesh</code>, <code>kitbash_mesh_prop</code>, <code>build_vfx_emitter</code>, <code>build_combat_hitbox</code>, <code>configure_camera_rig</code>, <code>generate_sfx_soundbank</code>, <code>operator_chat</code>, <code>audit_network_security</code>, <code>build_cutscene_sequence</code>, <code>generate_ui_theme_pack</code>, <code>manage_plugin_and_playtest</code>) + 33 reusable Luau modules.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="sm primary" data-act="runV6ToolPreview" data-args='["import_ui_from_web", {"preset": "rpg_hud", "deSlop": true, "installInStudio": false}]'>&#127760; Import UI from Web</button>
+          <button class="sm primary" data-act="runV6ToolPreview" data-args='["export_ui_to_web", {"path": "StarterGui", "deSlop": true}]'>&#128228; Export UI to Web</button>
+          <button class="sm primary" data-act="runV6ToolPreview" data-args='["de_slop_audit", {"texts": ["Furthermore \u2014 delve into this seamless quest!"], "includeStudio": true}]'>&#10024; De-Slop Audit</button>
+          <button class="sm primary" data-act="runV6ToolPreview" data-args='["kitbash_mesh_prop", {"preset": "runic_obelisk", "scale": 1.2, "spawnInStudio": false}]'>&#128142; Kitbash 3D Mesh Prop</button>
+          <button class="sm primary" data-act="runV6ToolPreview" data-args='["build_combat_hitbox", {"preset": "melee_combo", "installInStudio": false}]'>&#9876; Build Combat Hitbox</button>
+          <button class="sm primary" data-act="runV6ToolPreview" data-args='["configure_camera_rig", {"preset": "over_shoulder_action", "installInStudio": false}]'>&#127909; Configure Camera Rig</button>
+          <button class="sm primary" data-act="runV6ToolPreview" data-args='["generate_sfx_soundbank", {"pack": "combat_pack", "installInStudio": false}]'>&#128266; Generate SFX Bank</button>
+          <button class="sm primary" data-act="runV6ToolPreview" data-args='["build_vfx_emitter", {"preset": "portal_swirl", "burstCount": 32, "buildInStudio": false}]'>&#9889; Build VFX Emitter</button>
+        </div>
+      </div>
+      <pre id="v6-tool-out" style="max-height:220px">Select any V6 tool above to inspect its structured output.</pre>
+    </div>
+
+    <div class="two-col">
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>&#128172; Direct Operator &harr; Agent Live Chat (Push-Injected into Tool Loop)</h3>
+            <div class="sub">Unlike <code>agent_bus</code> broadcasts that agents can overlook, messages sent here are <strong>automatically injected into the agent&rsquo;s very next MCP tool call response</strong> (<code>operatorLiveChat</code>) and answered via <code>operator_chat(action='reply')</code>.</div>
+          </div>
+          <span class="pill on" id="live-chat-badge">Direct Live</span>
+        </div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin:6px 0">
+          <button class="sm" data-act="quickOperatorDirective" data-args='["Prioritize 3D meshes (MeshPart / SpecialMesh / kitbash_mesh_prop) over blocky Part primitives."]'>&#128142; Directive: 3D Mesh Priority</button>
+          <button class="sm" data-act="quickOperatorDirective" data-args='["Import the HUD directly from the Web / Dashboard using import_ui_from_web."]'>&#127760; Directive: Import Web UI</button>
+          <button class="sm" data-act="quickOperatorDirective" data-args='["Run de_slop_audit: remove all em-dashes (\u2014), filler connectors, and text dumps; add icon badges."]'>&#10024; Directive: De-Slop UI</button>
+        </div>
+        <div id="direct-chat-feed" style="max-height:210px;overflow:auto;background:#090d14;border:1px solid var(--border);border-radius:8px;padding:10px;margin:8px 0;font-size:12.5px">
+          <div class="sub">No direct chat messages yet. Send a message below to inject it into the agent&rsquo;s active tool loop.</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input id="direct-chat-input" placeholder="Message the active agent directly (e.g. Use 3D meshes for the shrine and import the HUD from Web)..." style="flex:1;min-width:220px" data-act="sendOperatorLiveChat" data-act-on="keydown:Enter">
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="direct-chat-pin"> Pin Directive</label>
+          <button class="sm primary" data-act="sendOperatorLiveChat">Send to Agent</button>
+          <button class="sm" data-act="refreshDirectChat">&#8635;</button>
+        </div>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div>
+            <h3>&#127760; Import &amp; Round-Trip UI Between Web (HTML / Tailwind) &amp; <code>StarterGui</code></h3>
+            <div class="sub">Paste Web HTML/Tailwind markup or pick a preset to convert directly into a responsive Roblox <code>ScreenGui</code> with automatic De-Slop sanitization, or export live <code>StarterGui</code> back to Web HTML.</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0">
+          <select id="web-ui-preset" style="width:170px">
+            <option value="rpg_hud">Preset: RPG HUD Bar</option>
+            <option value="shop_grid">Preset: Shop Grid</option>
+            <option value="quest_tracker">Preset: Quest Tracker</option>
+            <option value="inventory_dock">Preset: Inventory Dock</option>
+            <option value="boss_bar">Preset: Boss Health Bar</option>
+            <option value="dialog_card">Preset: NPC Dialog Card</option>
+          </select>
+          <input id="web-ui-name" value="WebImportedGui" placeholder="ScreenGui Name" style="width:155px">
+          <button class="sm primary" data-act="importWebUiFromDashboard" data-args='[false]'>Preview Tree</button>
+          <button class="sm primary" data-act="importWebUiFromDashboard" data-args='[true]'>&#11014; Build in StarterGui</button>
+          <button class="sm" data-act="exportStudioUiToWeb">&#11015; Export StarterGui &rarr; HTML</button>
+        </div>
+        <textarea id="web-ui-html" placeholder="Optional: paste custom HTML / Tailwind markup here (e.g. <div class='bg-slate-900 rounded-xl p-3 flex'><span>HP 100/100</span><button>[Q] DASH</button></div>)" style="min-height:68px"></textarea>
+        <pre id="web-ui-out" style="max-height:140px">Converted Roblox ScreenGui tree will appear here.</pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast">Copied to clipboard</div>
+
+<script src="/static/dashboard.js?v=__BRIDGE_VERSION__" defer></script></body></html>

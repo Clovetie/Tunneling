@@ -26,7 +26,7 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-BUS_VERSION = "6.0.0"
+BUS_VERSION = "6.1.0"
 DEFAULT_STATE_DIR = Path(__file__).resolve().parent / "bridge_state"
 
 AGENT_STATUSES = ("online", "busy", "idle", "offline")
@@ -885,7 +885,16 @@ class AgentBus:
         text = "\n".join(lines)
         target = None
         if path:
-            target = Path(path)
+            # v6.1.0 (P0-S4): this used to be `Path(path).write_text(...)`, which
+            # made `agent_bus {action:"export", path:"~/.bashrc"}` an arbitrary
+            # file-write primitive reachable from any MCP client — and the write
+            # lands *before* the caller ever sees the markdown. Confine it to an
+            # import root (the repo, the temp dir, or whatever the operator lists
+            # in BRIDGE_IMPORT_ROOTS) exactly like `import_image`'s `saveFile`.
+            from mcp_core import safe_import_path
+            target = safe_import_path(path, must_exist=False)
+            if target.is_dir():
+                raise ValueError(f"export path is a directory: {target}")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
         return {"markdown": text, "path": str(target) if target else None, "bytes": len(text.encode("utf-8"))}

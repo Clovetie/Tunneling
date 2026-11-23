@@ -639,6 +639,19 @@ python3 roblox-bridge/mcp_server.py --require-confirm destructive   # stdio, sam
 equivalents; `BRIDGE_CONFIRM_SECRET` overrides the HMAC key (default: the bridge
 token, so a per-process secret is fine but restarts invalidate pending requests).
 
+**What a tool may touch on disk and on the network.** Every file-shaped tool
+argument (`filePath`, `saveFile`, `outputFile`, `repoAsset`, `localDir`,
+`directory`, `placeFile`, `path` on `luau_check`, `agent_bus` `export`) is
+resolved through `mcp_core.safe_import_path()` / `safe_local_path()`: absolute
+paths, `..` segments, `~`, NUL bytes and symlinks that leave the root are
+refused, and so is anything outside an *import root* — the kit root, the
+repository, and the system temp directory. `BRIDGE_IMPORT_ROOTS` adds more,
+`os.pathsep`-separated (`~/Downloads:~/captures`), which is how you let
+`import_image` read a screenshot from your Desktop without opening the whole
+filesystem to a prompt-injected agent. Outbound fetches (`imageUrl`) go through
+`safe_url()`: `http`/`https` only, and never at loopback, link-local, private,
+reserved or cloud-metadata hosts.
+
 **Two eras, one queue.** A 2026-07-28 client gets `input_required` immediately and
 holds no connection. A legacy client (no MRTR) is *waited on* for
 `--confirm-wait` seconds (default 45) so older agents still get an answer in-band;
@@ -653,7 +666,7 @@ inputResponses}` is the answer path.
 | `POST /api/confirmations` `{"action":"approve","requestId":"cfm-…","note":"…","remember":true}` | the operator path; `source` defaults to `operator` |
 | `arena_studio.py confirmations` / `approve <id> [--remember]` / `deny <id> [--note]` | same thing from a terminal (`BRIDGE_URL` + `BRIDGE_TOKEN`) |
 | `bridge_ops` `confirm_approve` / `confirm_deny` | an *agent* may answer another principal's request (audited as `mcp-operator`); approving your own is refused with `reason: "operator_only"` |
-| in-band `inputResponses` | only honoured when the client declared `elicitation`; otherwise the note tells the caller to have an operator answer |
+| in-band `inputResponses` | **refused by default since 6.1.0.** The `elicitation` capability arrives in per-request `_meta`, which the caller writes, so a declared capability is not evidence that a human was asked — an agent could approve its own `execute_luau`. The caller gets `input_required` again with `reason: "client_answers_disabled"` and the operator command in the note. Set `BRIDGE_TRUST_CLIENT_ELICITATION=1` only if you run a host that genuinely elicits a human; `bridge_ops confirmations` reports which policy is in force as `trustClientElicitation` |
 
 `remember: true` opens an allowance (`--confirm-allowance` seconds) for that
 tool + principal, so a repeated loop does not re-prompt. Read actions and the

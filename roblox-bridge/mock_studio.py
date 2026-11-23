@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-mock_studio.py — Stateful Roblox Studio v6.0.0 simulator for testing the bridge,
+mock_studio.py — Stateful Roblox Studio v6.1.0 simulator for testing the bridge,
 CLI, and all registered MCP tools without Roblox Studio open.
 
 Simulates:
@@ -25,15 +25,19 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from auth_core import PLACEHOLDER_TOKEN
 from mcp_core import fnv1a_32, fnv1a_hex, normalize_newlines
 
 BASE = os.environ.get("BRIDGE_URL", "http://127.0.0.1:8077").rstrip("/")
-TOKEN = os.environ.get("BRIDGE_TOKEN", "arena-demo-7f3a")
+# The mock defaults to the *demo* literal on purpose: it stands in for an
+# unconfigured plugin. A real server refuses that token (v6.1.0, P0-S5), so
+# BRIDGE_TOKEN must be set — or bridge.token present — to talk to one.
+TOKEN = os.environ.get("BRIDGE_TOKEN") or PLACEHOLDER_TOKEN
 #: The plugin version the mock claims. It must match `local PLUGIN_VERSION` in
 #: ArenaBridge.lua: the mock stands in for that plugin, reports this as its
 #: `pluginVersion` in every info result, and registers it as `pv` like the real
 #: one does — which is what /api/peers and the studio strip display.
-PLUGIN_VERSION = os.environ.get("MOCK_PLUGIN_VERSION", "6.0.0")
+PLUGIN_VERSION = os.environ.get("MOCK_PLUGIN_VERSION", "6.1.0")
 
 PLACE = os.environ.get("MOCK_PLACE", "DemoPlace (simulated Studio v%s)" % PLUGIN_VERSION)
 # The engine build the mock pretends to be, reported by playtest_caps. Real
@@ -1531,7 +1535,7 @@ def run_mock_loop(base_url: str = BASE, token: str = TOKEN, stop_event: threadin
 
 
 def main():
-    print(f"mock Studio v6.0.0 -> {BASE} (place: {PLACE})", flush=True)
+    print(f"mock Studio v6.1.0 -> {BASE} (place: {PLACE})", flush=True)
     run_mock_loop(BASE, TOKEN)
 
 

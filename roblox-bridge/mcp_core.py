@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 mcp_core.py — Zero-dependency Model Context Protocol (MCP) engine & Roblox Studio
-tool suite for Arena <-> Roblox Studio (v6.0.0).
+tool suite for Arena <-> Roblox Studio (v6.1.0).
 
 Supports:
   - Dual-era MCP: 2026-07-28 (stateless, server/discover, resultType, MRTR,
@@ -25,11 +25,13 @@ Supports:
 """
 
 import base64
+import ipaddress
 import json
 import math
 import os
 import random
 import re
+import socket
 import threading
 import uuid
 import subprocess
@@ -37,6 +39,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -48,7 +51,7 @@ from confirm_gate import (  # noqa: E402  (v5.4.0 human-in-the-loop gate)
 )
 
 MCP_SERVER_NAME = "arena-roblox-studio-mcp"
-MCP_SERVER_VERSION = "6.0.0"
+MCP_SERVER_VERSION = "6.1.0"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2026-07-28",   # stateless era: server/discover, per-request _meta, resultType
     "2025-11-25",   # final legacy era: tasks, elicitation, structured output
@@ -214,7 +217,317 @@ CONFIRM_GATED_TOOLS = (
     "install_kit_module", "spawn_prefab", "drift_and_sync", "manage_snapshots",
     "open_cloud_action", "start_stop_play", "run_studio_tests", "simulate_input",
     "undo_redo",
+    # v6.1.0: arbitrary-code execution and DataModel probes were missing from the
+    # curated destructive set even though they carry `destructiveHint: true`.
+    "run_luau", "execute_luau", "probe",
 )
+
+#: Job kinds enqueued over `POST /api/jobs` mapped onto the MCP tool whose
+#: policy applies to them (v6.1.0, P0-S1).
+#:
+#: Derived by instrumenting `BridgeClient.submit_job` and calling all 100 tools
+#: through `execute_tool`; `test_bridge_mcp.py` re-derives it and fails if a new
+#: job kind shows up unmapped, so this cannot silently rot. Most kinds already
+#: share their tool's name; the interesting ones are the aliases — `run_luau` is
+#: the same arbitrary-code surface as `execute_luau` but has no spec of its own,
+#: which is exactly why the REST path used to skip the gate.
+JOB_KIND_TOOL = {
+    "attributes": "manage_attributes",
+    "batch_write": "batch_write",
+    "build": "build_tree",
+    "camera": "manage_camera",
+    "clone_instance": "clone_instance",
+    "compare_instances": "compare_instances",
+    "console": "get_console_output",
+    "delete": "delete_instance",
+    "device_simulator": "manage_device_simulator",
+    "find_replace_scripts": "find_and_replace_scripts",
+    "get_properties": "get_properties",
+    "history": "undo_redo",
+    "import_image": "import_image",
+    "insert_asset": "insert_asset",
+    "inspect": "inspect_instance",
+    "mass_set_properties": "mass_set_properties",
+    "mesh_capabilities": "mesh_capabilities",
+    "multi_edit": "multi_edit",
+    "open_script": "open_script_in_editor",
+    "ping": "ping_studio",
+    "playtest": "start_stop_play",
+    "playtest_caps": "playtest_capabilities",
+    "plugin_info": "manage_plugin_and_playtest",
+    "read_script": "script_read",
+    "read_scripts": "read_scripts_batch",
+    "reparent_instance": "reparent_or_rename",
+    "require_fresh": "require_fresh",
+    "run_luau": "execute_luau",
+    "scatter_props": "scatter_props",
+    "script_grep": "script_grep",
+    "script_search": "script_search",
+    "search_tree": "search_game_tree",
+    "selection": "manage_selection",
+    "set_properties": "set_properties",
+    "studio_state": "get_studio_state",
+    "studio_tests": "run_studio_tests",
+    "survey": "survey_place",
+    "tags": "manage_tags",
+    "terrain": "edit_terrain",
+    "virtual_input": "simulate_input",
+    "write_script": "write_script",
+}
+
+#: Job kinds the helpers submit that have no tool of their own and are always
+#: reads. `get_tree` backs `export_ui_to_web`/`de_slop_audit`; `hash_scripts`
+#: backs `drift_and_sync`. Anything unmapped and not in `READ_ONLY_JOB_TYPES`
+#: fails closed as a write.
+READ_ONLY_INTERNAL_JOB_KINDS = frozenset({"get_tree", "hash_scripts"})
+
+
+def job_tool_name(kind: str):
+    """The MCP tool whose gate policy applies to a REST job kind, or None.
+
+    `None` means "no tool owns this kind"; the caller then falls back to
+    `READ_ONLY_JOB_TYPES` / `READ_ONLY_INTERNAL_JOB_KINDS` and fails closed.
+    """
+    return JOB_KIND_TOOL.get(kind)
+
+
+def job_kind_is_read_only(kind: str, payload: dict) -> bool:
+    """Single read/write oracle for a queued job, on either transport.
+
+    `is_tool_call_read_only` stays the source of truth: when a kind maps to a
+    tool, the *job payload* is that tool's argument set for the purposes of the
+    question, so `manage_attributes` with `{"action": "get"}` is a read and with
+    `{"action": "set"}` is a write — the same answer the MCP path gives.
+    """
+    tool = JOB_KIND_TOOL.get(kind)
+    if tool:
+        return is_tool_call_read_only(tool, payload if isinstance(payload, dict) else {})
+    if kind in READ_ONLY_JOB_TYPES or kind in READ_ONLY_INTERNAL_JOB_KINDS:
+        return True
+    return False
+
+
+# ----------------------------------------------------------------------------
+# Path & URL safety (v6.1.0, P0-S4)
+# ----------------------------------------------------------------------------
+#
+# Every tool argument that names a file or a remote URL goes through one of the
+# helpers below. They exist because `import_image` accepted
+# `repoAsset: "../registry.json"` (3.7 MB read from outside `assets/images/`),
+# `saveFile: "~/.arena_write_probe.png"` (a write outside the repo), and
+# `imageUrl: "file:///etc/hostname"` (`urlopen` happily serves any scheme).
+# A new tool cannot "forget" the check if it uses these instead of `Path(...)`.
+
+#: URL schemes a tool argument may use. `file:`, `ftp:`, `gopher:` and friends
+#: are refused outright; `data:` is handled by the base64 branch of each caller,
+#: never by `urlopen`.
+ALLOWED_URL_SCHEMES = ("http", "https")
+
+#: Hosts that must not be fetched from an agent-supplied URL: reaching them is
+#: SSRF against the operator's own machine (the bridge itself, cloud metadata).
+BLOCKED_URL_HOSTS = frozenset({
+    "localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback",
+    "metadata.google.internal", "metadata", "instance-data",
+})
+
+
+class UnsafePathError(ValueError):
+    """A tool argument tried to read or write outside its allowed root."""
+
+    def __init__(self, reason: str, value):
+        super().__init__(f"{reason}: {value!r}")
+        self.reason = reason
+
+
+class UnsafeURLError(ValueError):
+    """A tool argument named a URL the bridge refuses to fetch."""
+
+    def __init__(self, reason: str, value):
+        super().__init__(f"{reason}: {value!r}")
+        self.reason = reason
+
+
+def safe_local_path(root, rel, *, must_exist: bool = False, allow_dir: bool = True):
+    """Resolve `rel` inside `root` or raise `UnsafePathError`.
+
+    Refuses absolute paths, drive letters/UNC prefixes, NUL bytes, `~`
+    expansion, and anything whose resolved location escapes `root` (including
+    through a symlink). `must_exist=True` additionally requires a real file —
+    or, with `allow_dir=True`, a directory.
+    """
+    if rel is None:
+        raise UnsafePathError("missing path", rel)
+    text = os.fspath(rel) if not isinstance(rel, str) else rel
+    if "\x00" in text:
+        raise UnsafePathError("path contains a NUL byte", "<redacted>")
+    text = text.strip()
+    if not text:
+        raise UnsafePathError("empty path", text)
+    if text.startswith("~"):
+        raise UnsafePathError("home-relative paths are not allowed", text)
+
+    root_path = Path(root).expanduser().resolve()
+    normalised = text.replace("\\", "/")
+    # Absolute in any dialect: POSIX, Windows drive letter, or UNC. These are
+    # *rejected*, not silently rebased under the root — a caller asking for
+    # `/etc/passwd` is not asking for `<root>/etc/passwd`.
+    if normalised.startswith("/") or normalised.startswith("//"):
+        raise UnsafePathError("absolute paths are not allowed", text)
+    if re.match(r"^[A-Za-z]:[/\\]", normalised):
+        raise UnsafePathError("absolute paths are not allowed", text)
+    if any(seg == ".." for seg in normalised.split("/")):
+        raise UnsafePathError("path traversal ('..') is not allowed", text)
+
+    candidate = root_path / normalised
+    try:
+        resolved = candidate.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise UnsafePathError(f"unresolvable path ({exc})", text) from exc
+    if resolved != root_path and root_path not in resolved.parents:
+        raise UnsafePathError("path escapes its root", text)
+
+    if must_exist:
+        if allow_dir and resolved.is_dir():
+            return resolved
+        if not resolved.is_file():
+            raise UnsafePathError("file not found", text)
+    return resolved
+
+
+def import_roots() -> tuple:
+    """Directories a tool may read an operator-supplied `filePath` from.
+
+    The repo itself and the system temp dir (tools legitimately round-trip an
+    export through a temp file and re-import it) plus anything the operator
+    lists in `BRIDGE_IMPORT_ROOTS` — an `os.pathsep`-separated set of paths,
+    e.g. `~/Downloads`. Everything else is refused, which stops a
+    prompt-injected agent from using `import_image`/`import_rbxmx` to read
+    `/etc/passwd` back out as an "asset".
+    """
+    roots = []
+    try:
+        from image_pipeline import find_kit_root
+        roots.append(Path(find_kit_root()).resolve())
+    except Exception:  # noqa: BLE001 - the kit root is optional in odd layouts
+        roots.append(Path(__file__).resolve().parent)
+    roots.append(Path(__file__).resolve().parent.parent)
+    try:
+        roots.append(Path(tempfile.gettempdir()).resolve())
+    except OSError:
+        pass
+    for chunk in (os.environ.get("BRIDGE_IMPORT_ROOTS") or "").split(os.pathsep):
+        chunk = chunk.strip()
+        if chunk:
+            roots.append(Path(chunk).expanduser().resolve())
+    seen, out = set(), []
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            seen.add(key)
+            out.append(root)
+    return tuple(out)
+
+
+def safe_import_path(value, *, must_exist: bool = True, suffixes=None):
+    """Resolve an operator-supplied `filePath`/`outputFile`/`saveFile`.
+
+    Unlike `safe_local_path` the root is not fixed by the caller: any configured
+    import root may contain the file. Symlinks are resolved, so a link inside
+    the repo cannot point at `/etc/shadow`.
+    """
+    if value is None:
+        raise UnsafePathError("missing path", value)
+    text = os.fspath(value) if not isinstance(value, str) else value
+    if "\x00" in text:
+        raise UnsafePathError("path contains a NUL byte", "<redacted>")
+    text = text.strip()
+    if not text:
+        raise UnsafePathError("empty path", text)
+    try:
+        resolved = Path(text).expanduser().resolve()
+    except (OSError, RuntimeError) as exc:
+        raise UnsafePathError(f"unresolvable path ({exc})", text) from exc
+    roots = import_roots()
+    if not any(resolved == root or root in resolved.parents for root in roots):
+        raise UnsafePathError(
+            "path is outside every allowed import root (set BRIDGE_IMPORT_ROOTS to extend them)",
+            text,
+        )
+    if suffixes:
+        wanted = {s.lower() if s.startswith(".") else f".{s.lower()}" for s in suffixes}
+        if resolved.suffix.lower() not in wanted:
+            raise UnsafePathError(
+                f"expected one of {', '.join(sorted(wanted))} but got '{resolved.suffix or '(none)'}'",
+                text,
+            )
+    if must_exist and not resolved.exists():
+        raise UnsafePathError("file not found", text)
+    return resolved
+
+
+def _host_is_local(host: str) -> bool:
+    """True for loopback, link-local, private, reserved and metadata IP shapes.
+
+    Hostnames are resolved so `localtest.me`-style DNS tricks do not slip
+    through; an unresolvable name is treated as *not* local (the fetch fails on
+    its own) so flaky DNS cannot block a legitimate host.
+    """
+    bare = host.strip("[]")
+    if bare in ("169.254.169.254", "fd00:ec2::254"):
+        return True
+    try:
+        infos = socket.getaddrinfo(bare, None)
+    except (OSError, UnicodeError):
+        return False
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr.split("%", 1)[0])
+        except ValueError:
+            continue
+        if (ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            return True
+    return False
+
+
+def safe_url(url, *, allowed_schemes=ALLOWED_URL_SCHEMES, block_private: bool = True):
+    """Validate an agent-supplied URL and return it unchanged, or raise.
+
+    Only `http`/`https` by default; loopback, link-local, private and
+    cloud-metadata hosts are refused so an agent cannot make the bridge read its
+    own `/api/state`, `bridge.token`, or `169.254.169.254`. Pass
+    `block_private=False` for internal callers that legitimately talk to the
+    bridge itself (they build their own URL, never one from tool arguments).
+    """
+    if url is None:
+        raise UnsafeURLError("missing url", url)
+    text = str(url).strip()
+    if not text:
+        raise UnsafeURLError("empty url", text)
+    if "\x00" in text or any(ord(ch) < 0x20 for ch in text):
+        raise UnsafeURLError("url contains a control character", "<redacted>")
+    if text.startswith("\\\\") or re.match(r"^[A-Za-z]:[/\\]", text):
+        raise UnsafeURLError("filesystem paths are not URLs", text)
+    try:
+        parsed = urllib.parse.urlsplit(text)
+    except ValueError as exc:
+        raise UnsafeURLError(f"unparseable url ({exc})", text) from exc
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in allowed_schemes:
+        raise UnsafeURLError(
+            f"scheme '{scheme or '(none)'}' is not allowed (expected one of: "
+            f"{', '.join(allowed_schemes)})", text,
+        )
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host:
+        raise UnsafeURLError("url has no host", text)
+    if host in BLOCKED_URL_HOSTS or host.endswith(".localhost"):
+        raise UnsafeURLError(f"host '{host}' is not allowed", text)
+    if block_private and _host_is_local(host):
+        raise UnsafeURLError(f"host '{host}' resolves to a local/private address", text)
+    return text
+
 
 #: `manage_device_simulator` actions, in the order the tool schema advertises
 #: them. The schema enum is derived from this tuple so the two cannot drift.
@@ -478,9 +791,11 @@ def run_luau_check(code: str = None, path: str = None) -> dict:
     if not path:
         raise ValueError("Provide either 'code' (inline string) or 'path' (file/directory).")
 
-    target = Path(path).expanduser().resolve()
-    if not target.exists():
-        raise FileNotFoundError(f"Path does not exist: {target}")
+    # v6.1.0 (P0-S4): the `code=` branch only uses `path` as a display label, but
+    # this branch reads real files and echoes diagnostics (line numbers plus the
+    # offending source) back to the caller — so `path` was an arbitrary local
+    # file read. Confine it to the import roots like every other file argument.
+    target = safe_import_path(path, must_exist=True)
 
     files = []
     if target.is_file():
@@ -895,6 +1210,14 @@ class BridgeClient:
                     "principal": call_ctx["principal"],
                     "protocolVersion": call_ctx.get("requestedVersion"),
                 }
+                # v6.1.0 (P0-S1): the REST gate lives in enqueue_job, which both
+                # transports reach. An MCP call has already been through
+                # `_gate_pre` for *this* tool and *this* principal, so re-gating
+                # the jobs it fans out into would ask the operator twice (and
+                # under mode `all` would deadlock a legacy caller). The marker is
+                # only ever set by the dispatcher, never read from a request body.
+                body["gateCleared"] = bool(call_ctx.get("gateCleared"))
+                body["principal"] = call_ctx["principal"]
         if dm and dm != "auto":
             body["dm"] = dm
         if peer_id:
@@ -2632,9 +2955,9 @@ TOOL_SPECS = [
     {
         "name": "manage_plugin_and_playtest",
         "description": (
-            "Inspect Studio plugin version compatibility (`v6.0.0` vs older `v4.0.0`/`v4.1.0` peers), query live "
+            "Inspect Studio plugin version compatibility (`v6.1.0` vs older `v6.0.0`/`v4.0.0`/`v4.1.0` peers), query live "
             "in-Studio `ArenaBridge` plugin telemetry (`plugin_info`: jobs processed, DockWidget dashboard status, "
-            "capabilities), install/update `ArenaBridge.lua` v6.0.0 into local Studio Plugins, or run "
+            "capabilities), install/update `ArenaBridge.lua` v6.1.0 into local Studio Plugins, or run "
             "`force_stop_playtest` / `evict_stale_peers` to cleanly close stuck playtests and purge ghost runtime peers."
         ),
         "inputSchema": {
@@ -4155,7 +4478,10 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
         return drift_and_sync_tree(
             client=client,
             mode=args["mode"],
-            local_dir=Path(args["localDir"]).expanduser(),
+            # v6.1.0 (P0-S4): `pull` mode *writes* every Studio script into this
+            # directory, so an unvalidated `localDir` was an arbitrary file-write
+            # primitive (`localDir:"~/.ssh"`). Import roots only.
+            local_dir=safe_import_path(args["localDir"], must_exist=True),
             studio_root=args["studioRoot"].replace("/", "."),
             skip_check=args.get("skipCheck", False),
             peer_id=peer_id,
@@ -6103,14 +6429,12 @@ def import_audio_helper(client: BridgeClient, args: dict, peer_id: str = None) -
     audio_dir.mkdir(parents=True, exist_ok=True)
 
     if args.get("repoAudio"):
-        cand = audio_dir / Path(args["repoAudio"]).name
-        if not cand.is_file():
-            raise FileNotFoundError(f"Repo audio not found: {cand}")
+        cand = safe_local_path(audio_dir, Path(args["repoAudio"]).name, must_exist=True, allow_dir=False)
         raw = cand.read_bytes()
         fname = cand.name
         stem = cand.stem
     elif args.get("filePath"):
-        p = Path(args["filePath"]).expanduser()
+        p = safe_import_path(args["filePath"], suffixes=(".wav", ".ogg", ".mp3", ".flac"))
         if not p.is_file():
             raise FileNotFoundError(f"Audio file not found: {p}")
         raw = p.read_bytes()
@@ -6181,7 +6505,7 @@ def import_rbxmx_helper(client: BridgeClient, args: dict, peer_id: str = None) -
             raise FileNotFoundError(f"Repo .rbxmx model not found: {mp}")
         xml_str = mp.read_text(encoding="utf-8")
     elif args.get("filePath"):
-        fp = Path(args["filePath"]).expanduser()
+        fp = safe_import_path(args["filePath"], suffixes=(".rbxmx", ".xml"))
         if not fp.is_file():
             raise FileNotFoundError(f"File not found: {fp}")
         xml_str = fp.read_text(encoding="utf-8")
@@ -6256,7 +6580,11 @@ def export_rbxmx_helper(client: BridgeClient, args: dict, peer_id: str = None) -
         raise ValueError("Provide either live Studio 'path' or repo 'prefab'.")
 
     xml_str = serialize_tree_to_rbxmx(nodes)
-    out_file = Path(args["outputFile"]).expanduser() if args.get("outputFile") else (kit / "models" / f"{default_name}.rbxmx")
+    # v6.1.0 (P0-S4): confined to an allowed import root.
+    out_file = (
+        safe_import_path(args["outputFile"], must_exist=False, suffixes=(".rbxmx",))
+        if args.get("outputFile") else (kit / "models" / f"{default_name}.rbxmx")
+    )
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(xml_str, encoding="utf-8")
     return {
@@ -6648,7 +6976,8 @@ def capture_viewport_helper(client: BridgeClient, args: dict, peer_id: str = Non
         zoom=zoom,
     )
     if args.get("saveFile"):
-        sp = Path(args["saveFile"]).expanduser()
+        sp = safe_import_path(args["saveFile"], must_exist=False,
+                              suffixes=(".png", ".jpg", ".jpeg", ".bmp"))
         sp.parent.mkdir(parents=True, exist_ok=True)
         sp.write_bytes(png_bytes)
         meta["savedFile"] = str(sp)
@@ -6763,7 +7092,8 @@ def render_offline_helper(client: BridgeClient, args: dict, peer_id: str = None,
         if source == "exported_tree" and meta["measuredFrom"] == "derived":
             meta.setdefault("warnings", []).append("No client absolute UI measurements were present in the exported tree; layout was derived from UDim2.")
     if args.get("saveFile"):
-        out = Path(args["saveFile"]).expanduser()
+        out = safe_import_path(args["saveFile"], must_exist=False,
+                               suffixes=(".png", ".jpg", ".jpeg", ".bmp"))
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(png)
         meta["savedFile"] = str(out)
@@ -6855,7 +7185,10 @@ def export_place_rbxlx_helper(client: BridgeClient, args: dict, peer_id: str = N
     from rbxmx_pipeline import serialize_place_to_rbxlx
 
     kit = find_kit_root()
-    out_file = Path(args.get("outputFile") or (kit / "models" / "StarterPlace.rbxlx")).expanduser()
+    out_file = (
+        safe_import_path(args["outputFile"], must_exist=False, suffixes=(".rbxlx",))
+        if args.get("outputFile") else (kit / "models" / "StarterPlace.rbxlx")
+    )
     services_map = {}
 
     if args.get("offlineStarterPlace") or not client.health().get("studio_connected"):
@@ -6918,7 +7251,7 @@ def export_place_rbxlx_helper(client: BridgeClient, args: dict, peer_id: str = N
 def import_place_rbxlx_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
     from rbxmx_pipeline import parse_rbxlx_place
 
-    fp = Path(args["filePath"]).expanduser()
+    fp = safe_import_path(args["filePath"], suffixes=(".rbxlx",))
     if not fp.is_file():
         raise FileNotFoundError(f".rbxlx file not found: {fp}")
     services, stats = parse_rbxlx_place(fp.read_text(encoding="utf-8"), strip_scripts=bool(args.get("stripScripts", False)))
@@ -6959,7 +7292,11 @@ def open_cloud_action_helper(args: dict) -> dict:
 
     if action == "publish_place":
         pid = int(args["placeId"])
-        pfile = Path(args["placeFile"]).expanduser()
+        # v6.1.0 (P0-S4): this read any local file the bridge user could open and
+        # uploaded it to Roblox's API — an exfiltration primitive dressed as a
+        # publish step (`placeFile:"~/.ssh/id_rsa"`). Import roots only, and the
+        # extension is now checked instead of merely sniffed.
+        pfile = safe_import_path(args["placeFile"], suffixes=(".rbxlx", ".rbxl"))
         if not pfile.is_file():
             raise FileNotFoundError(f"Place file not found: {pfile}")
         raw = pfile.read_bytes()
@@ -7032,16 +7369,16 @@ def import_image_helper(client: BridgeClient, args: dict, peer_id: str = None) -
         raw_bytes = encode_png_rgba(w, h, rgba)
         default_stem = preset
     elif args.get("repoAsset"):
-        rel_clean = args["repoAsset"].replace("\\", "/").lstrip("/")
-        cand = images_dir / rel_clean
-        if not cand.is_file():
-            raise FileNotFoundError(f"Repo asset not found: {cand}")
+        # v6.1.0 (P0-S4): confined to assets/images/. `"../registry.json"` used
+        # to read 3.7 MB from outside the kit and echo it back as an asset uri.
+        cand = safe_local_path(images_dir, args["repoAsset"], must_exist=True, allow_dir=False)
+        rel_clean = cand.relative_to(images_dir.resolve()).as_posix()
         raw_bytes = cand.read_bytes()
         ext = cand.suffix.lower() or ".png"
         default_stem = cand.stem
         rel_override = rel_clean
     elif args.get("filePath"):
-        src_p = Path(args["filePath"]).expanduser()
+        src_p = safe_import_path(args["filePath"], suffixes=(".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif", ".tga"))
         if not src_p.is_file():
             raise FileNotFoundError(f"Image file not found: {src_p}")
         raw_bytes = src_p.read_bytes()
@@ -7057,10 +7394,13 @@ def import_image_helper(client: BridgeClient, args: dict, peer_id: str = None) -
                 ext = ".bmp"
         raw_bytes = _b64.b64decode(b64_in)
     elif args.get("imageUrl"):
-        req = urllib.request.Request(args["imageUrl"], headers={"User-Agent": f"ArenaRobloxMCP/{MCP_SERVER_VERSION}"})
+        # v6.1.0 (P0-S4): http(s) only, and never at the operator's own machine
+        # or a cloud metadata endpoint.
+        fetch_url = safe_url(args["imageUrl"])
+        req = urllib.request.Request(fetch_url, headers={"User-Agent": f"ArenaRobloxMCP/{MCP_SERVER_VERSION}"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw_bytes = resp.read()
-        url_path = args["imageUrl"].split("?", 1)[0]
+        url_path = fetch_url.split("?", 1)[0]
         if Path(url_path).suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp"):
             ext = Path(url_path).suffix.lower()
         default_stem = Path(url_path).stem or "remote_image"
@@ -7073,10 +7413,13 @@ def import_image_helper(client: BridgeClient, args: dict, peer_id: str = None) -
     safe_stem = _re.sub(r"[^A-Za-z0-9_\-]", "_", Path(raw_name).stem) or "image"
     subdir = _re.sub(r"[^A-Za-z0-9_/\-]", "", args.get("saveSubdir") or "imported").strip("/") or "imported"
     rel_path = rel_override or f"{subdir}/{safe_stem}{ext}"
+    # v6.1.0 (P0-S4): the character filter above stops most escapes but not a
+    # bare ".." segment; resolve inside assets/images/ before any write.
+    out_path = safe_local_path(images_dir, rel_path)
+    rel_path = out_path.relative_to(images_dir.resolve()).as_posix()
 
     repo_saved_path = None
     if args.get("saveToRepo", True):
-        out_path = images_dir / rel_path
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(raw_bytes)
         repo_saved_path = str(out_path)
@@ -7174,9 +7517,14 @@ def import_images_batch_helper(client: BridgeClient, args: dict, peer_id: str = 
 
     items = []
     if explicit_files:
-        file_list = [Path(p).expanduser() for p in explicit_files]
+        # v6.1.0 (P0-S4): both the explicit list and the scan directory were
+        # `Path(...).expanduser()`, so a prompt-injected agent could read any
+        # image on the host and have it installed into Studio / the kit.
+        file_list = [safe_import_path(p, suffixes=(".png", ".jpg", ".jpeg", ".bmp"))
+                     for p in explicit_files]
     else:
-        scan_dir = Path(args["directory"]).expanduser() if args.get("directory") else images_dir
+        scan_dir = (safe_import_path(args["directory"], must_exist=True)
+                    if args.get("directory") else images_dir)
         file_list = [
             f for f in sorted(scan_dir.rglob("*"))
             if f.is_file() and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp")
@@ -8281,14 +8629,24 @@ def synthesize_sound_effect_helper(client: BridgeClient, args: dict, peer_id: st
 
 
 # ---------------------------------------------------------------------------
-# Group J Helpers (v6.0.0): Plugin & Playtest Controller, Network Security
+# Group J Helpers (v6.1.0): Plugin & Playtest Controller, Network Security
 #                           Auditor, Cutscene Sequencer, UI Theme Pack
 # ---------------------------------------------------------------------------
 
 PLUGIN_VERSION_MATRIX = [
     {
-        "version": "6.0.0",
+        "version": "6.1.0",
         "status": "current",
+        "highlights": [
+            "Security release: the plugin's baked credential is a dedicated, revocable write token minted by `setup.py` — never the owner `bridge.token`",
+            "`?token=` is accepted only on `/api/poll` and `/api/result` (the routes `HttpService:RequestAsync` cannot send headers on); everything else is header-only",
+            "The demo placeholder `arena-demo-7f3a` is refused by `TokenStore.authenticate`, so an unconfigured plugin can never authenticate",
+            "Confirmation-gate parity: `--require-confirm` now also covers jobs enqueued over `POST /api/jobs`",
+        ],
+    },
+    {
+        "version": "6.0.0",
+        "status": "legacy_supported",
         "highlights": [
             "Built-in Roblox Studio DockWidgetPluginGui Dashboard (`ArenaBridgeDashboardV6`) + `Arena v6 UI` toolbar button",
             "Bulletproof Playtest Stop: `EndTest` + `LeaveTest` fallback, idempotent already-stopped handling, automatic `__ArenaTestRunner_*` purge, and `/api/poll?goodbye=1` unload beacon",
@@ -8324,7 +8682,7 @@ def _parse_ver_tuple(ver_str: str) -> tuple:
 def manage_plugin_and_playtest_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
     action = str(args.get("action") or "status").strip().lower()
     plugin_file = Path(__file__).resolve().parent / "ArenaBridge.lua"
-    bundled_ver = "6.0.0"
+    bundled_ver = "6.1.0"
     if plugin_file.is_file():
         m = re.search(r'local PLUGIN_VERSION = "([0-9.]+)"', plugin_file.read_text(encoding="utf-8"))
         if m:
@@ -8349,7 +8707,7 @@ def manage_plugin_and_playtest_helper(client: BridgeClient, args: dict, peer_id:
             "action": "install_local",
             "installedToOsPlugins": bool(installed_ok),
             "bundledPluginVersion": bundled_ver,
-            "note": "Restart Roblox Studio once (or reload plugins) for the updated ArenaBridge.lua v6.0.0 to take effect.",
+            "note": "Restart Roblox Studio once (or reload plugins) for the updated ArenaBridge.lua v6.1.0 to take effect.",
         }
 
     if action == "evict_stale_peers":
@@ -8456,7 +8814,11 @@ def audit_network_security_helper(client: BridgeClient, args: dict, peer_id: str
                 })
 
     if args.get("localDir"):
-        ldir = Path(args["localDir"]).expanduser()
+        # v6.1.0 (P0-S4): an offline "network audit" that reads `.lua`/`.luau`
+        # from any directory the bridge user can open, and quotes the offending
+        # lines back. Import roots only; a path outside them now fails loudly
+        # instead of being silently skipped.
+        ldir = safe_import_path(args["localDir"], must_exist=True)
         if ldir.is_dir():
             for lf in sorted(ldir.rglob("*")):
                 if lf.is_file() and lf.suffix.lower() in (".lua", ".luau"):
@@ -8657,7 +9019,7 @@ def build_cutscene_sequence_helper(client: BridgeClient, args: dict, peer_id: st
 
     module_source = (
         "--!strict\n"
-        f"-- CutsceneSequence_{seq_name}.lua — Generated by Arena MCP v6.0.0\n\n"
+        f"-- CutsceneSequence_{seq_name}.lua — Generated by Arena MCP v6.1.0\n\n"
         "return {\n"
         f"\tid = {json.dumps(seq_name)},\n"
         f"\ttitle = {json.dumps(spec['title'])},\n"
@@ -8768,7 +9130,7 @@ def generate_ui_theme_pack_helper(client: BridgeClient, args: dict, peer_id: str
 
     module_source = (
         "--!strict\n"
-        f"-- UIThemeTokens_{theme_name}.lua — Generated by Arena MCP v6.0.0\n\n"
+        f"-- UIThemeTokens_{theme_name}.lua — Generated by Arena MCP v6.1.0\n\n"
         "return {\n"
         f"\ttheme = {json.dumps(theme_name)},\n"
         f"\tbackground = Color3.new({bg[0]}, {bg[1]}, {bg[2]}),\n"
@@ -10774,14 +11136,21 @@ class MCPDispatcher:
         if responses is None:
             return self._err(msg_id, -32602, "tasks/update needs `inputResponses` for a task in input_required",
                              {"taskId": task_id, "requestId": request_id})
-        if not ctx.get("elicitation_capable"):
+        if not ctx.get("elicitation_capable") or not self.gate.trust_client_answers:
             # Answering here is claiming to carry a human's decision. A client
-            # that has not declared `elicitation` cannot make that claim; the
-            # operator answers out-of-band instead (POST /api/confirmations).
-            return self._err(msg_id, -32021,
-                             "This client has not declared the elicitation capability, so it may not answer "
-                             "a confirmation on a human's behalf",
+            # that has not declared `elicitation` cannot make that claim — and
+            # since v6.1.0 (P0-S1) a client that *has* declared it does not get
+            # the benefit of the doubt either, because the declaration arrives in
+            # per-request `_meta` that the caller writes. The operator answers
+            # out-of-band instead (POST /api/confirmations).
+            refused = ("This bridge does not accept a client's own answer to a confirmation "
+                       "(BRIDGE_TRUST_CLIENT_ELICITATION is not set)"
+                       if ctx.get("elicitation_capable") else
+                       "This client has not declared the elicitation capability, so it may not answer "
+                       "a confirmation on a human's behalf")
+            return self._err(msg_id, -32021, refused,
                              {"requiredCapability": "elicitation", "requestId": request_id,
+                              "trustClientElicitation": bool(self.gate.trust_client_answers),
                               "operatorAction": f"POST /api/confirmations {{\"action\":\"approve\",\"requestId\":\"{request_id}\"}}"})
         try:
             decision = self.gate.resolve(
@@ -11044,18 +11413,33 @@ class MCPDispatcher:
                 self._publish("mcp.confirm.applied", {"requestId": request_id, "tool": name,
                                                        "source": decided.get("source")})
                 return None
-            if not ctx.get("elicitation_capable"):
+            if not ctx.get("elicitation_capable") or not gate.trust_client_answers:
                 rec = gate.pending(request_id)
                 if rec is None:
                     return self._reprompt_or_error(
                         name, args,
                         GateError("unknown_request", "That confirmation is no longer pending; "
                                                       "re-issue the call."), ctx)
-                return self._input_required(name, args, rec, ctx, note=(
+                # v6.1.0 (P0-S1): `elicitation_capable` is read from per-request
+                # `_meta`, which the caller writes, so a declared capability is
+                # not evidence that a human was asked. Unless the operator opted
+                # in with BRIDGE_TRUST_CLIENT_ELICITATION, the answer has to come
+                # from the operator's own channel — the request stays pending and
+                # the caller is told exactly how to get it approved.
+                note = (
+                    "This bridge does not accept a client's own answer to a confirmation "
+                    "(BRIDGE_TRUST_CLIENT_ELICITATION is not set), because the elicitation "
+                    "capability is declared per request by the caller. The bridge operator must "
+                    "approve it (`arena_studio.py approve <requestId>`, POST /api/confirmations, "
+                    "or the Ops console), then retry this call."
+                    if ctx.get("elicitation_capable") else
                     "This client has not declared the `elicitation` capability, so it cannot answer on a "
                     "human's behalf. The bridge operator must approve it "
                     "(`arena_studio.py approve <requestId>` or the Ops console), then retry this call."
-                ))
+                )
+                return self._input_required(name, args, rec, ctx, note=note,
+                                            reason="client_answers_disabled"
+                                            if ctx.get("elicitation_capable") else None)
             try:
                 decision = gate.resolve(request_id, params.get("inputResponses"), principal,
                                         source="client", expected_digest=digest)
@@ -11528,7 +11912,17 @@ class MCPDispatcher:
         }
 
     def _invoke_tool(self, tname: str, targs: dict) -> dict:
-        """Run one tool call and return the MCP CallToolResult payload."""
+        """Run one tool call and return the MCP CallToolResult payload.
+
+        Reached only after `MCPDispatcher._gate_pre` (or `_gate_for_task`) has
+        rendered a verdict for this exact tool + principal, so it marks the
+        thread-local call context `gateCleared`. `BridgeClient.submit_job`
+        forwards that to `enqueue_job`, which is where the REST gate lives; this
+        is what keeps one MCP call from being confirmed twice.
+        """
+        ctx = current_call_context()
+        if isinstance(ctx, dict):
+            ctx["gateCleared"] = True
         if self.client.read_only and not is_tool_call_read_only(tname, targs):
             return {
                 "isError": True,

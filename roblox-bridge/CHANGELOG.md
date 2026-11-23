@@ -2,6 +2,121 @@
 
 All notable changes for the Roblox Studio bridge are documented here.
 
+## 6.1.0 — Security hardening, REST/MCP gate parity, dashboard extraction, and NightLoop removal
+
+### Security (P0)
+- **Confirmation-gate parity across transports (`P0-S1`).** The `--require-confirm`
+  human-in-the-loop gate used to wrap only the MCP `tools/call` path. The decision now
+  lives in `BridgeState.enqueue_job()`, the single chokepoint both transports feed, so a
+  write-scoped token can no longer enqueue `run_luau` over `POST /api/jobs` with the gate
+  on. `POST /api/jobs` answers `403` with the pending `requestId` and accepts
+  `{"confirmation": {"requestId"|"stateToken"}}` on retry. `run_luau`, `execute_luau` and
+  `probe` joined `CONFIRM_GATED_TOOLS`, and `mcp_core.job_kind_is_read_only()` routes every
+  REST job kind through `is_tool_call_read_only()` — the same argument-aware oracle the MCP
+  path uses — instead of a job-type string list. A client can no longer answer its own
+  confirmation either: `elicitation_capable` is read from per-request `_meta`, which the
+  *caller* writes, so accepting `inputResponses` from it let a prompt-injected agent approve
+  its own `execute_luau`. Client answers are now refused by default
+  (`reason: client_answers_disabled`, with the operator command in the message) and an
+  operator who runs a host that genuinely elicits can opt back in with
+  `BRIDGE_TRUST_CLIENT_ELICITATION=1`; `ConfirmGate.status()` reports which policy is in
+  force. `gateCleared` is likewise never read from a request body — it is set only from the
+  in-process MCP call context — so a REST caller cannot claim the dispatcher already cleared
+  the gate.
+- **No more owner-token disclosure (`P0-S2`).** `GET /api/plugin/download` is now
+  `admin`-only and bakes a short-TTL (`BRIDGE_PLUGIN_TOKEN_TTL`, default 24 h) write-scoped
+  token minted for that download, recorded in the audit log — never `bridge.token`.
+  `GET /api/local-boot` still returns the boot payload but withholds the credential unless
+  the caller is admin, and says so via `tokenWithheld`. `?token=` is accepted only on
+  `/api/poll` and `/api/result` (the two routes the Studio plugin calls, where
+  `HttpService:RequestAsync` cannot be relied on to send headers); every other route,
+  including `arena_studio.py`, is header-only. The dashboard's `EventSource` now redeems a
+  one-shot 30 s ticket from `GET /api/sse-ticket` instead of putting a token in a URL.
+- **Dashboard XSS closed (`P0-S3`).** `esc()` escaped only `& < >` and was interpolated
+  straight into inline `onclick` attributes, so a peer id containing `'` escaped the
+  attribute and executed attacker JS against the admin token in `localStorage`. `esc()` now
+  escapes `& < > " ' \``, the dashboard emits **zero** inline event handlers (133 static and
+  33 generated sites converted to `data-act` / `data-args` resolved by one delegated
+  listener), and every HTML/JS/CSS response carries
+  `Content-Security-Policy: … script-src 'self' … frame-ancestors 'none'`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cross-Origin-Opener-Policy`.
+- **Path and URL confinement (`P0-S4`).** New `mcp_core.safe_local_path()`,
+  `safe_import_path()` and `safe_url()` are now the only way a tool argument reaches the
+  filesystem or the network. `import_image` no longer accepts `repoAsset: "../registry.json"`
+  or `imageUrl: "file:///etc/hostname"`, and `saveFile` / `outputFile` on `render_offline`,
+  `capture_viewport`, `screenshot_gui`, `export_rbxmx` and `export_place_rbxlx` cannot write
+  outside an allowed import root (`BRIDGE_IMPORT_ROOTS` extends it). `safe_url` also refuses
+  loopback/link-local/private/metadata hosts, closing SSRF against the bridge itself.
+  `safe_local_path` *refuses* an absolute path (`/etc/passwd`, `\\server\share`,
+  `C:\Windows\win.ini`) instead of silently rebasing it under the root, which used to hand
+  back a contained path that was not the path the caller asked for. A sweep of all 100 tool
+  schemas for file-shaped arguments found six more unconfined sinks, each a different
+  primitive, and all now go through the same helpers: `agent_bus {action:"export", path}`
+  (write anywhere), `drift_and_sync {localDir}` in pull mode (write anywhere),
+  `luau_check {path}` and `audit_network_security {localDir}` (read anywhere and quote it
+  back), `import_images_batch {directory,files}` (read anywhere), and
+  `open_cloud_action {placeFile}` (read anywhere, then upload it to Roblox with the
+  operator's API key). `image_pipeline`'s generated `Assets.lua` now escapes every
+  interpolated key and value as a Luau string literal, so a filename containing `"` cannot
+  inject code into a module Studio `require`s — and a lock-file row with no `relPath` no
+  longer aborts the import with `KeyError`.
+- **Safe defaults (`P0-S5`).** `--host` defaults to `127.0.0.1`; binding a non-loopback
+  address prints a warning. A first run with no credential anywhere now generates
+  `bridge.token` at mode `0600` instead of coming up in open-admin mode; open mode requires
+  an explicit `--no-auth` (or `--no-generate-token`) and is written to the audit chain. The
+  demo literal `arena-demo-7f3a` is defined once (`auth_core.PLACEHOLDER_TOKEN`), refused by
+  `TokenStore.authenticate()`, and `setup.py` refuses to bake a plugin with it.
+- **Kit source is no longer public (`P0-S6`).** `GET /api/kit/catalog` bypassed `_require`
+  entirely, so an unauthenticated caller could read full module source
+  (`?item=NetworkGuard`). Kit *metadata* stays public (the kit is CC0 and the dashboard
+  gallery renders without a token); only `item=` and `section=` — the two queries that return
+  source — require `read`. A category listing returns name/path/bytes even at
+  `format=full`, so gating it would have broken the gallery without protecting anything.
+  `auth_core.READ_ONLY_PATHS` / `ADMIN_PATHS` were dead code and are now the written-down
+  route policy: `server.py` raises every request's required scope to the declared floor, so a
+  new `/api/*` route that forgets `_require(...)` still gets its declared scope enforced.
+  The tables are also honest now — a public prefix wins over a `read` entry (`/api/health`
+  was declared read-only while its handler never called `_require`), three declarations for
+  routes the server does not dispatch were dropped (`/api/fleet`, `/api/audit/verify`,
+  `/api/kit/model`), and routes whose scope depends on the query or the peer
+  (`/api/kit/catalog`, `/api/local-boot`, the kit binary routes, `/mcp`) are listed in
+  `ROUTE_DECIDES_PATHS` instead of being given a floor they do not honour. A test walks every
+  route as an anonymous *cross-site* caller — the header
+  `_is_local_convenience_request()` uses to spot a hostile web page talking to localhost — and
+  fails if anything outside those lists answers without a credential.
+
+### Changed
+- **The dashboard moved out of Python (`P4-D1`).** `dashboard_html()` was ~3,000 lines of
+  HTML/CSS/JS inside a Python raw string. It is now `roblox-bridge/static/{index.html,
+  dashboard.css,dashboard.js}`, served from `/static/` through a filename whitelist, with
+  Python substituting only the version stamp. This is what makes the strict
+  `script-src 'self'` CSP possible and cuts ~168 KB from `server.py`.
+- `arena_studio.py` sends `X-Arena-Token` only; the redundant `?token=` append is gone.
+- The dashboard's six kit calls (`/api/kit/catalog`, `/api/kit/cloud-icons`,
+  `/api/kit/viewport-preview`) go through `apiFetch`, so they carry the token and surface the
+  auth banner instead of rendering an empty gallery; `downloadPluginFile()` fetches the plugin
+  as a `Blob` rather than opening `/api/plugin/download?token=…` in a new tab.
+- New `roblox-bridge/tools/dashboard_harness.js`: a dependency-free Node harness that loads
+  `static/dashboard.js` into a stub DOM and checks the XSS contract (`esc()` coverage, hostile
+  peer data rendered inert, every `data-act` resolving, no token in a URL). Run
+  `node tools/dashboard_harness.js`; it exits non-zero, and restoring the pre-6.1.0 `esc()`
+  plus one inline `onclick` makes it fail with the original exploit string.
+- `test_bridge_mcp.py` gained `TestV61SecurityHardening` (25 tests) covering each P0 item
+  end-to-end against a live server: gate parity across both transports, the credential sweep
+  over every route, the path/URL confinement sweep over every file-shaped tool argument, the
+  CSP and static-asset policy, and the declared route policy. Suite total 117 → 142.
+- Plugin version matrix gained a `6.1.0` "current" row; `6.0.0` moved to `legacy_supported`.
+
+### Fixed
+- `BridgeState._gate_principal_ok()` did `from confirm_gate import same_principal`, but
+  `same_principal` is a `ConfirmGate` **staticmethod** — so the branch that compares
+  principals on a `confirmation.stateToken` retry raised `ImportError` instead of enforcing
+  the self-approval ban.
+- `update_repo_asset_manifest()` raised `KeyError: 'relPath'` on a lock-file row written
+  before that field existed, which aborted the whole image import; such rows are now emitted
+  with an empty `relPath`, and rows with neither a cloud nor a local URI are left out of
+  `Assets.lua` instead of being emitted as `key = ""`.
+
 ## 6.0.0 — Studio Plugin v6 (`ArenaBridge.lua` DockWidget UI + Bulletproof Playtest Stop), 90 MCP Tools, Network Security Auditor, Cutscene Sequencer, and V6 Control Center Overhaul
 
 ### Added
