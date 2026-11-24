@@ -31,7 +31,7 @@ file to copy. Copy all three, or keep the older standalone versions.
 | `CombatPipeline` | `--!nonstrict` | Deterministic damage, shield absorption, armour mitigation, crits, combo chains, status effects. |
 | `CooldownManager` | `--!nonstrict` | Multi-charge ability cooldowns, global cooldown, haste multiplier, per-entity rate limits. |
 | `CutsceneDirector` | `--!strict` | Keyframed camera path, FOV and letterbox cutscene engine. |
-| `DataStoreSafe` | — | Session-cached player profiles with an in-memory Studio fallback, retries, auto-save, `BindToClose` flush. |
+| `DataStoreSafe` | — | Session-cached player profiles with an in-memory Studio fallback, retries, auto-save, `BindToClose` flush. `createOrderedStore(name, opts)` adds the ordered-store half — throttled writes per key, names in a companion store, the same memory fallback — which is what `systems/liveops/leaderboard` writes through. |
 | `DialogueSystem` | `--!strict` | Branching NPC / lore-terminal dialogue trees with conditions. |
 | `DungeonGenerator` | `--!nonstrict` | Seeded procedural room-and-corridor layouts, non-overlapping placement, Prim-style growth. |
 | **`FeatureFlags`** | `--!strict` | **v6.1.0.** Attribute-driven feature flags on `ReplicatedStorage.FeatureFlags`: stage a system without editing code. |

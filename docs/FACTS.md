@@ -25,7 +25,7 @@ plugin against a 6.1.0 one, and 20 prefabs against 36.
 | `skills` | 33 | `search_skills_helper()` total |
 | `modules` | 35 | `roblox-kit/modules/*.lua` |
 | `systemCategories` | core, liveops, mechanics, monetization, ui | `roblox-kit/systems/*` directories |
-| `systems` | 26 | system directories under those categories |
+| `systems` | 27 | system directories under those categories |
 | `uiTemplates` | 6 | `roblox-kit/templates/screens/*.lua` |
 | `prefabs` | 36 | `roblox-kit/prefabs/*.json` |
 | `models` | 20 | `roblox-kit/models/*.rbxmx` |

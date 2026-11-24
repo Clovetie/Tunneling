@@ -495,6 +495,64 @@ All notable changes for the Roblox Studio bridge are documented here.
   `PALETTE_ADJUSTMENTS` or drives its own effect from
   `SettingsAPI.onChanged("ColorBlindPalette", fn)`.
 
+### Added (P5-K3 — `liveops/leaderboard`)
+- **The ordered-store pattern the kit documented but never demonstrated.**
+  `.claude/skills/roblox-lessons/references/data.md` says *"OrderedDataStore values must be
+  integers; keep display metadata in a normal store; refresh on a timer"*, and `core/data`
+  plus `DataStoreSafe` existed — but nothing put those together. Now a system does: one
+  ordered store per board (`<STORE_PREFIX>_<board key>_<STORE_VERSION>`) holding integer
+  scores keyed `Player_<UserId>`, and one plain store holding display names.
+- **`DataStoreSafe.createOrderedStore(storeName, options)`** is the new half of that
+  module: `Set` (throttled per key by `minWriteInterval`, with `force`), `Remove`, `GetTop`
+  (plain rows rather than DataStore row objects, so no caller has to know what a page
+  entry is), `GetName` (cached), `Flush`, `Pending` and `Available`. It follows the
+  module's existing conventions exactly — three retries with backoff, one `warn` and an
+  in-memory fallback when the cloud is unavailable, a `BindToClose` flush — and
+  `createProfileStore` is untouched. Names are only rewritten when they change, so a score
+  write does not cost two calls.
+- **Writes are sampled, not event-driven.** Values are read every 5 s, the best seen is
+  kept in memory, and one write per player per board per 30 s reaches the store — enforced
+  twice, once by the service and once per key by `DataStoreSafe`. A write per currency gain
+  exhausts the DataStore budget and drops the writes that matter. Two `Submit`s inside one
+  interval cost one write and leave one queued, which `Status().pendingWrites` reports.
+- **Degradation is a warning, never an error** — the convention this repo keeps and the one
+  thing the work order singled out. Without `DataStoreSafe` the service warns once, the
+  per-server board keeps working, and global requests answer with
+  `warning = "missing_module"`. In Studio with API access off the first store call fails,
+  `DataStoreSafe` switches to memory with a single warning, and the client shows a banner
+  (`"datastore_unavailable"`). The game still runs; the board is just smaller.
+- **Nothing out of a store is trusted on the way to a client.** Every row passes
+  `LeaderboardMath.sanitizeRow`, which floors the score, trims the name and drops rows with
+  a missing, negative or non-numeric id or score, so one hand-edited entry costs one row
+  instead of the board. Names are trimmed on **codepoint** boundaries rather than by byte
+  count: cutting trailing continuation bytes is not enough, because a cut landing exactly
+  on a boundary would delete a character that was already complete (`"aébc"` at a 3-byte
+  budget must keep `"aé"`, not fall back to `"a"`).
+- **Equal scores cannot reshuffle.** Rows sort by score, then name, then id. Without the
+  tie-breaks two players on the same score swap places on every refresh, which reads as a
+  bug even when nothing is wrong. Board tab order is deterministic for the same reason:
+  `table.sort` is not stable, so a board missing from `BOARD_ORDER` would swap with its
+  neighbours between runs, and each board now carries one precomputed position.
+- **Opt-out means removed, not hidden.** Ticking the box stops writes, hides the player
+  from both boards, and deletes their keys from the ordered *and* name stores — a toggle
+  that only stopped new writes would leave the old score up forever. It is mirrored onto
+  the `LeaderboardOptOut` attribute, persisted at `data.leaderboardOptOut` when `core/data`
+  is installed, honoured on join before the first sample, and it rides its own remote
+  (sharing the fetch cooldown, so it cannot be used to force uncached global reads) which
+  carries the view the client was looking at so a toggle does not throw the player back to
+  page 1.
+- **Names are resolved for the page being sent, not for the fetch.** A board is cached for
+  30 s and fetched 100 deep, but name lookups happen only for the 20 rows a client is about
+  to see, cached 300 s inside `DataStoreSafe` — otherwise one refresh would cost a hundred
+  reads against a rate-limited store.
+- **`shared/LeaderboardMath.lua` is pure and ships `tests/Leaderboard.spec.lua`** — 46
+  cases, 162 assertions — covering sanitising, merging the live per-server board onto the
+  cached global one (dedupe by id, higher score wins, primary wins ties so the result does
+  not depend on argument order), ranking, pagination, the around-me slice, best-of and the
+  write throttle's decision. `GetRank` deliberately reports a rank only within the fetched
+  top 100: an exact global rank would need a scan of the whole store per query, and `nil`
+  there means "outside the top 100", not "last".
+
 ### Added (P5-K4/K5 — kit modules)
 - **`roblox-kit/modules/Throttle.lua`** (`--!strict`) — the two rate-limiting primitives
   the kit shares. `Throttle.new(rate, burst)` is a token bucket (refills continuously,

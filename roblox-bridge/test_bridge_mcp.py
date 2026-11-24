@@ -6703,7 +6703,7 @@ class TestV61KitIntegrity(unittest.TestCase):
         self.assertEqual(categories, ["core", "liveops", "mechanics", "monetization", "ui"])
         systems = [(c.name, p.name) for c in (self.kit / "systems").iterdir() if c.is_dir()
                    for p in c.iterdir() if p.is_dir()]
-        self.assertEqual(len(systems), 26, "docs/FACTS.md and the README claim 26 systems")
+        self.assertEqual(len(systems), 27, "docs/FACTS.md and the README claim 27 systems")
         for category, name in systems:
             luau = list((self.kit / "systems" / category / name).rglob("*.lua"))
             self.assertTrue(luau, f"systems/{category}/{name} has no Luau in it")
