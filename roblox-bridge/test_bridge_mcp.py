@@ -1652,7 +1652,6 @@ class TestV5OpsPlatform(unittest.TestCase):
         bus.handle({"action": "task_claim", "taskId": task["id"], "agentId": ghost["id"]})
         bus.agents[ghost["id"]]["lastSeen"] = time.time() - 5000
 
-        before = self.state.metrics_snapshot()["counters"]
         swept = self.state.auto_sweep()
         self.assertEqual(swept["tasksReaped"], 1)
         self.assertEqual(bus.tasks[task["id"]]["status"], "todo")
@@ -4714,7 +4713,7 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
         self.assertGreaterEqual(fs_body["evictedPeers"], 1)
 
     def test_direct_live_chat_web_ui_deslop_and_mesh_priority(self):
-        from mcp_core import search_skills_helper, apply_skill_helper, skill_references_helper
+        from mcp_core import apply_skill_helper, skill_references_helper
         # 1. Verify all 10 new skills and their reference docs are discoverable & readable
         for sk_name, ref_path in (
             ("vfx-and-particles", "references/vfx-libraries-and-flipbooks.md"),

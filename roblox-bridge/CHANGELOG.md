@@ -191,6 +191,42 @@ All notable changes for the Roblox Studio bridge are documented here.
   dead peer, and `dryRun` resolves every target and reports the plan without touching Studio
   (and is classified read-only, like `find_and_replace_scripts(dryRun=true)`).
 
+### Developer tooling (P1-B6)
+- **There is a lint gate now.** `pyproject.toml` configures `ruff` over
+  `roblox-bridge/`, `jobs/` and `tools/` with `select = ["E", "F", "B", "BLE"]`, and
+  `bash tools/check_lint.sh` is the single command that runs it — the same string
+  locally and in CI. It exits `0` clean, `1` on a violation, `2` when ruff is not
+  installed (with the two install commands printed), so a missing dev dependency is
+  never silently a pass.
+  - Two rules are ignored, both on purpose and both documented in the config:
+    `E501` (3,994 hits — the tree embeds Luau source, dense report tables and prose
+    docstrings; wrapping them changes strings the tools emit verbatim) and `BLE001`,
+    the 63 blind `except Exception` handlers that P1-B6 was really about.
+  - `BLE001` is **ratcheted, not forgiven**: gate 2 counts the handlers and compares
+    against `tools/lint_ble_baseline.txt` (63 today). Adding one fails the build;
+    removing one prints a reminder to lower the baseline so the gain sticks. That is
+    the honest shape of this debt — rewriting 63 handlers in one pass is a larger
+    regression risk than the handlers themselves, and a silently-ignored rule is how
+    the count got to 63.
+  - The 50 non-`E501`/non-`BLE001` findings were fixed rather than ignored, and one
+    was a genuine latent bug: `tools/fetch_assets.py` defined `get_json()` inside a
+    loop closing over that iteration's `headers` dict (`B023`) — now bound as a
+    default argument. Also: 10 unused imports removed (including a dead
+    `mode_from_env` re-import in `server.py`; 5 more stay and are annotated — see
+    below), 4 unused-assignment findings deleted as 6 dead lines
+    (`existing_agents` was fetched twice and never read, so the seeding tool now
+    makes one fewer request), 15 compound `if x: y` / `a; b` lines split (each
+    rewrite AST-checked against the original before being written), 3 `raise`
+    statements given `from None` / `from exc` so the original cause is either
+    explicitly suppressed or preserved, 4 `zip()` calls given `strict=False` to pin
+    today's truncating behaviour, 6 unused loop variables `_`-prefixed, and 2
+    placeholder-free f-strings de-`f`'d. `build_handoff_pdfs.py`'s five
+    reportlab/pygments imports carry `# noqa: F401` — they are availability probes
+    for the optional PDF toolchain, not dead code.
+  - ruff is a **lint-time** dependency only: nothing in `pyproject.toml` is read at
+    runtime and the stdlib-only import audit in CI still applies to every module the
+    bridge loads (AGENTS.md rule 1).
+
 ### Removed (P2 — NightLoop)
 - **`nightloop/` is gone**, with its in-repo copies and every reference: 125
   tracked files, −37,441 lines. That is the reference horror-survival experience

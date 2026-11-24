@@ -29,10 +29,10 @@ from pathlib import Path
 
 try:
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT  # noqa: F401 - availability probe for the optional PDF toolchain
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import mm
+    from reportlab.lib.units import mm  # noqa: F401 - availability probe for the optional PDF toolchain
     from reportlab.pdfbase.pdfmetrics import stringWidth
     from reportlab.platypus import (
         BaseDocTemplate,
@@ -43,21 +43,21 @@ try:
         PageBreak,
         PageTemplate,
         Paragraph,
-        Preformatted,
+        Preformatted,  # noqa: F401 - availability probe for the optional PDF toolchain
         Spacer,
         Table,
         TableStyle,
         XPreformatted,
     )
     from pygments import lex
-    from pygments.lexers import DiffLexer, JsonLexer, MarkdownLexer, PythonLexer
+    from pygments.lexers import DiffLexer, JsonLexer, MarkdownLexer, PythonLexer  # noqa: F401 - availability probe for the optional PDF toolchain
     from pygments.token import Comment, Generic, Keyword, Name, Number, Operator, String
 except ImportError as exc:  # pragma: no cover - documentation tool only
     sys.stderr.write(
         f"missing PDF dependency: {exc}\n"
         "install with: python3 -m pip install --break-system-packages reportlab pygments\n"
     )
-    raise SystemExit(1)
+    raise SystemExit(1) from exc
 
 
 HERE = Path(__file__).resolve().parent
@@ -234,7 +234,7 @@ def code_lines(source: str, lexer=None, max_chars: int = 196, numbered: bool = T
 
     lines = []
     kinds = []
-    for chars, number in zip(display, numbers):
+    for chars, number in zip(display, numbers, strict=False):
         # Merge adjacent characters of the same colour into one span.
         spans = []
         buffer = []
@@ -578,7 +578,6 @@ def _code_story(styles, base):
         "Complete sources follow first, then unified diffs for every modified file. "
         "Line numbers are left-margin references; wrapped lines carry no number.", styles["small"])]
 
-    first = True
     for path, purpose in NEW_FILES:
         full = ROOT / path
         if not full.is_file():
@@ -587,7 +586,6 @@ def _code_story(styles, base):
         lines = code_lines(source, PythonLexer())
         story += [PageBreak(), SetFile(path), _file_header(path, purpose, len(source.splitlines()), styles)]
         story += _code_blocks(lines, styles, per_block=60)
-        first = False
 
     story += [PageBreak(), SetFile(""), Paragraph("5. Diffs against the previous release", styles["h1"]),
               Paragraph(
@@ -640,7 +638,7 @@ def _code_story(styles, base):
         lines, kinds = code_lines(diff, DiffLexer(), with_kinds=True)
         story += [PageBreak(), SetFile(path + " (diff)"),
                   _file_header(path + "  (diff)", purpose, len(diff.splitlines()), styles)]
-        story += _diff_blocks(list(zip(lines, kinds)), styles, per_block=60)
+        story += _diff_blocks(list(zip(lines, kinds, strict=False)), styles, per_block=60)
 
     story += [PageBreak(), SetFile(""), Paragraph("6. Verification snapshot", styles["h1"])]
     story += [Paragraph(

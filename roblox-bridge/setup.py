@@ -558,7 +558,7 @@ def main():
         say(f"    (opened from a tunnel/LAN address? paste this token when the console asks: {token})", DIM)
     say(f"  MCP Streamable HTTP: http://127.0.0.1:{args.port}/mcp  (Bearer {token})", GREEN)
     say(f"  MCP stdio server:    python \"{HERE / 'mcp_server.py'}\"", GREEN)
-    say(f"  CLI quick check:     .\\ab.ps1 ping", DIM)
+    say("  CLI quick check:     .\\ab.ps1 ping", DIM)
     say("\n  Studio auto-connects on place load (restart Studio once if newly installed).", BOLD)
     say("  Press Ctrl+C to stop.\n", DIM)
 

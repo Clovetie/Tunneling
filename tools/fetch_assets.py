@@ -11,11 +11,9 @@ import argparse
 import hashlib
 import html
 import json
-import os
 import pathlib
 import re
 import shutil
-import struct
 import sys
 import wave
 import urllib.parse
@@ -180,8 +178,8 @@ def upstream_blob_maps(sources: dict) -> dict[str, dict[str, str]]:
         owner_repo = parsed.path.strip("/").split("/")[:2]
         api = f"https://api.github.com/repos/{owner_repo[0]}/{owner_repo[1]}"
         headers = {"User-Agent": "Tunneling-licence-first-asset-registry", "Accept": "application/vnd.github+json"}
-        def get_json(url: str) -> dict:
-            request = urllib.request.Request(url, headers=headers)
+        def get_json(url: str, _headers=headers) -> dict:
+            request = urllib.request.Request(url, headers=_headers)
             with urllib.request.urlopen(request, timeout=60) as response:
                 return json.load(response)
         commit_info = get_json(f"{api}/commits/{commit}")

@@ -11,7 +11,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from fetch_assets import ALLOWED, ASSETS, REGISTRY_FILE, SOURCES_FILE, build_registry, load_sources  # noqa: E402
+from fetch_assets import ALLOWED, REGISTRY_FILE, SOURCES_FILE, build_registry, load_sources  # noqa: E402
 
 
 def sha256_file(path: pathlib.Path) -> str:

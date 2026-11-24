@@ -41,7 +41,6 @@ from confirm_gate import (  # noqa: E402
     GateError,
     canonical_digest,
     danger_keys_in,
-    mode_from_env,
 )
 from mcp_core import (
     CONFIRM_GATED_TOOLS,
@@ -987,7 +986,7 @@ class BridgeState:
         cancelled_jobs = 0
         with self.poll_cv:
             now = _now()
-            for pid, pinfo in list(self.peers.items()):
+            for _pid, pinfo in list(self.peers.items()):
                 if pinfo.get("dm") in ("server", "client"):
                     if (now - pinfo.get("lastPoll", 0.0)) < PEER_ONLINE_WINDOW and not pinfo.get("evicted"):
                         evicted_peers += 1
@@ -1689,7 +1688,8 @@ class BridgeState:
         if op == "get_job":
             with self.lock:
                 jid = body.get("id")
-                if jid not in self.jobs: raise KeyError(f"Unknown job id: {jid}")
+                if jid not in self.jobs:
+                    raise KeyError(f"Unknown job id: {jid}")
                 return dict(self.jobs[jid])
         if op == "submit_job":
             job, evt = self.enqueue_job(
@@ -3661,7 +3661,7 @@ def mint_owner_token(path: Path = None, verbose: bool = True) -> str:
         pass
     if verbose:
         print(f"[bridge] generated a new owner token and wrote it to {target} (mode 0600).", flush=True)
-        print(f"[bridge] Studio plugin + CLI read it automatically; to print it: python3 setup.py --token", flush=True)
+        print("[bridge] Studio plugin + CLI read it automatically; to print it: python3 setup.py --token", flush=True)
     return raw
 
 

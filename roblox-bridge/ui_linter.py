@@ -367,7 +367,7 @@ def _resolve_viewport(vp):
             width = float(vp.get("width"))
             height = float(vp.get("height"))
         except (TypeError, ValueError):
-            raise ValueError(f"Custom viewport {vp!r} needs numeric width and height")
+            raise ValueError(f"Custom viewport {vp!r} needs numeric width and height") from None
         if not (80 <= width <= 8192 and 80 <= height <= 8192):
             raise ValueError(f"Custom viewport {name!r} is out of range (80-8192 px)")
         return name, width, height

@@ -3876,7 +3876,6 @@ def run_bridge_self_test(client: BridgeClient, include_studio_smoke: bool = True
         status = "pass" if suite_ok and covered and metric.get("status") == "pass" else "fail"
         tool_matrix.append({"tool": tool_name, "status": status, "calls": metric.get("calls", 0), "durationSec": metric.get("durationSec", 0.0), "testedBy": "isolated_mock_regression_suite" if covered else "missing_or_unmeasured_end_to_end_fixture"})
     missing = [row["tool"] for row in tool_matrix if row["status"] != "pass"]
-    tests = [suite, {"name": "studio_scratch_write_read_delete", **smoke}]
     passed = suite_ok and not missing and smoke["status"] != "fail"
     table = ["CHECK | STATUS | DETAIL", f"mock regression suite | {suite['status']} | {suite.get('summary', suite.get('error',''))}", f"Studio scratch cycle | {smoke['status']} | {smoke.get('reason', smoke.get('path', smoke.get('error','')))}", f"registered MCP tools | {'pass' if not missing else 'fail'} | {len(TOOL_SPECS)} tested; missing: {', '.join(missing) or 'none'}"]
     return {"ok": passed, "warnings": [] if smoke["status"] == "pass" else [f"Studio smoke {smoke['status']}: {smoke.get('reason', '')}"], "durationSec": round(time.monotonic() - started, 2), "suite": suite, "studioSmoke": smoke, "toolMatrix": tool_matrix, "humanTable": chr(10).join(table)}
@@ -5990,7 +5989,7 @@ def search_cloud_icons_helper(
                 continue
             groups.setdefault((ic["pack"], fam), []).append(ic)
         results = []
-        for (pack_used, fam), variants in groups.items():
+        for (_pack_used, fam), variants in groups.items():
             variants.sort(key=lambda ic: (0 if ic["name"].lower() == fam.replace(" ", "-") else 1, ic["name"].lower()))
             selected = None
             if variant_filter != "any":
@@ -7121,16 +7120,22 @@ def export_geometry_helper(client: BridgeClient, args: dict, peer_id: str = None
             for parsed in collect_parts_from_tree(node):
                 pos, axes = parsed["pos"], parsed["axes"]
                 record = {"n": parsed["name"], "path": parsed["path"]}
-                if "size" in requested: record["s"] = list(parsed["size"])
+                if "size" in requested:
+                    record["s"] = list(parsed["size"])
                 if "cframe" in requested:
                     ax, ay, az = axes
                     record["z"] = list(pos)
                     record["r"] = [ax[0], ay[0], az[0], ax[1], ay[1], az[1], ax[2], ay[2], az[2]]
-                if "color" in requested: record["c"] = [round(v / 255.0, 6) for v in parsed["color"]]
-                if "transparency" in requested: record["t"] = parsed["transparency"]
-                if "material" in requested: record["m"] = str(props.get("Material", "SmoothPlastic"))
-                if "shape" in requested: record["sh"] = str(props.get("Shape", "Block"))
-                if "tags" in requested: record["tags"] = list(node.get("tags") or [])
+                if "color" in requested:
+                    record["c"] = [round(v / 255.0, 6) for v in parsed["color"]]
+                if "transparency" in requested:
+                    record["t"] = parsed["transparency"]
+                if "material" in requested:
+                    record["m"] = str(props.get("Material", "SmoothPlastic"))
+                if "shape" in requested:
+                    record["sh"] = str(props.get("Shape", "Block"))
+                if "tags" in requested:
+                    record["tags"] = list(node.get("tags") or [])
                 parts.append(record)
         stack.extend(reversed(node.get("children") or []))
     return {"ok": True, "path": args.get("path", "Workspace"), "count": len(parts), "parts": parts, "warnings": []}
@@ -7228,14 +7233,20 @@ def perf_audit_helper(client: BridgeClient, args: dict, peer_id: str = None) -> 
     counts, meshes, models, unanchored, bad_queries, total = {}, 0, 0, 0, 0, 0
     stack = [root]
     while stack:
-        node = stack.pop(); total += 1
-        cls = node.get("className", "Instance"); counts[cls] = counts.get(cls, 0) + 1
+        node = stack.pop()
+        total += 1
+        cls = node.get("className", "Instance")
+        counts[cls] = counts.get(cls, 0) + 1
         props = {**(node.get("properties") or {}), **(node.get("structuredProperties") or {})}
-        if cls == "MeshPart": meshes += 1
-        if cls == "Model": models += 1
+        if cls == "MeshPart":
+            meshes += 1
+        if cls == "Model":
+            models += 1
         if cls in ("Part", "MeshPart", "WedgePart", "CornerWedgePart", "UnionOperation", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat"):
-            if props.get("Anchored") is False or str(props.get("Anchored")).lower() == "false": unanchored += 1
-            if (props.get("CanQuery") is False or str(props.get("CanQuery")).lower() == "false") and (props.get("CanCollide") is True or str(props.get("CanCollide")).lower() == "true"): bad_queries += 1
+            if props.get("Anchored") is False or str(props.get("Anchored")).lower() == "false":
+                unanchored += 1
+            if (props.get("CanQuery") is False or str(props.get("CanQuery")).lower() == "false") and (props.get("CanCollide") is True or str(props.get("CanCollide")).lower() == "true"):
+                bad_queries += 1
         stack.extend(node.get("children") or [])
     part_count = sum(counts.get(c, 0) for c in ("Part", "MeshPart", "WedgePart", "CornerWedgePart", "UnionOperation", "TrussPart", "SpawnLocation", "Seat", "VehicleSeat"))
     risk = "high" if part_count >= 8000 else "elevated" if part_count >= 3000 or meshes >= 1500 else "moderate" if part_count >= 1000 else "low"
@@ -8073,7 +8084,7 @@ def device_simulator_helper(client: BridgeClient, args: dict, peer_id: str = Non
         try:
             dpi = float(args["density"])
         except (TypeError, ValueError):
-            raise ValueError("`density` must be a number of DPI")
+            raise ValueError("`density` must be a number of DPI") from None
         if not 72 <= dpi <= 10000:
             raise ValueError("`density` must be between 72 and 10000 DPI")
     if args.get("profile") is not None:

@@ -12,7 +12,7 @@ Catches classic AI-generated 3D map & building defects automatically:
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 
 _PART_CLASSES = {

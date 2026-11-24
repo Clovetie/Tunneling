@@ -637,7 +637,7 @@ def danger_keys_in(arguments: dict) -> list:
     if not isinstance(arguments, dict):
         return []
     keys = []
-    for key, value in arguments.items():
+    for key, _value in arguments.items():
         low = str(key).lower()
         if low in ("path", "root", "id", "code", "source", "target", "replaceinstance",
                    "confirm", "autofixunanchored", "snapfloating", "force", "delete",

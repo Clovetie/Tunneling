@@ -478,6 +478,9 @@ python3 roblox-bridge/image_pipeline.py --check      # committed asset manifest
                                                      #   matches the tree (exit 1
                                                      #   on drift, writes nothing)
 node roblox-bridge/tools/dashboard_harness.js        # dashboard XSS contract
+bash tools/check_lint.sh                             # ruff gate + blind-except
+                                                     #   ratchet (exit 2 = ruff not
+                                                     #   installed; see pyproject.toml)
 ```
 
 `.github/ci.yml` runs exactly those (plus a stdlib-only import audit and a

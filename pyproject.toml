@@ -1,0 +1,28 @@
+# Developer tooling only. Nothing in this file is read at runtime: the bridge stays
+# stdlib-only Python (AGENTS.md rule 1) and the Studio plugin stays Luau. ruff is a
+# lint-time dependency, installed by `make lint` / CI, never imported by server.py.
+
+[tool.ruff]
+# Oldest interpreter in the CI matrix; B905's `zip(..., strict=)` needs 3.10+.
+target-version = "py310"
+line-length = 120
+extend-exclude = [
+    "bridge_state",          # runtime state, never source
+    "snapshots",
+    "release-artifacts",
+    ".cache",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "BLE"]
+ignore = [
+    # The tree embeds Luau source, dense report tables and long prose docstrings;
+    # E501 produced 3,994 hits with no correctness signal, and wrapping them would
+    # bury the strings the tools emit verbatim. Line length is a human choice here.
+    "E501",
+    # Blind `except Exception`: 63 known handlers. This is real debt (P1-B6), but
+    # rewriting every handler in one pass is a bigger regression risk than the debt
+    # itself, so it is *ratcheted* instead of ignored: tools/check_lint.sh counts
+    # BLE001 and fails when the number rises above tools/lint_ble_baseline.txt.
+    "BLE001",
+]

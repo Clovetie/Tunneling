@@ -501,7 +501,7 @@ class MockWorld:
                     for k, delta in (p.get("relative") or {}).items():
                         cur = n.props.get(k, [0, 0, 0] if isinstance(delta, list) else 0)
                         if isinstance(cur, list) and isinstance(delta, list):
-                            n.props[k] = [a + b for a, b in zip(cur, delta)]
+                            n.props[k] = [a + b for a, b in zip(cur, delta, strict=False)]
                         else:
                             n.props[k] = cur + delta
                         applied.append(k)
@@ -595,7 +595,8 @@ class MockWorld:
                     old = parent.find_child(name)
                     if old and spec.get("expectedHash") and fnv1a_hex(old.source or "") != spec["expectedHash"]:
                         raise RuntimeError(f"hash mismatch on {old.full_name()}")
-                    if old: parent.children.remove(old)
+                    if old:
+                        parent.children.remove(old)
                     target = parent.add(MockNode(name, cls, source=src))
                     written.append({"path": target.full_name(), "hash": fnv1a_hex(src), "bytes": len(src.encode("utf-8"))})
             except Exception:
@@ -847,7 +848,8 @@ class MockWorld:
                     missing.append(path)
                     continue
                 full_p = inst.full_name()
-                if inst.parent: inst.parent.children.remove(inst)
+                if inst.parent:
+                    inst.parent.children.remove(inst)
                 deleted.append(full_p)
             return {"ok": len(missing) == 0, "deleted": deleted, "paths": deleted, "missing": missing, "count": len(deleted)}
 

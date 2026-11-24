@@ -67,11 +67,9 @@ def main() -> int:
 
         bus = AgentBus(Path(args.state_dir) / "bus.json" if args.state_dir else None)
         call = lambda payload: bus.handle(payload)  # noqa: E731
-        existing_agents = bus.list_agents()["agents"]
         existing_tasks = bus.list_tasks()["tasks"]
     else:
         call = lambda payload: http(args.url, args.token, payload)  # noqa: E731
-        existing_agents = call({"action": "agents"}).get("agents", [])
         existing_tasks = call({"action": "tasks"}).get("tasks", [])
 
     if args.dry_run:

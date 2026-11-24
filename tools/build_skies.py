@@ -31,7 +31,7 @@ PALETTES = [
 
 
 def _mix(a, b, t: float):
-    return tuple(max(0, min(255, int(round(x + (y - x) * t)))) for x, y in zip(a, b))
+    return tuple(max(0, min(255, int(round(x + (y - x) * t)))) for x, y in zip(a, b, strict=False))
 
 
 def _value_noise(rng: random.Random, gx: int = 34, gy: int = 16):

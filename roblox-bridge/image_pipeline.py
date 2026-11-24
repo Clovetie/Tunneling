@@ -11,7 +11,6 @@ macOS `sips`, or Windows `.NET System.Drawing` when decoding non-PNG/BMP formats
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import math

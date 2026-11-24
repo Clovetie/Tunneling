@@ -17,7 +17,6 @@ Supports round-tripping:
 
 import base64
 import json
-from pathlib import Path
 import xml.etree.ElementTree as ET
 
 

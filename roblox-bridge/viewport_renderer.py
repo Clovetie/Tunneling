@@ -15,11 +15,9 @@ Why this exists:
 
 from __future__ import annotations
 
-import base64
 import math
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -1164,7 +1162,7 @@ def render_scene_png(
     ground_faces = [item for item in opaque_faces if item[4]]
     fg_opaque_faces = [item for item in opaque_faces if not item[4]]
     ground_faces.sort(key=lambda item: item[0], reverse=True)
-    for _, pts3d, rgba, is_neon, _ in ground_faces:
+    for _, pts3d, rgba, _is_neon, _ in ground_faces:
         _fill_poly_zbuf(buf, zbuf, w, h, pts3d, rgba, depth_bias=0.0, write_z=False)
 
     # 2. Ground contact shadows (drawn on top of ground plane before foreground 3D geometry)
@@ -1206,7 +1204,7 @@ def render_scene_png(
 
     # 5. Translucent faces sorted back-to-front and depth-tested against opaque Z-buffer
     trans_faces.sort(key=lambda item: item[0], reverse=True)
-    for _, pts3d, rgba, is_neon, is_ground in trans_faces:
+    for _, pts3d, rgba, is_neon, _is_ground in trans_faces:
         _fill_poly_zbuf(buf, zbuf, w, h, pts3d, rgba, depth_bias=0.0, write_z=False)
         edge_rgba = (255, 255, 255, 95) if is_neon else (18, 24, 36, 55)
         for i in range(len(pts3d)):
@@ -1227,7 +1225,7 @@ def render_scene_png(
         label_candidates.sort(key=lambda x: x[0])
         placed_boxes: List[Tuple[int, int, int, int]] = []
         seen_names = set()
-        for cz, lx, ly, nm in label_candidates:
+        for _cz, lx, ly, nm in label_candidates:
             tag = nm[:16]
             if tag.lower() in seen_names:
                 continue
