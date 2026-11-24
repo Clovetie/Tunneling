@@ -19,7 +19,7 @@ test:	## full regression suite, ~215 s (what CI runs)
 test-fast:	## every test, minus the two nested self-test suite runs, ~71 s
 	cd $(BRIDGE) && $(PYTHON) -B test_bridge_mcp.py --fast
 
-test-unit:	## offline classes only: no port is bound, under a second
+test-unit:	## offline classes only: no port is bound, 63 tests in ~2 s
 	cd $(BRIDGE) && $(PYTHON) -B test_bridge_mcp.py --unit
 
 lint:	## ruff, plus the blind-except ratchet

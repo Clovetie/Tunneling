@@ -2,7 +2,7 @@
   "name": "mesh_forge_anvil_station",
   "category": "vfx_mesh",
   "description": "3D mesh blacksmith forge & anvil station built with sculpted SpecialMesh geometry, ember ParticleEmitter, and warm forge PointLight.",
-  "targetParent": "Workspace",
+  "defaultParent": "Workspace",
   "tree": [
     {
       "name": "ForgeAnvilStation",

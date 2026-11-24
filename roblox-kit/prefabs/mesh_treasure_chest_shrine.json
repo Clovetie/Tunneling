@@ -2,7 +2,7 @@
   "name": "mesh_treasure_chest_shrine",
   "category": "vfx_mesh",
   "description": "3D mesh-detailed gilded treasure chest on a sculpted stone dais with golden burst ParticleEmitter, PointLight, and ProximityPrompt.",
-  "targetParent": "Workspace",
+  "defaultParent": "Workspace",
   "tree": [
     {
       "name": "TreasureChestShrine",

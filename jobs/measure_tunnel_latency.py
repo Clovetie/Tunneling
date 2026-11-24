@@ -17,6 +17,10 @@ so it runs anywhere Python 3 does.
 
 Exit codes: 0 measured, 2 token rejected, 3 no Studio peer (nothing to measure),
 4 every request failed.
+
+Each target's peer list is checked before any job is enqueued, and only a job that comes
+back "done" counts as a sample: a job that outlives --timeout returns "queued" with no
+error, and timing that measures the wait window, not the tunnel.
 """
 
 import argparse
@@ -53,6 +57,22 @@ MCP_TOOL_ARGS = {
     "script_read": {"path": "ServerScriptService", "startLine": 1, "endLine": 5},
     "execute_luau": {"code": "return true"},
 }
+
+
+NO_PEER_FATAL = (
+    "{label}: no Studio peer connected to the bridge, so there is nothing to time. "
+    "Open the place with the ArenaBridge plugin and retry."
+)
+
+
+def http_json(base_url: str, path: str, token: str, timeout: float = 10.0):
+    """GET one JSON endpoint from the bridge (used for the peer pre-flight)."""
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(base_url + path, headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def parse_target(value: str):
@@ -145,6 +165,22 @@ def measure(targets, tools, token, runs, timeout, warmup, quiet=False, transport
     caller = post_mcp_call if transport == "mcp" else post_job
     for label, base in targets:
         results[label] = {}
+        # A target with no peer cannot be measured at all: every job waits out --timeout and
+        # comes back still "queued". Pre-flight the peer list so the operator is told that
+        # in a second instead of after runs x tools x --timeout seconds.
+        peers = None
+        try:
+            peers = http_json(base, "/api/peers", token).get("peers") or []
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            # Cannot tell - no /api/peers on this target, a token without read scope, or an
+            # unreachable host. That is not the same as "no peer", so fall through and let
+            # the jobs themselves speak; only an authoritative empty list short-circuits.
+            peers = None
+        if peers is not None and not peers:
+            fatal = fatal or NO_PEER_FATAL.format(label=label)
+            for tool in tools:
+                results[label][tool] = {"samples": [], "errors": ["no Studio peer connected"]}
+            continue
         for tool in tools:
             samples, errors = [], []
             attempts = runs + max(0, warmup)
@@ -164,15 +200,19 @@ def measure(targets, tools, token, runs, timeout, warmup, quiet=False, transport
                 except (urllib.error.URLError, TimeoutError, OSError) as exc:
                     errors.append(f"network: {exc}")
                     continue
-                if job.get("status") == "error":
-                    message = str(job.get("error") or "")
-                    errors.append(message or "job failed")
-                    low = message.lower()
-                    if "no peer" in low or "no studio" in low or "no_peer" in low:
-                        fatal = fatal or (
-                            f"{label}: no Studio peer connected to the bridge, so there is nothing to time. "
-                            "Open the place with the ArenaBridge plugin and retry."
-                        )
+                if job.get("status") != "done":
+                    # mcp_core._unwrap_job agrees: "done" is the only success, "error" is a
+                    # failure, and anything else means Studio did not finish in time. That
+                    # case returns no `error` string at all, so the old `== "error"` test
+                    # fell through and recorded the wait window as a latency sample.
+                    reason = str(job.get("reason") or "")
+                    message = str(job.get("error") or "").strip() or (
+                        f"job still {job.get('status')} after {timeout:.0f}s wait")
+                    errors.append(message)
+                    low = f"{reason} {message}".lower()
+                    if (reason in ("no_peer", "no_client_peer")
+                            or "no peer" in low or "no studio" in low or "no_peer" in low):
+                        fatal = fatal or NO_PEER_FATAL.format(label=label)
                     continue
                 if index >= warmup:
                     samples.append(round(elapsed, 2))
@@ -275,6 +315,33 @@ def main(argv=None):
             json.dump(payload, handle, indent=2)
         print(f"[written] {out_path}", file=sys.stderr)
 
+    measured = sum(1 for label in summary for tool in tools if summary[label][tool]["count"])
+    if fatal and "token rejected" in fatal:
+        print(f"error: {fatal}", file=sys.stderr)
+        return 2
+    if measured == 0:
+        # Print no table. A table of `n/a` rows is the thing that gets pasted into
+        # docs/OPS.md as a latency budget, and --markdown makes it look like a result.
+        if fatal:
+            print(f"error: {fatal}", file=sys.stderr)
+            verdict = 3
+        else:
+            print("error: every request failed; check the URL and the bridge log", file=sys.stderr)
+            verdict = 4
+        # The script already knows why; "go read the bridge log" made the operator do the
+        # work the tool had done. Up to five distinct reasons, in target order.
+        reasons = []
+        for label in results:
+            for tool in tools:
+                for err in results[label][tool]["errors"]:
+                    if err not in reasons:
+                        reasons.append(err)
+        for err in reasons[:5]:
+            print(f"  {err}", file=sys.stderr)
+        if len(reasons) > 5:
+            print(f"  ... and {len(reasons) - 5} more (see --json-out for all of them)", file=sys.stderr)
+        return verdict
+
     if args.markdown:
         labels = list(summary)
         print(render_markdown(summary, tools, labels))
@@ -283,17 +350,6 @@ def main(argv=None):
         if len(summary) > 1:
             print("Markdown excerpt for docs/OPS.md:\n")
             print(render_markdown(summary, tools, list(summary)))
-
-    measured = sum(1 for label in summary for tool in tools if summary[label][tool]["count"])
-    if fatal and "token rejected" in fatal:
-        print(f"error: {fatal}", file=sys.stderr)
-        return 2
-    if measured == 0:
-        if fatal:
-            print(f"error: {fatal}", file=sys.stderr)
-            return 3
-        print("error: every request failed; check the URL and the bridge log", file=sys.stderr)
-        return 4
     if fatal:
         print(f"note: {fatal}", file=sys.stderr)
     return 0

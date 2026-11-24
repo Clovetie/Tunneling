@@ -1,10 +1,9 @@
 {
   "name": "ui_input_prompt_bar",
   "category": "ui",
-  "description": "Clean bottom-right PC & Controller input legend bar using genuine CC0 Kenney Input Prompts (WASD, Shift, E, Q, Gamepad A).",
+  "description": "Clean bottom-right PC input legend bar (Interact, Sprint / Dash, Special Skill) using genuine CC0 Kenney Input Prompts.",
   "defaultParent": "StarterGui",
   "requiredImages": [
-    "kenney_inputs/keyboard_wasd.png",
     "kenney_inputs/keyboard_shift.png",
     "kenney_inputs/keyboard_e.png",
     "kenney_inputs/keyboard_q.png"

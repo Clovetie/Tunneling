@@ -39,6 +39,7 @@ Exit 0 clean, 1 on any disagreement.
 
 from __future__ import annotations
 
+import argparse
 import json
 import pathlib
 import re
@@ -303,8 +304,21 @@ def check(f: dict) -> list:
 
 
 def main(argv: list) -> int:
+    # argparse, not a hand-rolled scan of argv: `--help` used to fall through to the
+    # default action and rewrite docs/FACTS.md, which is the opposite of inert (P3-T7).
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--check", action="store_true",
+                    help="verify docs/FACTS.md and every doc claim; write nothing (exit 1 on drift)")
+    ap.add_argument("--json", action="store_true",
+                    help="print the computed facts as JSON instead of writing Markdown")
+    args = ap.parse_args(argv)
+
     f = facts()
-    if "--check" in argv:
+    if args.json:
+        print(json.dumps(f, indent=2, sort_keys=True))
+        return 0
+    if args.check:
         problems = check(f)
         if problems:
             print("\n".join(problems))

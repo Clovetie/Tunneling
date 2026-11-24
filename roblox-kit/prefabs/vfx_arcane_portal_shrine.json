@@ -2,6 +2,7 @@
   "name": "vfx_arcane_portal_shrine",
   "category": "vfx",
   "description": "3D mesh-detailed arcane portal gateway with SpecialMesh obelisks, swirling ParticleEmitter vortex, Beam energy link, and PointLight glow.",
+  "defaultParent": "Workspace",
   "tree": [
     {
       "name": "ArcanePortalShrine",

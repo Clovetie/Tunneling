@@ -62,6 +62,8 @@ from mock_studio import run_mock_loop  # noqa: E402
 from scene_auditor import audit_3d_hierarchy  # noqa: E402
 from ui_linter import audit_tree_on_viewport, run_multi_viewport_audit  # noqa: E402
 from viewport_renderer import _blit_scaled_rgba, render_scene_png  # noqa: E402
+from image_pipeline import decode_png_rgba  # noqa: E402
+from rbxmx_pipeline import parse_rbxmx_to_tree, serialize_tree_to_rbxmx  # noqa: E402
 from server import BridgeState, create_http_server  # noqa: E402
 import server as bridge_server  # noqa: E402
 import setup as bridge_setup  # noqa: E402
@@ -1556,20 +1558,36 @@ class TestV5OpsPlatform(unittest.TestCase):
         script = os.path.join(repo, "jobs", "measure_tunnel_latency.py")
 
         class FakeBridge(http.server.BaseHTTPRequestHandler):
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length") or 0)
-                self.rfile.read(length)
-                if self.headers.get("Authorization") != "Bearer good-token":
-                    body = b'{"error":"unauthorized"}'
-                    self.send_response(401)
-                else:
-                    body = json.dumps({"id": "job-1", "status": "done", "result": {"ok": True}}).encode()
-                    time.sleep(0.005)
-                    self.send_response(200)
+            def _send(self, code, body):
+                self.send_response(code)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def do_GET(self):
+                # The peer pre-flight: an authoritative "one peer here", so the script
+                # measures instead of reporting that there is nothing to time.
+                if self.path.split("?")[0] == "/api/peers":
+                    self._send(200, json.dumps({"peers": [{"peerId": "fake", "online": True}]}).encode())
+                else:
+                    self._send(404, b'{"error":"not found"}')
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length)
+                if self.headers.get("Authorization") != "Bearer good-token":
+                    self._send(401, b'{"error":"unauthorized"}')
+                    return
+                time.sleep(0.005)
+                if self.path.split("?")[0] == "/mcp":
+                    tool = (json.loads(raw).get("params") or {}).get("name")
+                    self._send(200, json.dumps({"jsonrpc": "2.0", "id": 1, "result": {
+                        "content": [{"type": "text", "text": f"{tool}: ok"}],
+                        "isError": False,
+                        "structuredContent": {"ok": True}}}).encode())
+                else:
+                    self._send(200, json.dumps({"id": "job-1", "status": "done", "result": {"ok": True}}).encode())
 
             def log_message(self, *args):
                 pass
@@ -1584,10 +1602,64 @@ class TestV5OpsPlatform(unittest.TestCase):
             self.assertIn("| Tool |", ok.stdout)
             self.assertIn("ping_studio", ok.stdout)
 
+            # Same script, MCP transport: it must benchmark the /mcp round trip too, not
+            # only POST /api/jobs. (This coverage used to live against a real bridge with
+            # no Studio peer, where the "measurement" was the bridge's own refusal.)
+            mcp = subprocess.run([sys.executable, script, "--url", f"local={base}", "--token", "good-token",
+                                  "--transport", "mcp", "--tools", "get_studio_state",
+                                  "--runs", "2", "--warmup", "0", "--markdown"],
+                                 capture_output=True, text=True, timeout=120)
+            self.assertEqual(mcp.returncode, 0, mcp.stdout + mcp.stderr)
+            self.assertIn("get_studio_state", mcp.stdout)
+            self.assertIn("| Tool |", mcp.stdout)
+
             denied = subprocess.run([sys.executable, script, "--url", f"local={base}", "--token", "nope",
                                      "--runs", "2"], capture_output=True, text=True, timeout=120)
             self.assertEqual(denied.returncode, 2)
             self.assertIn("token rejected", denied.stderr)
+
+            # v6.1.0 (P3-T7): a target that outlives its wait window comes back "queued"
+            # with no error, which used to be recorded as a latency sample - so the tool
+            # printed p50 == --timeout, errors 0, exit 0 for a bridge with nothing
+            # connected. Only a "done" job counts now.
+            class StalledBridge(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    body = json.dumps({"peers": [{"peerId": "ghost", "online": True}]}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def do_POST(self):
+                    length = int(self.headers.get("Content-Length") or 0)
+                    self.rfile.read(length)
+                    body = json.dumps({"id": "job-9", "status": "queued"}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, *args):
+                    pass
+
+            stalled = http.server.ThreadingHTTPServer(("127.0.0.1", 0), StalledBridge)
+            threading.Thread(target=stalled.serve_forever, daemon=True).start()
+            stall_base = f"http://127.0.0.1:{stalled.server_address[1]}"
+            try:
+                queued = subprocess.run([sys.executable, script, "--url", f"local={stall_base}",
+                                         "--tools", "ping_studio", "--runs", "1", "--warmup", "0"],
+                                        capture_output=True, text=True, timeout=120)
+                self.assertEqual(queued.returncode, 4, queued.stdout + queued.stderr)
+                self.assertIn("every request failed", queued.stderr)
+                self.assertIn("still queued", queued.stderr + queued.stdout)
+                # ... and nothing on stdout at all: a zero-measurement run used to print
+                # a table anyway, which is what gets pasted into docs/OPS.md as a budget.
+                self.assertEqual(queued.stdout.strip(), "")
+            finally:
+                stalled.shutdown()
+                stalled.server_close()
         finally:
             fake.shutdown()
             fake.server_close()
@@ -1608,6 +1680,20 @@ class TestV5OpsPlatform(unittest.TestCase):
             capture_output=True, text=True, timeout=120)
         self.assertEqual(drill.returncode, 3)
         self.assertIn("no Studio peer", drill.stderr)
+
+        # v6.1.0 (P3-T7): the third surviving operator job, which documents its own exit
+        # codes (0 measured, 2 token rejected, 3 no Studio peer, 4 every request failed).
+        latency = subprocess.run(
+            # One tool, one run, no warm-up and a short per-job wait: with no peer the
+            # script still waits out --timeout (default 60s) per attempt, and 3 tools x
+            # 3 attempts would outlast this test by an order of magnitude.
+            [sys.executable, os.path.join(repo, "jobs", "measure_tunnel_latency.py"),
+             "--url", self.base, "--token", self.admin_token, "--tools", "ping_studio",
+             "--runs", "1", "--warmup", "0", "--timeout", "5"],
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(latency.returncode, 3, latency.stdout + latency.stderr)
+        self.assertIn("no Studio peer", latency.stderr)
+        self.assertIn("nothing to time", latency.stderr)
 
     # -- v5.2: maintenance pause, automatic sweeper, ops resources -----------
 
@@ -4501,7 +4587,11 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
         spec.loader.exec_module(drill_mod)
         self.assertEqual(drill_mod.reaped_total(self.base_url, self.token), 3)
 
-        # Verify measure_tunnel_latency.py --transport mcp benchmarks real /mcp calls
+        # Verify measure_tunnel_latency.py refuses to invent a measurement: this bridge has
+        # no Studio peer, and before v6.1.0 the MCP transport still exited 0 with a latency
+        # table, because the bridge's own "no peer" reply was timed as if Studio had
+        # answered. The benchmarking of a *successful* /mcp call is covered against a fake
+        # bridge in TestV5OpsPlatform.test_latency_script_measures_percentiles_and_reports_auth_errors.
         lat_script = HERE.parent / "jobs" / "measure_tunnel_latency.py"
         lat_run = subprocess.run(
             [
@@ -4525,8 +4615,10 @@ class TestV55DiscoveryTunnelAndSecurity(unittest.TestCase):
             text=True,
             timeout=30,
         )
-        self.assertEqual(lat_run.returncode, 0, lat_run.stderr)
-        self.assertIn("get_studio_state", lat_run.stdout)
+        self.assertEqual(lat_run.returncode, 3, lat_run.stdout + lat_run.stderr)
+        self.assertIn("no Studio peer", lat_run.stderr)
+        self.assertIn("nothing to time", lat_run.stderr)
+        self.assertNotIn("| Tool |", lat_run.stdout)
 
     def test_viewport_3d_string_properties_zbuffer_and_preview_endpoint(self):
         from image_pipeline import decode_any_to_rgba
@@ -6213,10 +6305,561 @@ class TestV61SnapshotRestore(unittest.TestCase):
         self.assertNotEqual(back["hash"], v2, "the legacy restore did not write")
 
 
+# --- v6.1.0 (P3-T5/T6/T7): renderer goldens, kit integrity, operator-script smoke ---
+
+def _scene_part(name, size, pos, color, **props):
+    """A Part node in the shape `collect_parts_from_tree` reads."""
+    return {"name": name, "className": "Part",
+            "properties": {"Size": list(size), "Position": list(pos), "Color": list(color),
+                           "Anchored": True, **props},
+            "children": []}
+
+
+def _scene_gui(name, size_px, pos_px, text=None, color=(24, 26, 30), transparency=0.15):
+    node = {"name": name, "className": "Frame",
+            "properties": {"Size": {"__t": "UDim2", "v": [0, size_px[0], 0, size_px[1]]},
+                           "Position": {"__t": "UDim2", "v": [0, pos_px[0], 0, pos_px[1]]},
+                           "BackgroundColor3": list(color), "BackgroundTransparency": transparency,
+                           "BorderSizePixel": 0},
+            "children": []}
+    if text is not None:
+        node["children"].append({
+            "name": f"{name}Label", "className": "TextLabel",
+            "properties": {"Size": {"__t": "UDim2", "v": [1, 0, 1, 0]}, "Text": text,
+                           "TextColor3": [240, 240, 245], "BackgroundTransparency": 1.0,
+                           "TextScaled": True, "Font": "GothamMedium"},
+            "children": []})
+    return node
+
+
+def render_golden_scene(name):
+    """Fixed scenes for the rasteriser goldens (P3-T5).
+
+    Small on purpose: goldens hash the decoded RGBA buffer byte by byte through the
+    repo's own FNV-1a, so 320x200 keeps each scene near-instant while still exercising
+    projection, z-ordering, materials, transparency, labels and HUD compositing.
+    """
+    if name == "single_part":
+        return {"workspace_tree": {"name": "Workspace", "className": "Workspace", "children": [
+                    _scene_part("Deck", (12, 1, 12), (0, 0, 0), (120, 130, 140))]},
+                "width": 320, "height": 200, "include_hud": False,
+                "show_labels": False, "show_grid": False}
+    if name == "three_part_stack":
+        return {"workspace_tree": {"name": "Workspace", "className": "Workspace", "children": [
+                    _scene_part("Base", (16, 1, 16), (0, 0, 0), (92, 96, 104)),
+                    _scene_part("Mid", (8, 4, 8), (0, 2.5, 0), (168, 74, 58)),
+                    _scene_part("Top", (3, 3, 3), (0, 6.5, 0), (226, 196, 96))]},
+                "width": 320, "height": 240, "include_hud": False,
+                "show_labels": True, "show_grid": True}
+    if name == "materials_and_transparency":
+        return {"workspace_tree": {"name": "Workspace", "className": "Workspace", "children": [
+                    _scene_part("Neon", (4, 4, 4), (-6, 2, 0), (86, 220, 190),
+                                Material="Neon"),
+                    _scene_part("Glass", (6, 6, 1), (4, 3, -2), (150, 190, 235),
+                                Material="Glass", Transparency=0.55),
+                    {"name": "Gem", "className": "MeshPart",
+                     "properties": {"Size": [3, 5, 3], "Position": [0, 2.5, 4],
+                                    "Color": [210, 120, 220], "Anchored": True,
+                                    "Material": "ForceField"},
+                     "children": []}]},
+                "width": 320, "height": 240, "include_hud": False,
+                "show_labels": True, "show_grid": False}
+    if name == "hud_overlay":
+        return {"workspace_tree": {"name": "Workspace", "className": "Workspace", "children": [
+                    _scene_part("Deck", (14, 1, 14), (0, 0, 0), (110, 114, 122)),
+                    _scene_part("Pillar", (2, 8, 2), (4, 4, -3), (190, 170, 130))]},
+                "gui_tree": [_scene_gui("Vitals", (150, 42), (16, 16), text="HP 82"),
+                             _scene_gui("Objective", (170, 30), (16, 150),
+                                        text="Reach the cabin", transparency=0.35)],
+                "width": 320, "height": 240, "include_hud": True,
+                "show_labels": False, "show_grid": False}
+    if name == "kit_spawn_plaza_with_hud":
+        models = HERE.parent / "roblox-kit" / "models"
+        world, _ = parse_rbxmx_to_tree(
+            (models / "spawn_plaza.rbxmx").read_text(encoding="utf-8"), strip_scripts=True)
+        hud, _ = parse_rbxmx_to_tree(
+            (models / "hud_modern_shell.rbxmx").read_text(encoding="utf-8"), strip_scripts=True)
+        return {"workspace_tree": {"name": "Workspace", "className": "Workspace",
+                                   "children": world},
+                "gui_tree": hud, "width": 480, "height": 270, "camera_preset": "perspective",
+                "explicit_cam_pos": (52, 38, 68), "explicit_look_at": (0, 5, 0),
+                "include_hud": True, "show_labels": True, "show_grid": True}
+    raise ValueError(f"unknown golden scene {name!r}")
+
+
+# FNV-1a (mcp_core.fnv1a_hex) over the *decoded RGBA buffer*, not over the PNG: zlib
+# output is not guaranteed stable across builds, so hashing compressed bytes would make
+# these goldens platform-sensitive for no benefit. Update a hash only when a rendering
+# change is deliberate, and regenerate the whole set with:
+#   cd roblox-bridge && python3 -B -c "import test_bridge_mcp as t; t.print_renderer_goldens()"
+RENDERER_GOLDENS = {
+    # name: (fnv1a_hex of the decoded RGBA buffer, width, height)
+    "single_part": ("acb6b3ce", 320, 200),
+    "three_part_stack": ("303c7fe5", 320, 240),
+    "materials_and_transparency": ("2b6796a7", 320, 240),
+    "hud_overlay": ("56214d11", 320, 240),
+    "kit_spawn_plaza_with_hud": ("2bfb7702", 480, 270),
+}
+
+
+def renderer_golden_hashes():
+    out = {}
+    for name in ("single_part", "three_part_stack", "materials_and_transparency",
+                 "hud_overlay", "kit_spawn_plaza_with_hud"):
+        kwargs = render_golden_scene(name)
+        png, stats = render_scene_png(**kwargs)
+        width, height, rgba = decode_png_rgba(png)
+        out[name] = {"hash": fnv1a_hex(rgba), "width": width, "height": height,
+                     "stats": stats}
+    return out
+
+
+def print_renderer_goldens():
+    """Print the current hashes as a paste-ready dict (see RENDERER_GOLDENS)."""
+    for name, info in renderer_golden_hashes().items():
+        print(f'    "{name}": ("{info["hash"]}", {info["width"]}, {info["height"]}),')
+
+
+class TestV61RendererGoldens(unittest.TestCase):
+    """P3-T5: `viewport_renderer.render_scene_png` had no direct test at all.
+
+    A rasteriser regression used to be a visual surprise: the offline viewport, the HUD
+    compositor and the `spawn_plaza` self-test artifact all render through it, and
+    nothing compared their output to anything. These are fixed scenes hashed with the
+    repo's own FNV-1a over decoded pixels, so a change in projection, z-order, material
+    handling, label placement or HUD compositing is a test failure with the scene named.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rendered = renderer_golden_hashes()
+
+    def test_golden_scenes_hash_to_the_committed_values(self):
+        self.assertEqual(sorted(RENDERER_GOLDENS), sorted(self.rendered),
+                         "RENDERER_GOLDENS and render_golden_scene() list different scenes")
+        for name, info in self.rendered.items():
+            golden_hash, golden_w, golden_h = RENDERER_GOLDENS[name]
+            self.assertEqual((info["width"], info["height"]), (golden_w, golden_h),
+                             f"{name}: rendered dimensions changed")
+            self.assertEqual(info["hash"], golden_hash,
+                             f"{name}: rasteriser output changed. If that was deliberate, "
+                             f"regenerate with print_renderer_goldens() and review the diff "
+                             f"of the PNG before committing the new hash.")
+
+    def test_rendering_is_deterministic_within_a_run(self):
+        kwargs = render_golden_scene("materials_and_transparency")
+        first = render_scene_png(**kwargs)[0]
+        second = render_scene_png(**kwargs)[0]
+        self.assertEqual(first, second, "the same scene rendered different bytes")
+        self.assertTrue(first.startswith(b"\x89PNG\r\n\x1a\n"), "not a PNG")
+
+    def test_every_scene_renders_geometry_and_reports_what_it_did(self):
+        for name, info in self.rendered.items():
+            stats = info["stats"]
+            self.assertGreater(stats["partsRendered"], 0, f"{name}: no parts rendered")
+            self.assertGreater(stats["facesRasterized"], 0, f"{name}: no faces rasterized")
+            self.assertEqual(stats["width"], info["width"], f"{name}: width disagrees")
+            self.assertEqual(stats["height"], info["height"], f"{name}: height disagrees")
+        self.assertGreater(self.rendered["hud_overlay"]["stats"]["hudElementsComposited"], 0,
+                           "the HUD scene composited nothing")
+        self.assertGreater(
+            self.rendered["kit_spawn_plaza_with_hud"]["stats"]["hudElementsComposited"], 0)
+
+    def test_requested_dimensions_are_clamped_not_trusted(self):
+        tiny = render_scene_png(render_golden_scene("single_part")["workspace_tree"],
+                                width=1, height=1, include_hud=False)[0]
+        huge = render_scene_png(render_golden_scene("single_part")["workspace_tree"],
+                                width=99999, height=99999, include_hud=False)[0]
+        self.assertEqual(decode_png_rgba(tiny)[:2], (240, 160), "the 240x160 floor moved")
+        self.assertEqual(decode_png_rgba(huge)[:2], (1280, 800), "the 1280x800 ceiling moved")
+
+    def test_committed_self_test_viewport_matches_a_fresh_render(self):
+        """The tracked artifact is a golden too, and it was stale: it predated the
+        renderer's meshPartsRendered/primitivePartsRendered fields and 6.2% of its pixels
+        differed from a fresh render. `--check` compares decoded pixels and ignores the
+        wall-clock fields, so it cannot pass on a stale image or fail on a faster machine.
+        """
+        repo = HERE.parent
+        script = repo / "tools" / "build_self_test_viewport.py"
+        self.assertTrue(script.is_file(), f"{script} is gone; this golden has no generator")
+        proc = subprocess.run([sys.executable, "-B", str(script), "--check"],
+                              capture_output=True, text=True, timeout=300, cwd=str(repo))
+        self.assertEqual(proc.returncode, 0,
+                         f"the committed self-test viewport does not match a fresh render:\n"
+                         f"{proc.stdout}\n{proc.stderr}")
+        self.assertIn("matches a fresh render", proc.stdout)
+
+    def test_rbxmx_round_trips_through_parse_and_serialize(self):
+        """P3-T5's other half: `rbxmx_pipeline` had zero references in this file.
+
+        parse -> serialize -> parse must be a fixed point on a real kit model, and the
+        tree that comes back must describe the same instances with the same properties.
+        """
+        models = HERE.parent / "roblox-kit" / "models"
+        for model in sorted(models.glob("*.rbxmx"))[:6]:
+            original = model.read_text(encoding="utf-8")
+            tree, stats = parse_rbxmx_to_tree(original, strip_scripts=True)
+            self.assertIsInstance(tree, list, f"{model.name}: parse did not return a tree")
+            self.assertGreater(stats.get("itemsParsed", 0), 0, f"{model.name}: parsed nothing")
+            xml = serialize_tree_to_rbxmx(tree)
+            again, again_stats = parse_rbxmx_to_tree(xml, strip_scripts=True)
+            self.assertEqual(again_stats.get("itemsParsed"), stats.get("itemsParsed"),
+                             f"{model.name}: round-trip lost instances")
+            self.assertEqual(_tree_signature(again), _tree_signature(tree),
+                             f"{model.name}: round-trip changed the tree")
+            self.assertEqual(serialize_tree_to_rbxmx(again), xml,
+                             f"{model.name}: serialize is not idempotent")
+
+
+def _tree_signature(nodes):
+    """Names, classes, child shape and the properties that survive a round trip."""
+    out = []
+    for node in nodes:
+        props = {k: v for k, v in (node.get("properties") or {}).items()
+                 if not isinstance(v, (dict, list)) or k in ("Size", "Color")}
+        out.append((node.get("name"), node.get("className"),
+                    json.dumps(props, sort_keys=True, default=str),
+                    _tree_signature(node.get("children") or [])))
+    return out
+
+
+class TestV61KitIntegrity(unittest.TestCase):
+    """P3-T6: registry.json, the files on disk, asset-lock.json and modules/Assets.lua
+    are four descriptions of one kit, and nothing checked that they agreed.
+
+    This is the CI-visible half of P1-B3: `update_repo_asset_manifest` now writes
+    atomically and `image_pipeline.py --check` reports drift, but a registry that lists a
+    file which is not there - or an Assets.lua URI that resolves to nothing - is a kit
+    that fails at spawn time in Studio, not at build time here. `tools/verify_licences.py`
+    does the exhaustive hash and licence pass; this test does the *relationship* pass and
+    a deterministic hash sample, so it stays fast enough for `--unit`.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.kit = HERE.parent / "roblox-kit"
+        cls.registry = json.loads(
+            (cls.kit / "assets" / "registry.json").read_text(encoding="utf-8"))
+        cls.rows = cls.registry["assets"]
+        cls.lock = json.loads(
+            (cls.kit / "assets" / "asset-lock.json").read_text(encoding="utf-8"))
+        cls.assets_lua = (cls.kit / "modules" / "Assets.lua").read_text(encoding="utf-8")
+
+    def test_registry_rows_are_complete_and_their_files_exist(self):
+        self.assertEqual(self.registry["schemaVersion"], 1)
+        required = {"path", "name", "assetType", "sha256", "bytes", "license",
+                    "provenance", "category", "thumbnail"}
+        seen = set()
+        for row in self.rows:
+            missing = required - set(row)
+            self.assertFalse(missing, f"{row.get('path')}: missing {sorted(missing)}")
+            self.assertRegex(row["sha256"], r"^[0-9a-f]{64}$", f"{row['path']}: short sha256")
+            self.assertIn(row["assetType"], {"image", "audio", "model", "sky"})
+            self.assertTrue(row["license"], f"{row['path']}: no licence")
+            self.assertNotIn(row["path"], seen, f"{row['path']}: registered twice")
+            seen.add(row["path"])
+            self.assertTrue((HERE.parent / row["path"]).is_file(),
+                            f"{row['path']}: registered but not on disk")
+
+    def test_asset_type_counts_are_the_6_1_0_kit(self):
+        counts = {}
+        for row in self.rows:
+            counts[row["assetType"]] = counts.get(row["assetType"], 0) + 1
+        # Golden on purpose: an asset that goes missing should fail here, not silently
+        # shrink the kit. Update deliberately, with the reason in the commit message.
+        self.assertEqual(counts, {"image": 3705, "model": 520, "sky": 50, "audio": 45})
+        self.assertEqual(len(self.rows), 4320)
+        glb = [r for r in self.rows if r["path"].endswith(".glb")]
+        rbxmx = [r for r in self.rows if r["path"].endswith(".rbxmx")]
+        self.assertEqual((len(glb), len(rbxmx)), (500, 20))
+        on_disk = sorted(p.name for p in (self.kit / "models").glob("*.rbxmx"))
+        self.assertEqual(on_disk, sorted(Path(r["path"]).name for r in rbxmx),
+                         "models/*.rbxmx and the registry list different files")
+
+    def test_asset_lock_and_registry_describe_the_same_files(self):
+        by_path = {r["path"]: r for r in self.rows}
+        images = [r for r in self.rows if r["assetType"] in ("image", "sky")]
+        audio = [r for r in self.rows if r["assetType"] == "audio"]
+        # The lock's "images" bucket covers registered images *and* skies.
+        self.assertEqual(len(self.lock["images"]), len(images))
+        self.assertEqual(len(self.lock["audio"]), len(audio))
+        self.assertEqual(len({v["key"] for v in self.lock["images"].values()}),
+                         len(self.lock["images"]), "duplicate image keys in asset-lock.json")
+        # The two buckets prefix differently, and Assets.lua's URIs follow the same
+        # asymmetry: an image URI is arena_assets/<relPath> (images/ is implied) while an
+        # audio URI is arena_assets/audio/<relPath>. Both resolve on disk, so the test
+        # encodes the convention instead of assuming one rule fits both buckets.
+        checked = 0
+        for bucket, reg_prefix, uri_prefix in (
+                ("images", "roblox-kit/assets/images/", "rbxasset://arena_assets/"),
+                ("audio", "roblox-kit/assets/audio/", "rbxasset://arena_assets/audio/")):
+            for key, entry in self.lock[bucket].items():
+                rel = entry["relPath"]
+                row = by_path.get(reg_prefix + rel)
+                self.assertIsNotNone(row, f"asset-lock {bucket}/{key} -> {reg_prefix + rel} "
+                                          f"is not in registry.json")
+                self.assertEqual(row["bytes"], entry["bytes"], f"{key}: bytes disagree")
+                self.assertTrue(row["sha256"].startswith(entry["sha256"]),
+                                f"{key}: the lock's short sha256 is not a prefix of the "
+                                f"registry's - they are not the same file")
+                self.assertEqual(entry["localUri"], uri_prefix + rel,
+                                 f"{key}: localUri does not follow the {bucket} convention")
+                checked += 1
+        self.assertEqual(checked, 3800)
+
+    def test_assets_lua_uris_resolve_and_match_the_lock(self):
+        uris = re.findall(r'"rbxasset://arena_assets/([^"]+)"', self.assets_lua)
+        self.assertEqual(len(uris), 3800, "Assets.lua and asset-lock.json disagree in size")
+        self.assertEqual(len(set(uris)), len(uris), "Assets.lua repeats a URI")
+        lock_uris = {v["localUri"].split("arena_assets/", 1)[1]
+                     for v in list(self.lock["images"].values()) + list(self.lock["audio"].values())}
+        self.assertEqual(set(uris), lock_uris,
+                         "Assets.lua and asset-lock.json list different assets")
+        for rel in uris:
+            for prefix in ("assets/images/", "assets/"):
+                if (self.kit / prefix / rel).is_file():
+                    break
+            else:
+                self.fail(f"rbxasset://arena_assets/{rel} resolves to no file in the kit")
+        for section in ("Images", "Audio", "Meta"):
+            self.assertIn(f"Assets.{section} = {{", self.assets_lua,
+                          f"Assets.lua lost its {section} table")
+
+    def test_no_unregistered_asset_hides_in_the_kit(self):
+        """Every asset-shaped file under the registry's roots must be registered.
+
+        Two files are legitimately not assets: the skies' own catalogue and the starter
+        place. They are named here so that a *new* unregistered PNG, WAV or GLB fails
+        instead of being invisible to `spawn_prefab` and to Studio.
+        """
+        allowed = {"roblox-kit/assets/images/arena_skies/catalog.json",
+                   "roblox-kit/models/StarterPlace.rbxlx"}
+        extensions = {".png", ".jpg", ".jpeg", ".wav", ".glb", ".rbxmx"}
+        registered = {r["path"] for r in self.rows}
+        root = HERE.parent
+        unregistered = []
+        for base in ("assets/images", "assets/audio", "models"):
+            for path in (self.kit / base).rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in extensions:
+                    continue
+                rel = path.relative_to(root).as_posix()
+                if rel not in registered and rel not in allowed:
+                    unregistered.append(rel)
+        self.assertEqual(unregistered, [], "asset files on disk that registry.json does not list")
+        # And the allowed exceptions are still the only ones, so `allowed` cannot grow
+        # quietly into a dumping ground.
+        present = {rel for rel in allowed if (root / rel).is_file()}
+        self.assertEqual(present, allowed,
+                         "the documented non-asset exceptions changed; update the test")
+
+    def test_prefabs_parse_and_every_required_image_exists_and_is_registered(self):
+        registered = {r["path"] for r in self.rows}
+        prefabs = sorted((self.kit / "prefabs").glob("*.json"))
+        self.assertEqual(len(prefabs), 36, "the prefab count moved; docs/FACTS.md says 36")
+        refs = 0
+        for prefab in prefabs:
+            spec = json.loads(prefab.read_text(encoding="utf-8"))
+            # A missing `name` is legal - spawn_prefab falls back to the filename and the
+            # kit catalogue lists f.stem - but a *different* name would misreport what was
+            # spawned, and six prefabs omit the key entirely.
+            self.assertEqual(spec.get("name", prefab.stem), prefab.stem,
+                             f"{prefab.name}: its `name` disagrees with its filename")
+            self.assertTrue(spec.get("description"), f"{prefab.name}: no description")
+            # `spawn_prefab` reads only `defaultParent`; four prefabs used to declare
+            # `targetParent` instead, which is not an input key anywhere (mcp_core only
+            # *reports* targetParent), so the HUD one silently spawned into Workspace.
+            self.assertNotIn("targetParent", spec,
+                             f"{prefab.name}: `targetParent` is dead data - rename it to "
+                             f"`defaultParent`, which is what spawn_prefab reads")
+            self.assertIn(spec.get("defaultParent"),
+                          {"Workspace", "StarterGui", "Lighting"},
+                          f"{prefab.name}: defaultParent {spec.get('defaultParent')!r} is not "
+                          f"a service these prefabs can spawn into")
+            self.assertIsInstance(spec.get("tree"), list, f"{prefab.name}: tree is not a list")
+            self.assertTrue(spec["tree"], f"{prefab.name}: empty tree")
+            for rel in spec.get("requiredImages") or []:
+                refs += 1
+                path = self.kit / "assets" / "images" / rel
+                self.assertTrue(path.is_file(),
+                                f"{prefab.name} requires {rel}, which is not in the kit "
+                                f"(spawn_prefab skips missing images silently, so this "
+                                f"prefab would spawn untextured)")
+                self.assertIn(path.relative_to(HERE.parent).as_posix(), registered,
+                              f"{prefab.name} requires {rel}, which registry.json does not list")
+        self.assertEqual(refs, 30, "the prefab image references moved")
+
+    def test_drop_in_systems_and_modules_are_the_shape_the_docs_claim(self):
+        categories = sorted(p.name for p in (self.kit / "systems").iterdir() if p.is_dir())
+        self.assertEqual(categories, ["core", "liveops", "mechanics", "monetization", "ui"])
+        systems = [(c.name, p.name) for c in (self.kit / "systems").iterdir() if c.is_dir()
+                   for p in c.iterdir() if p.is_dir()]
+        self.assertEqual(len(systems), 24, "docs/FACTS.md and the README claim 24 systems")
+        for category, name in systems:
+            luau = list((self.kit / "systems" / category / name).rglob("*.lua"))
+            self.assertTrue(luau, f"systems/{category}/{name} has no Luau in it")
+        modules = sorted((self.kit / "modules").glob("*.lua"))
+        self.assertEqual(len(modules), 33, "docs/FACTS.md and the README claim 33 modules")
+        self.assertEqual(len(list((self.kit / "templates" / "screens").glob("*.lua"))), 6)
+        templates = json.loads((self.kit / "templates" / "systems.json").read_text(encoding="utf-8"))
+        self.assertTrue(templates.get("version"))
+        names = [s["name"] for s in templates["systems"]]
+        self.assertEqual(len(names), len(set(names)), "templates/systems.json repeats a name")
+        for entry in templates["systems"]:
+            for key in ("name", "category", "title", "description"):
+                self.assertTrue(entry.get(key), f"templates/systems.json: {key} missing")
+
+    def test_a_deterministic_sample_of_registry_hashes_is_real(self):
+        """Spot-check the hashes rather than trusting the registry's own numbers.
+
+        Every 251st row sorted by path, so the sample is stable and covers all four asset
+        types; `tools/verify_licences.py` hashes all 4,320 in CI.
+        """
+        import hashlib
+        by_type = {}
+        for row in self.rows:
+            by_type.setdefault(row["assetType"], []).append(row)
+        # Every type gets a slice, so "the sample happened to miss the skies" cannot
+        # happen again (it did: 4,320 rows every 251st landed on no sky at all).
+        sample = []
+        for kind in sorted(by_type):
+            rows = sorted(by_type[kind], key=lambda r: r["path"])
+            # Six per type whatever the type's size, so a 45-row type is not sampled once.
+            sample.extend(rows[::max(1, len(rows) // 6)][:6])
+        self.assertEqual({r["assetType"] for r in sample},
+                         {"image", "audio", "model", "sky"})
+        self.assertGreaterEqual(len(sample), 20)
+        kinds = set()
+        for row in sample:
+            digest = hashlib.sha256()
+            with (HERE.parent / row["path"]).open("rb") as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            self.assertEqual(digest.hexdigest(), row["sha256"],
+                             f"{row['path']}: registry sha256 does not match the file")
+            self.assertEqual((HERE.parent / row["path"]).stat().st_size, row["bytes"],
+                             f"{row['path']}: registry bytes do not match the file")
+            kinds.add(row["assetType"])
+        self.assertEqual(kinds, {"image", "audio", "model", "sky"},
+                         "the hash sample missed an asset type")
+
+
+class TestV61OperatorScriptSmoke(unittest.TestCase):
+    """P3-T7: `jobs/*.py` and `tools/*.py` had no tests at all.
+
+    Three properties, all offline: `--help` must work and must not *do* anything (two
+    scripts did the work instead of printing help, and one of them rewrote two tracked kit
+    artifacts - asking a script what it does must never be a mutation), nothing may touch
+    the network at import time, and a script that needs a dependency it does not have must
+    say so instead of raising a traceback.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.repo = HERE.parent
+        cls.scripts = sorted(
+            [p.relative_to(cls.repo).as_posix() for d in ("jobs", "tools", "roblox-bridge/tools")
+             for p in (cls.repo / d).glob("*.py")])
+
+    def test_the_operator_scripts_are_the_ones_we_expect(self):
+        self.assertGreaterEqual(len(self.scripts), 11)
+        for expected in ("jobs/live_acceptance.py", "jobs/drill_studio_kill.py",
+                         "jobs/measure_tunnel_latency.py", "tools/verify_licences.py",
+                         "tools/emit_facts.py", "tools/build_self_test_viewport.py",
+                         "tools/fetch_assets.py", "tools/build_skies.py",
+                         "roblox-bridge/tools/build_release.py",
+                         "roblox-bridge/tools/seed_agent_bus.py",
+                         "roblox-bridge/tools/build_handoff_pdfs.py"):
+            self.assertIn(expected, self.scripts, f"{expected} is gone or was renamed")
+
+    def test_help_works_and_writes_nothing(self):
+        before = subprocess.run(["git", "status", "--porcelain"], cwd=str(self.repo),
+                                capture_output=True, text=True, timeout=120).stdout
+        reportlab = _module_available("reportlab")
+        for script in self.scripts:
+            proc = subprocess.run([sys.executable, "-B", script, "--help"],
+                                  capture_output=True, text=True, timeout=300, cwd=str(self.repo))
+            if script.endswith("build_handoff_pdfs.py") and not reportlab:
+                # Its dependency probe is at import time, so --help cannot reach argparse.
+                # That is acceptable *because* it says what is missing and how to install
+                # it, and does not dump a traceback on the operator.
+                self.assertEqual(proc.returncode, 1, f"{script} --help: {proc.stdout}")
+                self.assertIn("missing PDF dependency", proc.stderr + proc.stdout)
+                self.assertIn("pip install", proc.stderr + proc.stdout)
+                self.assertNotIn("Traceback", proc.stderr + proc.stdout)
+                continue
+            self.assertEqual(proc.returncode, 0,
+                             f"{script} --help exited {proc.returncode}\n{proc.stdout}\n{proc.stderr}")
+            self.assertIn("usage:", proc.stdout, f"{script} --help printed no usage")
+            self.assertNotIn("Traceback", proc.stderr, f"{script} --help raised")
+        after = subprocess.run(["git", "status", "--porcelain"], cwd=str(self.repo),
+                               capture_output=True, text=True, timeout=120).stdout
+        self.assertEqual(before, after,
+                         "asking a script for --help changed the working tree:\n"
+                         f"{_diff_lines(before, after)}")
+
+    def test_nothing_reaches_the_network_on_import(self):
+        probe = (
+            "import socket, sys, runpy, urllib.request\n"
+            "class NetworkAtImport(AssertionError): pass\n"
+            "def deny(*a, **k):\n"
+            "    raise NetworkAtImport('network access while importing ' + sys.argv[1])\n"
+            "socket.socket = deny\n"
+            "socket.create_connection = deny\n"
+            "socket.getaddrinfo = deny\n"
+            "socket.gethostbyname = deny\n"
+            "urllib.request.urlopen = deny\n"
+            "try:\n"
+            "    runpy.run_path(sys.argv[1], run_name='arena_import_probe')\n"
+            "except SystemExit as exc:\n"
+            "    print('SYSTEM_EXIT', exc.code)\n"
+            "except NetworkAtImport as exc:\n"
+            "    print('NETWORK', exc)\n"
+            "    sys.exit(3)\n"
+        )
+        for script in self.scripts:
+            proc = subprocess.run([sys.executable, "-B", "-c", probe, script],
+                                  capture_output=True, text=True, timeout=300, cwd=str(self.repo))
+            self.assertNotEqual(proc.returncode, 3,
+                                f"{script} touches the network at import time: {proc.stdout}")
+            self.assertNotIn("NETWORK", proc.stdout, f"{script}: {proc.stdout}")
+            self.assertNotIn("Traceback", proc.stderr,
+                             f"{script} failed to import cleanly:\n{proc.stderr[-800:]}")
+
+    def test_jobs_say_what_they_need_instead_of_guessing(self):
+        """Without a bridge URL a job must fail loudly, not default into a live call."""
+        for script in ("jobs/live_acceptance.py", "jobs/drill_studio_kill.py",
+                       "jobs/measure_tunnel_latency.py"):
+            proc = subprocess.run([sys.executable, "-B", script, "--url",
+                                   # The token is built by concatenation on purpose: a
+                                   # literal `arb_` + 40 characters in a tracked file is
+                                   # exactly what tools/check_secrets.sh fails on.
+                                   "http://127.0.0.1:1", "--token", "arb_" + "0" * 40],
+                                  capture_output=True, text=True, timeout=300, cwd=str(self.repo))
+            self.assertNotEqual(proc.returncode, 0,
+                                f"{script} reported success against a dead bridge")
+            self.assertNotIn("Traceback", proc.stderr,
+                             f"{script} crashed instead of reporting:\n{proc.stderr[-800:]}")
+            combined = proc.stdout + proc.stderr
+            self.assertTrue(combined.strip(), f"{script} failed silently")
+
+
+def _module_available(name):
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _diff_lines(before, after):
+    return "\n".join(f"  + {line}" for line in after.splitlines()
+                     if line not in before.splitlines()) or "  (nothing new; a change reverted)"
+
 # Classes that bind a real port and drive the bridge over HTTP. Measured with
 # --fast on Python 3.11: these 7 hold ~65 s of the ~71 s (TestV61SecurityHardening
 # 31.5 s / TestV5OpsPlatform 22.8 s / TestV55DiscoveryTunnelAndSecurity 10.4 s and
-# four under 3 s); every other class together runs in under a second. `--unit` runs only
+# four under 3 s); every other class together runs in ~2 s, most of it the eleven
+# operator-script `--help` subprocesses in TestV61OperatorScriptSmoke. `--unit` runs only
 # the others, for iterating on pure helpers. A new HTTP class that is not listed here only
 # makes --unit slower - it cannot make a run wrong, and CI always runs everything.
 LIVE_HTTP_CLASSES = (

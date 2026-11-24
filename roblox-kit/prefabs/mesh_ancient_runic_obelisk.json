@@ -2,7 +2,7 @@
   "name": "mesh_ancient_runic_obelisk",
   "category": "vfx_mesh",
   "description": "Sculpted 3D mesh runic obelisk with tiered basalt cylinder plinth, floating crystal spire (SpecialMesh), rune PointLight, and ParticleEmitter.",
-  "targetParent": "Workspace",
+  "defaultParent": "Workspace",
   "tree": [
     {
       "name": "AncientRunicObelisk",

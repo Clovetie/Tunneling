@@ -2,6 +2,7 @@
   "name": "vfx_combat_aura_pedestal",
   "category": "vfx",
   "description": "3D mesh-sculpted weapon & ability aura pedestal with floating crystal SpecialMesh, rising spark ParticleEmitter, and Highlight rim glow.",
+  "defaultParent": "Workspace",
   "tree": [
     {
       "name": "CombatAuraPedestal",

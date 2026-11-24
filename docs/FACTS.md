@@ -32,7 +32,7 @@ plugin against a 6.1.0 one, and 20 prefabs against 36.
 | `assets` | 4,320 | `roblox-kit/assets/registry.json` entries |
 | `assetFilesOnDisk` | 4,677 | files under `roblox-kit/assets/` (includes docs and contact sheets) |
 | `jobs` | 3 | `jobs/*.py` |
-| `tests` | 152 | `def test_` methods in `test_bridge_mcp.py` |
+| `tests` | 170 | `def test_` methods in `test_bridge_mcp.py` |
 
 ## Which prose is a *current* claim
 

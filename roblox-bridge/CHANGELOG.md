@@ -305,6 +305,106 @@ All notable changes for the Roblox Studio bridge are documented here.
   script says to rotate (`python3 setup.py --rotate`) rather than implying a deletion
   fixed anything.
 
+### Fixed (P3)
+- **`jobs/measure_tunnel_latency.py` could report the wait window as the tunnel's latency.**
+  A Studio job that outlives `--timeout` comes back HTTP 200 with `status: "queued"` and
+  **no `error` field**, and the sampling loop only treated `status == "error"` as a failure —
+  so the timed-out wait was appended to the samples. With no peer at all and the default
+  `--timeout 60`, the tool printed `ping_studio n=1 p50 60000 ms errors 0` and exited `0`:
+  a plausible-looking latency table measured from nothing, contradicting its own docstring
+  promise that "a broken setup cannot produce a plausible-looking table". Now only a
+  `"done"` job is a sample (matching `mcp_core._unwrap_job`, for which `"done"` is the only
+  success), anything else records the status as an error, and a `no_peer`/`no_client_peer`
+  reason or a no-peer message sets the documented exit `3`. Each target's peer list is also
+  read up front (`GET /api/peers`, as `drill_studio_kill.py` already did), so the operator
+  hears "no Studio peer … nothing to time" in about a second instead of after
+  `runs × tools × --timeout`. The live no-peer test covers it.
+  Two follow-ons from the same investigation: when **nothing** was measured the script now
+  prints **no table** (it used to render one first and decide the exit code after, so
+  `--markdown` emitted a table of `n/a` rows — the thing that gets pasted into `OPS.md` §11
+  as a latency budget), and it prints up to five distinct failure reasons on stderr instead
+  of only "check the URL and the bridge log" for something it already knew. The pre-flight
+  is **advisory**: a target that cannot answer `/api/peers` (no such route, a token without
+  read scope, unreachable host) is still measured and judged on its jobs — only an
+  authoritative empty peer list short-circuits.
+  - The `--transport mcp` benchmarking assertion in
+    `TestV55DiscoveryTunnelAndSecurity.test_setup_token_chmod_http_mcp_config_and_operator_scripts`
+    was passing for the wrong reason: that bridge has no Studio peer, so the "measurement"
+    was the bridge's own refusal, timed. It now asserts exit `3` and "nothing to time", and
+    benchmarking a **successful** `/mcp` call moved to the fake-bridge test in
+    `TestV5OpsPlatform.test_latency_script_measures_percentiles_and_reports_auth_errors`,
+    which also gained a stalled-bridge case (`status: "queued"`, one peer advertised) that
+    pins exit `4` with no table.
+
+### Test coverage (P3-T5/T6/T7)
+- **18 new tests in three offline classes** (152 → 170, all inside `--unit`, so they run
+  in under two seconds and bind no port): `TestV61RendererGoldens`,
+  `TestV61KitIntegrity`, `TestV61OperatorScriptSmoke`. T1–T4 needed no new classes — the
+  P0 sweeps already assert transport parity for every policy decision, the credential
+  sweep over every route, path/URL confinement over every file-shaped argument, and
+  manifest idempotency (`TestV61ManifestIntegrity`, from P1-B3).
+- **The software rasteriser is now pinned (`P3-T5`).** `viewport_renderer.render_scene_png`
+  had no direct test, and `rbxmx_pipeline.py` had zero references in the suite. Five fixed
+  scenes — a single part, a three-part stack with labels and grid, neon/glass/force-field
+  materials with transparency, a HUD overlay, and the real `spawn_plaza` + `hud_modern_shell`
+  kit models — are hashed with the repo's own FNV-1a and compared against committed goldens.
+  The hash is over the **decoded RGBA buffer**, not the PNG, because zlib output is not
+  guaranteed stable across builds and a golden that fails only on another machine is worse
+  than no golden. Also asserted: render determinism within a run, PNG magic, the
+  240×160/1280×800 dimension clamps, `partsRendered`/`facesRasterized`/
+  `hudElementsComposited` for every scene, and an rbxmx round trip
+  (`parse_rbxmx_to_tree` → `serialize_tree_to_rbxmx` → parse) that must be a fixed point on
+  six real kit models with serialization idempotent.
+  - Writing it found that the **tracked** `roblox-kit/assets/screenshots/self-test-viewport.png`
+    was stale: it predated the renderer's `meshPartsRendered`/`primitivePartsRendered`
+    fields and 6.2% of its pixels (32,386 of 518,400) differed from a fresh render. It is
+    regenerated, and `tools/build_self_test_viewport.py --check` now guards it by comparing
+    decoded pixels and metadata while ignoring wall-clock fields (`renderMs`), so it can
+    neither pass on a stale image nor fail on a faster machine.
+- **The kit's four descriptions of itself must agree (`P3-T6`).** `registry.json` ↔ files on
+  disk ↔ `asset-lock.json` ↔ `modules/Assets.lua`: every registry row is complete, unique
+  and present; the type counts are the 6.1.0 kit (3,705 images / 520 models / 50 skies /
+  45 audio = 4,320, with 500 GLB + 20 `.rbxmx` matching `models/` exactly); every lock row
+  resolves to a registry row with equal bytes and a sha256 the registry's full digest
+  extends; `Assets.lua`'s 3,800 `rbxasset://arena_assets/…` URIs are exactly the lock's and
+  all resolve on disk; no asset-shaped file hides unregistered under the registry's roots
+  (the only two exceptions are named in the test, so the allowlist cannot grow quietly);
+  all 36 prefabs parse with their `requiredImages` present *and* registered; and a
+  deterministic sample — six rows per asset type — is re-hashed against the registry, so
+  the numbers are checked rather than trusted (`tools/verify_licences.py` still hashes all
+  4,320 in CI).
+  - The lock's two buckets prefix their `relPath`s differently (an image URI is
+    `arena_assets/<relPath>`, an audio URI is `arena_assets/audio/<relPath>`); the test
+    encodes that asymmetry instead of assuming one rule, because both resolve and Studio
+    depends on both.
+  - It found **two real kit bugs**, both fixed. `prefabs/ui_input_prompt_bar.json` required
+    `kenney_inputs/keyboard_wasd.png`, which is not in the kit — and `spawn_prefab` skips
+    missing images silently, so the prefab would have spawned untextured with no warning;
+    its tree only ever referenced `keyboard_e`, `keyboard_shift` and `keyboard_q`, so the
+    dead entry is removed and the description no longer advertises WASD and a gamepad
+    button it does not contain. Four prefabs declared **`targetParent`**, a key nothing
+    reads (`mcp_core` only *reports* `targetParent`; `spawn_prefab` reads `defaultParent`),
+    so `ui_visual_clarity_hud` — a HUD — spawned into `Workspace` instead of `StarterGui`.
+    All four are renamed to the documented key and the two prefabs that declared nothing
+    now declare `Workspace`, so all 36 say where they land. Seven files, seven lines.
+- **Operator scripts are smoke-tested (`P3-T7`).** `jobs/*.py` and `tools/*.py` (1,004
+  lines between them) had no tests. All 11 are now checked for three properties, offline:
+  `--help` works and **writes nothing** (verified by comparing `git status --porcelain`
+  before and after, because two scripts did the work instead of printing help —
+  `tools/build_self_test_viewport.py --help` rewrote two *tracked* kit artifacts and
+  `tools/emit_facts.py --help` rewrote `docs/FACTS.md`; both now use `argparse`); nothing
+  reaches the network at import time (probed in a subprocess with `socket.socket`,
+  `create_connection`, `getaddrinfo`, `gethostbyname` and `urllib.request.urlopen`
+  replaced by a raiser, importing via `runpy` under a non-`__main__` name so no script
+  runs its real work); and a script missing an optional dependency says so without a
+  traceback (`build_handoff_pdfs.py` exits 1 with "missing PDF dependency" and the pip
+  command). Against a dead bridge all three jobs fail non-zero with a message rather than
+  a traceback, and the existing live no-peer test now covers `measure_tunnel_latency.py`
+  (exit 3, "no Studio peer … nothing to time") alongside `live_acceptance.py` and
+  `drill_studio_kill.py`. The owner token in that test is built by concatenation so the
+  literal never appears in a tracked file — `tools/check_secrets.sh` would otherwise fail
+  on the test itself.
+
 ### Removed (P2 — NightLoop)
 - **`nightloop/` is gone**, with its in-repo copies and every reference: 125
   tracked files, −37,441 lines. That is the reference horror-survival experience

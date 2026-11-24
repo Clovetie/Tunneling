@@ -2,7 +2,7 @@
   "name": "ui_visual_clarity_hud",
   "category": "ui",
   "description": "Anti-slop, icon-first RPG/Action HUD ScreenGui with concise status badges, segmented health/mana bars, and 4-slot ability hotbar.",
-  "targetParent": "StarterGui",
+  "defaultParent": "StarterGui",
   "tree": [
     {
       "name": "VisualClarityHUD",

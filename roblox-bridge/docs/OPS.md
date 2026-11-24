@@ -475,7 +475,7 @@ Override with `--state-dir` or `BRIDGE_STATE_DIR`.
 ## 9. Tests
 
 ```bash
-python3 -B roblox-bridge/test_bridge_mcp.py          # 152 tests
+python3 -B roblox-bridge/test_bridge_mcp.py          # 170 tests
 bash roblox-bridge/tools/check_globals.sh roblox-bridge   # undefined Luau globals
 python3 -B tools/verify_licences.py                  # kit asset licence manifest
 python3 roblox-bridge/image_pipeline.py --check      # committed asset manifest
@@ -494,13 +494,17 @@ bash tools/check_secrets.sh                          # no credential, state file
 `make ci` runs all of the above plus the Luau scan over `roblox-kit/{modules,systems}`,
 in the same order CI does. For the inner loop, `test_bridge_mcp.py` takes `--fast`
 (every test, minus the two nested self-test suite runs: ~71 s instead of ~215 s) and
-`--unit` (the offline classes only, no port bound, under a second), and accepts test
+`--unit` (the offline classes only, no port bound: 63 tests in ~2 s), and accepts test
 names — `python3 -B test_bridge_mcp.py TestV61SnapshotRestore` runs just that class.
 
-`.github/ci.yml` runs exactly those (plus a stdlib-only import audit and a
-doc/version consistency check) on Python 3.10, 3.12 and 3.13 — once it is moved
-into `.github/workflows/`, which needs the `workflows` permission on whatever
-identity pushes it (`git mv .github/ci.yml .github/workflows/ci.yml && git push`).
+`.github/workflows/ci.yml` is **active** and runs exactly those, as five job definitions
+(eight jobs once the matrix expands): `bridge-suite` (`make test`, on Python 3.10, 3.11,
+3.12 and 3.13, with a stdlib-only import audit and the log/upload of failures),
+`lint` (`make lint`: ruff plus the blind-except ratchet), `studio-plugin` (`make luau` and
+the two plugin pre-flight tests), `kit-and-docs` (`make verify kit docs-check secrets`) and
+`dashboard` (`make harness` on node 22). Nothing in it is a command CI invented: each job
+runs the same `make` target a contributor runs locally, so "green in CI" and "green on my
+machine" cannot drift apart.
 
 v6.1 coverage added on top: the P0 security sweeps (gate parity on both
 transports, the credential sweep over every route, path/URL confinement over every
@@ -509,7 +513,12 @@ and the P1 reliability items — a capped peer crash-loop, fleet state surviving
 corrupt file and a crash mid-write, chunked/`Expect: 100-continue`/oversized
 bodies and the bounded worker pool, manifest regeneration that is byte-identical
 and refuses to write under `--check`, and snapshot restore keeping dotted
-instance names while reporting a partial failure.
+instance names while reporting a partial failure. The P3 additions are the three offline
+classes: `TestV61RendererGoldens` (five hashed scenes, so a silent change to the software
+rasteriser is a diff and not a mystery), `TestV61KitIntegrity` (the kit's four descriptions
+of itself — `registry.json`, the files on disk, `asset-lock.json` and `modules/Assets.lua` —
+must agree) and `TestV61OperatorScriptSmoke` (`jobs/*.py` and `tools/*.py`: `--help` works
+and writes nothing, no network at import time, a missing optional dependency says so).
 
 v5 / v5.1 / v5.2 / v5.3 coverage: scoped roles over HTTP and MCP, rate-limit 429s, bus presence/
 mailbox/lease expiry/handoff export, stale-agent sweeping, incremental
@@ -607,6 +616,27 @@ call, then prints per-target `n / p50 / p95 / max` plus a markdown table with th
 delta. It exits `2` on a rejected token, `3` when no Studio peer is connected and
 `4` when every request failed, so a broken setup cannot produce a plausible-looking
 table.
+
+Two rules make that exit-code claim true rather than decorative:
+
+- **Each target's peer list is read first** (`GET /api/peers`). A target with no peer
+  cannot be measured at all — every job simply waits out `--timeout` — so the script
+  says so in a second instead of after `runs × tools × --timeout` seconds.
+- **Only a job that comes back `"done"` counts as a sample.** A job that outlives its
+  wait window is returned still `"queued"` with no `error` field, and `mcp_core._unwrap_job`
+  treats anything but `"done"` as "Studio did not finish in time". Counting that case
+  reported the wait window itself as the measurement: with no peer and `--timeout 60`
+  the table read `p50 60000 ms`, which looks like a finding about the tunnel.
+
+When nothing was measured the script prints **no table at all** (a `--markdown` table of
+`n/a` rows is the exact thing that gets pasted into the budget below as if it were real) and
+instead prints up to five distinct failure reasons on stderr, so the operator does not have
+to go read the bridge log for something the tool already knew. The pre-flight is advisory:
+a target that cannot answer `/api/peers` — a bridge without that route, a token without read
+scope, an unreachable host — is measured anyway and judged on its jobs.
+
+Both were found by the P3-T7 smoke test and both are covered by the suite
+(`TestV5OpsPlatform.test_operator_scripts_fail_loudly_without_a_studio_peer`).
 
 **Tunnel latency budget** — fill this from a real run; do not publish estimates:
 
