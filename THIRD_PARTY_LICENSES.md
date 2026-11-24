@@ -1,5 +1,11 @@
 # Third-Party Open Source Licenses & Attribution
 
+This repository's own code — the bridge (`roblox-bridge/`), the operator jobs (`jobs/`),
+the tooling (`tools/`) and the docs — is **MIT licensed**: see [`LICENSE`](LICENSE).
+Everything catalogued below is bundled *in addition* to that and keeps its own licence;
+`python3 -B tools/verify_licences.py` checks the per-file records against
+`roblox-kit/assets/registry.json`.
+
 This repository bundles curated public-domain (CC0 1.0), MIT, ISC, and Apache-2.0 open-source game UI/icon/particle/audio assets, Luau component kits, drop-in server/client gameplay systems, and agent skills inside `roblox-kit/` and `.claude/skills/`.
 
 ---

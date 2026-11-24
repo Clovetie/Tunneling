@@ -227,6 +227,84 @@ All notable changes for the Roblox Studio bridge are documented here.
     runtime and the stdlib-only import audit in CI still applies to every module the
     bridge loads (AGENTS.md rule 1).
 
+### Documentation, licence and developer ergonomics (P4-D2/D3/D4/D6, P3-C3)
+- **The repository has a licence (`P4-D3`).** `LICENSE` at the root, MIT, covering this
+  repo's own code — the bridge, `jobs/`, `tools/` and the docs — and linked from
+  `README.md` and `THIRD_PARTY_LICENSES.md`. Until now the tree shipped a third-party
+  licence catalogue and no licence of its own, which contradicted the "commercial-safe"
+  pitch for anyone adopting the bridge or the kit. Bundled kit assets and skills are
+  unaffected: they keep their per-asset licences recorded in
+  `roblox-kit/assets/registry.json` and verified by `tools/verify_licences.py`.
+- **Doc counts are generated now, not typed (`P4-D2`).** `python3 -B
+  tools/emit_facts.py` writes `docs/FACTS.md` from `len(TOOL_SPECS)`,
+  `RESOURCES`/`RESOURCE_TEMPLATES`/`PROMPTS`, `search_skills_helper()`, the
+  `roblox-kit/` directories and `registry.json`; `--check` rewrites nothing and fails
+  when the committed file is stale, when the release carries more than one version
+  across its nine stamps, or when a doc states a number the tree contradicts. Writing it
+  found the drift the handoff predicted and more: `roblox-bridge/README.md` still
+  described the plugin as **v4.1.0** in its file-role table and its `ab.ps1` example,
+  listed **8** prefabs against 36, and listed 8 of 12 resources, 2 of 3 resource
+  templates and 4 of 7 prompts; `AGENTS.md` claimed **20** ready-to-spawn prefabs against
+  36; `OPS.md` claimed **11** resources against 12; `CONNECT.md` claimed **95** tools
+  against 100. Every current-state `v6.0.0` claim in `README.md`, `AGENTS.md` and
+  `roblox-bridge/README.md` is now `v6.1.0`. Dated history is deliberately left alone —
+  `CONNECT.md` keeps descending release notes and only its newest one is a claim about
+  today, and `OPS.md` §7 records what each v5.x release changed.
+- **The docs version guard is fixed and can no longer go blind (`P3-C2.1`).** Run
+  verbatim it exited 1 with `CONNECT.md: carries no version claim any more (guard is
+  blind)`, because none of its three patterns matched that doc's phrasing. It now also
+  scans `README.md` (which was not in the list at all), matches `ArenaBridge.lua …
+  vX.Y.Z` and version-bearing headings, and falls back to every bare `X.Y.Z` in a doc
+  that carries no precise claim — with lookarounds, because a naive fallback matches the
+  `127.0.0` inside every loopback URL in these docs. A pattern that stops matching
+  anything is itself a failure. The guard lives in `tools/emit_facts.py` now rather than
+  in a YAML heredoc, so it can be run and tested locally.
+- **Three test tiers instead of one (`P4-D6.3`).** `python3 -B test_bridge_mcp.py` is
+  unchanged (152 tests, ~215 s, what CI runs); `--fast` runs every test but skips the two
+  blocks that re-spawn this whole suite in a child process — `self_test` and
+  `GET /api/self-test`, which measurement showed are ~200 s of the ~215 s — for ~71 s;
+  `--unit` runs only the classes that never bind a port, 45 tests in under a second. The
+  handoff asked for a sub-15 s inner loop by skipping the live-HTTP E2E classes, and
+  measurement says that trade is wrong: three of those classes
+  (`TestV61SecurityHardening` 31.5 s, `TestV5OpsPlatform` 22.8 s,
+  `TestV55DiscoveryTunnelAndSecurity` 10.4 s) hold ~65 s of the ~71 s and are exactly the
+  P0 security sweeps, so `--fast` keeps them and `--unit` is the sub-second tier. Naming
+  tests now works too — `test_bridge_mcp.py TestV61SnapshotRestore` runs that class
+  instead of the whole module, which removes the need for a separate loader script.
+- **`arena_studio.py guide` (`P4-D6.4`).** Prints the ten commands worth knowing first
+  across the 79 subcommands, with usage lines formatted by `argparse` itself and the tool
+  / module / prefab counts computed from `TOOL_SPECS` and the kit directories, so the
+  cheat sheet cannot drift; a renamed subcommand fails loudly instead of printing a
+  command that no longer exists. It runs offline — no client, no token, no request.
+- **`Makefile` (`P4-D6.2`).** `make ci` runs every gate in CI order, and each target is
+  the same string CI runs: `test`, `test-fast`, `test-unit`, `lint`, `verify`,
+  `docs-check`, `facts`, `luau` (now over `roblox-kit/modules` and `roblox-kit/systems`
+  as well as `roblox-bridge/`, both clean), `kit`, `harness`, `secrets`.
+- **`.gitignore` covers credentials wherever they land (`P4-D4`).** Runtime state and
+  secrets are ignored by name, not just by directory: `tokens.json`, `audit.jsonl`,
+  `fleet.json`, `fleet.json.corrupt-*`, `bus.json`, `tunnel.json`, `*.pem` and
+  `SESSION.md` (deleted in this release; ignoring it stops a future session re-adding a
+  tracked credentials file), plus `.venv/`, `.ruff_cache/`, `node_modules/` and the kit's
+  generated artifacts (`roblox-kit/**/*.tmp` from `image_pipeline`'s atomic write, and
+  `assets/images/generated/`, which holds no tracked files). The handoff's suggested
+  `roblox-kit/assets/images/**/__probe*` was **not** added: nothing in the code produces
+  that name — the path-confinement test writes `probe*` and cleans up after itself,
+  verified by `find` after a full run.
+- **A leak guard (`P3-C3`).** `bash tools/check_secrets.sh` fails if a credential or
+  state file is tracked (`bridge.token`, `bridge_state/`, `tokens.json`, `audit.jsonl`,
+  `fleet.json`, `bus.json`, `tunnel.json`, `SESSION.md`, any `*.pem`), if a literal that
+  looks like a live owner token appears in any tracked file, or if a PEM private-key block
+  does. The token rule requires 20+ characters after `arb_` because `auth_core` mints
+  `arb_` + `token_urlsafe(30)` while docs and tests legitimately contain `arb_…` and
+  `startswith("arb_")`; the key rule restricts the PEM label to `[A-Z0-9 ]` because the
+  work order that asked for this guard is itself tracked and quotes
+  `-----BEGIN … PRIVATE KEY-----` in prose, which a loose `.*` label matched. Both rules
+  were negative-tested in a scratch clone: planted `bridge.token` and `tokens.json` fail
+  on two rules at once, a planted `ops.pem` fails on two, and the clean tree passes. It
+  guards the current tree only — a secret that was ever committed stays in history, so the
+  script says to rotate (`python3 setup.py --rotate`) rather than implying a deletion
+  fixed anything.
+
 ### Removed (P2 — NightLoop)
 - **`nightloop/` is gone**, with its in-repo copies and every reference: 125
   tracked files, −37,441 lines. That is the reference horror-survival experience

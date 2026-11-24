@@ -2376,6 +2376,22 @@ class TestV4RegressionFixtures(unittest.TestCase):
         self.assertTrue(any(x["code"] == "Z_FIGHTING_COPLANAR" for x in audit_3d_hierarchy(overlap)["issues"]))
 
 
+def nested_suite_reason() -> str:
+    """Why the two blocks that re-run this whole suite in a child are being skipped.
+
+    `self_test` (the MCP tool) and `GET /api/self-test` each spawn
+    `python3 -B test_bridge_mcp.py` and wait for it: ~100 s apiece, so ~200 s of the
+    215 s full run is nested suite time. A child skips them so the recursion
+    terminates; `--fast` skips them for the inner loop (P4-D6.3). Both still run in
+    CI, where the full suite is the default. Returns "" when they should run.
+    """
+    if os.environ.get("ARENA_SELF_TEST_CHILD"):
+        return "child of a nested self-test run"
+    if os.environ.get("ARENA_FAST_SUITE"):
+        return "--fast: nested self-test suite skipped"
+    return ""
+
+
 class TestSetupTokenRecovery(unittest.TestCase):
     def test_recovers_token_from_installed_plugin(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2514,7 +2530,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             self.assertIn("readOnlyHint", t["annotations"])
 
         # Dashboard/API self-test route includes the registered-tool matrix.
-        if not os.environ.get("ARENA_SELF_TEST_CHILD"):
+        if not nested_suite_reason():
             self_test_req = urllib.request.Request(f"{self.base_url}/api/self-test", headers={"X-Arena-Token": self.token})
             with urllib.request.urlopen(self_test_req, timeout=90) as self_test_resp:
                 self_test_api = json.loads(self_test_resp.read().decode("utf-8"))
@@ -3202,8 +3218,7 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
             cloud_passed = True
         finally:
             record_tool_metric("open_cloud_action", time.monotonic() - cloud_started, cloud_passed)
-        import os as _os
-        if not _os.environ.get("ARENA_SELF_TEST_CHILD"):
+        if not nested_suite_reason():
             self_test = self.call_tool("self_test", {"includeStudioSmoke": False, "timeout": 120})
             self.assertTrue(self_test["ok"], msg=json.dumps(self_test.get("suite"), indent=2))
             self.assertEqual(len(self_test["toolMatrix"]), len(TOOL_SPECS))
@@ -6198,8 +6213,56 @@ class TestV61SnapshotRestore(unittest.TestCase):
         self.assertNotEqual(back["hash"], v2, "the legacy restore did not write")
 
 
+# Classes that bind a real port and drive the bridge over HTTP. Measured with
+# --fast on Python 3.11: these 7 hold ~65 s of the ~71 s (TestV61SecurityHardening
+# 31.5 s / TestV5OpsPlatform 22.8 s / TestV55DiscoveryTunnelAndSecurity 10.4 s and
+# four under 3 s); every other class together runs in under a second. `--unit` runs only
+# the others, for iterating on pure helpers. A new HTTP class that is not listed here only
+# makes --unit slower - it cannot make a run wrong, and CI always runs everything.
+LIVE_HTTP_CLASSES = (
+    "TestConnectionDiagnostics",
+    "TestEndToEndBridgeAndMCP",
+    "TestV54ConfirmationGate",
+    "TestV55DiscoveryTunnelAndSecurity",
+    "TestV61SecurityHardening",
+    "TestV61SnapshotRestore",
+    "TestV5OpsPlatform",
+)
+
+
 if __name__ == "__main__":
-    suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
+    # `python3 -B test_bridge_mcp.py [--fast|--unit] [TestClass[.test_method] ...]`
+    #
+    # --fast skips only the two nested-suite blocks (see nested_suite_reason); every
+    # test method still runs. --unit also drops the HTTP classes listed above. Naming
+    # tests used to be ignored and run the whole module, so the inner loop needed a
+    # separate loader script - it does not now. No flag = the full suite, which is
+    # what CI runs.
+    flags = {a for a in sys.argv[1:] if a.startswith("--")}
+    unknown = flags - {"--fast", "--unit"}
+    if unknown:
+        raise SystemExit(f"unknown flag(s): {', '.join(sorted(unknown))} (use --fast or --unit)")
+    wanted = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if flags:
+        os.environ["ARENA_FAST_SUITE"] = "1"
+    # Computed, not typed: a message that hardcodes "14 classes (45 tests)" is stale the
+    # moment a class is added, which is the drift docs/FACTS.md exists to prevent.
+    offline = sorted(n for n, o in vars(sys.modules[__name__]).items()
+                     if isinstance(o, type) and issubclass(o, unittest.TestCase)
+                     and o is not unittest.TestCase and n not in LIVE_HTTP_CLASSES)
+    if "--unit" in flags:
+        print(f"unit mode: {len(offline)} offline classes - no port is bound and the two "
+              "nested self-test suite runs are skipped")
+    elif "--fast" in flags:
+        print("fast mode: every test runs, skipping the two nested self-test suite runs "
+              "(~200 s of the full run)")
+    loader = unittest.defaultTestLoader
+    if wanted:
+        suite = loader.loadTestsFromNames(wanted, module=sys.modules[__name__])
+    elif "--unit" in flags:
+        suite = loader.loadTestsFromNames(offline, module=sys.modules[__name__])
+    else:
+        suite = loader.loadTestsFromModule(sys.modules[__name__])
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     if os.environ.get("ARENA_SELF_TEST_CHILD"):
         print("ARENA_TOOL_METRICS=" + json.dumps(TOOL_TEST_METRICS, sort_keys=True))

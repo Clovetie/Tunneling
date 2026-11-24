@@ -1,6 +1,6 @@
 # v5 Ops Platform — tunnels, multi-agent coordination, telemetry, scoped auth
 
-_Applies to bridge `6.0.0`._
+_Applies to bridge `6.1.0`._
 
 Everything in this document ships in `roblox-bridge/` and is **stdlib-only**
 (no pip installs). It layers on top of the v4 MCP + plugin bridge; nothing in the
@@ -394,6 +394,10 @@ monitors can probe it.
 
 ## 7. MCP surface changes
 
+_Historical: the counts below are what each v5.x release changed, in the words of that
+release. Today's surface is generated rather than hand-counted — `docs/FACTS.md`,
+rewritten by `python3 -B tools/emit_facts.py` and verified by `--check`._
+
 * **71 tools** (was 68 at v5.0): `agent_bus`, `bridge_ops` and `studio_fleet`.
 * **7 prompts** (was 4): `multi_agent_handoff`, `bus_standup` and `task_triage`
   render live bus state (roster, task board, cursor) and fall back to a one-line
@@ -481,7 +485,17 @@ node roblox-bridge/tools/dashboard_harness.js        # dashboard XSS contract
 bash tools/check_lint.sh                             # ruff gate + blind-except
                                                      #   ratchet (exit 2 = ruff not
                                                      #   installed; see pyproject.toml)
+python3 -B tools/emit_facts.py --check               # docs/FACTS.md and every doc
+                                                     #   claim agree with the tree
+bash tools/check_secrets.sh                          # no credential, state file or
+                                                     #   private key is tracked
 ```
+
+`make ci` runs all of the above plus the Luau scan over `roblox-kit/{modules,systems}`,
+in the same order CI does. For the inner loop, `test_bridge_mcp.py` takes `--fast`
+(every test, minus the two nested self-test suite runs: ~71 s instead of ~215 s) and
+`--unit` (the offline classes only, no port bound, under a second), and accepts test
+names — `python3 -B test_bridge_mcp.py TestV61SnapshotRestore` runs just that class.
 
 `.github/ci.yml` runs exactly those (plus a stdlib-only import audit and a
 doc/version consistency check) on Python 3.10, 3.12 and 3.13 — once it is moved

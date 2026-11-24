@@ -11,3 +11,28 @@ roblox-bridge/bridge_state/
 
 # Generated release artifacts (rebuild with roblox-bridge/tools/build_release.py)
 release-artifacts/
+
+# Operator credentials and bridge runtime state (P4-D4). roblox-bridge/bridge_state/
+# and roblox-bridge/bridge.token are covered above; these are ignored by name too, so
+# a --state-dir anywhere in the tree cannot put a credential or an audit log in Git.
+SESSION.md
+tokens.json
+audit.jsonl
+fleet.json
+fleet.json.corrupt-*
+bus.json
+tunnel.json
+*.pem
+
+# Dev tooling. check_lint.sh suggests a venv for ruff, which is a lint-time
+# dependency only - the bridge runtime stays stdlib-only (AGENTS.md rule 1).
+.venv/
+.ruff_cache/
+node_modules/
+
+# Generated kit artifacts. image_pipeline writes `<name>.tmp` beside its target and
+# os.replace()s it into place, and the offline renderer emits under
+# assets/images/generated/ (nothing there is tracked). A crashed run must not show up
+# as kit churn, because kit churn is never committed.
+roblox-kit/**/*.tmp
+roblox-kit/assets/images/generated/

@@ -1,6 +1,6 @@
-# Arena ↔ Roblox Studio MCP Server & Bridge (v6.0.0)
+# Arena ↔ Roblox Studio MCP Server & Bridge (v6.1.0)
 
-Zero-dependency **Model Context Protocol (MCP)** server (`stdio` + `Streamable HTTP`), multi-DataModel Studio local plugin (`ArenaBridge.lua` v6.0.0), live web dashboard, and CLI (`arena_studio.py` / `ab.ps1`) for connecting AI coding agents to Roblox Studio.
+Zero-dependency **Model Context Protocol (MCP)** server (`stdio` + `Streamable HTTP`), multi-DataModel Studio local plugin (`ArenaBridge.lua` v6.1.0), live web dashboard, and CLI (`arena_studio.py` / `ab.ps1`) for connecting AI coding agents to Roblox Studio.
 
 Works simultaneously across **every connection mode**:
 
@@ -38,7 +38,7 @@ Works simultaneously across **every connection mode**:
 
 ## Ecosystem Research Summary (2026 Best Practices Applied)
 
-This v6.0.0 architecture incorporates verified patterns across the 2026 Roblox MCP ecosystem:
+This v6.1.0 architecture incorporates verified patterns across the 2026 Roblox MCP ecosystem:
 
 1. **Roblox Official Built-in Studio MCP (`create.roblox.com/docs/studio/mcp`)** *(which superseded `Roblox/studio-rust-mcp-server`, archived April 2026)*:
    - Focused, low-token tool taxonomy (`get_studio_state`, `list_studios`, `search_game_tree`, `inspect_instance`, `script_read` with line ranges, atomic `multi_edit`, `script_search`, `script_grep`, DataModel-targeted `execute_luau`, `start_stop_play`, `get_console_output`) rather than 150+ overlapping micro-tools that bloat prompt context.
@@ -68,9 +68,9 @@ cd roblox-bridge
 python setup.py --write-mcp
 ```
 
-- Installs `ArenaBridge.lua` v6.0.0 into `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or `~/Documents/Roblox/Plugins` (macOS) with your token pre-baked.
+- Installs `ArenaBridge.lua` v6.1.0 into `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or `~/Documents/Roblox/Plugins` (macOS) with your token pre-baked.
 - Writes `.mcp.json` ready for Claude Code / Cursor / VS Code.
-- Starts `server.py` v6.0.0 on `http://127.0.0.1:8077` (Web Dashboard + REST API + `POST /mcp` Streamable HTTP).
+- Starts `server.py` v6.1.0 on `http://127.0.0.1:8077` (Web Dashboard + REST API + `POST /mcp` Streamable HTTP).
 - Add `--tunnel` if exposing to a remote cloud agent via Cloudflare Quick Tunnel, or `--install-only` if letting `mcp_server.py` self-host the embedded bridge on demand.
 
 ### Safe script edits
@@ -176,13 +176,13 @@ See [Overhaul plan](docs/OVERHAUL.md) and [Skills roadmap and continuation promp
 - **500 pinned Kenney CC0 GLB models** plus 20 repository-authored `.rbxmx` models are catalogued with thumbnail metadata. GLB thumbnails are explicitly marked as neutral format placeholders until real mesh rendering is available.
 - **45 CC0 WAV audio files** have waveform thumbnails. Every entry carries SHA-256, source, pinned revision, licence, provenance status, and thumbnail path; 3,656 files additionally match exact upstream Git blob hashes.
 - Verify and browse with `python3 -B tools/verify_licences.py` and `roblox-kit/assets/contact-sheets/index.html`. Rebuild with `tools/fetch_assets.py` and `tools/build_skies.py`; see `roblox-kit/assets/README.md` for the limitations and reproduction commands.
-- **8 Ready-to-Spawn Prefabs (`roblox-kit/prefabs/*.json`)**:
+- **36 Ready-to-Spawn Prefabs (`roblox-kit/prefabs/*.json`)** — eight of them:
   - `lighting_cinematic_sunset`, `lighting_cyber_night`, `lighting_stylized_day`, `hud_modern_shell`, `interact_pad`, `spawn_plaza`, `world_sign_board`, `vfx_collectible_orb`
 
 ### MCP Resources & Prompts Also Exposed
-- **Resources**: `studio://state`, `studio://peers`, `studio://console`, `studio://selection`, `studio://survey`, `studio://bus`, `studio://ops`, `studio://audit`
-- **Resource Templates**: `studio://scripts/{path}`, `studio://instance/{path}`
-- **Prompts**: `survey_and_architecture`, `safe_module_edit`, `automated_playtest_debug`, `sync_repo_package`
+- **Resources (12)**: `studio://state`, `studio://peers`, `studio://console`, `studio://selection`, `studio://survey`, `studio://bus`, `studio://ops`, `studio://audit`, `studio://jobs`, `studio://studios`, `studio://handoff`, `mcp://server-card.json`
+- **Resource Templates (3)**: `studio://scripts/{path}`, `studio://instance/{path}`, `skill://{name}`
+- **Prompts (7)**: `survey_and_architecture`, `safe_module_edit`, `automated_playtest_debug`, `sync_repo_package`, `multi_agent_handoff`, `bus_standup`, `task_triage`
 
 ---
 
@@ -190,7 +190,7 @@ See [Overhaul plan](docs/OVERHAUL.md) and [Skills roadmap and continuation promp
 
 ```powershell
 .\ab.ps1 health                                             # Bridge + connected peers
-.\ab.ps1 ping                                               # Verify pluginVersion "4.1.0" & latency
+.\ab.ps1 ping                                               # Verify pluginVersion "6.1.0" & latency
 .\ab.ps1 state                                              # Full Studio state (memory, FPS, undo)
 .\ab.ps1 check .\src                                        # Offline compile + undefined-global audit
 .\ab.ps1 drift .\src ServerScriptService.App                # Exact 32-bit FNV-1a diff report
@@ -217,12 +217,12 @@ python3 roblox-bridge/test_bridge_mcp.py
 
 | File | Role |
 |---|---|
-| `setup.py` | Installs `ArenaBridge.lua` v4.1.0, recovers/manages `bridge.token`, writes `.mcp.json`, launches server/tunnel |
+| `setup.py` | Installs `ArenaBridge.lua` v6.1.0, recovers/manages `bridge.token`, writes `.mcp.json`, launches server/tunnel |
 | `mcp_server.py` | Standalone `stdio` MCP server (auto-attaches to `server.py` or starts an embedded bridge thread) |
 | `mcp_core.py` | Zero-dependency MCP protocol engine, tool schemas/handlers, resources, prompts, `luau_check`, `drift_and_sync` |
 | `server.py` | Multi-peer long-poll HTTP bridge + `/mcp` Streamable HTTP endpoint + snapshot store + live web dashboard |
-| `ArenaBridge.lua` | Roblox Studio local plugin v4.1.0 (`edit` + `server` + silent `client` RPC bridge, VirtualInput + Device Simulator + StudioTestService handlers) |
+| `ArenaBridge.lua` | Roblox Studio local plugin v6.1.0 (`edit` + `server` + silent `client` RPC bridge, VirtualInput + Device Simulator + StudioTestService handlers) |
 | `arena_studio.py` | UTF-8-safe CLI covering all bridge & MCP operations |
 | `ab.ps1` | Windows PowerShell wrapper with automatic token lookup and UTF-8 console setup |
-| `mock_studio.py` | Stateful in-memory Studio v4.1.0 simulator (including simulated Play Server/Client peers & undo/redo) |
+| `mock_studio.py` | Stateful in-memory Studio v6.1.0 simulator (including simulated Play Server/Client peers & undo/redo) |
 | `test_bridge_mcp.py` | End-to-end automated test suite |

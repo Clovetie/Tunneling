@@ -178,6 +178,57 @@ def show_tool_output(label: str, client: BridgeClient, tool_name: str, tool_args
     print(formatted if full else formatted[:6000])
     return 0
 
+# The ten commands worth knowing first (P4-D6.4). Usage lines are formatted by the
+# parser itself and the counts are computed, so this cannot drift the way a
+# hand-written cheat sheet does; a renamed subcommand fails loudly instead of
+# printing a command that no longer exists.
+GUIDE_COMMANDS = (
+    ("doctor", "bridge access, peer registry and token state - no Studio job, no credentials printed"),
+    ("health", "one-line liveness check; the fastest way to see whether the bridge is up"),
+    ("mcp-tools", "every registered MCP tool with its read-only annotation, as JSON"),
+    ("survey", "read the whole place in one job (pass includeSource=false for just the tree)"),
+    ("check", "offline Luau syntax + undefined-global audit; run it before any write"),
+    ("drift", "compare repo Luau against Studio with exact 32-bit FNV-1a hashes"),
+    ("edit", "surgical multi_edit on a live script (read it first with `script`)"),
+    ("snapshots", "save/restore a script snapshot; restore reports per-script results"),
+    ("confirmations", "pending human-in-the-loop confirmations (`approve`/`deny` decide them)"),
+    ("kit", "browse the offline roblox-kit catalogue (`prefab`, `template`, `system` spawn from it)"),
+)
+
+
+def print_guide(ap) -> int:
+    """Print the shortlist, with usage lines taken from the parser itself."""
+    subs = next((a for a in ap._actions  # noqa: SLF001 - argparse keeps choices here
+                 if hasattr(a, "choices") and isinstance(getattr(a, "choices", None), dict)
+                 and "doctor" in a.choices), None)
+    if subs is None:
+        print("cannot find the subparser choices; `--help` still lists every command", file=sys.stderr)
+        return 1
+    kit = Path(__file__).resolve().parents[1] / "roblox-kit"
+    prefabs = len(list((kit / "prefabs").glob("*.json")))
+    modules = len(list((kit / "modules").glob("*.lua")))
+    print(f"arena_studio.py - the {len(GUIDE_COMMANDS)} commands worth knowing first "
+          f"({len(subs.choices)} exist; --help lists them all)")
+    print()
+    broken = []
+    for index, (name, why) in enumerate(GUIDE_COMMANDS, 1):
+        choice = subs.choices.get(name)
+        if choice is None:
+            broken.append(name)
+            continue
+        print(f"{index:2d}. {choice.format_usage().strip().replace('usage: ', '', 1)}")
+        print(f"      {why}")
+    if broken:
+        print(f"\nGUIDE_COMMANDS names subcommand(s) that no longer exist: {', '.join(broken)}",
+              file=sys.stderr)
+        return 1
+    print()
+    print(f"Behind these: {len(TOOL_SPECS)} registered MCP tools, and a kit of {modules} modules "
+          f"with {prefabs} ready-to-spawn prefabs.")
+    print("Writes are gated when the bridge runs with --require-confirm: `confirmations` lists, "
+          "`approve`/`deny` decide.")
+    return 0
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -190,6 +241,7 @@ def main() -> int:
 
     sub.add_parser("health")
     sub.add_parser("doctor", help="diagnose bridge access and peer registry without sending Studio jobs or showing credentials")
+    sub.add_parser("guide", help="print the ten most useful commands, generated from this parser")
     sub.add_parser("peers")
     sub.add_parser("state")
     sub.add_parser("ping")
@@ -568,6 +620,8 @@ def main() -> int:
     p.add_argument("--fix", action="store_true", help="Auto-fix live Studio UI labels")
 
     args = ap.parse_args()
+    if args.cmd == "guide":
+        return print_guide(ap)   # offline: no client, no token, no request
     client = BridgeClient(base_url=BASE, token=TOKEN)
 
     if args.cmd == "mcp-tools":
