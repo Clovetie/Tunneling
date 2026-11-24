@@ -171,6 +171,31 @@
         background:rgba(255,255,255,.04);color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
  #fleet-detail{display:flex;flex-wrap:wrap;gap:10px;min-height:34px}
  #fleet-detail .studio-card{min-width:240px}
+ /* ---- P5-U1: security posture panel ---- */
+ .policy-card{margin-bottom:14px;border-color:var(--border2)}
+ .policy-banner{display:none;border:1px solid rgba(255,107,107,.45);border-radius:11px;
+        padding:10px 12px;margin:0 0 4px;background:linear-gradient(90deg,rgba(255,107,107,.18),rgba(255,107,107,.05))}
+ .policy-banner.show{display:flex}
+ .policy-head-ctl{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+ .policy-grid{margin-bottom:10px}
+ .policy-grid .card .v{font-size:15px;word-break:break-word;overflow-wrap:anywhere}
+ .risk-row{display:grid;grid-template-columns:auto auto 1fr;gap:4px 9px;align-items:baseline;
+        padding:8px 11px;margin-bottom:6px;border-radius:10px;border:1px solid var(--border);
+        border-left-width:3px;background:rgba(255,255,255,.025)}
+ .risk-sev{font-size:9.8px;font-weight:800;letter-spacing:.8px;text-transform:uppercase}
+ .risk-id{font-size:11.5px;background:none;border:none;padding:0;color:var(--muted)}
+ .risk-msg{font-size:12.3px}
+ .risk-fix{grid-column:1/-1;font-size:11.5px;color:var(--muted)}
+ .sev-critical{border-left-color:var(--red);background:rgba(255,107,107,.10)}
+ .sev-critical .risk-sev{color:var(--red)}
+ .sev-high{border-left-color:#ff9d97;background:rgba(255,107,107,.07)}
+ .sev-high .risk-sev{color:#ff9d97}
+ .sev-medium{border-left-color:var(--amber);background:rgba(255,200,87,.07)}
+ .sev-medium .risk-sev{color:var(--amber)}
+ .sev-review{border-left-color:var(--accent2);background:rgba(167,139,250,.07)}
+ .sev-review .risk-sev{color:var(--accent2)}
+ .sev-info{border-left-color:var(--accent);background:rgba(92,200,255,.06)}
+ .sev-info .risk-sev{color:var(--accent)}
  @media(prefers-reduced-motion:reduce){
    *,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
  }
@@ -195,6 +220,34 @@
    .card .k{font-size:10px}
    h1{font-size:14.5px}
    .studio-card .place{max-width:130px}
+ }
+ /* P5-U3: 390x844 portrait (iPhone 12/13/14 logical size). The 720px block
+    already collapses .two-col and hides .cmd-desc; this is the pass that stops the
+    *inline* widths in the markup (`style="width:230px"`, `min-width:360px`) from
+    forcing horizontal overflow. `html,body{overflow-x:hidden}` at the bottom of
+    this file would otherwise hide the symptom by clipping — which means the
+    overflowed control is unreachable, not that the layout is fine, so the cause is
+    fixed here instead of relying on that. An `!important` stylesheet rule beats a
+    non-important inline style, which is what makes this work without editing
+    twenty inline widths in index.html. */
+ @media(max-width:430px){
+   main input,main select,main textarea,header input,header select{
+     width:100%!important;min-width:0!important;max-width:100%!important;flex:1 1 auto}
+   main div{min-width:0!important}
+   .prompt-head,.cmd-row,.toolbar,.policy-head-ctl{flex-direction:column;align-items:stretch}
+   .prompt-head .policy-head-ctl{flex-direction:row;justify-content:flex-start}
+   .risk-row{grid-template-columns:1fr;gap:2px}
+   .policy-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+   .tab-btn{padding:7px 10px;font-size:12.2px}
+   .banner{padding:10px 12px}
+   .banner input{max-width:100%}
+   .banner .grow{min-width:0}
+   #fleet-detail .studio-card{min-width:0;width:100%}
+   .studio-card .place{max-width:none}
+   .card .v{font-size:15px}
+   pre{font-size:11.3px;max-height:170px}
+   .toast{left:12px;right:12px;bottom:12px;text-align:center}
+   .cmd-row code{white-space:pre-wrap;word-break:break-all}
  }
  html,body{max-width:100%;overflow-x:hidden}
  img,pre,input,textarea,select{max-width:100%}

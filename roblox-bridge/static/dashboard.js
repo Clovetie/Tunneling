@@ -117,6 +117,113 @@ function bindDelegatedActions(){
     if (t && t.tagName === 'IMG' && t.hasAttribute('data-hide-on-error')) t.style.display = 'none';
   }, true);
 }
+/* -- P5-U3: keyboard shortcuts ----------------------------------------------
+   `/` focuses a search field, `r` re-reads the bridge, `g` then `o` opens the Ops
+   tab. Three rules keep these from being worse than nothing:
+
+   - They never fire while the operator is typing. A shortcut that eats the `/` in
+     a path or the `r` in a Luau snippet is a defect, not a feature.
+   - They never fire with a modifier held, so Ctrl+R stays the browser's reload and
+     Cmd+/ stays the browser's own.
+   - `/` is honest about there being nothing to focus: the two filter inputs live in
+     the Studio Kit tab, so on any other tab it says so and offers to jump, rather
+     than silently focusing an unrelated field. */
+const CHORD_TARGETS = { o: 'ops' };
+let KEY_CHORD = null;
+let KEY_CHORD_TIMER = null;
+
+function isTypingTarget(el){
+  if(!el) return false;
+  const tag = String(el.tagName || '').toUpperCase();
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
+}
+
+function activeTabName(){
+  const pane = document.querySelector('.tab-pane.active');
+  return pane ? String(pane.id || '').replace(/^tab-/, '') : '';
+}
+
+function tabButtonFor(name){
+  // Found by parsing each button's data-args rather than by an attribute-substring
+  // selector, so reformatting the markup cannot silently break the shortcut.
+  const buttons = Array.prototype.slice.call(document.querySelectorAll('.tab-btn[data-act="showTab"]'));
+  for (const btn of buttons) {
+    try {
+      const args = JSON.parse(btn.getAttribute('data-args') || '[]');
+      if (Array.isArray(args) && args[0] === name) return btn;
+    } catch(_){}
+  }
+  return null;
+}
+
+function openTab(name){
+  const btn = tabButtonFor(name);
+  if(!btn) return toast('No tab named "' + name + '".');
+  showTab(name, btn);
+  try { btn.scrollIntoView({block: 'nearest', inline: 'nearest'}); } catch(_){}
+  return true;
+}
+
+function dashboardSearchFields(){
+  return Array.prototype.filter.call(document.querySelectorAll('input[type="text"], input[type="search"], input:not([type])'),
+    el => /search|filter|-q$|query/i.test(String(el.id || '') + ' ' + String(el.placeholder || '')));
+}
+
+function focusDashboardSearch(){
+  const visible = dashboardSearchFields().filter(el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+  if(visible.length){
+    visible[0].focus();
+    try { visible[0].select(); } catch(_){}
+    return true;
+  }
+  const any = dashboardSearchFields();
+  if(any.length){
+    // The filters live in the Studio Kit tab; jumping there is more useful than
+    // focusing an invisible field, and saying so keeps the shortcut predictable.
+    toast('No search field on this tab — opening the Studio Kit tab.');
+    const host = any[0].closest('.tab-pane');
+    if(host && openTab(String(host.id || '').replace(/^tab-/, ''))){
+      any[0].focus();
+      return true;
+    }
+  }
+  return toast('This dashboard has no search field to focus.');
+}
+
+function refreshDashboard(){
+  toast('Refreshing…');
+  tick(); refreshOps(); refreshPolicy(); refreshFleet(); refreshBus();
+  return true;
+}
+
+function onDashboardKeydown(ev){
+  if(ev.defaultPrevented || isTypingTarget(ev.target)) return;
+  if(ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const key = ev.key;
+  if(KEY_CHORD){
+    const target = CHORD_TARGETS[String(key).toLowerCase()];
+    KEY_CHORD = null;
+    clearTimeout(KEY_CHORD_TIMER);
+    if(target){ ev.preventDefault(); openTab(target); return; }
+    // Fall through: an unrecognised second key may itself be a shortcut.
+  }
+  if(key === '/'){ ev.preventDefault(); focusDashboardSearch(); return; }
+  if(String(key).toLowerCase() === 'r'){ ev.preventDefault(); refreshDashboard(); return; }
+  if(String(key).toLowerCase() === 'g'){
+    ev.preventDefault();
+    KEY_CHORD = 'g';
+    KEY_CHORD_TIMER = setTimeout(() => { KEY_CHORD = null; }, 1200);
+    toast('g… — press o for the Ops tab');
+  }
+}
+
+let KEYS_BOUND = false;
+function bindKeyboardShortcuts(){
+  if(KEYS_BOUND) return;
+  KEYS_BOUND = true;
+  document.addEventListener('keydown', onDashboardKeydown);
+}
+
 let BOOT = { local:false, token:'', bridgeDir:'roblox-bridge', mcpServerPath:'roblox-bridge/mcp_server.py', tools:[] };
 let LAST_STATE = {};
 
@@ -182,7 +289,7 @@ function saveToken(){
   storeToken(value); setToken(value); box.value = '';
   hideAuthBanner();
   toast('Token saved for this browser — reloading data…');
-  tick(); refreshOps(); refreshFleet(); refreshBus(); loadKitGallery(); refresh3DViewport(); run3DSceneAudit(false, false);
+  tick(); refreshOps(); refreshPolicy(); refreshFleet(); refreshBus(); loadKitGallery(); refresh3DViewport(); run3DSceneAudit(false, false);
 }
 function applyHeaderToken(){
   const box = document.getElementById('tok-input');
@@ -191,7 +298,7 @@ function applyHeaderToken(){
   storeToken(value); setToken(value);
   hideAuthBanner();
   toast('Header token applied — reloading data…');
-  tick(); refreshOps(); refreshFleet(); refreshBus(); loadKitGallery(); refresh3DViewport(); run3DSceneAudit(false, false);
+  tick(); refreshOps(); refreshPolicy(); refreshFleet(); refreshBus(); loadKitGallery(); refresh3DViewport(); run3DSceneAudit(false, false);
 }
 function showStaleBanner(runningVersion){
   const b = document.getElementById('stale-banner');
@@ -360,10 +467,68 @@ async function callSelectedTool(){
   } catch (e) { out.textContent = String(e); }
 }
 
+/* -- P5-U2: one MCP config per transport -------------------------------------
+   There used to be a single "Streamable HTTP (Local or Tunnel)" snippet built from
+   `tunnel-url input || window.location.origin`, so with no tunnel running it handed
+   out a *localhost* URL under a heading that said tunnel. Pasted into a remote
+   agent's client that fails with a connection error which says nothing about the
+   tunnel being down. Each transport now builds only the URL it means, and the
+   tunnel one refuses to guess. */
+let LAST_TUNNEL = { state: 'unknown', publicUrl: '' };
+
+function mcpEndpoint(base){
+  return String(base || '').replace(/\/+$/, '') + '/mcp';
+}
+
+function stdioMcpConfig(){
+  const mcpPath = (BOOT.mcpServerPath || 'roblox-bridge/mcp_server.py').replace(/\\/g, '/');
+  return { mcpServers: { 'roblox-studio': {
+    command: 'python',
+    args: [mcpPath, '--auto-install-plugin'],
+    env: { BRIDGE_URL: window.location.origin }
+  } } };
+}
+
+function localHttpMcpConfig(){
+  return { mcpServers: { 'roblox-studio-http': {
+    type: 'http',
+    url: mcpEndpoint(window.location.origin),
+    headers: { Authorization: 'Bearer ' + (getToken() || '<YOUR_BRIDGE_TOKEN>') }
+  } } };
+}
+
+function tunnelHttpMcpConfig(url){
+  return { mcpServers: { 'roblox-studio-tunnel': {
+    type: 'http',
+    url: mcpEndpoint(url),
+    headers: { Authorization: 'Bearer ' + (getToken() || '<YOUR_BRIDGE_TOKEN>') }
+  } } };
+}
+
+/* The tunnel card reflects the *live* tunnel from /api/ops, falling back to a URL
+   the operator typed into the prompts tab. With neither, it says so instead of
+   emitting a config that cannot work. */
+function renderTunnelConfig(){
+  const pre = document.getElementById('cfg-http-tunnel');
+  const statePill = document.getElementById('cfg-tunnel-state');
+  if(!pre) return;
+  const typed = (document.getElementById('tunnel-url') || {}).value;
+  const url = LAST_TUNNEL.publicUrl || String(typed || '').trim();
+  const online = LAST_TUNNEL.state === 'online';
+  if(statePill){
+    statePill.textContent = url ? (online ? 'tunnel online' : 'url set · ' + LAST_TUNNEL.state)
+                                : 'tunnel ' + LAST_TUNNEL.state;
+    statePill.className = 'pill ' + (url && online ? 'on' : (url ? 'ro' : 'off'));
+  }
+  pre.textContent = url
+    ? JSON.stringify(tunnelHttpMcpConfig(url), null, 2)
+    : 'No public tunnel URL is known.\n\nStart the tunnel in the Ops tab (or paste its URL\ninto "Next-Agent Handoff & Prompts"), then copy this.\n\nThis card deliberately does not fall back to '
+      + window.location.origin + ': a config labelled "tunnel" that points at localhost\nfails on the remote client with an error that never mentions the tunnel.';
+}
+
 function renderConfigsAndCommands(){
   const mcpPath = (BOOT.mcpServerPath || 'roblox-bridge/mcp_server.py').replace(/\\/g, '/');
   const tok = getToken() || '<YOUR_BRIDGE_TOKEN>';
-  const pubUrl = (document.getElementById('tunnel-url').value.trim() || window.location.origin).replace(/\/+$/, '');
 
   document.getElementById('cfg-cli').textContent =
 `# Claude Code
@@ -372,15 +537,8 @@ claude mcp add roblox-studio -- python "${mcpPath}" --auto-install-plugin
 # OpenAI Codex CLI
 codex mcp add roblox-studio -- python "${mcpPath}" --auto-install-plugin`;
 
-  document.getElementById('cfg-http').textContent = JSON.stringify({
-    mcpServers: {
-      "roblox-studio-http": {
-        type: "http",
-        url: pubUrl + "/mcp",
-        headers: { Authorization: "Bearer " + tok }
-      }
-    }
-  }, null, 2);
+  document.getElementById('cfg-http-local').textContent = JSON.stringify(localHttpMcpConfig(), null, 2);
+  renderTunnelConfig();
 
   document.getElementById('cfg-json').textContent = JSON.stringify({
     mcpServers: {
@@ -443,7 +601,14 @@ function renderPrompts(){
   const placeId = (LAST_STATE.studio && LAST_STATE.studio.place_id) ? LAST_STATE.studio.place_id : 0;
   const dir = BOOT.bridgeDir || 'roblox-bridge';
   const tok = getToken() || '<PASTE_BRIDGE_TOKEN>';
-  const pubUrl = (document.getElementById('tunnel-url').value.trim() || window.location.origin).replace(/\/+$/, '');
+  /* P5-U2: this is the *tunnel* handoff prompt, so it used to fall back to this
+     page's origin — a remote agent told "Base URL: http://127.0.0.1:8077" gets a
+     connection refused and no hint that the tunnel was never started. Prefer the
+     live tunnel from /api/ops, then a URL the operator typed, then a placeholder
+     that cannot be mistaken for something that works. */
+  const typedUrl = String((document.getElementById('tunnel-url') || {}).value || '').trim();
+  const pubUrl = (LAST_TUNNEL.publicUrl || typedUrl || '<NO_TUNNEL_URL — start it in the Ops tab>')
+    .replace(/\/+$/, '');
 
   const prompts = [
     {
@@ -567,6 +732,12 @@ function renderTips(){
      "`insert_asset` scans all inserted descendants for embedded `Script` / `LocalScript` / `ModuleScript` instances and strips them by default (`stripScripts: true`), protecting places from malicious free-model scripts."],
     ["Zero-Drift Local Folder <-> Studio Workflow",
      "`drift_and_sync` computes identical 53-bit-safe 32-bit FNV-1a hashes in Python and Luau. Always run `mode='check'` first to inspect modified/local-only/studio-only scripts before running `mode='push'` or `mode='pull'`."],
+    ["Keyboard Shortcuts (P5-U3)",
+     "`/` focuses a search field (the filters live in the Studio Kit tab, so on another tab it says so and jumps there), `r` re-reads the bridge (jobs, ops, posture, fleet, bus), and `g` then `o` opens the Ops tab. None of them fire while you are typing in a field, and none fire with Ctrl/Cmd/Alt held, so Ctrl+R is still the browser's reload."],
+    ["Security Posture Panel (Ops tab)",
+     "The first card in the Ops tab is `GET /api/policy` — the same `policy_report()` behind `mcp://bridge/policy` and `bridge_ops {\"action\":\"policy\"}`, so the three cannot disagree. The red banner fires only on `auth.mode == \"open\"` or `confirmGate.mode == \"off\"`; everything else is a colour-coded risk row with its fix. `riskLevel` is the worst *actionable* finding, so `ok` never hides a review or info row. If the report cannot be read the panel says UNAVAILABLE instead of keeping stale numbers, because green cards that no longer describe the bridge are worse than none."],
+    ["MCP Config Per Transport (Commands tab)",
+     "Three configs, each with the URL it actually means: `stdio` (python + `mcp_server.py`, for Claude Code / Cursor / Claude Desktop), Streamable HTTP for *this machine* (the origin this page was served from), and Streamable HTTP for the *public tunnel* (the live URL from `/api/ops`). The tunnel card refuses to fall back to localhost — a config labelled tunnel that points at 127.0.0.1 fails remotely with an error that never mentions the tunnel."],
     ["Why the Bridge Runs on Your Machine (Not Inside Cloud Preview URLs)",
      "Cloud sandbox preview hosts require browser session headers that Roblox Studio `HttpService` cannot attach. Running `server.py` locally on `:8077` works out-of-the-box for all local MCP clients, and adding `--tunnel` exposes `/mcp` + `/api/*` cleanly when a remote cloud agent needs direct access."]
   ];
@@ -1515,6 +1686,8 @@ async function initBoot(){
     onSelectTool();
   } catch(_){}
   bindViewportInteractiveControls();
+  bindKeyboardShortcuts();
+  refreshPolicy();
   renderTips();
   renderPrompts();
   refresh3DViewport('perspective');
@@ -1873,10 +2046,171 @@ async function broadcastPing(){
     toast(err.message);
   }
 }
+/* -- P5-U1: security posture panel ------------------------------------------
+   `/api/policy` is the same `BridgeState.policy_report()` that backs
+   `mcp://bridge/policy` and `bridge_ops {"action":"policy"}`, so this panel cannot
+   drift from the resource an agent reads. Two deliberate choices:
+
+   - The banner is *narrower* than the risk list. It fires on the two
+     configurations that make a bridge usable by strangers — auth open, gate off —
+     because P0-S5's whole point was that an exposed bridge was only visible in a
+     startup log line. Everything else is in the risk rows, colour-coded, so a
+     banner that fires for medium findings would train operators to ignore it.
+   - An unreadable report renders as an explicit "not measured" state rather than
+     leaving the previous numbers on screen. `refreshOps()` swallows its errors
+     because a stale queue depth is harmless; a stale *posture* is not, since green
+     cards that no longer describe the bridge are worse than none. */
+let POLICY_REPORT = null;
+const POLICY_PILL_CLASS = {ok: 'on', info: 'info-pill', review: 'ro', medium: 'ro',
+                           high: 'off', critical: 'off'};
+
+function policySet(id, text){
+  const el = document.getElementById(id);
+  if(el) el.textContent = text;
+}
+
+function policySeverityClass(severity){
+  const key = String(severity == null ? 'info' : severity).toLowerCase();
+  return 'sev-' + (['critical', 'high', 'medium', 'review', 'info'].indexOf(key) >= 0 ? key : 'info');
+}
+
+function policyTimestamp(value){
+  if(value == null || value === '') return 'unknown time';
+  // `generatedAt` is an epoch float from `_now()`; accept an ISO string too so a
+  // future change of representation degrades to "unknown" instead of "NaN".
+  const ms = typeof value === 'number' ? (value < 1e12 ? value * 1000 : value) : Date.parse(value);
+  if(!isFinite(ms)) return 'unknown time';
+  try { return new Date(ms).toLocaleTimeString(); } catch(_){ return 'unknown time'; }
+}
+
+function policyUnavailable(reason){
+  POLICY_REPORT = null;
+  const banner = document.getElementById('policy-banner');
+  if(banner) banner.classList.remove('show');
+  const pill = document.getElementById('policy-risk-pill');
+  if(pill){ pill.textContent = 'not measured'; pill.className = 'pill ro'; }
+  ['policy-auth-mode', 'policy-gate-mode', 'policy-bind', 'policy-tunnel',
+   'policy-cors', 'policy-tokens'].forEach(id => policySet(id, 'unknown'));
+  const box = document.getElementById('policy-risks');
+  if(box){
+    // Rendered through textContent: the reason can contain a server-supplied
+    // error string, and this is the one place a failure message must not become
+    // markup.
+    box.textContent = '';
+    const line = document.createElement('div');
+    line.className = 'sub';
+    line.textContent = 'Posture UNAVAILABLE — nothing below is a measurement: '
+      + (reason || 'the bridge did not answer /api/policy')
+      + '. Do not read the unknown cards as a clean report; re-read once the bridge answers.';
+    box.appendChild(line);
+  }
+  policySet('policy-meta', 'No report to summarise.');
+}
+
+function renderPolicy(report){
+  if(!report || typeof report !== 'object' || !report.risks){
+    policyUnavailable('the response was not a posture report');
+    return;
+  }
+  POLICY_REPORT = report;
+  const auth = report.auth || {};
+  const gate = report.confirmGate || {};
+  const net = report.network || {};
+  const bind = net.bind || {};
+  const cors = net.cors || {};
+  const tunnel = report.tunnel || {};
+  const tokens = auth.tokens || {};
+  const surface = report.surface || {};
+  const risks = Array.isArray(report.risks) ? report.risks : [];
+
+  const level = String(report.riskLevel == null ? 'unknown' : report.riskLevel).toLowerCase();
+  const pill = document.getElementById('policy-risk-pill');
+  if(pill){
+    pill.textContent = level + (report.exposed ? ' · exposed' : ' · not exposed');
+    pill.className = 'pill ' + (POLICY_PILL_CLASS[level] || 'info-pill');
+  }
+
+  const openAuth = auth.mode === 'open';
+  const gateOff = gate.mode === 'off';
+  const banner = document.getElementById('policy-banner');
+  if(banner) banner.classList.toggle('show', !!(openAuth || gateOff));
+  if(openAuth || gateOff){
+    const reasons = [];
+    if(openAuth) reasons.push('auth mode is open — no credential is configured, so anyone who can reach this port can drive Studio');
+    if(gateOff) reasons.push('the confirm gate is off — ' + (gate.gatedToolCount || 0)
+      + ' gated tool(s) and ' + ((gate.gatedJobKinds || []).length) + ' job kind(s) run with no human approving');
+    policySet('policy-banner-title', openAuth
+      ? 'This bridge is reachable without a credential'
+      : 'Destructive tools run without confirmation');
+    policySet('policy-banner-msg', reasons.join('; ') + '.');
+  }
+
+  policySet('policy-auth-mode', auth.mode === 'open' ? 'OPEN'
+    : (auth.readOnly ? 'scoped · read-only' : 'scoped'));
+  policySet('policy-gate-mode', String(gate.mode == null ? 'unknown' : gate.mode)
+    + ' · ' + (gate.gatedToolCount || 0) + ' tools');
+  policySet('policy-bind', (bind.host == null ? 'unknown' : bind.host) + ':'
+    + (bind.port == null ? '?' : bind.port) + (bind.public ? ' · PUBLIC' : ' · loopback'));
+  policySet('policy-tunnel', String(tunnel.state == null ? 'unknown' : tunnel.state)
+    + (tunnel.publicUrl ? ' · ' + tunnel.publicUrl : ''));
+  policySet('policy-cors', cors.wildcard ? 'wildcard *'
+    : ((cors.allowlist || []).length + ' allowed origin(s)'));
+  policySet('policy-tokens', (tokens.count == null ? '?' : tokens.count) + ' total · '
+    + (tokens.active == null ? '?' : tokens.active) + ' active · '
+    + (tokens.revoked == null ? 0 : tokens.revoked) + ' revoked · '
+    + (tokens.expired == null ? 0 : tokens.expired) + ' expired');
+
+  const box = document.getElementById('policy-risks');
+  if(box){
+    box.innerHTML = risks.length
+      ? risks.map(r => {
+          const severity = String(r && r.severity == null ? 'info' : r.severity).toLowerCase();
+          const fix = r && r.fix
+            ? `<div class="risk-fix">fix: ${esc(r.fix)}</div>` : '';
+          return `<div class="risk-row ${esc(policySeverityClass(severity))}">
+            <span class="risk-sev">${esc(severity.toUpperCase())}</span>
+            <code class="risk-id">${esc(r && r.id)}</code>
+            <span class="risk-msg">${esc(r && r.message)}</span>${fix}
+          </div>`;
+        }).join('')
+      : `<div class="sub">No risks reported by <code>policy_report()</code>. That is a
+         measurement of this bridge right now — not a guarantee about the network it sits on,
+         and not a substitute for the checks in OPS §10.</div>`;
+  }
+
+  const ungated = gate.destructiveNotGated || [];
+  policySet('policy-meta', 'generated ' + policyTimestamp(report.generatedAt)
+    + ' · bridge v' + (report.version || '?')
+    + ' · ' + (surface.mcpTools == null ? '?' : surface.mcpTools) + ' tools / '
+    + (surface.mcpResources == null ? '?' : surface.mcpResources) + ' resources / '
+    + (surface.mcpPrompts == null ? '?' : surface.mcpPrompts) + ' prompts'
+    + ' · ' + risks.length + ' risk row(s), ' + (report.actionableRisks == null ? '?' : report.actionableRisks) + ' actionable'
+    + ' · ' + (gate.destructiveToolCount == null ? '?' : gate.destructiveToolCount) + ' destructive tool(s), '
+    + (ungated.length ? ungated.length + ' NOT gated' : 'none ungated')
+    + ' · body cap ' + (net.maxBodyBytes == null ? '?' : net.maxBodyBytes) + ' bytes');
+}
+
+async function refreshPolicy(){
+  try {
+    renderPolicy(await opsJson('/api/policy'));
+  } catch(err){
+    // `apiFetch` has already shown the auth banner for a 401/403, so this only
+    // has to make the panel honest — no second toast, no stale numbers.
+    policyUnavailable(err && err.message ? err.message : String(err));
+  }
+}
+
+async function copyPolicyJson(){
+  if(!POLICY_REPORT) return toast('No posture report to copy — refresh first.');
+  await copyText(JSON.stringify(POLICY_REPORT, null, 2));
+}
+
 async function refreshOps(){
   try {
     const ops = await opsJson('/api/ops');
     const t = ops.tunnel || {};
+    LAST_TUNNEL = { state: t.state || 'unknown', publicUrl: String(t.publicUrl || '').trim() };
+    renderTunnelConfig();
     document.getElementById('ops-tunnel-state').textContent = t.state || 'unknown';
     document.getElementById('ops-tunnel-url').textContent = t.publicUrl || '—';
     const pill = document.getElementById('ops-tunnel-pill');
@@ -2127,17 +2461,30 @@ function toggleEventStream(){
   EV_DELAY = 1000;
   connectEvents();
 }
-async function copyMcpConfig(){
+/* P5-U2: `transport` is `stdio`, `local` or `tunnel`. Callers that pass nothing get
+   `tunnel`, which is what the single old button did. */
+async function copyMcpConfig(transport){
+  const kind = String(transport == null ? 'tunnel' : transport).toLowerCase();
   try {
-    const ops = await opsJson('/api/ops');
-    const url = (ops.tunnel || {}).publicUrl;
-    if(!url) throw new Error('Tunnel is not online yet — start it, then copy the config.');
-    const token = getToken() || '<bridge-token>';
-    const cfg = { mcpServers: { 'roblox-studio': {
-      url: String(url).replace(/\/$/, '') + '/mcp',
-      headers: { Authorization: 'Bearer ' + token }
-    } } };
-    await copyText(JSON.stringify(cfg, null, 2));
+    if(kind === 'stdio'){
+      await copyText(JSON.stringify(stdioMcpConfig(), null, 2));
+      return toast('Copied the stdio config (Claude Code / Cursor / Claude Desktop).');
+    }
+    if(kind === 'local'){
+      await copyText(JSON.stringify(localHttpMcpConfig(), null, 2));
+      return toast('Copied the Streamable HTTP config for ' + window.location.origin + '.');
+    }
+    if(kind === 'tunnel'){
+      // Read the live tunnel rather than trusting this page's origin: see
+      // renderTunnelConfig() for why the fallback was wrong.
+      const ops = await opsJson('/api/ops');
+      const url = String(((ops.tunnel || {}).publicUrl) || '').trim();
+      if(!url) throw new Error('Tunnel is not online — start it in the Ops tab, then copy. '
+        + 'Refusing to hand out a localhost URL labelled "tunnel".');
+      await copyText(JSON.stringify(tunnelHttpMcpConfig(url), null, 2));
+      return toast('Copied the tunnel config for ' + url + '.');
+    }
+    throw new Error('Unknown transport "' + kind + '" — expected stdio, local or tunnel.');
   } catch(err){ toast(err.message || 'Cannot build MCP config'); }
 }
 
@@ -2262,6 +2609,8 @@ initBoot().then(() => { tick(); refreshOps(); refreshBus(); refreshFleet(); refr
   setInterval(refreshDirectChat, 2500);
   setInterval(() => {
     const active = document.getElementById('tab-ops').classList.contains('active');
-    if(active){ refreshOps(); refreshBus(); }
+    // P5-U1: the posture panel refreshes with the rest of the Ops tab, so it cannot
+    // sit there describing a bridge configuration that changed ten minutes ago.
+    if(active){ refreshOps(); refreshPolicy(); refreshBus(); }
   }, 4000);
 });

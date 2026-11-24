@@ -60,7 +60,7 @@ Everything runs offline with Python 3.10+ stdlib only. `make` wraps the same com
 CI runs (`make help` lists them, `make ci` runs all of them in order):
 
 ```bash
-make test        # full MCP + bridge + mock Studio regression suite (244 tests, ~260 s)
+make test        # full MCP + bridge + mock Studio regression suite (253 tests, ~250 s)
 make test-fast   # every test, minus the two nested self-test suite runs (~71 s)
 make test-unit   # offline classes only: no port is bound, 63 tests in ~2 s
 make lint        # ruff + the blind-except ratchet (tools/check_lint.sh)

@@ -1546,7 +1546,7 @@ class TestV5OpsPlatform(unittest.TestCase):
         self.assertNotRegex(html, r"\son[a-z]+\s*=")
 
         bundle = dashboard_bundle()
-        for needle in ("copyMcpConfig", "Copy MCP config (tunnel)", "@media(max-width:720px)",
+        for needle in ("copyMcpConfig", "Copy config: HTTP tunnel", "@media(max-width:720px)",
                        "grid-template-columns:repeat(2,minmax(0,1fr))",
                        "Reconnecting (${Math.round(wait/1000)}s)", "EV_DELAY * 2",
                        "overflow-x:hidden"):
@@ -2115,6 +2115,22 @@ class TestV5OpsPlatform(unittest.TestCase):
         self.assertIn("apiFetch", bundle)
         self.assertIn("PAGE_VERSION", bundle)
         self.assertIn(f'PAGE_VERSION = "{bridge_server.VERSION}"', bundle)
+
+        # P5-U1: the posture panel is part of the *served* document, not only the
+        # static file, so an operator who opens the console sees it with no build
+        # step. Its data comes from /api/policy — which, as this same test shows,
+        # refuses a page opened through a tunnel or LAN address — so the panel has
+        # to degrade to an explicit UNAVAILABLE state instead of keeping numbers
+        # from a report it could not read.
+        self.assertIn('id="policy-banner"', html)
+        self.assertIn('data-act="refreshPolicy"', html)
+        self.assertIn("policyUnavailable", bundle)
+        self.assertIn("nothing below is a measurement", bundle)
+        posture_proxied = urllib.request.Request(
+            self.base + "/api/policy", headers={"CF-Connecting-IP": "203.0.113.9"})
+        with self.assertRaises(urllib.error.HTTPError) as posture_denied:
+            urllib.request.urlopen(posture_proxied, timeout=15)
+        self.assertEqual(posture_denied.exception.code, 401)
 
         # v6.1.0 (P0-S2): loopback no longer means "here is the owner token".
         # An unauthenticated page still boots (so it can render the banner) but
@@ -8393,6 +8409,221 @@ class TestV61NewSkills(unittest.TestCase):
         self.assertFalse((data_dir / "tests").exists(),
                          "the data system grew a tests/ dir — update the skill's stated gap")
         self.assertIn("ships **no `tests/` directory**", text)
+
+
+
+class TestV61DashboardU1U3(unittest.TestCase):
+    """P5-U1..U3 — the posture panel, one MCP config per transport, and a phone pass.
+
+    Offline on purpose: P4-D1 made the dashboard three files on disk, so the markup,
+    the styles and the behaviour are all readable as data. What these tests cannot do
+    is run a browser, and every claim below is chosen so that it does not pretend to.
+    The panel's *behaviour* (banner conditions, escaping, degradation) is asserted by
+    `tools/dashboard_harness.js`, which loads the real module into a stub DOM; these
+    tests tie the two sides together and check the markup the behaviour renders into.
+    """
+
+    HARNESS = HERE / "tools" / "dashboard_harness.js"
+
+    def html(self) -> str:
+        return dashboard_source("index.html")
+
+    def js(self) -> str:
+        return dashboard_source("dashboard.js")
+
+    def css(self) -> str:
+        return dashboard_source("dashboard.css")
+
+    def test_the_harness_fixtures_match_the_real_policy_report(self):
+        # The harness drives renderPolicy() with hand-written report literals, and a
+        # literal can drift from the function that produces it. This is the tie: a
+        # renamed field in policy_report() fails here and names both sides.
+        keys = re.search(r"const POLICY_REPORT_KEYS = \[(.*?)\];",
+                         self.HARNESS.read_text(encoding="utf-8"), re.S)
+        self.assertIsNotNone(keys, "the harness no longer declares POLICY_REPORT_KEYS")
+        declared = sorted(re.findall(r"'([^']+)'", keys.group(1)))
+        state = BridgeState(token="u1-fixture-token-000",
+                            state_dir=tempfile.mkdtemp(prefix="arena-u1-"),
+                            require_confirm="write")
+        self.addCleanup(state._reaper_stop.set)
+        self.assertEqual(declared, sorted(state.policy_report()))
+
+    def test_the_ops_tab_carries_every_element_the_panel_renders_into(self):
+        html = self.html()
+        pane = html.split('<section id="tab-ops"', 1)[1].split("</section>", 1)[0]
+        for element_id in ("policy-card", "policy-banner", "policy-banner-title",
+                           "policy-banner-msg", "policy-risk-pill", "policy-auth-mode",
+                           "policy-gate-mode", "policy-bind", "policy-tunnel",
+                           "policy-cors", "policy-tokens", "policy-risks", "policy-meta"):
+            with self.subTest(element=element_id):
+                self.assertIn(f'id="{element_id}"', pane,
+                              "renderPolicy writes into an element the markup does not have")
+        # The panel is the first thing in the Ops tab: P0-S5's point was that an
+        # exposed bridge was buried, and a panel below the fold is still buried.
+        self.assertLess(pane.index('id="policy-card"'), pane.index('id="ops-tunnel-state"'))
+        self.assertIn('role="alert"', pane)
+        self.assertIn('data-act="refreshPolicy"', pane)
+        self.assertIn('data-act="copyPolicyJson"', pane)
+        # Every id the JS touches exists, in both directions.
+        written = set(re.findall(r"policySet\('([a-z0-9-]+)'", self.js()))
+        written |= set(re.findall(r"getElementById\('(policy-[a-z0-9-]+)'\)", self.js()))
+        self.assertTrue(written)
+        for element_id in sorted(written):
+            self.assertIn(f'id="{element_id}"', html, element_id)
+
+    def test_the_panel_reads_the_route_instead_of_recomputing_the_posture(self):
+        js = self.js()
+        # One implementation, three surfaces: if the panel computed its own risk level
+        # it could disagree with the resource an agent reads, which is the whole thing
+        # M2 existed to prevent.
+        self.assertIn("opsJson('/api/policy')", js)
+        self.assertIn("report.riskLevel", js)
+        self.assertIn("report.exposed", js)
+        # "Does not recompute" stated precisely: `riskLevel` may only ever be *read*
+        # off the report (`report.riskLevel`), never assigned, and exposure is read
+        # rather than derived from the bind/tunnel fields. A blunt
+        # `assertNotIn("riskLevel =")` fails on the `==` in `report.riskLevel == null`,
+        # which is the panel reading the report correctly.
+        self.assertEqual([], re.findall(r"(?<!report\.)\briskLevel\s*=(?!=)", js),
+                         "the panel assigns its own risk level instead of reading the report's")
+        self.assertEqual([], re.findall(r"\bexposed\s*=(?!=)", js),
+                         "the panel derives exposure instead of reading the report's")
+        # Nor may it read a *different* surface's idea of the posture.
+        self.assertEqual([], re.findall(r"health\.authMode", js),
+                         "the panel reads authMode from /api/health instead of /api/policy")
+        self.assertIn("auth.mode === 'open'", js)
+        self.assertIn("gate.mode === 'off'", js)
+        # The banner condition is the two configurations the handoff names, and the
+        # panel says the report is a measurement rather than a guarantee.
+        self.assertIn("openAuth || gateOff", js)
+        self.assertIn("not a guarantee", js)
+
+    def test_an_unreadable_report_clears_the_panel_rather_than_keeping_stale_numbers(self):
+        js = self.js()
+        self.assertIn("function policyUnavailable(reason)", js)
+        self.assertIn("POLICY_REPORT = null", js)
+        self.assertIn("'not measured'", js)
+        self.assertIn("nothing below is a measurement", js)
+        # refreshPolicy must not swallow the failure the way refreshOps swallows its
+        # own: a stale queue depth is harmless, a stale posture is not.
+        body = js.split("async function refreshPolicy(){", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("policyUnavailable(", body)
+        self.assertNotIn("catch(_){}", body)
+        # The reason is rendered as text, not markup: it can carry a server error string.
+        self.assertIn("line.textContent =", body if "line.textContent" in body else js)
+
+    def test_each_transport_gets_the_config_it_means(self):
+        html, js = self.html(), self.js()
+        # The single "Local or Tunnel" snippet is gone, and with it the fallback that
+        # let a config labelled tunnel point at localhost.
+        self.assertTrue('id="cfg-http"' not in html, "the single local-or-tunnel card is back")
+        self.assertTrue("|| window.location.origin).replace" not in js,
+                        "a config or prompt falls back to the local origin again")
+        for element_id in ("cfg-http-local", "cfg-http-tunnel", "cfg-tunnel-state"):
+            self.assertIn(f'id="{element_id}"', html)
+        for transport in ("stdio", "local", "tunnel"):
+            self.assertIn(f"""data-act="copyMcpConfig" data-args='["{transport}"]'""", html)
+        for builder in ("function stdioMcpConfig()", "function localHttpMcpConfig()",
+                        "function tunnelHttpMcpConfig(url)", "function renderTunnelConfig()"):
+            self.assertIn(builder, js)
+        self.assertIn("Refusing to hand out a localhost URL", js)
+        self.assertIn("deliberately does not fall back", js)
+        # Callers that pass no transport keep the old behaviour.
+        self.assertIn("transport == null ? 'tunnel'", js)
+
+    def test_every_glyph_only_button_has_an_aria_label(self):
+        html = self.html()
+        buttons = re.findall(r"<button\b[^>]*>(.*?)</button>", html, re.S)
+        self.assertTrue(buttons)
+        glyph_only = []
+        for tag in re.findall(r"<button\b[^>]*>.*?</button>", html, re.S):
+            inner = tag.split(">", 1)[1].rsplit("</button>", 1)[0]
+            # Text with the HTML entities and the aria-hidden glyph spans removed.
+            words = re.sub(r"<span aria-hidden=\"true\">.*?</span>", " ", inner, flags=re.S)
+            words = re.sub(r"&#?\w+;", " ", words)
+            words = re.sub(r"<[^>]+>", " ", words)
+            if not words.strip():
+                glyph_only.append(tag)
+        self.assertTrue(glyph_only, "no glyph-only buttons found — the scan stopped matching")
+        for tag in glyph_only:
+            with self.subTest(button=tag[:70]):
+                self.assertRegex(tag, r'aria-label="[^"]+"',
+                                 "an icon-only button has no accessible name")
+        # Decorative glyphs inside a labelled button must be hidden from AT.
+        self.assertIn('<span aria-hidden="true">&#9209;</span>', html)
+        self.assertGreaterEqual(html.count("aria-label="), 19)
+
+    def test_the_phone_pass_neutralises_the_inline_widths_that_overflow_390(self):
+        css, html = self.css(), self.html()
+        self.assertIn("@media(max-width:430px)", css)
+        block = css.split("@media(max-width:430px){", 1)[1].split("\n }", 1)[0]
+        # 390 logical px minus main's 12px padding each side is what has to fit.
+        for rule in ("main input,main select,main textarea", "width:100%!important",
+                     "main div{min-width:0!important}", ".prompt-head", ".cmd-row",
+                     ".toolbar", "flex-direction:column"):
+            self.assertIn(rule, block, rule)
+        widths = [int(n) for n in re.findall(r'style="[^"]*?\bwidth:\s*(\d+)px', html)]
+        self.assertTrue(widths)
+        self.assertLessEqual(max(widths), 366,
+                             f"an inline width of {max(widths)}px cannot fit a 390px viewport "
+                             "and the media query does not cover its selector")
+        # `overflow-x:hidden` hides the symptom by clipping, which makes the control
+        # unreachable rather than fixing the layout; the cause is handled above, and
+        # the guard stays as a last resort.
+        self.assertIn("html,body{max-width:100%;overflow-x:hidden}", css)
+        self.assertIn("prefers-reduced-motion", css)
+
+    def test_the_shortcuts_are_bound_guarded_and_documented(self):
+        js, html = self.js(), self.html()
+        self.assertIn("function bindKeyboardShortcuts()", js)
+        self.assertIn("document.addEventListener('keydown', onDashboardKeydown)", js)
+        boot = js.split("async function initBoot(){", 1)[1]
+        self.assertIn("bindKeyboardShortcuts();", boot)
+        self.assertIn("refreshPolicy();", boot)
+        # The two guards that decide whether a shortcut is a feature or a defect.
+        self.assertIn("isTypingTarget(ev.target)", js)
+        self.assertIn("ev.ctrlKey || ev.metaKey || ev.altKey", js)
+        self.assertIn("const CHORD_TARGETS = { o: 'ops' }", js)
+        self.assertIn("key === '/'", js)
+        self.assertIn("=== 'r'", js)
+        # Documented where an operator will look, and honest about the search field
+        # living in another tab.
+        self.assertIn("Keyboard Shortcuts (P5-U3)", js)
+        self.assertIn("Security Posture Panel (Ops tab)", js)
+        self.assertIn("MCP Config Per Transport (Commands tab)", js)
+        self.assertIn("Studio Kit tab", js)
+        # The panel and its controls are in the served page, not just the file.
+        self.assertIn('id="policy-banner"', html)
+        self.assertIn('aria-label="Refresh the security posture report"', html)
+
+    def test_the_ui_linter_runs_on_the_converted_markup_and_states_its_limits(self):
+        # The handoff asks for `audit_ui_layout` against the dashboard markup "if you
+        # can extract it". It can be extracted, and this runs the real offline linter
+        # on it — but read what it proves. `import_ui_from_web` is a heuristic
+        # converter (it regex-matches tags and stacks what it finds), so the tree is a
+        # *conversion* of the page, not the page: a web page scrolls and a ScreenGui
+        # does not, so stacking 127 elements vertically overflows any finite height.
+        # What is worth asserting is the axis the responsive pass is about — width —
+        # plus the report's own admission that its bounds are derived, not measured.
+        from mcp_core import import_ui_from_web_helper
+        converted = import_ui_from_web_helper(None, {"html": self.html(), "deSlop": False})
+        self.assertTrue(converted["ok"])
+        self.assertGreater(converted["elementsConverted"], 100)
+        report = audit_tree_on_viewport(converted["screenGuiTree"], 390.0, 844.0, "mobile")
+        self.assertEqual(report["measuredFrom"], "derived",
+                         "a derived-bounds report must not be readable as a measurement")
+        self.assertEqual((report["width"], report["height"]), (390.0, 844.0))
+        for element in report["elements"]:
+            x, y, w, h = element["rect"]
+            self.assertLessEqual(x + w, 390.0,
+                                 f"{element['path']} is wider than a 390px viewport")
+        for issue in report["issues"]:
+            x, y, w, h = issue["rect"]
+            self.assertLessEqual(x + w, 390.0,
+                                 f"a horizontal overflow survived the phone pass: {issue['message']}")
+            self.assertGreater(y + h, 844.0,
+                               f"{issue['code']} is not the vertical-stacking artifact this "
+                               "test expects, so the conversion changed shape")
 
 
 

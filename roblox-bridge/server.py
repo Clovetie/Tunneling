@@ -1835,8 +1835,16 @@ class BridgeState:
         It also computes `risks`. A posture report that makes the reader derive "am I
         exposed?" from eight separate fields is a report nobody reads, and P0-S5's whole
         point was that an open bridge on a public bind was only visible in a startup log
-        line. Nothing secret leaves this function: tokens appear as id/label/role/prefix
-        (what `TokenRecord.view()` already exposes), never as values.
+        line.
+
+        Nothing secret leaves this function, and that is a property of the shape rather than
+        of the values: `auth.tokens` is **counts only** (total, active, revoked, expired, by
+        role). There are no per-token rows here at all — no id, no label, and specifically no
+        `prefix`, because `TokenRecord.view()`'s `prefix` is `raw[:8]`, the first eight
+        characters of the real secret, and `GET /api/policy` is a *read*-scope route. Per-token
+        rows live on admin-only `/api/tokens`. Do not "restore" them here: an earlier draft of
+        this docstring claimed they were present, which is exactly the invitation that leaks
+        eight characters of every credential to any read-scoped caller.
         """
         auth_mode = "scoped" if self.token else "open"
         gate = self.confirm_gate_summary()

@@ -940,6 +940,76 @@ All notable changes for the Roblox Studio bridge are documented here.
   and asserts the count (14) so the number can only move deliberately. The gap and the ratchet
   plan are recorded in `docs/SKILLS_ROADMAP.md` §5.
 
+### Added (P5-U1/U2/U3 — the Ops tab shows what is exposed, hands out the right URL, and answers to a keyboard)
+
+- **U1 — a Security Posture panel, first card in the Ops tab.** It renders `GET /api/policy`,
+  the same `BridgeState.policy_report()` behind `mcp://bridge/policy` and
+  `bridge_ops {"action":"policy"}` (P5-M2), so the console cannot disagree with the resource an
+  agent reads. Six cards (auth mode, gate mode + gated tool count, bound `host:port` with
+  `PUBLIC`/`loopback`, tunnel state and URL, CORS wildcard-or-allowlist, token counts by state),
+  a `riskLevel` + `exposed` pill, and one row per finding in severity colour with the report's
+  own `fix` string. The banner is deliberately **narrower** than the risk list — it fires only on
+  `auth.mode == "open"` or `confirmGate.mode == "off"`, the two configurations that let a stranger
+  drive Studio or let an agent delete something nobody asked about; a panel that shouted at every
+  finding would be ignored by week two. `risks` and `fix` come from the server and are rendered
+  through `esc()`, so a message can describe an attack without becoming one. The report carries
+  counts only — never a token value, never a prefix — so **Copy report** is safe to paste.
+  Refreshes with the Ops tab every 4 s, on `r`, and on its own button.
+  - **A failed read clears the panel instead of keeping the last numbers.** `policyUnavailable()`
+    sets every card to `unknown`, the pill to `not measured`, prints the reason, and nulls the
+    cached report: a green posture that no longer describes the bridge is worse than no posture.
+    Malformed JSON degrades the same way as a 401. This matters because `/api/policy` is
+    read-scope — a dashboard opened through the tunnel or a LAN address cannot authenticate
+    itself (`/api/local-boot` withholds the token off loopback), so the panel is unreachable
+    exactly in the case where an operator is most likely to be looking at it.
+  - The panel reads the route; it does not recompute the verdict in JS. Two regex assertions in
+    `TestV61DashboardU1U3` forbid assigning `riskLevel`/`exposed` (outside `report.…`) and forbid
+    reading `health.authMode`, so a second, drifting opinion of "are we exposed?" cannot appear.
+- **U2 — one config per transport, and the tunnel one stops guessing.** The single
+  "Local or Tunnel" snippet built from `tunnel-url input || window.location.origin` is now three:
+  **stdio** (`python <mcp_server.py> --auto-install-plugin` + `BRIDGE_URL`, for Claude Code /
+  Cursor / Claude Desktop), **HTTP local** (`type: "http"` against the origin this page was served
+  from), and **HTTP tunnel** (the live tunnel URL from `/api/ops`, trailing slash stripped).
+  `copyMcpConfig(transport)` backs all three buttons; `copyMcpConfig(null)` behaves as `tunnel`
+  because that is what the old button did.
+  - **A real bug, found by the new test rather than by inspection:** `renderPrompts()` computed
+    its handoff prompt's `pubUrl` the same way, so the *"Direct Tunnel / Streamable HTTP MCP"*
+    prompt — the text an operator copies to tell a **remote** agent how to reach this bridge —
+    could say `Base URL: http://127.0.0.1:8077`. That URL is not wrong from the operator's
+    machine, which is why nobody noticed; it is wrong for every recipient. The prompt and the card
+    now prefer the live `publicUrl`, then the typed URL, then refuse: `<NO_TUNNEL_URL — start it in
+    the Ops tab>`, with the tunnel card explaining why it will not fall back and the copy button
+    toasting instead of copying a plausible-looking localhost address.
+- **U3 — keyboard shortcuts.** `/` focuses a search field (the two filters live in the Studio Kit
+  tab, so elsewhere it says so and jumps there rather than focusing something unrelated), `r`
+  re-reads jobs/ops/policy/fleet/bus, `g` then `o` opens the Ops tab (1.2 s chord). All three are
+  inert while typing in `INPUT`/`TEXTAREA`/`SELECT`/`contentEditable`, inert with Ctrl/Meta/Alt
+  held — Ctrl+R stays the browser's reload — and inert on `defaultPrevented`. They are listed in
+  the Tips tab, so they are discoverable from the page that has them.
+- **Narrow-viewport pass (390×844).** A `@media (max-width: 430px)` block stacks the Ops/fleet
+  control rows, makes form controls fluid and collapses risk rows to one column. The cause is
+  fixed rather than hidden: `html,body{overflow-x:hidden}` was already in the stylesheet, and
+  clipping an overflowing control means it is *unreachable*, not that the layout is fine — the
+  new block neutralises the inline `width:`/`min-width:` values in the markup that forced the
+  overflow (largest inline width in the page is 366 px, so 430 px holds). Every icon-only button
+  (camera orbit, chat refresh) gained an `aria-label`; decorative glyphs inside labelled buttons
+  are `aria-hidden`.
+
+### Test coverage (P5-U1/U2/U3)
+- `node roblox-bridge/tools/dashboard_harness.js` grows from 8 to **14 checks**, loading the real
+  `static/dashboard.js` into a stub DOM: banner conditions (open auth, off gate — and *not* for a
+  public bind that is scoped and gated, which is a risk row rather than a banner), pill class and
+  suffix, hostile `message`/`fix` rendering inert, `policyUnavailable` clearing every field,
+  malformed payload degrading identically, the three transport configs and the tunnel refusal, and
+  shortcut guarding. `POLICY_REPORT_KEYS` is asserted equal to `sorted(BridgeState.policy_report())`
+  so a new report field breaks the harness on purpose.
+- `TestV61DashboardU1U3` (9 tests) asserts the markup and CSS as data — panel present in the served
+  document, `data-act` sites resolving, every glyph-only button labelled, the two regexes above, and
+  the media query's contents — because no browser runs in CI. `TestV5OpsPlatform`'s
+  dashboard-token test now also pins the panel's presence *and* the 401 that makes its
+  `UNAVAILABLE` state reachable.
+- 253 tests, ~250 s. Nothing here spends network time: the new tests read files and one stub DOM.
+
 ### Removed (P2 — NightLoop)
 - **`nightloop/` is gone**, with its in-repo copies and every reference: 125
   tracked files, −37,441 lines. That is the reference horror-survival experience

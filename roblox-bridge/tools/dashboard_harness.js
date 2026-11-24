@@ -45,11 +45,21 @@ function makeElement(tag) {
       add(...c) { c.forEach(x => this._s.add(x)); },
       remove(...c) { c.forEach(x => this._s.delete(x)); },
       contains(c) { return this._s.has(c); },
-      toggle(c) { this._s.has(c) ? this._s.delete(c) : this._s.add(c); },
+      /* Real DOM: `toggle(token, force)` adds when force is truthy and removes
+         when it is falsy, and only flips when force is omitted. The stub used to
+         ignore the second argument, so any dashboard code that passes an explicit
+         force — `renderPolicy`'s banner does — was being tested against a DOM that
+         does not exist. A stub that mis-models the platform gives false confidence
+         in both directions. */
+      toggle(c, force) {
+        if (force === undefined) { this._s.has(c) ? this._s.delete(c) : this._s.add(c); }
+        else if (force) { this._s.add(c); }
+        else { this._s.delete(c); }
+        return this._s.has(c);
+      },
     },
     children: [],
     dataset: {},
-    textContent: '',
     innerHTML: '',
     value: '',
     checked: false,
@@ -70,6 +80,19 @@ function makeElement(tag) {
     blur() {},
     click() {},
   };
+  /* Real DOM `textContent` on a container reads as the concatenation of its
+     descendants' text, and assigning it removes every child. The stub used to keep
+     a flat string, so `box.textContent = ''; box.appendChild(line)` read back as
+     '' — dashboard code that builds a message out of child nodes looked broken in
+     the harness while working in a browser. Second instance of the stub
+     under-modelling the platform (the first was `classList.toggle`), and the same
+     reason to fix the stub rather than the code. */
+  let ownText = '';
+  Object.defineProperty(el, 'textContent', {
+    enumerable: true,
+    get() { return ownText + el.children.map(c => (c && c.textContent) || '').join(''); },
+    set(v) { ownText = String(v == null ? '' : v); el.children = []; },
+  });
   return el;
 }
 
@@ -139,6 +162,19 @@ function loadDashboard() {
     actDataOn: typeof actDataOn === 'function' ? actDataOn : null,
     runAction: typeof runAction === 'function' ? runAction : null,
     resolveAction: typeof resolveAction === 'function' ? resolveAction : null,
+    renderPolicy: typeof renderPolicy === 'function' ? renderPolicy : null,
+    policyUnavailable: typeof policyUnavailable === 'function' ? policyUnavailable : null,
+    stdioMcpConfig: typeof stdioMcpConfig === 'function' ? stdioMcpConfig : null,
+    localHttpMcpConfig: typeof localHttpMcpConfig === 'function' ? localHttpMcpConfig : null,
+    tunnelHttpMcpConfig: typeof tunnelHttpMcpConfig === 'function' ? tunnelHttpMcpConfig : null,
+    renderTunnelConfig: typeof renderTunnelConfig === 'function' ? renderTunnelConfig : null,
+    isTypingTarget: typeof isTypingTarget === 'function' ? isTypingTarget : null,
+    onDashboardKeydown: typeof onDashboardKeydown === 'function' ? onDashboardKeydown : null,
+    copyMcpConfig: typeof copyMcpConfig === 'function' ? copyMcpConfig : null,
+    POLICY_PILL_CLASS: typeof POLICY_PILL_CLASS === 'object' ? POLICY_PILL_CLASS : null,
+    CHORD_TARGETS: typeof CHORD_TARGETS === 'object' ? CHORD_TARGETS : null,
+    lastTunnel: () => LAST_TUNNEL,
+    policyReport: () => POLICY_REPORT,
   })`, sandbox, { filename: 'dashboard-expose.js' });
   Object.assign(sandbox, expose);
   return { sandbox, bootstrap, file };
@@ -190,6 +226,18 @@ function check(name, fn) {
 function assert(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
 
 const { sandbox: ctx, bootstrap } = loadDashboard();
+/* The U1 risk-row check needs the same inline-handler scan the markup check uses,
+   applied to generated markup instead of a file. */
+function handlersIn(html) { return inlineHandlersIn(html); }
+/* `LAST_TUNNEL` is a module-level `let`, so the checks drive it through these two
+   accessors rather than reaching into the realm's lexical scope. */
+vm.runInContext(`
+  globalThis.LAST_TUNNEL_RESET_FOR_TEST = () => { LAST_TUNNEL = { state: 'unknown', publicUrl: '' };
+    const box = document.getElementById('tunnel-url'); if (box) box.value = ''; };
+  globalThis.LAST_TUNNEL_SET_FOR_TEST = (state, url) => { LAST_TUNNEL = { state, publicUrl: url }; };
+`, sandbox, { filename: 'dashboard-test-hooks.js' });
+ctx.LAST_TUNNEL_RESET_FOR_TEST = sandbox.LAST_TUNNEL_RESET_FOR_TEST;
+ctx.LAST_TUNNEL_SET_FOR_TEST = sandbox.LAST_TUNNEL_SET_FOR_TEST;
 const esc = ctx.esc;
 const actData = ctx.actData;
 const studioCard = ctx.studioCard;
@@ -327,6 +375,199 @@ check('delegated listeners are registered for every action event', () => {
     assert(/keydown(?::[\w,+ ]+)?"$/.test(attr), `malformed keydown binding: ${attr}`);
   }
   return `${registered.length} listener types, ${keyed.length} keydown binding(s)`;
+});
+
+/* ---------------------------------------------------------------------------
+   P5-U1..U3: the posture panel, per-transport configs, and the shortcuts.
+
+   The report literals below are hand-written, and a hand-written literal can drift
+   from the function that produces it — so `TestV61DashboardU1U3` in
+   test_bridge_mcp.py builds a real `BridgeState.policy_report()` and asserts its key
+   set matches `POLICY_REPORT_KEYS` here. Renaming a field therefore fails a Python
+   test that says which side to update, instead of silently testing a shape the
+   bridge no longer emits.
+   --------------------------------------------------------------------------- */
+const POLICY_REPORT_KEYS = ['version', 'generatedAt', 'riskLevel', 'actionableRisks',
+  'exposed', 'risks', 'auth', 'confirmGate', 'network', 'tunnel', 'surface'];
+
+function policyFixture(over) {
+  const base = {
+    version: '6.1.0',
+    generatedAt: 1795540000.5,
+    riskLevel: 'ok',
+    actionableRisks: 0,
+    exposed: false,
+    risks: [],
+    auth: { mode: 'scoped', readOnly: false, credentialConfigured: true,
+            tokens: { count: 2, active: 2, revoked: 0, expired: 0,
+                      byRole: { admin: 1, read: 1 }, roles: ['admin', 'read'] } },
+    confirmGate: { version: '6.1.0', mode: 'write', pendingCount: 0, ttlSeconds: 300,
+                   allowanceSeconds: 120, counters: {}, enabled: true, gatedToolCount: 34,
+                   gatedTools: [], gatedJobKinds: ['run_luau'], destructiveToolCount: 6,
+                   destructiveTools: [], destructiveNotGated: [] },
+    network: { bind: { host: '127.0.0.1', port: 8077, public: false, loopback: true },
+               maxBodyBytes: 33554432,
+               cors: { allowlist: [], wildcard: false, policy: 'same-origin',
+                       reflectsAllowedRequestOrigin: false, wildcardWhenNoOriginHeader: true } },
+    tunnel: { state: 'stopped', publicUrl: '', localUrl: '', flavor: '' },
+    surface: { mcpTools: 103, mcpResources: 14, mcpResourceTemplates: 3, mcpPrompts: 10 },
+  };
+  return Object.assign(base, over || {});
+}
+const el = id => ctx.document.getElementById(id);
+
+check('U1: the posture banner fires on open auth and on an off gate, and only on those', () => {
+  const cases = [
+    ['scoped + write gate', policyFixture(), false],
+    ['open auth', policyFixture({ riskLevel: 'critical', exposed: true, actionableRisks: 1,
+      auth: { mode: 'open', readOnly: false, credentialConfigured: false,
+              tokens: { count: 0, active: 0, revoked: 0, expired: 0, byRole: {}, roles: [] } } }), true],
+    ['gate off', policyFixture({ riskLevel: 'medium', actionableRisks: 1,
+      confirmGate: { mode: 'off', enabled: false, gatedToolCount: 34, gatedJobKinds: ['run_luau'],
+                     destructiveNotGated: [], destructiveToolCount: 6 } }), true],
+    // A public bind with a credential and a gate on is a *risk row*, not a banner:
+    // if the banner fired for every finding, operators would stop reading it.
+    ['public bind, scoped, gated', policyFixture({ riskLevel: 'high', exposed: true, actionableRisks: 1,
+      risks: [{ id: 'public_bind', severity: 'high', message: 'bound to 0.0.0.0', fix: 'bind loopback' }],
+      network: { bind: { host: '0.0.0.0', port: 8077, public: true, loopback: false },
+                 maxBodyBytes: 33554432, cors: { allowlist: [], wildcard: false, policy: 'same-origin' } } }), false],
+  ];
+  for (const [label, report, wantBanner] of cases) {
+    ctx.renderPolicy(report);
+    const shown = el('policy-banner').classList.contains('show');
+    assert(shown === wantBanner, `${label}: banner shown=${shown}, expected ${wantBanner}`);
+    const pill = el('policy-risk-pill');
+    assert(pill.textContent.indexOf(report.riskLevel) === 0,
+      `${label}: pill reads "${pill.textContent}", expected it to start with "${report.riskLevel}"`);
+    const wantClass = 'pill ' + (ctx.POLICY_PILL_CLASS[report.riskLevel] || 'info-pill');
+    assert(pill.className === wantClass, `${label}: pill class "${pill.className}" != "${wantClass}"`);
+  }
+  // The banner says what is wrong in words an operator can act on, not just "risk".
+  ctx.renderPolicy(policyFixture({ riskLevel: 'critical', exposed: true,
+    auth: { mode: 'open', tokens: { count: 0, active: 0, revoked: 0, expired: 0, byRole: {}, roles: [] } },
+    confirmGate: { mode: 'off', gatedToolCount: 34, gatedJobKinds: ['run_luau'], destructiveNotGated: [] } }));
+  const msg = el('policy-banner-msg').textContent;
+  assert(/no credential is configured/.test(msg), `banner does not explain open auth: ${msg}`);
+  assert(/no human approving/.test(msg), `banner does not explain the off gate: ${msg}`);
+  assert(/34/.test(msg), `banner drops the gated tool count: ${msg}`);
+  // Cards read the report rather than inventing values.
+  assert(el('policy-auth-mode').textContent === 'OPEN', el('policy-auth-mode').textContent);
+  assert(/0\.0\.0\.0|127\.0\.0\.1/.test(el('policy-bind').textContent), el('policy-bind').textContent);
+  assert(/loopback|PUBLIC/.test(el('policy-bind').textContent), el('policy-bind').textContent);
+  assert(/2 total/.test(el('policy-tokens').textContent) || /0 total/.test(el('policy-tokens').textContent),
+    el('policy-tokens').textContent);
+  return `${cases.length} posture combinations, banner + pill + 4 cards asserted`;
+});
+
+check('U1: risk rows escape server-supplied text, and no risks says what that means', () => {
+  ctx.renderPolicy(policyFixture({ riskLevel: 'high', actionableRisks: 1, risks: [
+    { id: 'cors_wildcard', severity: 'medium',
+      message: `allowlist is * <img src=x onerror=alert(1)>`,
+      fix: `bind loopback '); alert('xss` },
+  ] }));
+  const html = el('policy-risks').innerHTML;
+  assert(html.indexOf('<img') < 0, `a risk message became markup: ${html.slice(0, 160)}`);
+  assert(/onerror=/.test(html) === false || /&#39;|&quot;/.test(html),
+    `quotes in a risk fix were not escaped: ${html.slice(0, 160)}`);
+  assert(/sev-medium/.test(html), `severity class missing: ${html.slice(0, 120)}`);
+  assert(/cors_wildcard/.test(html), 'risk id missing');
+  assert(handlersIn(html).length === 0, `inline handler survived into a risk row: ${handlersIn(html).join(', ')}`);
+  ctx.renderPolicy(policyFixture());
+  const empty = el('policy-risks').innerHTML;
+  assert(/No risks reported/.test(empty), `empty state changed: ${empty.slice(0, 120)}`);
+  assert(/not a guarantee/.test(empty), 'the empty state must not read as a clean bill of health');
+  return 'hostile message + fix inert, empty state states its own limit';
+});
+
+check('U1: an unreadable report clears the panel instead of leaving stale numbers', () => {
+  ctx.renderPolicy(policyFixture({ riskLevel: 'critical', exposed: true,
+    auth: { mode: 'open', tokens: { count: 0, active: 0, revoked: 0, expired: 0, byRole: {}, roles: [] } } }));
+  assert(el('policy-banner').classList.contains('show'), 'precondition: banner was showing');
+  ctx.policyUnavailable('HTTP 401');
+  assert(!el('policy-banner').classList.contains('show'), 'banner stayed up after the report went away');
+  assert(el('policy-risk-pill').textContent === 'not measured', el('policy-risk-pill').textContent);
+  for (const id of ['policy-auth-mode', 'policy-gate-mode', 'policy-bind',
+                    'policy-tunnel', 'policy-cors', 'policy-tokens']) {
+    assert(el(id).textContent === 'unknown', `${id} kept a stale value: "${el(id).textContent}"`);
+  }
+  const note = el('policy-risks').textContent;
+  assert(/UNAVAILABLE/.test(note) && /nothing below is a measurement/.test(note),
+    `the unavailable state does not say nothing was measured: ${note.slice(0, 140)}`);
+  assert(/HTTP 401/.test(note), 'the reason is dropped');
+  assert(ctx.policyReport() === null, 'a failed read kept the previous report for copying');
+  // A malformed payload must degrade the same way rather than half-render.
+  ctx.renderPolicy({ nope: true });
+  assert(el('policy-risk-pill').textContent === 'not measured', 'a malformed report half-rendered');
+  return 'banner down, 6 cards unknown, reason shown, stale report dropped';
+});
+
+check('U2: each transport builds only the URL it means', () => {
+  const stdio = ctx.stdioMcpConfig().mcpServers['roblox-studio'];
+  assert(stdio.command === 'python' && Array.isArray(stdio.args), 'stdio config is not a command');
+  assert(stdio.url === undefined, 'a stdio config must not carry a url');
+  assert(stdio.args.some(a => /mcp_server\.py$/.test(a)), `stdio args lose the server path: ${stdio.args}`);
+
+  const local = ctx.localHttpMcpConfig().mcpServers['roblox-studio-http'];
+  assert(local.type === 'http' && local.url === 'http://127.0.0.1:8077/mcp', local.url);
+  assert(/^Bearer /.test(local.headers.Authorization), 'local config has no bearer header');
+
+  const tunnel = ctx.tunnelHttpMcpConfig('https://abc.trycloudflare.com/').mcpServers['roblox-studio-tunnel'];
+  assert(tunnel.url === 'https://abc.trycloudflare.com/mcp', tunnel.url);
+  assert(tunnel.url !== local.url, 'the tunnel config points at the local origin');
+  return 'stdio (command+args), local (origin), tunnel (given url, trailing slash stripped)';
+});
+
+check('U2: the tunnel card refuses to fall back to this page origin', () => {
+  // No live tunnel and nothing typed: the old code emitted `window.location.origin`
+  // under a heading that said tunnel, which fails remotely with an error that never
+  // mentions the tunnel.
+  ctx.LAST_TUNNEL_RESET_FOR_TEST();
+  ctx.renderTunnelConfig();
+  const refused = el('cfg-http-tunnel').textContent;
+  assert(refused.indexOf('mcpServers') < 0, `a config was emitted with no tunnel: ${refused.slice(0, 120)}`);
+  assert(/No public tunnel URL is known/.test(refused), refused.slice(0, 140));
+  assert(/deliberately does not fall back/.test(refused), 'the refusal does not explain itself');
+  assert(el('cfg-tunnel-state').className.indexOf('off') > 0, el('cfg-tunnel-state').className);
+
+  ctx.LAST_TUNNEL_SET_FOR_TEST('online', 'https://abc.trycloudflare.com');
+  ctx.renderTunnelConfig();
+  const cfg = JSON.parse(el('cfg-http-tunnel').textContent);
+  assert(cfg.mcpServers['roblox-studio-tunnel'].url === 'https://abc.trycloudflare.com/mcp',
+    cfg.mcpServers['roblox-studio-tunnel'].url);
+  assert(el('cfg-tunnel-state').className.indexOf('on') > 0, el('cfg-tunnel-state').className);
+  return 'refuses with no tunnel, emits the live URL when there is one';
+});
+
+check('U3: shortcuts never fire while typing or with a modifier held', () => {
+  const typing = ctx.isTypingTarget;
+  for (const tag of ['INPUT', 'TEXTAREA', 'SELECT']) {
+    assert(typing({ tagName: tag }) === true, `${tag} must count as typing`);
+  }
+  assert(typing({ tagName: 'DIV', isContentEditable: true }) === true, 'contentEditable must count');
+  assert(typing({ tagName: 'DIV' }) === false, 'a plain div is not a typing target');
+  assert(typing(null) === false, 'a missing target is not a typing target');
+
+  let prevented = 0;
+  const ev = over => Object.assign({ key: 'r', ctrlKey: false, metaKey: false, altKey: false,
+    defaultPrevented: false, target: { tagName: 'DIV' },
+    preventDefault() { this.defaultPrevented = true; prevented += 1; } }, over || {});
+
+  ctx.onDashboardKeydown(ev({ target: { tagName: 'INPUT' } }));
+  ctx.onDashboardKeydown(ev({ ctrlKey: true }));
+  ctx.onDashboardKeydown(ev({ metaKey: true, key: '/' }));
+  ctx.onDashboardKeydown(ev({ altKey: true, key: 'g' }));
+  ctx.onDashboardKeydown(ev({ defaultPrevented: true }));
+  assert(prevented === 0, `${prevented} shortcut(s) fired while typing or with a modifier held`);
+
+  // The positive path that needs no DOM: `/` with nothing to focus must say so
+  // rather than throw or silently focus an unrelated field.
+  ctx.onDashboardKeydown(ev({ key: '/' }));
+  assert(prevented === 1, `slash did not preventDefault the browser's quick-find (prevented=${prevented})`);
+  assert(/no search field/i.test(el('toast').textContent), el('toast').textContent);
+  assert(ctx.CHORD_TARGETS.o === 'ops', 'g+o must open the Ops tab');
+  assert(Object.keys(ctx.CHORD_TARGETS).length === 1,
+    'an unbound chord was added without documenting it in the tips tab');
+  return '5 guard cases inert, / prevents quick-find and toasts, g+o bound to ops';
 });
 
 check('the page keeps its token out of URLs', () => {

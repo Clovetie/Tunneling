@@ -14,14 +14,14 @@
   <div class="spacer"></div>
   <span class="sub">Token:</span>
   <input id="tok-input" type="password" placeholder="auto-loaded on localhost" data-act="applyHeaderToken" data-act-on="change" style="width:185px;padding:4px 8px">
-  <button class="sm" data-act="toggleToken">Show</button>
+  <button class="sm" data-act="toggleToken" aria-label="Show or hide the bridge token field">Show</button>
 </header>
 
 <div class="fleet-bar" id="fleet-bar">
   <span class="fleet-label"><span class="dot-live" id="fleet-dot"></span> Studios</span>
   <div class="fleet-chips" id="fleet-chips"><span class="sub">Looking for connected Studio windows&hellip;</span></div>
-  <button class="sm danger" data-act="forceStopPlaytestUI" title="Force-stop any active or stuck Play Solo / Server Run session and evict ghost runtime peers">&#9209; Force Stop Playtest</button>
-  <button class="sm primary" data-act="downloadPluginFile" title="Download pre-configured ArenaBridge.lua v__BRIDGE_VERSION__">&#11015; Plugin v__BRIDGE_VERSION__</button>
+  <button class="sm danger" data-act="forceStopPlaytestUI" title="Force-stop any active or stuck Play Solo / Server Run session and evict ghost runtime peers" aria-label="Force stop playtest"><span aria-hidden="true">&#9209;</span> Force Stop Playtest</button>
+  <button class="sm primary" data-act="downloadPluginFile" title="Download pre-configured ArenaBridge.lua v__BRIDGE_VERSION__" aria-label="Download plugin v__BRIDGE_VERSION__"><span aria-hidden="true">&#11015;</span> Plugin v__BRIDGE_VERSION__</button>
   <button class="sm" data-act="broadcastPing" title="Ping every online Studio and show per-peer latency">Broadcast ping</button>
 </div>
 
@@ -75,7 +75,7 @@
       <button class="sm" data-act="quickTool" data-args='["list_studios", {}]'>List Peers</button>
       <button class="sm" data-act="quickTool" data-args='["undo_redo", {"action": "undo"}]'>Undo (Ctrl+Z)</button>
       <button class="sm" data-act="quickTool" data-args='["undo_redo", {"action": "redo"}]'>Redo</button>
-      <button class="sm danger" data-act="forceStopPlaytestUI">&#9209; Stop Playtest</button>
+      <button class="sm danger" data-act="forceStopPlaytestUI" aria-label="Stop playtest"><span aria-hidden="true">&#9209;</span> Stop Playtest</button>
       <button class="sm" data-act="quickTool" data-args='["export_place_rbxlx", {"outputFile": "roblox-kit/models/StarterPlace.rbxlx"}]'>Export .rbxlx Place</button>
       <div class="spacer"></div>
       <button class="danger sm" data-act="clearQueue">Clear Queue</button>
@@ -114,12 +114,12 @@
             <option value="prefab:world_quest_giver_npc">3D Prefab: Quest Giver NPC</option>
           </select>
           <div style="display:flex;gap:4px;flex-wrap:wrap">
-            <button class="sm" data-act="orbit3DCamera" data-args='[-25, 0, 1]' title="Orbit Left">&#10226;</button>
-            <button class="sm" data-act="orbit3DCamera" data-args='[25, 0, 1]' title="Orbit Right">&#10227;</button>
-            <button class="sm" data-act="orbit3DCamera" data-args='[0, 12, 1]' title="Pitch Up">&#8593;</button>
-            <button class="sm" data-act="orbit3DCamera" data-args='[0, -12, 1]' title="Pitch Down">&#8595;</button>
-            <button class="sm" data-act="orbit3DCamera" data-args='[0, 0, 0.8]' title="Zoom In">&#65291;</button>
-            <button class="sm" data-act="orbit3DCamera" data-args='[0, 0, 1.25]' title="Zoom Out">&#65293;</button>
+            <button class="sm" data-act="orbit3DCamera" data-args='[-25, 0, 1]' title="Orbit Left" aria-label="Orbit camera left">&#10226;</button>
+            <button class="sm" data-act="orbit3DCamera" data-args='[25, 0, 1]' title="Orbit Right" aria-label="Orbit camera right">&#10227;</button>
+            <button class="sm" data-act="orbit3DCamera" data-args='[0, 12, 1]' title="Pitch Up" aria-label="Pitch camera up">&#8593;</button>
+            <button class="sm" data-act="orbit3DCamera" data-args='[0, -12, 1]' title="Pitch Down" aria-label="Pitch camera down">&#8595;</button>
+            <button class="sm" data-act="orbit3DCamera" data-args='[0, 0, 0.8]' title="Zoom In" aria-label="Zoom camera in">&#65291;</button>
+            <button class="sm" data-act="orbit3DCamera" data-args='[0, 0, 1.25]' title="Zoom Out" aria-label="Zoom camera out">&#65293;</button>
             <button class="sm" data-act="reset3DCamera" title="Reset Orbit/Zoom">Reset</button>
           </div>
         </div>
@@ -449,12 +449,27 @@
         <pre id="cfg-cli"></pre>
       </div>
 
+      <!-- P5-U2: one snippet used to cover "local or tunnel" by falling back to
+           this page's origin when no tunnel URL was known, so an operator could
+           copy a config labelled tunnel that pointed at localhost. Two cards now,
+           each with the URL it actually means, and the tunnel one refuses to guess. -->
       <div class="prompt-card">
         <div class="prompt-head">
-          <div><h3>Streamable HTTP MCP Config (Local or Tunnel)</h3><div class="sub">Direct HTTP JSON-RPC 2.0 endpoint on <code>POST /mcp</code></div></div>
-          <button class="primary sm" data-act="copyById" data-args='["cfg-http"]'>Copy</button>
+          <div><h3>Streamable HTTP &mdash; this machine</h3><div class="sub">The origin this page was served from, <code>POST /mcp</code>. Use it for a client on the same host as the bridge.</div></div>
+          <button class="primary sm" data-act="copyById" data-args='["cfg-http-local"]' aria-label="Copy the local Streamable HTTP MCP config">Copy</button>
         </div>
-        <pre id="cfg-http"></pre>
+        <pre id="cfg-http-local"></pre>
+      </div>
+
+      <div class="prompt-card">
+        <div class="prompt-head">
+          <div><h3>Streamable HTTP &mdash; public tunnel</h3><div class="sub">The live tunnel URL from <code>/api/ops</code>, for a remote agent. Never falls back to localhost: no tunnel means no config.</div></div>
+          <div class="policy-head-ctl">
+            <span class="pill off" id="cfg-tunnel-state">tunnel stopped</span>
+            <button class="primary sm" data-act="copyById" data-args='["cfg-http-tunnel"]' aria-label="Copy the tunnel Streamable HTTP MCP config">Copy</button>
+          </div>
+        </div>
+        <pre id="cfg-http-tunnel"></pre>
       </div>
 
       <div class="prompt-card">
@@ -520,6 +535,42 @@
   <!-- ==================== TAB 5: HELPFUL TIPS & GOTCHAS ==================== -->
   <!-- ==================== TAB 7: OPS CONSOLE & AGENT BUS ==================== -->
   <section id="tab-ops" class="tab-pane">
+    <!-- P5-U1: the posture report where an operator will actually see it. Same
+         BridgeState.policy_report() as mcp://bridge/policy and
+         bridge_ops {"action":"policy"}, so the three surfaces cannot disagree. -->
+    <div class="prompt-card policy-card" id="policy-card">
+      <div class="banner bad policy-banner" id="policy-banner" role="alert">
+        <div class="grow">
+          <strong id="policy-banner-title">This bridge is reachable without a credential</strong>
+          <div class="sub" id="policy-banner-msg"></div>
+        </div>
+        <button class="sm" data-act="copyPolicyJson" aria-label="Copy the security posture report as JSON">Copy report</button>
+      </div>
+      <div class="prompt-head">
+        <div>
+          <h3>Security Posture</h3>
+          <div class="sub">Live <code>GET /api/policy</code>. <b>Risk level is the worst
+            <i>actionable</i> finding</b> &mdash; review and info rows are counted separately, so
+            <code>ok</code> never hides a note. The report carries token <i>counts</i> only, never a
+            value or a prefix, so it is safe to paste into a ticket.</div>
+        </div>
+        <div class="policy-head-ctl">
+          <span class="pill info-pill" id="policy-risk-pill">checking&hellip;</span>
+          <button class="sm" data-act="refreshPolicy" aria-label="Refresh the security posture report">Refresh</button>
+        </div>
+      </div>
+      <div class="grid policy-grid">
+        <div class="card"><div class="k">Auth mode</div><div class="v" id="policy-auth-mode">&mdash;</div></div>
+        <div class="card"><div class="k">Confirm gate</div><div class="v" id="policy-gate-mode">&mdash;</div></div>
+        <div class="card"><div class="k">Bind</div><div class="v" id="policy-bind">&mdash;</div></div>
+        <div class="card"><div class="k">Tunnel</div><div class="v" id="policy-tunnel">&mdash;</div></div>
+        <div class="card"><div class="k">CORS</div><div class="v" id="policy-cors">&mdash;</div></div>
+        <div class="card"><div class="k">Tokens</div><div class="v" id="policy-tokens">&mdash;</div></div>
+      </div>
+      <div id="policy-risks"><span class="sub">Reading the posture report&hellip;</span></div>
+      <div class="sub" id="policy-meta"></div>
+    </div>
+
     <div class="grid">
       <div class="card"><div class="k">Tunnel</div><div class="v" id="ops-tunnel-state">stopped</div></div>
       <div class="card"><div class="k">Public URL</div><div class="v" id="ops-tunnel-url" style="font-size:12.5px;word-break:break-all">&mdash;</div></div>
@@ -564,8 +615,10 @@
           <button class="primary sm" data-act="tunnelAction" data-args='["start"]'>Start Tunnel</button>
           <button class="sm" data-act="tunnelAction" data-args='["restart"]'>Restart</button>
           <button class="sm danger" data-act="tunnelAction" data-args='["stop"]'>Stop</button>
-          <button class="sm" data-act="copyTunnelUrl">Copy URL</button>
-          <button class="sm" data-act="copyMcpConfig">Copy MCP config (tunnel)</button>
+          <button class="sm" data-act="copyTunnelUrl" aria-label="Copy the public tunnel URL">Copy URL</button>
+          <button class="sm" data-act="copyMcpConfig" data-args='["stdio"]' aria-label="Copy the stdio MCP config for Claude Code or Cursor">Copy config: stdio</button>
+          <button class="sm" data-act="copyMcpConfig" data-args='["local"]' aria-label="Copy the local Streamable HTTP MCP config">Copy config: HTTP local</button>
+          <button class="sm" data-act="copyMcpConfig" data-args='["tunnel"]' aria-label="Copy the tunnel Streamable HTTP MCP config">Copy config: HTTP tunnel</button>
         </div>
         <div class="sub" id="ops-tunnel-meta" style="margin-top:6px">Checking tunnel status&hellip;</div>
         <div class="sub" id="ops-tunnel-lan" style="margin-top:4px"></div>
@@ -731,7 +784,7 @@
           <input id="direct-chat-input" placeholder="Message the active agent directly (e.g. Use 3D meshes for the shrine and import the HUD from Web)..." style="flex:1;min-width:220px" data-act="sendOperatorLiveChat" data-act-on="keydown:Enter">
           <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="direct-chat-pin"> Pin Directive</label>
           <button class="sm primary" data-act="sendOperatorLiveChat">Send to Agent</button>
-          <button class="sm" data-act="refreshDirectChat">&#8635;</button>
+          <button class="sm" data-act="refreshDirectChat" title="Refresh the direct chat feed" aria-label="Refresh the direct chat feed">&#8635;</button>
         </div>
       </div>
 

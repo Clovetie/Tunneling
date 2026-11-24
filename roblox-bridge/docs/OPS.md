@@ -509,7 +509,7 @@ Override with `--state-dir` or `BRIDGE_STATE_DIR`.
 ## 9. Tests
 
 ```bash
-python3 -B roblox-bridge/test_bridge_mcp.py          # 244 tests
+python3 -B roblox-bridge/test_bridge_mcp.py          # 253 tests, ~250 s
 bash roblox-bridge/tools/check_globals.sh roblox-bridge   # undefined Luau globals
 python3 -B tools/verify_licences.py                  # kit asset licence manifest
 python3 roblox-bridge/image_pipeline.py --check      # committed asset manifest
@@ -772,6 +772,71 @@ script produced them.
 ---
 
 ## 12. Console troubleshooting
+
+### The Ops tab in v6.1.0: posture panel, transports, shortcuts (P5-U1..U3)
+
+**Security Posture is the first card in the Ops tab.** It renders `GET /api/policy` —
+the same `BridgeState.policy_report()` behind `mcp://bridge/policy` and
+`bridge_ops {"action":"policy"}` (§6.1), so the panel cannot disagree with the resource
+an agent reads. It refreshes with the rest of the Ops tab every 4 s, on `r`, and on its
+own **Refresh** button.
+
+| What you see | What it means |
+|---|---|
+| Red banner | `auth.mode == "open"` **or** `confirmGate.mode == "off"` — the two configurations that let a stranger drive Studio, or let an agent delete something with nobody asked. The banner is deliberately narrower than the risk list: if it fired on every finding, operators would stop reading it |
+| Risk pill | `riskLevel` plus `exposed`. `riskLevel` is the worst **actionable** finding, so `ok` never hides a review or info row — those are listed below it |
+| Six cards | auth mode (and read-only), gate mode + how many tools it covers, bound `host:port` with `PUBLIC`/`loopback`, tunnel state and URL, CORS (wildcard vs. allowed-origin count), token counts by state |
+| Risk rows | one per finding, colour-coded by severity, each with the report's own `fix` string |
+| `UNAVAILABLE` | the panel could not read `/api/policy`. Every card reads `unknown` and the pill reads `not measured` — a failed read clears the panel instead of leaving the previous numbers, because a green posture that no longer describes the bridge is worse than no posture. The reason is shown |
+
+The report carries token **counts** only — never a value, never a prefix — so **Copy
+report** is safe to paste into a ticket. (Per-token rows, prefixes included, live on
+admin-only `/api/tokens`; see §3.)
+
+**Three MCP configs, one per transport** (Commands tab, and three buttons in the Ops
+tunnel card):
+
+| Button | What it copies |
+|---|---|
+| `Copy config: stdio` | `{"command": "python", "args": ["<mcp_server.py>", "--auto-install-plugin"], "env": {"BRIDGE_URL": <this origin>}}` — for Claude Code, Cursor, Claude Desktop |
+| `Copy config: HTTP local` | Streamable HTTP against **the origin this page was served from** |
+| `Copy config: HTTP tunnel` | Streamable HTTP against the **live tunnel URL** from `/api/ops` |
+
+There used to be one "Local or Tunnel" snippet built from
+`tunnel-url input || window.location.origin`, so with no tunnel running it handed out a
+*localhost* URL under a heading that said tunnel — and the tunnel handoff **prompt** did
+the same, telling a remote agent `Base URL: http://127.0.0.1:8077`. Both now refuse to
+guess: the tunnel card says "No public tunnel URL is known" and explains why it will not
+fall back, the copy button toasts instead of copying, and the prompt carries
+`<NO_TUNNEL_URL — start it in the Ops tab>`. A wrong URL that fails loudly beats a
+plausible one that fails remotely.
+
+**Keyboard shortcuts** (documented in the Tips tab):
+
+| Keys | Action |
+|---|---|
+| `/` | focus a search field. The two filters live in the Studio Kit tab, so on any other tab it says so and jumps there rather than focusing something unrelated |
+| `r` | re-read the bridge: jobs, ops, **posture**, fleet, bus |
+| `g` then `o` | open the Ops tab (1.2 s to press the second key) |
+
+None of them fire while you are typing in a field, and none fire with Ctrl/Cmd/Alt held,
+so Ctrl+R is still the browser's reload and a `/` in a path is still a `/`.
+
+**At 390×844** (portrait phone) the Ops and fleet tabs stack: control rows go vertical,
+form controls go fluid, cards keep two columns, risk rows collapse to one. The cause is
+fixed rather than hidden — `html,body{overflow-x:hidden}` was already there, and clipping
+an overflowing control means it is *unreachable*, not that the layout is fine, so the
+narrow-viewport pass neutralises the inline `width:`/`min-width:` values in the markup
+that forced the overflow. Every icon-only button (camera orbit, chat refresh) now has an
+`aria-label`, and decorative glyphs inside labelled buttons are `aria-hidden`.
+
+What this section cannot claim: no browser runs in CI. The panel's *behaviour* — banner
+conditions, escaping of server-supplied risk text, and the degradation above — is asserted
+by `node tools/dashboard_harness.js`, which loads the real `static/dashboard.js` into a
+stub DOM (14 checks); the markup, CSS and shortcut wiring are asserted as data by
+`TestV61DashboardU1U3`. Rendering in an actual browser at an actual 390×844 viewport is
+operator-verify: open the console on a phone (or a dev-tools device profile), press `g o`,
+and confirm the Ops tab is reachable and readable with no horizontal scroll.
 
 ### "The dashboard doesn't update"
 
