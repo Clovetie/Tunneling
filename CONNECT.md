@@ -8,7 +8,7 @@
 > atomically and quarantined when unreadable, chunked and oversized bodies are refused instead of
 > silently becoming empty, and snapshot restore reports per-script results. Tooling: `bash
 > tools/check_lint.sh` (ruff plus a blind-except ratchet). The dead NightLoop tree and its two
-> divergent bridge copies are gone. Current surface: **100 MCP tools**, 12 resources, 3 resource
+> divergent bridge copies are gone. Current surface: **103 MCP tools**, 12 resources, 3 resource
 > templates, 7 prompts, 33 bundled skills (`.claude/skills/`), 35 Luau modules, 27 drop-in
 > systems, 6 UI templates, 36 JSON prefabs (+20 `.rbxmx` models) and 4,320 licensed kit assets.
 > The dated notes below are history, and their counts are the counts of their day.
@@ -16,7 +16,7 @@
 > **v6.0 note (2026-11-13):** the bridge and `ArenaBridge.lua` Studio plugin are now `6.0.0`: adds the in-Studio
 > `ArenaBridgeDashboardV6` `DockWidgetPluginGui` panel, bulletproof playtest closing (`EndTest` + `LeaveTest` fallback,
 > `__ArenaTestRunner_*` cleanup, dual `edit`+`server` stop routing, and `/api/poll?goodbye=1` instant ghost-peer
-> eviction), **100 MCP tools** (including `import_ui_from_web` for importing UI from the Web & Dashboard,
+> eviction), **103 MCP tools** (including `import_ui_from_web` for importing UI from the Web & Dashboard,
 > `de_slop_audit` for eliminating `—` em-dashes and text dumps, `spawn_kit_mesh` for 3D Mesh Priority over blocky
 > primitives, `build_vfx_emitter` for `:Emit(n)` particle bursts, and `operator_chat` for Direct Operator ↔ Agent
 > Live Chat push-injected into every tool call), 16 bundled skills (`.claude/skills/`), 29 Luau modules (`VFXManager`),

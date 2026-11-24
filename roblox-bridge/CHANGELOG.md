@@ -647,6 +647,92 @@ All notable changes for the Roblox Studio bridge are documented here.
   `wrote docs/FACTS.md (21 facts)` before argparse ran (caught by the announcement check) —
   then restoring the file byte-identically (`md5sum -c`).
 
+### Added (P5-M1 — three MCP tools: kit integrity, asset references, TestEZ)
+- **`audit_kit_integrity`** (`readOnlyHint: true`) — the P3-T6 kit cross-check behind an
+  agent-facing tool, built as **one function with two callers**: `audit_kit_integrity_report`
+  is what the tool runs *and* what `TestV61KitIntegrityAuditTool` asserts against, so an
+  agent asking "is the kit intact?" and `make ci` asking it cannot drift apart. It compares
+  all four self-descriptions of the kit — `assets/registry.json`, the files on disk,
+  `assets/asset-lock.json`, `modules/Assets.lua` — plus the manifest leg, and reports
+  `missingFromDisk`, `unregisteredOnDisk`, `rowProblems`, `lockDrift`, `assetsLuaDrift`,
+  `manifestDrift`, `hashMismatches` and `checked`, each as a clipped list beside an
+  unclipped `*Total` so a short list never reads as "few findings". `ok` is false when any
+  total is non-zero, when `errors` is non-empty, or when the manifest leg did not run
+  *without* saying why: for a `kitRoot` other than the repository's own kit the manifest
+  check is skipped and reported as skipped, because that check always reads the real repo
+  and quietly answering for another directory would be a lie. `verifyHashes` samples four
+  rows per `assetType` (first, last, third, two-thirds) rather than a fixed stride over the
+  registry — a stride can skip a small category entirely and report a clean kit. `kitRoot`
+  goes through `safe_local_path`, so `/etc`, `~`, `../../etc` and `roblox-kit/../../..` are
+  refused instead of read and quoted back.
+- **`audit_asset_references`** (`readOnlyHint: true`, live peer *or* a supplied tree) —
+  catches the classic "the image was deleted from the kit but the place still points at it".
+  Scans instance `properties`, `structuredProperties`, `attributes` and script sources for
+  `rbxasset://arena_assets/…` and `rbxassetid://…`, and reports `missingKitAssets`,
+  `unresolvedKitFiles`, `unknownCloudIds`, `duplicateReferences`, `conflictingIds`,
+  `cloudIds` and `commentedReferences` — every finding carrying `where` (a list of
+  `Path.Property` or `Path:line`) and `references`, because "this asset is missing" without
+  its locations leaves an agent grepping. Works offline from `{tree, scripts}` so the whole
+  report is replayable in a test, and live by `inspect` → `hash_scripts` → batched
+  `read_scripts` with `depth`, `maxChildren` and `maxScripts` bounding the payload; the
+  report says which path ran. Three details that were wrong once and are now tested: kit
+  asset paths legitimately contain spaces (`kenney_fetched/2d/Flag Pack/AD.png`), so
+  extraction is context-aware — a *string* property value is the whole URI, a serialised or
+  script value is matched quoted, and only free text falls back to whitespace delimiting;
+  a reference behind a `--` comment is tagged `comment: true` and listed but never counted
+  as a finding; and two line-tagged hits are two references, not one, so a script that
+  requires the same asset on three lines reports a count of three places to fix.
+  **The kit publishes no Roblox cloud ids** — all 3,800 `asset-lock.json` entries carry
+  `cloudUri: null`, and `registry.json`'s `sourceId` is fetch provenance, not an asset id —
+  so `rbxassetid://` references are listed but *not* judged: the report carries
+  `manifestTracksCloudIds: false` and a `note` saying so rather than inventing thousands of
+  false positives.
+- **`run_testez_suite`** (`readOnlyHint: false`, **confirm-gated**) — the kit ships
+  TestEZ-style `tests/*.spec.lua` and nothing ran them. This composes primitives that
+  already exist instead of adding a Studio capability: build a scratch container
+  (`ServerStorage.ArenaTestSuites` by default) holding one ModuleScript per spec plus a
+  runner, hand the runner to `run_studio_tests` — the `StudioTestService` path, so the
+  session is reported and its injected runner torn down by that machinery — then delete the
+  container, whether the suite passed, failed or threw. The place is left exactly as it was
+  found unless `keepContainer` is set (for follow-up `execute_luau`), and the report says
+  what it installed, what it removed, and `maxSpecs` as applied. `maxSpecs` clamps toward
+  the *stricter* bound: `0` means 1, never the 50-spec default, and the cap slices the list
+  before batching so it bounds how many scripts are read rather than just how many batches
+  run.
+- **`roblox-bridge/testez_runner.py`** — the Luau that gets installed, and the reason the
+  tool can be honest about what ran. TestEZ is nowhere in this repository, so the runner
+  looks for the place's own copy first (`testezPath`, then a `TestEZ` ModuleScript under
+  `ReplicatedStorage`/`ServerStorage`, then `Packages/TestEZ`) and otherwise falls back to a
+  bundled shim covering the subset the kit actually uses: `describe`/`it`/`itFOCUS`/`itSKIP`/
+  `fit`/`expect`/`beforeEach`/`afterEach`/`FOCUS`/`SKIP` with `equal`, `ok()`, `truthy()`,
+  `near(expected, tolerance)`, `greater`, `less`, `throw([message])` and a `never` chain.
+  `runner` in the report always names which one ran — **a green run under the shim is not a
+  green run under TestEZ** and the report refuses to let the two be confused.
+  `scan_spec_dsl` cross-checks a spec's source against `SUPPORTED_DSL`/`SUPPORTED_MATCHERS`
+  and the tool reports `shimGaps`: a spec using a construct the shim lacks would otherwise
+  have its assertions skipped and still report green. That gate found a real gap while being
+  written — `modules/tests/FeatureFlags.spec.lua` asserts with `.to.throw()`, which the shim
+  did not implement — and all five specs in the repository are now covered.
+- **`roblox-bridge/asset_reference_audit.py`** — the pure half of `audit_asset_references`
+  (`load_kit_manifest`, `collect_references`, `audit_asset_reference_report`), following the
+  `scene_auditor.py` + `audit_3d_scene` precedent: live fetch in the helper, judgement in a
+  module that takes plain data, so the logic is testable without a peer.
+- **Neither audit is in `INSPECTOR_MIXED_TOOLS`, and that is deliberate.** That set exists
+  for tools annotated as writers that nevertheless have read-only *modes*, which a read-only
+  Inspector token may use. The two audits are annotated `readOnlyHint: true` and are visible
+  without it; `run_testez_suite` has no read-only mode at all, so listing it would hand a
+  read-only token a write. `test_a_read_only_inspector_token_sees_the_audits_and_not_the_suite_runner`
+  asserts both halves.
+- **What CI proves and what it does not.** 33 tests cover the report functions against the
+  real kit (4,320 registry rows, 3,800 lock entries, 3,800 `Assets.lua` URIs, 16 sampled
+  hashes), 17 sabotage mutations of a synthetic four-asset kit each asserted against the
+  counter it must move, the offline and live reference paths against the mock peer, the
+  install/run/cleanup plumbing, every refusal, and the runner source through the
+  repository's own `luau-compile`/`luau-analyze` (syntax clean, zero undefined globals,
+  zero unused locals). **Nothing here executes Luau**, so per-spec results under
+  `run_testez_suite` — and any use of these tools against a live place — remain
+  operator-verify.
+
 ### Removed (P2 — NightLoop)
 - **`nightloop/` is gone**, with its in-repo copies and every reference: 125
   tracked files, −37,441 lines. That is the reference horror-survival experience

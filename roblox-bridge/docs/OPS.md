@@ -475,7 +475,7 @@ Override with `--state-dir` or `BRIDGE_STATE_DIR`.
 ## 9. Tests
 
 ```bash
-python3 -B roblox-bridge/test_bridge_mcp.py          # 170 tests
+python3 -B roblox-bridge/test_bridge_mcp.py          # 203 tests
 bash roblox-bridge/tools/check_globals.sh roblox-bridge   # undefined Luau globals
 python3 -B tools/verify_licences.py                  # kit asset licence manifest
 python3 roblox-bridge/image_pipeline.py --check      # committed asset manifest
@@ -596,6 +596,47 @@ peer stops heart-beating (20 s grace), so expect a ~30 s window.
 | `verdict: pass`, job `queued` then `done` | reaper requeued the orphan and Studio picked it up on reconnect |
 | `verdict: pass`, `reaped delta > 0` | job was reaped by the timeout/requeue path |
 | `verdict: fail` | the job stayed `running`; check the bridge log for `job.requeued_orphan` events |
+
+### 10.3 Kit audits and TestEZ specs (P5-M1, operator-verify)
+
+Three tools landed in v6.1.0 whose *live* halves this repository cannot exercise: the two
+audits are testable offline and are covered in `test_bridge_mcp.py`, but
+`run_testez_suite` only means something against a real Studio, and nothing here executes
+Luau. Run these once against a live peer and record what you saw.
+
+```bash
+BRIDGE=http://127.0.0.1:8077          # or your tunnel URL
+call() { curl -sS -X POST "$BRIDGE/mcp" -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}"; }
+
+# 1. Is the kit self-consistent? Read-only, no peer needed, ~1 s (add verifyHashes for ~2 s).
+call audit_kit_integrity '{"verifyHashes":true}'
+#    Expect "ok": true, checked.registryRows 4320, lockEntries 3800, assetsLuaUris 3800,
+#    manifestChecked true, every *Total 0. Any non-zero total names what to fix.
+
+# 2. Does the open place point at assets the kit no longer ships? Needs a peer.
+call audit_asset_references '{"path":"game","maxScripts":200}'
+#    Expect missingKitAssets [] for a place built from the kit. Each finding carries
+#    "where" (Path.Property or Path:line) so you can go straight to it.
+
+# 3. Do the kit's own specs pass? Confirm-gated: with --require-confirm the call returns a
+#    pending requestId first, and you approve it (see 13.1).
+call run_testez_suite '{"testsDir":"roblox-kit/systems/liveops/leaderboard/tests"}'
+call run_testez_suite '{"testsDir":"roblox-kit/modules/tests","keepContainer":true}'
+```
+
+| Field | What it tells you |
+|---|---|
+| `installed`, `specs` | how many `*.spec.lua` were copied into the scratch container |
+| `session.suites`, `passed`, `failed` | the `StudioTestService` result — the actual verdict |
+| `runner` | **`bundled-shim` means your place has no TestEZ**, so the run used the subset shim. A green run under the shim is not a green run under TestEZ. Install TestEZ (or pass `testezPath`) and re-run for an authoritative result |
+| `shimGaps` | specs using TestEZ features the shim lacks; those assertions would never run, so a green report would mean nothing |
+| `containerRemoved` | `true` normally. Anything else names a Folder to delete yourself |
+
+Afterwards `ServerStorage.ArenaTestSuites` must be gone (unless you passed
+`keepContainer`), and `git status --porcelain roblox-kit/` must still be empty — the tool
+writes into the place, never into the repository.
 
 ## 11. Latency budget (G2)
 

@@ -27,6 +27,7 @@ Tests:
   8. CLI (`arena_studio.py`) end-to-end execution including UTF-8 non-ASCII characters (`—`, `·`)
 """
 
+import hashlib
 import json
 import os
 import re
@@ -57,7 +58,10 @@ def record_tool_metric(name: str, elapsed: float, passed: bool = True):
 
 sys.path.insert(0, str(HERE))
 
-from mcp_core import BridgeClient, TOOL_SPECS, execute_tool, fnv1a_32, fnv1a_hex, run_luau_check  # noqa: E402
+from mcp_core import (  # noqa: E402
+    BridgeClient, MCPDispatcher, TOOL_SPECS, UnsafePathError,
+    audit_kit_integrity_report, execute_tool, fnv1a_32, fnv1a_hex, run_luau_check,
+)
 from mock_studio import run_mock_loop  # noqa: E402
 from scene_auditor import audit_3d_hierarchy  # noqa: E402
 from ui_linter import audit_tree_on_viewport, run_multi_viewport_audit  # noqa: E402
@@ -3341,6 +3345,31 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         scene_fixed = self.call_tool("audit_3d_scene", {"path": "Workspace", "autoFixUnanchored": True, "snapFloating": True})
         self.assertEqual(scene_fixed["errorCount"], 0)
         self.assertGreaterEqual(scene_fixed["autoFixedUnanchored"], 1)
+
+        # P5-M1's three tools, called by name through the instrumented HTTP path: `self_test`
+        # builds its coverage matrix from `call_tool("...")` literals plus recorded metrics,
+        # so a tool exercised only by its own test class counts as untested.
+        kit_audit = self.call_tool("audit_kit_integrity", {})
+        self.assertTrue(kit_audit["ok"], json.dumps(kit_audit["errors"])[:400])
+        self.assertEqual(kit_audit["checked"]["registryRows"], 4320)
+        self.assertEqual(kit_audit["lockDriftTotal"], 0)
+
+        ref_audit = self.call_tool("audit_asset_references", {"path": "Workspace"})
+        self.assertEqual(ref_audit["errors"], [])
+        self.assertTrue(ref_audit["scanned"]["liveTree"])
+        self.assertTrue(ref_audit["scanned"]["liveScripts"])
+        self.assertEqual(ref_audit["scanned"]["root"], "Workspace")
+
+        suite = self.call_tool("run_testez_suite", {
+            "testsDir": "roblox-kit/systems/mechanics/checkpoint-respawn/tests"})
+        self.assertEqual(suite["installed"], 1)
+        self.assertEqual(suite["specs"], ["CheckpointOrder"])
+        self.assertTrue(suite["ok"], json.dumps(suite["session"])[:400])
+        self.assertTrue(suite["containerRemoved"])
+        self.assertEqual(suite["shimGapsTotal"], 0)
+        # It writes into the place and then undoes it: nothing may be left behind.
+        storage = self.call_tool("inspect_instance", {"path": "ServerStorage", "depth": 1})
+        self.assertNotIn("ArenaTestSuites", json.dumps(storage.get("children", [])))
 
         # Full .rbxlx Place XML export + re-import round-trip
         with tempfile.TemporaryDirectory() as rbxlx_tmp:
@@ -6913,6 +6942,761 @@ def _diff_lines(before, after):
 # operator-script `--help` subprocesses in TestV61OperatorScriptSmoke. `--unit` runs only
 # the others, for iterating on pure helpers. A new HTTP class that is not listed here only
 # makes --unit slower - it cannot make a run wrong, and CI always runs everything.
+def _write_synthetic_kit(owner: Path) -> Path:
+    """A four-asset kit carrying all four self-descriptions, at `owner/roblox-kit`.
+
+    `audit_kit_integrity_report` resolves registry rows against `kit.parent`, so the
+    synthetic kit has to sit one level down exactly like the real one does. Deliberately
+    tiny: the point of these cases is which counter a mutation moves, not scale.
+    """
+    kit = owner / "roblox-kit"
+    bodies = {
+        "assets/images/a.png": b"synthetic-png-a",
+        "assets/images/sky/b.png": b"synthetic-png-b",
+        "assets/audio/c.wav": b"synthetic-wav-c",
+        "models/d.glb": b"synthetic-glb-d",
+    }
+    kinds = {"a.png": "image", "b.png": "sky", "c.wav": "audio", "d.glb": "model"}
+    rows = []
+    for rel, body in bodies.items():
+        target = kit / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+        rows.append({
+            "path": f"roblox-kit/{rel}",
+            "name": Path(rel).stem,
+            "assetType": kinds[Path(rel).name],
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "bytes": len(body),
+            "license": "CC0",
+            "provenance": "synthetic-test-kit",
+            "category": "test",
+            "thumbnail": None,
+        })
+    (kit / "assets").mkdir(parents=True, exist_ok=True)
+    (kit / "assets" / "registry.json").write_text(
+        json.dumps({"schemaVersion": 1, "assets": rows}, indent=2), encoding="utf-8")
+
+    lock = {"version": 1, "images": {}, "audio": {}}
+    for rel, body in bodies.items():
+        if rel.startswith("assets/images/"):
+            bucket, rel_path, prefix = "images", rel[len("assets/images/"):], "rbxasset://arena_assets/"
+        elif rel.startswith("assets/audio/"):
+            bucket, rel_path, prefix = "audio", rel[len("assets/audio/"):], "rbxasset://arena_assets/audio/"
+        else:
+            continue  # models are not lock entries in the real kit either
+        key = Path(rel).stem
+        lock[bucket][key] = {
+            "key": key, "relPath": rel_path, "bytes": len(body),
+            "sha256": hashlib.sha256(body).hexdigest()[:16],
+            "localUri": prefix + rel_path, "cloudUri": None,
+        }
+    (kit / "assets" / "asset-lock.json").write_text(json.dumps(lock, indent=2), encoding="utf-8")
+
+    lua = ["local Assets = {}", ""]
+    for section in ("Images", "Audio"):
+        lua.append(f"Assets.{section} = {{")
+        for key, entry in lock[section.lower()].items():
+            lua.append(f'\t{key} = "{entry["localUri"]}",')
+        lua.append("}")
+    lua.append("Assets.Meta = {")
+    for key, entry in lock["images"].items():
+        lua.append(f'\t{key} = {{ relPath = "{entry["relPath"]}" }},')
+    lua.append("}")
+    lua.append("return Assets")
+    (kit / "modules").mkdir(parents=True, exist_ok=True)
+    (kit / "modules" / "Assets.lua").write_text("\n".join(lua) + "\n", encoding="utf-8")
+    return kit
+
+
+def _read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+class TestV61KitIntegrityAuditTool(unittest.TestCase):
+    """P5-M1 — `audit_kit_integrity`, and the report function behind it.
+
+    The kit describes itself four times over (registry.json, the files on disk,
+    asset-lock.json, modules/Assets.lua) and P3-T6 added a test that the four agree. This
+    puts the *same function* behind an agent-facing tool, so an agent asking "is the kit
+    intact?" and `make ci` asking it cannot drift apart: one implementation, two callers.
+
+    Every sabotage case below is asserted against the counter it must move, because a
+    cross-check that returns `ok: false` for the wrong reason is not a cross-check.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        # Read-only and offline: no peer, no Studio, no writes.
+        cls.report = audit_kit_integrity_report()
+
+    def test_the_real_kit_reports_clean(self):
+        r = self.report
+        self.assertTrue(r["ok"], json.dumps({"errors": r["errors"], "rowProblems": r["rowProblems"],
+                                             "lockDrift": r["lockDrift"],
+                                             "assetsLuaDrift": r["assetsLuaDrift"],
+                                             "missingFromDisk": r["missingFromDisk"],
+                                             "unregisteredOnDisk": r["unregisteredOnDisk"]})[:900])
+        self.assertEqual(r["errors"], [])
+        for key in ("missingFromDiskTotal", "unregisteredOnDiskTotal", "rowProblemsTotal",
+                    "lockDriftTotal", "assetsLuaDriftTotal", "manifestDriftTotal",
+                    "hashMismatchesTotal"):
+            self.assertEqual(r[key], 0, key)
+        self.assertTrue(r["manifestChecked"])
+        self.assertEqual(r["checked"]["registryRows"], 4320)
+        self.assertEqual(r["checked"]["assetFilesOnDisk"], 4320)
+        self.assertEqual(r["checked"]["lockEntries"], 3800)
+        self.assertEqual(r["checked"]["assetsLuaUris"], 3800)
+        self.assertEqual(r["checked"]["manifestCount"], 3755)
+        self.assertEqual(r["checked"]["manifestAudioCount"], 45)
+        # Same goldens as TestV61KitIntegrity, reached through the tool's own function.
+        self.assertEqual({k: r["counts"][k] for k in ("image", "model", "sky", "audio")},
+                         {"image": 3705, "model": 520, "sky": 50, "audio": 45})
+
+    def test_the_sampled_hash_leg_actually_hashes(self):
+        # Off by default, so this is the only test that the hashing branch runs at all.
+        # `import hashlib` was once missing from mcp_core and the clean run still passed.
+        r = audit_kit_integrity_report(verify_hashes=True)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["checked"]["hashesChecked"], 16)   # 4 picks x 4 assetTypes
+        self.assertEqual(r["hashMismatchesTotal"], 0)
+
+    def test_tool_surface_matches_the_function(self):
+        via_tool = execute_tool(None, "audit_kit_integrity", {"limit": 3})
+        self.assertTrue(via_tool["ok"])
+        self.assertEqual(via_tool["checked"]["registryRows"], self.report["checked"]["registryRows"])
+        self.assertEqual(via_tool["checked"]["lockEntries"], self.report["checked"]["lockEntries"])
+        # A limit clips the *lists*, never the totals: a caller must not read a short list
+        # as "few findings".
+        self.assertEqual(via_tool["missingFromDiskTotal"], self.report["missingFromDiskTotal"])
+
+    def test_hostile_kit_roots_are_refused(self):
+        for bad in ("/etc", "../../etc", "~", "roblox-kit/../../.."):
+            with self.subTest(kitRoot=bad):
+                with self.assertRaises(UnsafePathError):
+                    execute_tool(None, "audit_kit_integrity", {"kitRoot": bad})
+
+    def test_a_kit_root_outside_the_default_skips_only_the_manifest_leg(self):
+        tmp = Path(tempfile.mkdtemp(prefix="arena-kit-self-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        kit = _write_synthetic_kit(tmp)
+        r = audit_kit_integrity_report(kit_root=str(kit))
+        self.assertTrue(r["ok"], json.dumps(r["errors"]) + json.dumps(r["lockDrift"])[:400])
+        # The manifest check always reads the repository's own kit, so for any other root it
+        # must say it was skipped - not silently report manifestChecked false, which would
+        # read as a failure, and not quietly run against the wrong directory.
+        self.assertFalse(r["manifestChecked"])
+        self.assertIn("skipped", r["checked"]["manifest"])
+        self.assertEqual(r["checked"]["registryRows"], 4)
+        self.assertEqual(r["counts"]["image"], 1)
+
+    def test_sabotaged_kits_fire_the_counter_they_should(self):
+        def mutate_deleted_file(kit):
+            (kit / "assets" / "images" / "a.png").unlink()
+            return "missingFromDiskTotal"
+
+        def mutate_stray_file(kit):
+            (kit / "assets" / "images" / "stray.png").write_bytes(b"not registered")
+            return "unregisteredOnDiskTotal"
+
+        def mutate_lock_bytes(kit):
+            lock = _read_json(kit / "assets" / "asset-lock.json")
+            lock["images"]["a"]["bytes"] += 1
+            (kit / "assets" / "asset-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+            return "lockDriftTotal"
+
+        def mutate_lock_sha(kit):
+            lock = _read_json(kit / "assets" / "asset-lock.json")
+            lock["images"]["a"]["sha256"] = "0" * 16
+            (kit / "assets" / "asset-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+            return "lockDriftTotal"
+
+        def mutate_lock_uri(kit):
+            lock = _read_json(kit / "assets" / "asset-lock.json")
+            lock["images"]["a"]["localUri"] = "rbxasset://arena_assets/wrong/a.png"
+            (kit / "assets" / "asset-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+            return "lockDriftTotal"
+
+        def mutate_lock_orphan(kit):
+            lock = _read_json(kit / "assets" / "asset-lock.json")
+            lock["images"]["ghost"] = dict(lock["images"]["a"], key="ghost", relPath="ghost.png")
+            (kit / "assets" / "asset-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+            return "lockDriftTotal"
+
+        def mutate_lock_count(kit):
+            lock = _read_json(kit / "assets" / "asset-lock.json")
+            del lock["audio"]["c"]
+            (kit / "assets" / "asset-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+            return "lockDriftTotal"
+
+        def mutate_lock_duplicate_relpath(kit):
+            lock = _read_json(kit / "assets" / "asset-lock.json")
+            lock["images"]["aCopy"] = dict(lock["images"]["a"], key="aCopy")
+            (kit / "assets" / "asset-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+            return "lockDriftTotal"
+
+        def mutate_registry_missing_field(kit):
+            reg = _read_json(kit / "assets" / "registry.json")
+            del reg["assets"][0]["license"]
+            (kit / "assets" / "registry.json").write_text(json.dumps(reg), encoding="utf-8")
+            return "rowProblemsTotal"
+
+        def mutate_registry_short_sha(kit):
+            reg = _read_json(kit / "assets" / "registry.json")
+            reg["assets"][0]["sha256"] = "abc123"
+            (kit / "assets" / "registry.json").write_text(json.dumps(reg), encoding="utf-8")
+            return "rowProblemsTotal"
+
+        def mutate_registry_duplicate_row(kit):
+            reg = _read_json(kit / "assets" / "registry.json")
+            reg["assets"].append(dict(reg["assets"][0]))
+            (kit / "assets" / "registry.json").write_text(json.dumps(reg), encoding="utf-8")
+            return "rowProblemsTotal"
+
+        def mutate_lua_dropped_uri(kit):
+            lua = (kit / "modules" / "Assets.lua").read_text(encoding="utf-8")
+            (kit / "modules" / "Assets.lua").write_text(
+                lua.replace('\ta = "rbxasset://arena_assets/a.png",\n', ""), encoding="utf-8")
+            return "assetsLuaDriftTotal"
+
+        def mutate_lua_invented_uri(kit):
+            lua = (kit / "modules" / "Assets.lua").read_text(encoding="utf-8")
+            (kit / "modules" / "Assets.lua").write_text(
+                lua.replace("Assets.Meta = {",
+                            'Assets.Meta = {\n\tghost = "rbxasset://arena_assets/ghost.png",'),
+                encoding="utf-8")
+            return "assetsLuaDriftTotal"
+
+        def mutate_lua_lost_section(kit):
+            lua = (kit / "modules" / "Assets.lua").read_text(encoding="utf-8")
+            (kit / "modules" / "Assets.lua").write_text(lua.replace("Assets.Meta = {", "Meta = {"),
+                                                        encoding="utf-8")
+            return "assetsLuaDriftTotal"
+
+        def mutate_tampered_content(kit):
+            (kit / "assets" / "images" / "a.png").write_bytes(b"same size, different bytes!")
+            return "hashMismatchesTotal"
+
+        def mutate_unreadable_registry(kit):
+            (kit / "assets" / "registry.json").write_text("{ not json", encoding="utf-8")
+            return "errors"
+
+        def mutate_missing_modules(kit):
+            shutil.rmtree(kit / "modules")
+            return "errors"
+
+        cases = [
+            mutate_deleted_file, mutate_stray_file, mutate_lock_bytes, mutate_lock_sha,
+            mutate_lock_uri, mutate_lock_orphan, mutate_lock_count,
+            mutate_lock_duplicate_relpath, mutate_registry_missing_field,
+            mutate_registry_short_sha, mutate_registry_duplicate_row, mutate_lua_dropped_uri,
+            mutate_lua_invented_uri, mutate_lua_lost_section, mutate_tampered_content,
+            mutate_unreadable_registry, mutate_missing_modules,
+        ]
+        for case in cases:
+            tmp = Path(tempfile.mkdtemp(prefix="arena-kit-sabotage-"))
+            self.addCleanup(shutil.rmtree, tmp, True)
+            kit = _write_synthetic_kit(tmp)
+            counter = case(kit)
+            with self.subTest(sabotage=case.__name__):
+                r = audit_kit_integrity_report(kit_root=str(kit), verify_hashes=True)
+                self.assertFalse(r["ok"], f"{case.__name__} reported a clean kit")
+                # `errors` is a list of strings, everything else a Total counter.
+                value = r[counter] if counter != "errors" else len(r[counter])
+                self.assertGreater(value, 0, f"{case.__name__} left {counter} empty")
+
+    def test_a_kit_root_that_is_not_a_directory_is_an_error_not_a_crash(self):
+        tmp = Path(tempfile.mkdtemp(prefix="arena-kit-notdir-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        r = audit_kit_integrity_report(kit_root=str(tmp / "nope"))
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("not a directory" in e for e in r["errors"]), r["errors"])
+
+    def test_limit_clips_the_lists_but_never_the_totals(self):
+        tmp = Path(tempfile.mkdtemp(prefix="arena-kit-limit-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        kit = _write_synthetic_kit(tmp)
+        for rel in ("x1.png", "x2.png", "x3.png"):
+            (kit / "assets" / "images" / rel).write_bytes(b"stray")
+        clipped = audit_kit_integrity_report(kit_root=str(kit), limit=1)
+        full = audit_kit_integrity_report(kit_root=str(kit), limit=100)
+        self.assertEqual(len(clipped["unregisteredOnDisk"]), 1)
+        self.assertEqual(clipped["unregisteredOnDiskTotal"], 3)
+        self.assertEqual(full["unregisteredOnDiskTotal"], 3)
+        self.assertEqual(len(full["unregisteredOnDisk"]), 3)
+
+
+class TestV61AssetReferences(unittest.TestCase):
+    """P5-M1 — `audit_asset_references`: what a place points at versus what the kit ships.
+
+    The kit's 3,800 lock entries all carry `cloudUri: null`, so the kit publishes *no*
+    Roblox cloud ids and `rbxassetid://` references cannot be resolved against it. Judging
+    them anyway would be thousands of false positives, so the report carries
+    `manifestTracksCloudIds` and says so in `note` instead of inventing findings.
+    """
+
+    TREE = {
+        "name": "Workspace", "className": "Workspace", "path": "Workspace",
+        "properties": {"Texture": "rbxasset://arena_assets/kenney_fetched/2d/Flag Pack/AD.png"},
+        "attributes": {"IconUri": "rbxasset://arena_assets/deleted_from_kit.png"},
+        "children": [{
+            "name": "Decal", "className": "Decal", "path": "Workspace.Decal",
+            "structuredProperties": {"Texture": {"__t": "Content",
+                                                 "v": "rbxasset://arena_assets/nope.png"}},
+            "children": [],
+        }],
+    }
+    SCRIPTS = [{
+        "path": "ServerScriptService.Loader",
+        "source": (
+            'local Assets = require(game.ReplicatedStorage.Shared.Assets)\n'
+            '-- local old = "rbxasset://arena_assets/deleted_from_kit.png"\n'
+            'local flag = "rbxasset://arena_assets/kenney_fetched/2d/Flag Pack/AD.png"\n'
+            'local again = "rbxasset://arena_assets/kenney_fetched/2d/Flag Pack/AD.png"\n'
+            'local third = "rbxasset://arena_assets/kenney_fetched/2d/Flag Pack/AD.png"\n'
+            'local cloud = "rbxassetid://777"\n'
+            'return {flag, again, third, cloud}\n'
+        ),
+    }]
+
+    def report(self, **kw):
+        from asset_reference_audit import audit_asset_reference_report
+        return audit_asset_reference_report(tree=self.TREE, scripts=self.SCRIPTS, **kw)
+
+    def test_missing_kit_assets_are_found_in_properties_and_scripts(self):
+        r = self.report()
+        self.assertFalse(r["ok"])
+        self.assertEqual(sorted(m["uri"] for m in r["missingKitAssets"]),
+                         ["rbxasset://arena_assets/deleted_from_kit.png",
+                          "rbxasset://arena_assets/nope.png"])
+        self.assertEqual(r["missingKitAssetsTotal"], 2)
+        # A URI whose path contains spaces is one reference, not three truncated ones. This
+        # was a real false positive: kit paths legitimately contain spaces, and a
+        # whitespace-delimited scan reported "kenney_fetched/2d/Flag" as a missing asset.
+        self.assertEqual({d["value"] for d in r["duplicateReferences"]},
+                         {"kenney_fetched/2d/Flag Pack/AD.png"})
+        for missing in r["missingKitAssets"]:
+            self.assertNotIn("Flag", missing["uri"])
+
+    def test_a_reference_repeated_three_times_is_one_duplicate_finding(self):
+        r = self.report()
+        dupes = {d["value"]: d for d in r["duplicateReferences"]}
+        self.assertEqual(r["duplicateReferencesTotal"], len(r["duplicateReferences"]))
+        dupe = dupes["kenney_fetched/2d/Flag Pack/AD.png"]
+        # One property plus three script lines. Collapsing the three lines into one - which
+        # the dedup used to do, because its key ignored line numbers - reported count 2 and
+        # hid two of the three places an agent would have to edit.
+        self.assertEqual(dupe["count"], 4)
+        self.assertEqual(dupe["where"], ["Workspace.Texture",
+                                         "ServerScriptService.Loader:3",
+                                         "ServerScriptService.Loader:4",
+                                         "ServerScriptService.Loader:5"])
+
+    def test_a_commented_out_reference_is_tagged_and_never_a_finding(self):
+        r = self.report()
+        self.assertEqual(r["scanned"]["commentedReferences"], 1)
+        self.assertEqual(len(r["commentedReferences"]), 1)
+        tagged = r["commentedReferences"][0]
+        self.assertEqual(tagged["line"], 2)
+        self.assertEqual(tagged["value"], "deleted_from_kit.png")
+        # `deleted_from_kit.png` is missing from the kit, but only the *live* attribute
+        # reference to it may be reported; the comment must not add a second location.
+        live = [m for m in r["missingKitAssets"] if m["uri"].endswith("deleted_from_kit.png")]
+        self.assertEqual(len(live), 1)
+        self.assertEqual(r["scanned"]["commentedReferences"], 1)
+
+    def test_cloud_ids_are_reported_but_not_judged_because_the_kit_tracks_none(self):
+        r = self.report()
+        self.assertFalse(r["manifestTracksCloudIds"])
+        self.assertEqual(r["cloudIdsTotal"], 1)
+        self.assertEqual(r["cloudIds"][0]["id"], "777")
+        self.assertEqual(r["unknownCloudIdsTotal"], 0)
+        self.assertEqual(r["conflictingIdsTotal"], 0)
+        self.assertIn("cloudUri", r.get("note", ""))
+
+    def test_the_kit_manifest_leg_reads_the_real_lock(self):
+        from asset_reference_audit import load_kit_manifest
+        manifest = load_kit_manifest()
+        self.assertEqual(manifest["errors"], [])
+        self.assertEqual(len(manifest["kitUris"]), 3800)
+        self.assertEqual(manifest["cloudIds"], set())
+        self.assertFalse(manifest["manifestTracksCloudIds"])
+        # The URI whose path has spaces must be in the manifest verbatim.
+        self.assertIn("kenney_fetched/2d/Flag Pack/AD.png", manifest["kitUris"])
+
+    def test_collect_references_covers_properties_structured_attributes_and_sources(self):
+        from asset_reference_audit import collect_references
+        refs = collect_references(self.TREE, self.SCRIPTS)
+        origins = sorted({ref["origin"] for ref in refs})
+        self.assertEqual(origins, ["attributes", "properties", "script", "structuredProperties"])
+        kinds = sorted({ref["kind"] for ref in refs})
+        self.assertEqual(kinds, ["cloud", "kit"])
+        # Every reference carries enough context to be actionable.
+        for ref in refs:
+            self.assertTrue(ref["where"], ref)
+            self.assertIn("comment", ref)
+
+    def test_limit_clips_lists_not_totals(self):
+        r = self.report(limit=1)
+        self.assertLessEqual(len(r["missingKitAssets"]), 1)
+        self.assertEqual(r["missingKitAssetsTotal"], 2)
+
+    def test_tool_surface_runs_offline_from_supplied_tree_and_scripts(self):
+        r = execute_tool(None, "audit_asset_references", {"tree": self.TREE, "scripts": self.SCRIPTS})
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["missingKitAssetsTotal"], 2)
+        self.assertFalse(r["scanned"]["liveTree"])
+        self.assertFalse(r["scanned"]["liveScripts"])
+        self.assertIsNone(r["scanned"]["root"])
+
+    def test_a_clean_place_reports_ok(self):
+        tree = {"name": "Workspace", "className": "Workspace", "path": "Workspace",
+                "properties": {"Texture": "rbxasset://arena_assets/kenney_fetched/2d/Flag Pack/AD.png"},
+                "children": []}
+        from asset_reference_audit import audit_asset_reference_report
+        r = audit_asset_reference_report(tree=tree, scripts=[])
+        self.assertTrue(r["ok"], json.dumps(r["missingKitAssets"]) + json.dumps(r["errors"]))
+        self.assertEqual(r["missingKitAssetsTotal"], 0)
+
+
+class TestV61RunTestezSuite(unittest.TestCase):
+    """P5-M1 — `run_testez_suite`: run a local `tests/` directory inside Studio.
+
+    The repo ships TestEZ-style `*.spec.lua` files and no TestEZ at all, so nothing ever
+    executed them. This composes primitives that already exist — build a scratch container,
+    hand the runner to `run_studio_tests` (the StudioTestService path, so the session is
+    reported and torn down by that machinery), delete the container — rather than adding a
+    Studio capability.
+
+    What CI can and cannot prove here is stated plainly: the runner source is checked with
+    the repository's own Luau toolchain, the install/run/cleanup plumbing is exercised
+    against the mock peer, and the shim's DSL coverage is cross-checked against the specs by
+    text. Nothing here executes Luau, so per-spec results stay operator-verify.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = _free_port()
+        cls.token = "testez-suite-secret"
+        cls.base_url = f"http://127.0.0.1:{cls.port}"
+        cls.state_dir = tempfile.mkdtemp(prefix="arena-v61-testez-")
+        cls.httpd, cls.state = create_http_server(
+            host="127.0.0.1", port=cls.port, token=cls.token, state_dir=cls.state_dir)
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.stop_mock = threading.Event()
+        cls.mock_thread = threading.Thread(
+            target=run_mock_loop, args=(cls.base_url, cls.token, cls.stop_mock), daemon=True)
+        cls.mock_thread.start()
+        for _ in range(80):
+            if cls.state.direct_dispatch("health", {})["studio_connected"]:
+                break
+            threading.Event().wait(0.05)
+        cls.client = BridgeClient(base_url=cls.base_url, token=cls.token)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.stop_mock.set()
+        cls.state._reaper_stop.set()
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        shutil.rmtree(cls.state_dir, ignore_errors=True)
+
+    def tool(self, name: str, args: dict) -> dict:
+        return execute_tool(self.client, name, args)
+
+    def children_of(self, path: str) -> list:
+        job = self.client.submit_job("inspect", {"path": path, "depth": 1}, wait=25.0, dm="edit")
+        payload = job.get("result", job)
+        return [c.get("name") for c in (payload.get("children") or [])]
+
+    def test_the_throw_matcher_branches_are_the_documented_truth_table(self):
+        """Pin `.to.throw()` semantics, the one matcher that is easy to invert.
+
+        CI has no Luau runtime, so this cannot run the shim: it transliterates the branch
+        structure and then asserts the source still has that structure, so editing the Luau
+        without re-deriving the table fails here. `expect(f).never.to.throw("x")` means
+        "does not throw *that* error", so the message participates in both directions.
+        """
+        from testez_runner import RUNNER_SOURCE
+
+        def fails(negated: bool, threw: bool, err, wanted) -> bool:
+            matched = threw and (wanted is None or wanted in str(err))
+            return matched if negated else not matched
+
+        cases = [
+            (False, True,  "server-only",   None,     False),  # threw, as asked
+            (False, False, None,            None,     True),   # returned, expected a throw
+            (False, True,  "server-only",   "server", False),  # message matches
+            (False, True,  "other problem", "server", True),   # threw something else
+            (False, False, None,            "server", True),   # nothing thrown at all
+            (True,  False, None,            None,     False),  # never.throw, returned
+            (True,  True,  "server-only",   None,     True),   # never.throw, but threw
+            (True,  True,  "other problem", "server", False),  # threw, not that message
+            (True,  True,  "server-only",   "server", True),   # threw exactly that
+            (True,  False, None,            "server", False),  # nothing thrown
+        ]
+        for negated, threw, err, wanted, must_fail in cases:
+            with self.subTest(negated=negated, threw=threw, wanted=wanted):
+                self.assertEqual(fails(negated, threw, err, wanted), must_fail)
+        # The coupling: if these lines change, the table above has to be re-derived.
+        for fragment in ("local matched = threw and (wanted == nil or string.find(tostring(err), wanted, 1, true) ~= nil)",
+                         "if state.negated then\n\t\t\tif matched then",
+                         "elseif not matched then"):
+            self.assertIn(fragment, RUNNER_SOURCE, fragment[:60])
+
+    def test_the_runner_source_passes_the_repository_luau_toolchain(self):
+        from testez_runner import render_runner_source
+        res = run_luau_check(code=render_runner_source())["results"][0]
+        if not res["toolchainAvailable"]:
+            self.skipTest("no Luau toolchain on this host")
+        self.assertTrue(res["syntaxOk"], res["compileErrors"])
+        self.assertEqual(res["undefinedGlobals"], [])
+        self.assertEqual(res["unusedVariables"], [])
+
+    def test_the_bundled_shim_covers_every_construct_the_kit_specs_use(self):
+        # The shim is a subset of TestEZ on purpose. The gate is that the subset covers what
+        # the repo actually ships: a spec using something else must fail here, not run under
+        # a shim that cannot execute it. Every `*.spec.lua` in the repository is in scope -
+        # `roblox-kit/modules/tests/` as well as the systems' `tests/` directories - because
+        # narrowing the glob is how `FeatureFlags.spec.lua`'s `.to.throw()` was missed once.
+        from testez_runner import scan_spec_dsl
+        specs = sorted(HERE.parent.rglob("*.spec.lua"))
+        self.assertEqual(len(specs), 5, [s.name for s in specs])
+        for spec in specs:
+            with self.subTest(spec=str(spec.relative_to(HERE.parent))):
+                scan = scan_spec_dsl(spec.read_text(encoding="utf-8"))
+                self.assertEqual(scan["unsupportedDsl"], [])
+                self.assertEqual(scan["unsupportedMatchers"], [])
+                self.assertIn("describe", scan["dsl"])
+                self.assertIn("expect", scan["dsl"])
+
+    def test_scan_spec_dsl_reports_gaps_and_does_not_invent_them(self):
+        from testez_runner import scan_spec_dsl
+        cases = [
+            ('beforeAll(function() end)', ["beforeAll"], []),
+            ('expect(1).to.be.a("number")', [], ["a"]),
+            ('expect(x).never.to.be.ok()', [], []),
+            # A matcher's *arguments* are field accesses, not matchers. Greedy scanning here
+            # once reported SCHEMA/MusicVolume/default as three unsupported matchers.
+            ('expect(out.MusicVolume).to.equal(CFG.SCHEMA.MusicVolume.default)', [], []),
+            ('local t = { describe = 1 } print(t.describe)', [], []),
+            ('expect(a).to.be.near(1.5, 0.01)', [], []),
+            ('expect(function() error("x") end).to.throw()', [], []),
+            ('expect(f).never.to.throw("server-only")', [], []),
+        ]
+        for source, want_dsl, want_matchers in cases:
+            with self.subTest(source=source):
+                scan = scan_spec_dsl(source)
+                self.assertEqual(scan["unsupportedDsl"], want_dsl)
+                self.assertEqual(scan["unsupportedMatchers"], want_matchers)
+
+    def test_it_installs_runs_and_removes_the_container_again(self):
+        before = self.children_of("ServerStorage")
+        self.assertNotIn("ArenaTestSuites", before)
+        out = self.tool("run_testez_suite",
+                        {"testsDir": "roblox-kit/systems/liveops/leaderboard/tests"})
+        try:
+            self.assertEqual(out["installed"], 1)
+            self.assertEqual(out["specs"], ["Leaderboard"])
+            self.assertEqual(out["container"], "ServerStorage.ArenaTestSuites")
+            self.assertEqual(out["shimGapsTotal"], 0)
+            self.assertTrue(out["containerRemoved"])
+            self.assertTrue(out["ok"])
+            # The session went through run_studio_tests, so it is a StudioTestService run.
+            self.assertEqual(out["session"]["mode"], "run")
+            self.assertEqual(out["session"]["runner"], out["session"]["runner"])
+            self.assertIn("ArenaSpecRunner", json.dumps(out["session"].get("suites")))
+        finally:
+            self.assertNotIn("ArenaTestSuites", self.children_of("ServerStorage"))
+
+    def test_keep_container_leaves_the_specs_installed_for_follow_up_luau(self):
+        out = self.tool("run_testez_suite", {
+            "testsDir": "roblox-kit/systems/mechanics/checkpoint-respawn/tests",
+            "keepContainer": True})
+        try:
+            self.assertIn("keepContainer", out["containerRemoved"])
+            children = self.children_of("ServerStorage.ArenaTestSuites")
+            self.assertIn("CheckpointOrder.spec", children)
+            self.assertIn("ArenaSpecRunner", children)
+        finally:
+            self.client.submit_job("delete", {"paths": ["ServerStorage.ArenaTestSuites"]},
+                                   wait=25.0, dm="edit")
+        self.assertNotIn("ArenaTestSuites", self.children_of("ServerStorage"))
+
+    def test_a_spec_the_shim_cannot_run_is_reported_not_silently_green(self):
+        gap_dir = HERE / "tmp_testez_gap_spec"
+        gap_dir.mkdir(exist_ok=True)
+        self.addCleanup(shutil.rmtree, gap_dir, True)
+        (gap_dir / "Gap.spec.lua").write_text(
+            'return function()\n\tbeforeAll(function() end)\n\texpect(1).to.be.a("number")\nend\n',
+            encoding="utf-8")
+        out = self.tool("run_testez_suite", {"testsDir": "roblox-bridge/tmp_testez_gap_spec"})
+        self.assertEqual(out["shimGapsTotal"], 1)
+        self.assertEqual(out["shimGaps"][0]["spec"], "Gap.spec")
+        self.assertEqual(sorted(out["shimGaps"][0]["unsupported"]), ["a", "beforeAll"])
+        self.assertIn("shimGaps", out["note"])
+        self.assertTrue(out["containerRemoved"])
+
+    def test_bad_arguments_are_refused_before_anything_is_installed(self):
+        cases = [
+            ({}, "testsDir is required"),
+            ({"testsDir": "/etc/passwd"}, None),                      # UnsafePathError
+            ({"testsDir": "../../etc"}, None),                         # UnsafePathError
+            ({"testsDir": "roblox-kit/modules"}, "no *.spec.lua"),
+            ({"testsDir": "roblox-kit/systems/ui/settings-menu/tests",
+              "container": "Bad-Name"}, "dot-separated"),
+            ({"testsDir": "roblox-kit/systems/ui/settings-menu/tests",
+              "container": "Workspace"}, "inside a service"),
+        ]
+        for args, fragment in cases:
+            with self.subTest(args=args):
+                with self.assertRaises((ValueError, UnsafePathError)) as ctx:
+                    self.tool("run_testez_suite", args)
+                if fragment:
+                    self.assertIn(fragment, str(ctx.exception))
+        self.assertNotIn("ArenaTestSuites", self.children_of("ServerStorage"))
+
+    def test_max_specs_clamps_toward_the_stricter_bound(self):
+        # A nonsense maxSpecs must never install *more* than asked: 0 becomes 1, not the
+        # 50-spec default, and 9999 becomes the schema's 200.
+        for asked, want in ((0, 1), (1, 1), (9999, 200)):
+            with self.subTest(maxSpecs=asked):
+                out = self.tool("run_testez_suite", {
+                    "testsDir": "roblox-kit/systems/liveops/leaderboard/tests",
+                    "maxSpecs": asked})
+                self.assertEqual(out["maxSpecs"], want)
+        self.assertNotIn("ArenaTestSuites", self.children_of("ServerStorage"))
+
+    def test_the_three_new_tools_are_gated_exactly_as_their_annotations_claim(self):
+        from mcp_core import CONFIRM_GATED_TOOLS, is_tool_call_read_only
+        # Installing specs writes into the place, so it is confirmation-gated and never
+        # read-only. The two audits read files and a tree, so they are the opposite.
+        self.assertIn("run_testez_suite", CONFIRM_GATED_TOOLS)
+        self.assertFalse(is_tool_call_read_only("run_testez_suite", {}))
+        for name in ("audit_kit_integrity", "audit_asset_references"):
+            self.assertNotIn(name, CONFIRM_GATED_TOOLS)
+            self.assertTrue(is_tool_call_read_only(name, {}))
+        specs = {s["name"]: s for s in TOOL_SPECS}
+        for name, want_read_only in (("audit_kit_integrity", True),
+                                     ("audit_asset_references", True),
+                                     ("run_testez_suite", False)):
+            ann = specs[name]["annotations"]
+            self.assertEqual(ann["readOnlyHint"], want_read_only, name)
+            self.assertEqual(ann["destructiveHint"], False, name)
+            self.assertEqual(ann["idempotentHint"], True, name)
+        self.assertEqual(specs["run_testez_suite"]["inputSchema"]["required"], ["testsDir"])
+
+    def test_a_read_only_inspector_token_sees_the_audits_and_not_the_suite_runner(self):
+        # `INSPECTOR_MIXED_TOOLS` is for writers that have a read-only mode. The two audits
+        # are annotated read-only and so are visible on their own; `run_testez_suite` writes
+        # on every invocation, so a read-only token must neither see it nor be able to call it.
+        dispatcher = MCPDispatcher(BridgeClient(read_only=True))
+        advertised = {t["name"] for t in dispatcher.visible_tools()}
+        self.assertIn("audit_kit_integrity", advertised)
+        self.assertIn("audit_asset_references", advertised)
+        self.assertNotIn("run_testez_suite", advertised)
+        self.assertTrue(dispatcher._invoke_tool(
+            "run_testez_suite", {"testsDir": "roblox-kit/systems/ui/settings-menu/tests"})["isError"])
+
+    def test_search_tools_read_only_finds_the_audits_but_not_the_suite_runner(self):
+        listed = {r["name"] for r in execute_tool(
+            BridgeClient(read_only=True), "search_tools", {"query": "audit", "limit": 100})["results"]}
+        self.assertIn("audit_kit_integrity", listed)
+        self.assertIn("audit_asset_references", listed)
+        runner = {r["name"] for r in execute_tool(
+            BridgeClient(read_only=True), "search_tools", {"query": "testez", "limit": 100})["results"]}
+        self.assertNotIn("run_testez_suite", runner)
+
+
+
+class TestV61AssetReferencesLive(unittest.TestCase):
+    """P5-M1 — `audit_asset_references` against a live peer.
+
+    The offline tests above supply a tree and a script list; this one walks the whole live
+    path — `inspect` for property references, `hash_scripts` to enumerate, batched
+    `read_scripts` for sources — because that chain is what an agent actually calls, and a
+    payload shape the mock returns differently would pass offline and fail in Studio.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = _free_port()
+        cls.token = "asset-refs-live-secret"
+        cls.base_url = f"http://127.0.0.1:{cls.port}"
+        cls.state_dir = tempfile.mkdtemp(prefix="arena-v61-assetrefs-")
+        cls.httpd, cls.state = create_http_server(
+            host="127.0.0.1", port=cls.port, token=cls.token, state_dir=cls.state_dir)
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.stop_mock = threading.Event()
+        cls.mock_thread = threading.Thread(
+            target=run_mock_loop, args=(cls.base_url, cls.token, cls.stop_mock), daemon=True)
+        cls.mock_thread.start()
+        for _ in range(80):
+            if cls.state.direct_dispatch("health", {})["studio_connected"]:
+                break
+            threading.Event().wait(0.05)
+        cls.client = BridgeClient(base_url=cls.base_url, token=cls.token)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.stop_mock.set()
+        cls.state._reaper_stop.set()
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        shutil.rmtree(cls.state_dir, ignore_errors=True)
+
+    def tool(self, name: str, args: dict) -> dict:
+        return execute_tool(self.client, name, args)
+
+    def test_a_live_scan_reports_which_path_it_took(self):
+        out = self.tool("audit_asset_references", {"path": "ServerScriptService"})
+        self.assertEqual(out["errors"], [])
+        self.assertTrue(out["scanned"]["liveTree"])
+        self.assertTrue(out["scanned"]["liveScripts"])
+        self.assertEqual(out["scanned"]["root"], "ServerScriptService")
+        # The mock place ships two scripts under ServerScriptService; both must be read,
+        # which is what proves the hash_scripts -> read_scripts batching works.
+        self.assertEqual(out["scanned"]["scriptsSeen"], 2)
+        self.assertEqual(out["scanned"]["scriptsRead"], 2)
+        self.assertNotIn("scriptsSkipped", out["scanned"])
+
+    def test_a_missing_kit_reference_written_into_the_place_is_found_live(self):
+        uri = "rbxasset://arena_assets/never_shipped_by_the_kit.png"
+        probe = "ServerScriptService.ArenaRefProbe"
+        # `write_script` takes parent + name, not a dotted path: the mock ignores keys it
+        # does not know, so passing `path` silently created the default-named ArenaScript.
+        self.client.submit_job("write_script", {
+            "parent": "ServerScriptService", "name": "ArenaRefProbe",
+            "source": f'local icon = "{uri}"\nreturn icon\n',
+            "className": "ModuleScript",
+        }, note="test-probe", wait=25.0, dm="edit")
+        # `wait` matters: a delete that is merely enqueued has not happened when the next
+        # test counts scripts, and the count then disagrees by one.
+        self.addCleanup(lambda: self.client.submit_job(
+            "delete", {"paths": [probe]}, wait=25.0, dm="edit"))
+        out = self.tool("audit_asset_references", {"path": "ServerScriptService"})
+        self.assertFalse(out["ok"])
+        self.assertIn(uri, [m["uri"] for m in out["missingKitAssets"]])
+        finding = [m for m in out["missingKitAssets"] if m["uri"] == uri][0]
+        # The finding carries its locations: "missing" alone leaves an agent grepping.
+        # Format is `path:line` for a script reference, `path.Property` for a property one.
+        self.assertEqual(finding["where"], [f"{probe}:1"])
+        self.assertEqual(finding["references"], 1)
+
+    def test_max_scripts_bounds_the_payload_and_says_it_skipped_some(self):
+        out = self.tool("audit_asset_references",
+                        {"path": "ServerScriptService", "maxScripts": 1})
+        self.assertEqual(out["scanned"]["scriptsRead"], 1)
+        self.assertEqual(out["scanned"]["scriptsSkipped"], 1)
+
+    def test_a_hostile_kit_root_is_refused_before_any_peer_call(self):
+        with self.assertRaises(UnsafePathError):
+            self.tool("audit_asset_references", {"kitRoot": "/etc"})
+
+
+
 LIVE_HTTP_CLASSES = (
     "TestConnectionDiagnostics",
     "TestEndToEndBridgeAndMCP",
@@ -6920,6 +7704,8 @@ LIVE_HTTP_CLASSES = (
     "TestV55DiscoveryTunnelAndSecurity",
     "TestV61SecurityHardening",
     "TestV61SnapshotRestore",
+    "TestV61RunTestezSuite",
+    "TestV61AssetReferencesLive",
     "TestV5OpsPlatform",
 )
 

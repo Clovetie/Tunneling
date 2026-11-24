@@ -25,6 +25,7 @@ Supports:
 """
 
 import base64
+import hashlib
 import ipaddress
 import json
 import math
@@ -217,6 +218,8 @@ CONFIRM_GATED_TOOLS = (
     "install_kit_module", "spawn_prefab", "drift_and_sync", "manage_snapshots",
     "open_cloud_action", "start_stop_play", "run_studio_tests", "simulate_input",
     "undo_redo",
+    # v6.1.0 (P5-M1): installs a scratch container of specs into the place, so it writes.
+    "run_testez_suite",
     # v6.1.0: arbitrary-code execution and DataModel probes were missing from the
     # curated destructive set even though they carry `destructiveHint: true`.
     "run_luau", "execute_luau", "probe",
@@ -1963,6 +1966,69 @@ TOOL_SPECS = [
 
     # --- Group H: Local Luau Toolchain, Drift Audit, Package Sync & Snapshots ---
     {
+        "name": "audit_kit_integrity",
+        "description": (
+            "Cross-check the four descriptions of `roblox-kit/` against each other: `assets/registry.json`, the "
+            "files on disk, `assets/asset-lock.json` and `modules/Assets.lua`. Reports registered assets missing "
+            "from disk, asset files on disk the registry does not list, registry rows that are incomplete or "
+            "listed twice, lock entries whose bytes/sha256/`localUri`/counts disagree with the registry, "
+            "`Assets.lua` URIs that are duplicated, absent from the lock, or resolve to no file, and - for the "
+            "repository's own kit - `image_pipeline --check` manifest drift. `verifyHashes=True` re-hashes a "
+            "deterministic sample (four files per asset type, so a small category cannot be skipped) and "
+            "compares with the registry. Pure filesystem: no Studio peer, no network, nothing written. This is "
+            "the same check `make ci` runs, so an agent and CI cannot disagree about what drift means."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kitRoot": {
+                    "type": "string",
+                    "description": "Optional kit directory relative to the repository root (default `roblox-kit`). Absolute paths, `~` and `..` are refused.",
+                },
+                "verifyHashes": {
+                    "type": "boolean", "default": False,
+                    "description": "Also re-hash a deterministic per-asset-type sample and compare with registry.json.",
+                },
+                "limit": {
+                    "type": "integer", "minimum": 1, "maximum": 100, "default": 25,
+                    "description": "Most entries returned per finding list. Each list also reports its own `*Total`.",
+                },
+            },
+        },
+        "annotations": _ann("Audit Kit Integrity (registry vs disk vs lock vs Assets.lua)",
+                            read_only=True, destructive=False, idempotent=True),
+    },
+    {
+        "name": "audit_asset_references",
+        "description": (
+            "Scan a Studio tree (or a caller-supplied one) for asset references and report the ones the kit "
+            "cannot resolve. Catches the classic `rbxasset://arena_assets/<rel>` left behind after an image was "
+            "deleted from `roblox-kit/`, references the lock lists but no file on disk satisfies, and the same "
+            "asset referenced from several places. Scans instance properties (`Texture`, `SoundId`, `MeshId`, "
+            "skybox faces, attributes, StringValues) and script sources. `rbxassetid://` cloud ids are listed "
+            "but not judged unless the manifest publishes cloud ids — it currently publishes none, and saying "
+            "so beats reporting every Toolbox insert as a defect. Reads nothing back and writes nothing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "default": "game", "description": "Root to scan when no `tree`/`scripts` are supplied."},
+                "tree": {"type": ["object", "array"], "description": "Optional pre-fetched instance tree (the shape `inspect_instance` returns) to analyse offline."},
+                "scripts": {"type": "array", "items": {"type": "object"}, "description": "Optional array of `{path, source}` script objects to analyse offline."},
+                "includeScripts": {"type": "boolean", "default": True, "description": "Also read script sources under `path` in the live scan."},
+                "maxScripts": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200, "description": "Cap on script sources read in one live scan."},
+                "depth": {"type": "integer", "minimum": 1, "maximum": 30, "default": 12},
+                "maxChildren": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 1000},
+                "kitRoot": {"type": "string", "description": "Optional kit directory relative to the repository root. Absolute paths, `~` and `..` are refused."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
+                "dm": DM_PROP,
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Audit Asset References (place vs kit manifest)",
+                            read_only=True, destructive=False, idempotent=True),
+    },
+    {
         "name": "luau_check",
         "description": "Offline local pre-push verifier using available luau-compile and luau-analyze binaries. Reports missing toolchains; does not submit a Studio job. Analysis coverage depends on installed binaries and does not prove runtime correctness.",
         "inputSchema": {
@@ -2769,6 +2835,44 @@ TOOL_SPECS = [
         "annotations": _ann("Drive Studio's Device Simulator", read_only=False, destructive=False, idempotent=False),
     },
     {
+        "name": "run_testez_suite",
+        "description": (
+            "Run a local `tests/` directory — the `*.spec.lua` layout `roblox-kit/systems/CONVENTIONS.md` "
+            "defines — inside Studio, and get per-spec results back. Installs one ModuleScript per spec plus a "
+            "runner into a scratch container (`ServerStorage.ArenaTestSuites` by default), runs it through "
+            "`run_studio_tests` (StudioTestService, so the session is reported and its runner torn down by that "
+            "machinery), then deletes the container: the place is left as it was found unless `keepContainer`. "
+            "The runner uses the place's own TestEZ when it can find one (`testezPath`, else a `TestEZ` "
+            "ModuleScript under ReplicatedStorage/ServerStorage) and otherwise a bundled shim covering the "
+            "subset the kit's specs use; the report's `runner` field always says which one ran, because a green "
+            "run under the shim is not a green run under TestEZ. This is the tool that finally executes the "
+            "specs the kit ships — it writes into the place, so it is confirmation-gated."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["testsDir"],
+            "properties": {
+                "testsDir": {
+                    "type": "string",
+                    "description": "Directory of `*.spec.lua` relative to the repository root, e.g. `roblox-kit/systems/liveops/leaderboard/tests`. Absolute paths, `~` and `..` are refused.",
+                },
+                "container": {
+                    "type": "string",
+                    "description": "Dot-separated path of the scratch Folder to install into (default `ServerStorage.ArenaTestSuites`). Deleted again afterwards.",
+                },
+                "testezPath": {"type": "string", "description": "Optional path to a TestEZ ModuleScript in the place."},
+                "maxSpecs": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                "mode": {"type": "string", "enum": ["run", "play", "multiplayer"], "default": "run"},
+                "timeoutSec": {"type": "number", "minimum": 5, "maximum": 900, "default": 120},
+                "keepContainer": {"type": "boolean", "default": False, "description": "Leave the installed specs in the place for follow-up `execute_luau`."},
+                "collectClientLogs": {"type": "boolean", "default": False},
+                "peerId": PEER_PROP,
+            },
+        },
+        "annotations": _ann("Run TestEZ Suite (installs a scratch container)",
+                            read_only=False, destructive=False, idempotent=True),
+    },
+    {
         "name": "run_studio_tests",
         "description": (
             "Run tests through Studio's own runner (StudioTestService): mode `run` = Test > Run (no game loop), "
@@ -3368,6 +3472,13 @@ INSPECTOR_MIXED_TOOLS = frozenset((
     "manage_plugin_and_playtest", "build_cutscene_sequence", "generate_ui_theme_pack",
     "import_ui_from_web", "build_vfx_emitter", "de_slop_audit", "spawn_kit_mesh", "operator_chat",
     "kitbash_mesh_prop", "build_combat_hitbox", "configure_camera_rig", "generate_sfx_soundbank",
+    # v6.1.0 (P5-M1) deliberately adds none of the three new tools. This set exists for
+    # tools that are annotated as writers but have genuinely read-only *modes*, which a
+    # read-only Inspector token may therefore use. `audit_kit_integrity` and
+    # `audit_asset_references` are annotated `readOnlyHint: true` and so are already visible
+    # without being listed here; `run_testez_suite` has no read-only mode at all - every
+    # invocation installs a container of ModuleScripts into the place - so listing it would
+    # hand a read-only token a write.
 ))
 
 
@@ -4682,6 +4793,15 @@ def execute_tool(client: BridgeClient, name: str, args: dict) -> dict:
             variant=args.get("variant", "any"),
             limit=int(args.get("limit", 40)),
         )
+
+    if name == "audit_kit_integrity":
+        return audit_kit_integrity_helper(args)
+
+    if name == "audit_asset_references":
+        return audit_asset_references_helper(client=client, args=args, peer_id=peer_id)
+
+    if name == "run_testez_suite":
+        return run_testez_suite_helper(client=client, args=args, peer_id=peer_id)
 
     if name == "install_template":
         return install_template_helper(
@@ -6343,6 +6463,408 @@ def browse_kit_helper(category: str = "all", item: str = None, output_format: st
         out["format"] = "full"
         out["counts"] = counts
     return out
+
+
+# ---------------------------------------------------------------------------
+# Kit integrity: four descriptions of one kit, checked against each other
+# ---------------------------------------------------------------------------
+
+# `registry.json`, the files on disk, `assets/asset-lock.json` and `modules/Assets.lua` all
+# describe the same kit. One implementation, two callers - the `audit_kit_integrity` tool and
+# the CI test - so an agent and `make ci` cannot disagree about what drift means.
+KIT_INTEGRITY_ROOTS = ("assets/images", "assets/audio", "models")
+KIT_INTEGRITY_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".wav", ".glb", ".rbxmx"})
+KIT_INTEGRITY_ROW_FIELDS = ("path", "name", "assetType", "sha256", "bytes", "license",
+                            "provenance", "category", "thumbnail")
+# Two files under the registry's roots are legitimately not assets: the skies' own catalogue
+# and the starter place. Named here so a *new* stray PNG fails instead of being invisible.
+KIT_INTEGRITY_ALLOWED_UNREGISTERED = frozenset({
+    "roblox-kit/assets/images/arena_skies/catalog.json",
+    "roblox-kit/models/StarterPlace.rbxlx",
+})
+# The two lock buckets prefix differently, and Assets.lua follows the same asymmetry: an
+# image URI is arena_assets/<relPath> (images/ implied) while audio keeps its directory.
+KIT_LOCK_IMAGE_PREFIX = "roblox-kit/assets/images/"
+KIT_LOCK_AUDIO_PREFIX = "roblox-kit/assets/audio/"
+KIT_LOCK_URI_PREFIX = {
+    "images": "rbxasset://arena_assets/",
+    "audio": "rbxasset://arena_assets/audio/",
+}
+KIT_LOCK_REGISTRY_PREFIX = {"images": KIT_LOCK_IMAGE_PREFIX, "audio": KIT_LOCK_AUDIO_PREFIX}
+
+
+def _clip(items: list, limit) -> tuple:
+    total = len(items)
+    if limit is None:
+        return list(items), total
+    try:
+        cap = int(limit)
+    except Exception:  # noqa: BLE001 - a nonsense limit means "the default cap"
+        cap = 25
+    if cap <= 0:
+        return [], total
+    return list(items[:cap]), total
+
+
+def _sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def audit_kit_integrity_report(kit_root=None, limit: int = 25, verify_hashes: bool = False) -> dict:
+    """Cross-check the kit's four self-descriptions. Read-only, offline, no Studio peer.
+
+    `kit_root` defaults to the repository's own `roblox-kit/`. The manifest leg
+    (`image_pipeline.update_repo_asset_manifest(check=True)`) always inspects the real
+    repository, so it is skipped - and reported as skipped - when a different root is
+    passed, rather than quietly answering a question about another directory.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    kit = Path(kit_root).resolve() if kit_root else repo_root / "roblox-kit"
+    report = {
+        "ok": False,
+        "kitRoot": kit.as_posix(),
+        "errors": [],
+        "checked": {},
+        "counts": {},
+        "missingFromDisk": [], "missingFromDiskTotal": 0,
+        "unregisteredOnDisk": [], "unregisteredOnDiskTotal": 0,
+        "rowProblems": [], "rowProblemsTotal": 0,
+        "lockDrift": [], "lockDriftTotal": 0,
+        "assetsLuaDrift": [], "assetsLuaDriftTotal": 0,
+        "manifestDrift": [], "manifestDriftTotal": 0,
+        "manifestChecked": False,
+        "hashMismatches": [], "hashMismatchesTotal": 0,
+        "hashesChecked": 0,
+    }
+    if not kit.is_dir():
+        report["errors"].append(f"kit root is not a directory: {kit.as_posix()}")
+        return report
+    registry_owner = kit.parent
+
+    registry_path = kit / "assets" / "registry.json"
+    lock_path = kit / "assets" / "asset-lock.json"
+    assets_lua_path = kit / "modules" / "Assets.lua"
+
+    rows = []
+    registry = {}
+    if not registry_path.is_file():
+        report["errors"].append("assets/registry.json is missing")
+    else:
+        try:
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            rows = registry.get("assets") or []
+            if not isinstance(rows, list):
+                rows = []
+                report["errors"].append("assets/registry.json has no `assets` list")
+            if registry.get("schemaVersion") != 1:
+                report["errors"].append(
+                    f"assets/registry.json schemaVersion is {registry.get('schemaVersion')!r}, expected 1")
+        except Exception as exc:  # noqa: BLE001 - a corrupt registry is a finding, not a crash
+            report["errors"].append(f"assets/registry.json could not be read: {exc}")
+
+    by_path = {}
+    row_problems = []
+    missing = []
+    counts = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            row_problems.append({"problem": "row is not an object"})
+            continue
+        rel = row.get("path")
+        if not isinstance(rel, str) or not rel:
+            row_problems.append({"problem": "row has no path", "name": row.get("name")})
+            continue
+        if rel in by_path:
+            row_problems.append({"path": rel, "problem": "listed twice in registry.json"})
+        by_path[rel] = row
+        kind = row.get("assetType")
+        counts[kind] = counts.get(kind, 0) + 1
+        absent = [f for f in KIT_INTEGRITY_ROW_FIELDS if f not in row]
+        if absent:
+            row_problems.append({"path": rel, "problem": f"missing fields: {', '.join(sorted(absent))}"})
+        sha = row.get("sha256")
+        if not (isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)):
+            row_problems.append({"path": rel, "problem": "sha256 is not 64 lowercase hex chars"})
+        if not (registry_owner / rel).is_file():
+            missing.append(rel)
+
+    unregistered = []
+    files_on_disk = 0
+    for base in KIT_INTEGRITY_ROOTS:
+        root = kit / base
+        if not root.is_dir():
+            report["errors"].append(f"{base}/ is missing from the kit")
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in KIT_INTEGRITY_SUFFIXES:
+                continue
+            files_on_disk += 1
+            rel = path.relative_to(registry_owner).as_posix()
+            if rel not in by_path and rel not in KIT_INTEGRITY_ALLOWED_UNREGISTERED:
+                unregistered.append(rel)
+
+    lock = {}
+    if not lock_path.is_file():
+        report["errors"].append("assets/asset-lock.json is missing")
+    else:
+        try:
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            report["errors"].append(f"assets/asset-lock.json could not be read: {exc}")
+            lock = {}
+
+    lock_drift = []
+    lock_entries = 0
+    seen_rel = {}
+    for bucket in ("images", "audio"):
+        entries = lock.get(bucket)
+        if not isinstance(entries, dict):
+            if lock:
+                lock_drift.append({"bucket": bucket, "problem": "bucket is missing or not an object"})
+            continue
+        reg_prefix = KIT_LOCK_REGISTRY_PREFIX[bucket]
+        uri_prefix = KIT_LOCK_URI_PREFIX[bucket]
+        expected_type = ("image", "sky") if bucket == "images" else ("audio",)
+        typed = [r for r in rows if isinstance(r, dict) and r.get("assetType") in expected_type]
+        if len(entries) != len(typed):
+            lock_drift.append({
+                "bucket": bucket, "problem": "count disagrees with registry.json",
+                "lock": len(entries), "registry": len(typed),
+            })
+        for key, entry in entries.items():
+            lock_entries += 1
+            if not isinstance(entry, dict):
+                lock_drift.append({"bucket": bucket, "key": key, "problem": "entry is not an object"})
+                continue
+            rel = entry.get("relPath")
+            if not isinstance(rel, str) or not rel:
+                lock_drift.append({"bucket": bucket, "key": key, "problem": "entry has no relPath"})
+                continue
+            if rel in seen_rel:
+                lock_drift.append({
+                    "bucket": bucket, "key": key, "problem": f"relPath also keyed {seen_rel[rel]!r}",
+                    "relPath": rel})
+            seen_rel[rel] = key
+            if entry.get("key") not in (None, key):
+                lock_drift.append({
+                    "bucket": bucket, "key": key, "problem": "entry.key disagrees with its bucket key",
+                    "entryKey": entry.get("key")})
+            row = by_path.get(reg_prefix + rel)
+            if row is None:
+                lock_drift.append({
+                    "bucket": bucket, "key": key, "relPath": rel,
+                    "problem": f"{reg_prefix + rel} is not in registry.json"})
+                continue
+            if row.get("bytes") != entry.get("bytes"):
+                lock_drift.append({
+                    "bucket": bucket, "key": key, "relPath": rel, "problem": "bytes disagree",
+                    "lock": entry.get("bytes"), "registry": row.get("bytes")})
+            lock_sha = entry.get("sha256")
+            reg_sha = row.get("sha256")
+            if not (isinstance(lock_sha, str) and isinstance(reg_sha, str)
+                    and reg_sha.startswith(lock_sha) and lock_sha):
+                lock_drift.append({
+                    "bucket": bucket, "key": key, "relPath": rel,
+                    "problem": "the lock's short sha256 is not a prefix of the registry's"})
+            if entry.get("localUri") != uri_prefix + rel:
+                lock_drift.append({
+                    "bucket": bucket, "key": key, "relPath": rel,
+                    "problem": f"localUri does not follow the {bucket} convention",
+                    "localUri": entry.get("localUri"), "expected": uri_prefix + rel})
+
+    assets_lua = ""
+    if not assets_lua_path.is_file():
+        report["errors"].append("modules/Assets.lua is missing")
+    else:
+        try:
+            assets_lua = assets_lua_path.read_text(encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            report["errors"].append(f"modules/Assets.lua could not be read: {exc}")
+
+    lua_drift = []
+    uris = re.findall(r'"rbxasset://arena_assets/([^"]+)"', assets_lua) if assets_lua else []
+    lock_uris = set()
+    for bucket in ("images", "audio"):
+        entries = lock.get(bucket)
+        if isinstance(entries, dict):
+            for entry in entries.values():
+                if isinstance(entry, dict) and isinstance(entry.get("localUri"), str):
+                    lock_uris.add(entry["localUri"].split("arena_assets/", 1)[-1])
+    if assets_lua:
+        if len(set(uris)) != len(uris):
+            repeated = sorted({u for u in uris if uris.count(u) > 1})
+            lua_drift.append({"problem": "Assets.lua repeats a URI", "uris": repeated[:10]})
+        for rel in sorted(set(uris) - lock_uris):
+            lua_drift.append({"uri": rel, "problem": "in Assets.lua but not in asset-lock.json"})
+        for rel in sorted(lock_uris - set(uris)):
+            lua_drift.append({"uri": rel, "problem": "in asset-lock.json but not in Assets.lua"})
+        for rel in sorted(set(uris)):
+            if not any((kit / prefix / rel).is_file() for prefix in ("assets/images", "assets")):
+                lua_drift.append({"uri": rel, "problem": "rbxasset://arena_assets/ resolves to no file"})
+        for section in ("Images", "Audio", "Meta"):
+            if f"Assets.{section} = {{" not in assets_lua:
+                lua_drift.append({"problem": f"Assets.lua lost its {section} table"})
+
+    manifest_note = None
+    if kit != (repo_root / "roblox-kit"):
+        manifest_note = ("skipped: the manifest check always reads the repository's own kit, "
+                         "and a different kitRoot was given")
+    else:
+        try:
+            from image_pipeline import update_repo_asset_manifest
+            manifest = update_repo_asset_manifest(check=True)
+            report["manifestChecked"] = bool(manifest.get("checked"))
+            report["manifestDrift"], report["manifestDriftTotal"] = _clip(
+                manifest.get("drift") or [], limit)
+            report["checked"]["manifestCount"] = manifest.get("count")
+            report["checked"]["manifestAudioCount"] = manifest.get("audioCount")
+        except Exception as exc:  # noqa: BLE001 - report the failure, do not raise through the tool
+            report["errors"].append(f"the manifest check could not run: {exc}")
+
+    hashes_checked = 0
+    mismatches = []
+    if verify_hashes:
+        # Sampled per assetType rather than by a fixed stride over the whole registry: a
+        # stride can skip a small category entirely and report a clean kit.
+        for kind in sorted(counts):
+            kind_rows = sorted((r for r in rows if isinstance(r, dict) and r.get("assetType") == kind),
+                               key=lambda r: str(r.get("path")))
+            if not kind_rows:
+                continue
+            picks = {0, len(kind_rows) - 1, len(kind_rows) // 3, (2 * len(kind_rows)) // 3}
+            for index in sorted(picks):
+                row = kind_rows[index]
+                rel = row.get("path")
+                target = registry_owner / rel if isinstance(rel, str) else None
+                if not target or not target.is_file():
+                    continue
+                hashes_checked += 1
+                try:
+                    actual = _sha256_of(target)
+                except Exception as exc:  # noqa: BLE001
+                    mismatches.append({"path": rel, "problem": f"could not be hashed: {exc}"})
+                    continue
+                if actual != row.get("sha256"):
+                    mismatches.append({
+                        "path": rel, "problem": "sha256 does not match registry.json",
+                        "expected": row.get("sha256"), "actual": actual})
+
+    report["counts"] = dict(sorted(counts.items(), key=lambda kv: str(kv[0])))
+    report["counts"]["glb"] = sum(1 for r in rows if isinstance(r, dict)
+                                  and str(r.get("path", "")).endswith(".glb"))
+    report["counts"]["rbxmx"] = sum(1 for r in rows if isinstance(r, dict)
+                                    and str(r.get("path", "")).endswith(".rbxmx"))
+    report["checked"] = {
+        **report["checked"],
+        "registryRows": len(rows),
+        "assetFilesOnDisk": files_on_disk,
+        "lockEntries": lock_entries,
+        "assetsLuaUris": len(uris),
+        "registrySchemaVersion": registry.get("schemaVersion"),
+        "hashesChecked": hashes_checked,
+    }
+    if manifest_note:
+        report["checked"]["manifest"] = manifest_note
+    report["missingFromDisk"], report["missingFromDiskTotal"] = _clip(sorted(missing), limit)
+    report["unregisteredOnDisk"], report["unregisteredOnDiskTotal"] = _clip(sorted(unregistered), limit)
+    report["rowProblems"], report["rowProblemsTotal"] = _clip(row_problems, limit)
+    report["lockDrift"], report["lockDriftTotal"] = _clip(lock_drift, limit)
+    report["assetsLuaDrift"], report["assetsLuaDriftTotal"] = _clip(lua_drift, limit)
+    report["hashMismatches"], report["hashMismatchesTotal"] = _clip(mismatches, limit)
+    report["ok"] = not (
+        report["errors"] or report["missingFromDiskTotal"] or report["unregisteredOnDiskTotal"]
+        or report["rowProblemsTotal"] or report["lockDriftTotal"] or report["assetsLuaDriftTotal"]
+        or report["manifestDriftTotal"] or report["hashMismatchesTotal"]
+        or (report["manifestChecked"] is False and not manifest_note)
+    )
+    return report
+
+
+def audit_kit_integrity_helper(args: dict = None) -> dict:
+    """`audit_kit_integrity` — the CI kit cross-check behind an agent-facing tool.
+
+    `kitRoot` goes through `safe_local_path` for the same reason every other file-shaped
+    argument does: an audit that could be pointed at `/etc` would read outside the repo and
+    quote it back. `limit` is clamped so one call cannot ask for the whole registry.
+    """
+    args = args if isinstance(args, dict) else {}
+    repo_root = Path(__file__).resolve().parent.parent
+    kit_root = args.get("kitRoot")
+    if kit_root:
+        kit_root = safe_local_path(repo_root, kit_root, must_exist=True, allow_dir=True)
+    try:
+        limit = int(args.get("limit", 25))
+    except Exception:  # noqa: BLE001 - a nonsense limit means the default
+        limit = 25
+    return audit_kit_integrity_report(
+        kit_root=kit_root, limit=max(1, min(limit, 100)),
+        verify_hashes=bool(args.get("verifyHashes", False)))
+
+
+def audit_asset_references_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """`audit_asset_references` — a place's asset references versus what the kit ships.
+
+    Works three ways, and the report says which one ran: a caller-supplied `tree` and/or
+    `scripts` (offline, replayable in a test), or a live scan that inspects a root for
+    property references and then reads the scripts under it. Reading sources is bounded by
+    `maxScripts` because a whole game's scripts is not a bounded payload.
+    """
+    from asset_reference_audit import audit_asset_reference_report
+
+    args = args if isinstance(args, dict) else {}
+    repo_root = Path(__file__).resolve().parent.parent
+    kit_root = args.get("kitRoot")
+    if kit_root:
+        kit_root = safe_local_path(repo_root, kit_root, must_exist=True, allow_dir=True)
+    try:
+        limit = max(1, min(int(args.get("limit", 25)), 100))
+    except Exception:  # noqa: BLE001
+        limit = 25
+
+    tree = args.get("tree")
+    scripts = args.get("scripts")
+    provenance = {"liveTree": False, "liveScripts": False, "root": None}
+    if not isinstance(tree, (dict, list)) and not isinstance(scripts, list):
+        root = str(args.get("path") or "game")
+        dm = args.get("dm") or "edit"
+        tree = _unwrap_job(client.submit_job("inspect", {
+            "path": root,
+            "depth": max(1, min(int(args.get("depth", 12)), 30)),
+            "maxChildren": max(1, min(int(args.get("maxChildren", 1000)), 5000)),
+            "includeProperties": True,
+            "includeStructured": True,
+        }, wait=60.0, dm=dm, peer_id=peer_id))
+        provenance["liveTree"] = True
+        provenance["root"] = root
+        if args.get("includeScripts", True):
+            hashes = _unwrap_job(client.submit_job(
+                "hash_scripts", {"root": root}, wait=45.0, dm=dm, peer_id=peer_id))
+            entries = hashes.get("scripts") if isinstance(hashes, dict) else None
+            paths = [e["path"] for e in (entries or []) if isinstance(e, dict) and e.get("path")]
+            cap = max(1, min(int(args.get("maxScripts", 200)), 1000))
+            wanted = paths[:cap]
+            scripts = []
+            # The cap slices the list before batching: bounding only the loop end still let
+            # the first batch of 25 read every script, so maxScripts=1 read them all.
+            for start in range(0, len(wanted), 25):
+                got = _unwrap_job(client.submit_job("read_scripts", {
+                    "paths": wanted[start:start + 25], "maxBytes": 2_000_000,
+                }, wait=60.0, dm=dm, peer_id=peer_id))
+                if isinstance(got, dict):
+                    scripts.extend(got.get("scripts") or [])
+            provenance["liveScripts"] = True
+            provenance["scriptsSeen"] = len(paths)
+            provenance["scriptsRead"] = len(scripts)
+            if len(paths) > cap:
+                provenance["scriptsSkipped"] = len(paths) - cap
+
+    report = audit_asset_reference_report(tree=tree, scripts=scripts, kit_root=kit_root, limit=limit)
+    report["scanned"].update(provenance)
+    return report
 
 
 def search_assets_helper(query: str = "", asset_type: str = "any", category: str = None,
@@ -8140,6 +8662,114 @@ def device_simulator_helper(client: BridgeClient, args: dict, peer_id: str = Non
     result["warnings"] = warnings
     result["baseline"] = PLAYTEST_API_BASELINE["StudioDeviceSimulatorService"]
     return result
+
+
+def run_testez_suite_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
+    """`run_testez_suite` — install a local `tests/` dir into Studio and run it.
+
+    Composes primitives that already exist rather than adding a Studio capability: build a
+    scratch container (one ModuleScript per `*.spec.lua` plus a runner), hand the runner to
+    `run_studio_tests` — which is the StudioTestService path, so the session is reported and
+    its injected runner torn down by that machinery — then delete the container. The place is
+    left exactly as it was found unless `keepContainer` is set, and the report says which
+    runner Studio actually used, because a green run under the bundled shim is not a green
+    run under TestEZ.
+    """
+    from testez_runner import DEFAULT_CONTAINER, RUNNER_NAME, RUNNER_SOURCE, scan_spec_dsl
+
+    args = args if isinstance(args, dict) else {}
+    repo_root = Path(__file__).resolve().parent.parent
+    tests_arg = str(args.get("testsDir") or "").strip()
+    if not tests_arg:
+        raise ValueError("testsDir is required: a directory of *.spec.lua relative to the repository root")
+    tests_dir = safe_local_path(repo_root, tests_arg, must_exist=True, allow_dir=True)
+    specs = sorted(path for path in tests_dir.glob("*.spec.lua") if path.is_file())
+    if not specs:
+        raise ValueError(f"no *.spec.lua under {tests_arg}")
+    try:
+        asked = int(args.get("maxSpecs", 50))
+    except Exception:  # noqa: BLE001
+        asked = 50
+    # Clamp toward the *stricter* bound: a nonsense maxSpecs must never install more specs
+    # than asked for, so 0 means 1 rather than falling back to the 50-spec default.
+    cap = max(1, min(asked, 200))
+    if len(specs) > cap:
+        raise ValueError(f"{len(specs)} specs under {tests_arg}, over maxSpecs={cap}")
+
+    container = str(args.get("container") or DEFAULT_CONTAINER).strip()
+    if not re.fullmatch(r"(game\.)?[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,12}", container):
+        raise ValueError("container must be a dot-separated instance path such as ServerStorage.ArenaTestSuites")
+    parent_path, _, leaf = container.rpartition(".")
+    if not parent_path:
+        raise ValueError("container must live inside a service, e.g. ServerStorage.ArenaTestSuites")
+
+    children = []
+    shim_gaps = []
+    for spec in specs:
+        base = spec.name[: -len(".spec.lua")]
+        source = spec.read_text(encoding="utf-8")
+        scan = scan_spec_dsl(source)
+        gaps = sorted(set(scan["unsupportedDsl"]) | set(scan["unsupportedMatchers"]))
+        if gaps:
+            shim_gaps.append({"spec": f"{base}.spec", "unsupported": gaps})
+        children.append({
+            "name": f"{base}.spec",
+            "className": "ModuleScript",
+            "source": source,
+        })
+    children.append({"name": RUNNER_NAME, "className": "ModuleScript", "source": RUNNER_SOURCE})
+
+    # `build_tree` is a *tool*; the Studio job kind it submits is `build`. Same for `delete`.
+    _unwrap_job(client.submit_job("build", {
+        "parent": parent_path,
+        "tree": [{"name": leaf, "className": "Folder", "replaceExisting": True, "children": children}],
+        "select": False,
+    }, note="testez_suite_install", wait=90.0, dm="edit", peer_id=peer_id))
+
+    run_args = {
+        "mode": str(args.get("mode") or "run"),
+        "module": f"{container}.{RUNNER_NAME}",
+        "timeoutSec": args.get("timeoutSec"),
+        "collectClientLogs": bool(args.get("collectClientLogs", False)),
+    }
+    if args.get("testezPath"):
+        run_args["args"] = {"testezPath": str(args.get("testezPath"))}
+    try:
+        session = run_studio_tests_helper(client, run_args, peer_id=peer_id)
+    finally:
+        # The container goes whether the suite passed, failed or threw: a scratch install
+        # that survives a failed run is the next agent's mystery Folder.
+        if args.get("keepContainer"):
+            removed = "kept (keepContainer)"
+        else:
+            try:
+                _unwrap_job(client.submit_job("delete", {"paths": [container]},
+                                              note="testez_suite_cleanup", wait=20.0, dm="edit",
+                                              peer_id=peer_id))
+                removed = True
+            except Exception as exc:  # noqa: BLE001 - report the residue, do not mask the result
+                removed = f"NOT removed, delete {container} yourself: {exc}"
+
+    return {
+        "testsDir": tests_arg,
+        "container": container,
+        "installed": len(specs),
+        "specs": [spec.name[: -len(".spec.lua")] for spec in specs],
+        "maxSpecs": cap,
+        "runnerModule": RUNNER_NAME,
+        "shimGaps": shim_gaps[:25],
+        "shimGapsTotal": len(shim_gaps),
+        "containerRemoved": removed,
+        "session": session,
+        "ok": bool(isinstance(session, dict) and session.get("ok")),
+        "note": ("Per-spec results come from Studio. The `runner` field in the suite report "
+                 "names what actually ran the specs: a TestEZ the place provides, or the "
+                 "bundled shim. CI cannot execute Luau, so this tool is operator-verify."
+                 + ("" if not shim_gaps else
+                    " shimGaps lists specs using TestEZ features the bundled shim does not "
+                    "implement; under real TestEZ they are fine, under the shim those "
+                    "assertions would never run, so a green report would mean nothing.")),
+    }
 
 
 def run_studio_tests_helper(client: BridgeClient, args: dict, peer_id: str = None) -> dict:
