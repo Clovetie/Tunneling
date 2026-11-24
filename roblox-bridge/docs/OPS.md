@@ -1023,3 +1023,185 @@ delete that" is answerable from the hash-chained log alone.
 | Log notifications never arrive | the client must send `_meta["io.modelcontextprotocol/logLevel"]`; over single-shot HTTP the entries come back embedded as `io.modelcontextprotocol/logEntries` |
 
 ---
+
+## 14. Security model and review history (v6.1.0)
+
+This section exists so the next audit starts from evidence instead of repeating the last
+one. Everything here is either a default you can read in the source, a finding that was
+reproduced and then closed, or a command you can run to check it yourself.
+
+### 14.1 The model in one page
+
+**Three roles** (`auth_core.ROLE_RANK`), highest wins:
+
+| Role | Can do |
+|---|---|
+| `read` | Inspect only: state, peers, survey, script reads, telemetry, `/api/policy` |
+| `write` | Everything `read` can, plus Studio mutations, jobs, bus writes |
+| `admin` | Full control: token management, tunnel control, queue clearing, audit, `bridge_ops` |
+
+`bridge.token` is an `admin` credential ("owner"). Scoped tokens are minted with
+`arena_studio.py tokens create --label ci --role read|write|admin [--ttl 86400] [--rate 5]`, listed
+and revoked on `/api/tokens` (admin only — that is the one route that shows a per-token
+`prefix`, and a prefix is `raw[:8]`, the first eight characters of the real secret).
+
+**Four gate modes** (`confirm_gate.GATE_MODES`), for `--require-confirm` /
+`BRIDGE_CONFIRM_MODE`:
+
+| Mode | Gates |
+|---|---|
+| `off` (default) | nothing |
+| `destructive` | the curated destructive set — arbitrary code execution, instance deletion, place upload, asset publish |
+| `write` | every tool not annotated `readOnlyHint` (the intended lockdown) |
+| `all` | every tool, reads included |
+
+**Defaults, as shipped:** bind `127.0.0.1` (`BRIDGE_HOST` overrides; a non-loopback bind
+prints a warning), gate `off`, auth `scoped` — because a first run with no credential
+anywhere now *generates* `bridge.token` at mode `0600` rather than coming up in open-admin
+mode. Open mode requires an explicit `--no-auth` (or `--no-generate-token`) and is written
+to the audit chain. The demo literal `arena-demo-7f3a` is refused by
+`TokenStore.authenticate()` and `setup.py` will not bake a plugin with it. Body cap
+`32 MiB` (`BRIDGE_MAX_BODY_BYTES`, floor 4096). Read the *effective* values — not these
+prose ones — from `GET /api/policy` (§6.1), the Ops tab posture panel (§12), or
+`mcp://bridge/policy`; all three are the same `BridgeState.policy_report()`.
+
+**Three properties worth knowing before you change anything:**
+
+1. The gate decision lives in `BridgeState.enqueue_job()`, the single chokepoint both
+   transports feed. A security fix applied only to the MCP path is not a fix.
+2. `mcp_core.is_tool_call_read_only()` is the only oracle for "is this a read?", and it is
+   argument-aware (`bridge_ops {"action":"policy"}` is a read; `{"action":"queue_clear"}` is
+   not). REST job kinds route through it via `job_kind_is_read_only()`. Do not add a second
+   list.
+3. Every path- or URL-shaped tool argument goes through `safe_local_path()` /
+   `safe_import_path()` / `safe_url()`. `safe_local_path` *refuses* an absolute path rather
+   than rebasing it under the root — a contained path that is not the path the caller asked
+   for is how a "safe" helper hides a traversal.
+
+### 14.2 The six findings (P0-S1..S6), and what closes each one
+
+Each row names the test that fails if the fix regresses, so a claim here is checkable
+without trusting this document: `python3 -B test_bridge_mcp.py TestV61SecurityHardening`.
+
+**S1 — the confirmation gate was bypassable over REST.** `--require-confirm` wrapped only
+the MCP `tools/call` path, so a write-scoped token enqueued `run_luau` straight through
+`POST /api/jobs` and nobody was asked. Two more holes sat behind it: `elicitation_capable`
+was read from per-request `_meta`, which the *caller* writes, so a prompt-injected agent
+could answer its own confirmation; and `gateCleared` was accepted from a request body, so a
+REST caller could claim the dispatcher had already cleared the gate. Now: the decision is in
+`enqueue_job()`; `POST /api/jobs` answers `403` with the pending `requestId` and accepts
+`{"confirmation": {"requestId"|"stateToken"}}` on retry; client answers are refused by
+default (`reason: client_answers_disabled`, opt back in with
+`BRIDGE_TRUST_CLIENT_ELICITATION=1` only if your host genuinely elicits); `gateCleared` is
+set only from the in-process MCP call context.
+*Proven by:* `test_rest_enqueue_cannot_bypass_the_confirmation_gate`,
+`test_both_transports_reach_the_same_verdict_for_the_same_work`,
+`test_a_client_cannot_answer_its_own_confirmation`,
+`test_a_rest_caller_cannot_claim_the_dispatcher_cleared_the_gate`.
+
+**S2 — the owner token was handed out over HTTP.** `GET /api/plugin/download` baked
+`bridge.token` into the plugin it served, and `/api/local-boot` returned it to any caller
+that looked local. `?token=` was accepted everywhere, so a credential landed in proxy logs,
+browser history and `Referer` headers, and the dashboard's `EventSource` needed one in a URL
+because browsers cannot set headers on SSE. Now: plugin download is `admin`-only and bakes a
+short-TTL (`BRIDGE_PLUGIN_TOKEN_TTL`, default 24 h) *write*-scoped token minted for that
+download and recorded in the audit log; `/api/local-boot` withholds the credential from a
+non-admin caller and says so via `tokenWithheld`; `?token=` survives only on `/api/poll` and
+`/api/result` (the two routes the Studio plugin calls, where `HttpService:RequestAsync`
+cannot be relied on to send headers); SSE redeems a one-shot 30 s ticket from
+`GET /api/sse-ticket`. Loopback means `127.0.0.1`/`::1` *and* a matching localhost Host
+*and*, when present, a same-origin `Origin` and compatible `Sec-Fetch-Site` — a forwarded
+address (`CF-Connecting-IP`, `X-Forwarded-For`) is never local.
+*Proven by:* `test_no_limited_caller_ever_sees_the_owner_credential`,
+`test_plugin_download_is_admin_only_and_bakes_a_dedicated_token`,
+`test_local_boot_withholds_the_credential_from_a_limited_caller`,
+`test_query_string_credentials_are_refused_outside_the_plugin_routes`,
+`test_sse_ticket_is_single_use_and_cannot_reach_another_route`.
+
+**S3 — stored XSS in the dashboard, against the admin token.** `esc()` escaped only
+`& < >` and was interpolated straight into inline `onclick` attributes, so a peer id
+containing `'` escaped the attribute and ran attacker JS in a page holding an admin
+credential in `localStorage`. Now: `esc()` escapes `& < > " ' \``; the served page contains
+**zero** inline handlers and **zero** `<script>` (133 static and 33 generated sites became
+`data-act`/`data-args` resolved by one delegated listener); HTML/JS/CSS responses carry
+`Content-Security-Policy: … script-src 'self' … frame-ancestors 'none'`,
+`X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cross-Origin-Opener-Policy`.
+*Proven by:* `test_served_page_has_no_inline_script_or_handler`,
+`test_dashboard_and_static_assets_send_a_strict_csp`,
+`test_static_route_serves_only_whitelisted_assets`, and
+`node tools/dashboard_harness.js` (loads the real `static/dashboard.js` into a stub DOM and
+asserts escaping, delegation and handler resolution — 14 checks).
+
+**S4 — tools read and wrote anywhere on disk, and fetched any URL.** `import_image`
+accepted `repoAsset: "../registry.json"` and `imageUrl: "file:///etc/hostname"`;
+`saveFile`/`outputFile` on the five render/export tools wrote outside the repo; and a sweep
+of all 100 tool schemas for file-shaped arguments found six more unconfined sinks, each a
+different primitive — `agent_bus {action:"export", path}` (write anywhere),
+`drift_and_sync {localDir}` in pull mode (write anywhere), `luau_check {path}` and
+`audit_network_security {localDir}` (read anywhere, then quote it back),
+`import_images_batch {directory,files}` (read anywhere) and
+`open_cloud_action {placeFile}` (read anywhere, then upload it to Roblox with the
+operator's API key). Now all of them go through the three helpers, and `safe_url` refuses
+loopback/link-local/private/metadata hosts and every non-`http(s)` scheme, which closes
+SSRF against the bridge itself. `image_pipeline`'s generated `Assets.lua` escapes every
+interpolated key and value as a Luau string literal, so a filename containing `"` cannot
+inject code into a module Studio `require`s.
+*Proven by:* `test_repo_asset_and_save_paths_cannot_leave_their_root`,
+`test_import_image_refuses_traversal_and_file_urls_end_to_end`,
+`test_every_operator_supplied_file_argument_is_confined`,
+`test_safe_url_blocks_every_non_http_scheme_and_local_target`, `TestLuauOfflineSafety`.
+
+**S5 — the default configuration was an open admin endpoint.** `--host` defaulted to
+`0.0.0.0`, and with no credential configured the bridge came up in open mode: any host that
+could reach the port owned Studio. The shipped demo literal `arena-demo-7f3a` was accepted
+as a working credential. Now the default bind is `127.0.0.1`, a non-loopback bind warns,
+first run mints `bridge.token` at `0600`, open mode needs an explicit flag and is audited,
+and the placeholder is refused everywhere including `setup.py`.
+*Proven by:* `test_default_bind_is_loopback_and_public_binds_warn`,
+`test_first_run_generates_a_token_instead_of_open_admin`,
+`test_placeholder_token_is_refused_everywhere`, `TestSetupTokenRecovery`.
+
+**S6 — kit source was public with no auth at all.** `GET /api/kit/catalog` bypassed
+`_require`, so an unauthenticated caller read full module source (`?item=NetworkGuard`).
+Metadata stays public — the kit is CC0 and the dashboard gallery has to render without a
+token — but `item=` and `section=`, the two queries that return source, need `read`.
+*Proven by:* `test_kit_catalog_metadata_is_public_but_source_needs_read`,
+`test_declared_route_policy_is_enforced_and_not_dead_code` (the route/policy table is
+compared against the server source, so a route added without a declared policy fails
+instead of defaulting open), `test_route_table_matches_the_server_source`.
+
+### 14.3 Re-audit it yourself
+
+```bash
+# 1. What is this bridge actually configured to do, right now?
+curl -s -H "X-Arena-Token: $READ_TOKEN" http://127.0.0.1:8077/api/policy | python3 -m json.tool
+#    riskLevel, exposed, risks[] (each with its own fix string), auth.mode,
+#    confirmGate.mode + gatedToolCount, network.bind.public, network.cors.wildcard,
+#    tunnel.state. Counts only — never a token value, never a prefix.
+
+# 2. The same report as an agent sees it, rendered into a review checklist.
+#    MCP prompt: security_review  (get_prompt with name "security_review")
+#    It walks P0-S1..S6 against the *running* bridge and returns `unverified`
+#    plus the exact operator command for anything it could not measure.
+
+# 3. Is the audit chain intact (nobody edited the log after the fact)?
+#    MCP: bridge_ops {"action":"audit_verify"}   — SHA-256 hash chain
+
+# 4. Regression suite for all six findings, offline, no Studio needed.
+python3 -B test_bridge_mcp.py TestV61SecurityHardening
+```
+
+The posture panel in the Ops tab (§12) is the same report with a banner that fires on
+exactly two things: `auth.mode == "open"` or `confirmGate.mode == "off"`. Those are the two
+configurations where a stranger can drive Studio, or an agent can delete something and
+nobody was asked — which is why the banner is narrower than the risk list.
+
+### 14.4 What this section does *not* prove
+
+Nothing here was verified against a live Roblox Studio, a live public tunnel, TestEZ
+running inside Studio, or a real DataStore. Those need a Windows/macOS machine with Studio
+installed and are listed, with the exact commands, in §10.1 (acceptance run), §10.2
+(kill-switch drill), §10.3 (kit audits and TestEZ specs) and §10.4 (posture and triage
+prompts). The regression suite drives `mock_studio.py`, which implements the plugin
+protocol faithfully but is not Studio: a handler that the mock accepts can still be rejected
+by `HttpService`, and no amount of mock testing observes real DataStore throttling.

@@ -1010,6 +1010,41 @@ All notable changes for the Roblox Studio bridge are documented here.
   `UNAVAILABLE` state reachable.
 - 253 tests, ~250 s. Nothing here spends network time: the new tests read files and one stub DOM.
 
+### Documentation (release mechanics — README security posture, OPS.md §14)
+
+- **`README.md` gained a `## Security posture` section**, which is the thing a new user needs
+  most and which until now existed only as scattered prose: the shipped defaults in a table
+  (bind `127.0.0.1`, auth `scoped` because a first run *generates* `bridge.token` at `0600`,
+  gate `off`, 32 MiB body cap, no credentials in URLs except the two plugin routes) each with
+  the flag or env var that changes it; the three roles and why an agent should get a scoped
+  token rather than the owner credential; the three properties the code depends on
+  (`enqueue_job()` as the single gate chokepoint, `is_tool_call_read_only()` as the only
+  read oracle, the three `safe_*` path/URL helpers); the dashboard's response headers; and a
+  pointer to the six findings. It states the defaults and tells you to read the *effective*
+  ones from `/api/policy`, because prose goes stale and a running bridge does not.
+- **`docs/OPS.md` gained §14 "Security model and review history"** so the next audit starts
+  from evidence rather than repeating this one: §14.1 the model in one page (roles, gate modes,
+  defaults, the three invariants), §14.2 each of P0-S1..S6 written as *what you could do →
+  what changed → the test names that fail if it regresses*, including the secondary holes
+  behind each headline finding (S1's caller-written `elicitation_capable` and body-supplied
+  `gateCleared`; S4's six further unconfined sinks found by sweeping all 100 schemas),
+  §14.3 four commands to re-audit a running bridge, and §14.4 what none of it proves — no
+  live Studio, no live tunnel, no TestEZ inside Studio, no real DataStore, with pointers to
+  §10.1..§10.4 where those commands live.
+- **P5-X1 (`bridge_ops` write actions for the kit) was skipped, deliberately.** The handoff
+  offers "skip if P5-M1 is enough", and the write half is the part that should not exist:
+  `kit_sync_manifest` would rewrite `roblox-kit/assets/asset-lock.json` (3,800 rows) and
+  `roblox-kit/modules/Assets.lua` from a remote agent over a public tunnel, and the repair it
+  performs is a *git* operation — regenerate in a working tree, read the diff, commit. An
+  agent that can rewrite the kit manifest remotely can make 4,320 hash-verified assets look
+  verified without anyone seeing the change, which is the one capability the licence registry
+  exists to prevent. Detection is already agent-facing and offline-testable
+  (`audit_kit_integrity`, `mcp://bridge/kit-integrity`, the `kit_integrity_triage` prompt);
+  repair stays with `python3 roblox-bridge/image_pipeline.py` and a human reading
+  `git diff`. `bridge_ops action=kit_integrity` as a *read* alias was also skipped — it would
+  be a second name for a tool that already exists, and §14.1's second invariant is that there
+  is one oracle per question.
+
 ### Removed (P2 — NightLoop)
 - **`nightloop/` is gone**, with its in-repo copies and every reference: 125
   tracked files, −37,441 lines. That is the reference horror-survival experience

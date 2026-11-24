@@ -90,6 +90,42 @@ rewrites [`docs/FACTS.md`](docs/FACTS.md) from `TOOL_SPECS`, `RESOURCES`, the ki
 directories and `registry.json`, and `--check` fails when this README, `CONNECT.md`,
 `AGENTS.md`, `roblox-bridge/README.md` or `roblox-bridge/docs/OPS.md` disagrees with it.
 
+## Security posture
+
+The defaults, as shipped — read the *effective* values from `GET /api/policy`, the Ops tab's
+Security Posture panel, or `mcp://bridge/policy`; all three are the same
+`BridgeState.policy_report()`, so they cannot disagree.
+
+| | Default | Change it with |
+|---|---|---|
+| Bind | `127.0.0.1` — loopback only | `--host` / `BRIDGE_HOST` (a non-loopback bind prints a warning; prefer `--tunnel`) |
+| Auth | `scoped` — a first run with no credential anywhere **generates** `bridge.token` at mode `0600` | open mode needs an explicit `--no-auth` and is written to the audit chain |
+| Confirmation gate | `off` | `--require-confirm` / `BRIDGE_CONFIRM_MODE` = `destructive`, `write` (the intended lockdown: every tool not annotated `readOnlyHint`), `all` |
+| Request body | 32 MiB ceiling | `BRIDGE_MAX_BODY_BYTES` (floor 4096) |
+| Credentials in URLs | refused, except `/api/poll` and `/api/result` (the two routes the Studio plugin calls) | the dashboard's SSE redeems a one-shot 30 s ticket instead |
+
+`bridge.token` is an `admin` credential. Hand an agent a **scoped** token instead —
+`read` (inspect only), `write` (Studio mutations, jobs, bus writes) or `admin` — minted with
+`arena_studio.py tokens create --label ci --role read [--ttl 86400] [--rate 5]` and managed on
+admin-only `/api/tokens`, the one route that shows a per-token `prefix` (and a prefix is the
+first eight characters of the real secret, which is why `/api/policy` reports token *counts*
+only).
+
+Three properties the code depends on, if you are changing it: the gate decision lives in
+`BridgeState.enqueue_job()`, the single chokepoint both transports feed, so a fix applied
+only to the MCP path is not a fix; `mcp_core.is_tool_call_read_only()` is the only oracle for
+"is this a read?" and it is argument-aware; and every path- or URL-shaped tool argument goes
+through `safe_local_path()` / `safe_import_path()` / `safe_url()`. The dashboard serves
+`Content-Security-Policy: … script-src 'self' … frame-ancestors 'none'`,
+`X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and `Cross-Origin-Opener-Policy`, and
+contains zero inline handlers or `<script>`.
+
+v6.1.0 closed six exploitable findings — a REST bypass of the confirmation gate, owner-token
+disclosure over HTTP, stored XSS in the dashboard, unconfined file/URL arguments on twelve
+tools, an open-admin default bind, and unauthenticated kit source. Each one, with the bypass
+that was reproduced and the test that fails if it regresses, is written up in
+[`roblox-bridge/docs/OPS.md`](roblox-bridge/docs/OPS.md) §14.
+
 ## Licence
 
 This repository's own code — the bridge (`roblox-bridge/`), the operator jobs (`jobs/`),
