@@ -3732,8 +3732,18 @@ class TestV54ConfirmationGate(unittest.TestCase):
         state = self.dispatcher.gate.parse_state(res["requestState"])
         self.assertEqual(state["aud"], "tools/call")
         self.assertAlmostEqual(state["exp"], state["iat"] + 120, places=0)
+        # Tamper with the tag's FIRST character, not its last two. `requestState` is
+        # `<body>.<tag>` with an unpadded base64url tag over a 16-byte HMAC, so the final
+        # two characters jointly encode one byte: rewriting them as "aa" reproduced the
+        # original digest for roughly 1 tag in 273 (any tag ending "aQ"), which made this
+        # assertion pass for nothing on those runs. The first character owns the top six
+        # bits of byte 0, so flipping it always yields a different digest — and the
+        # assertNotEqual keeps the test honest if the encoding ever changes underneath it.
+        body, tag = res["requestState"].rsplit(".", 1)
+        tampered = body + "." + ("A" if tag[0] != "A" else "B") + tag[1:]
+        self.assertNotEqual(tampered, res["requestState"])
         with self.assertRaises(Exception) as ctx:
-            self.dispatcher.gate.parse_state(res["requestState"][:-2] + "aa")
+            self.dispatcher.gate.parse_state(tampered)
         self.assertEqual(ctx.exception.reason, "bad_signature")
 
     def test_an_approval_belongs_to_the_principal_it_was_issued_to(self):
@@ -6693,7 +6703,7 @@ class TestV61KitIntegrity(unittest.TestCase):
         self.assertEqual(categories, ["core", "liveops", "mechanics", "monetization", "ui"])
         systems = [(c.name, p.name) for c in (self.kit / "systems").iterdir() if c.is_dir()
                    for p in c.iterdir() if p.is_dir()]
-        self.assertEqual(len(systems), 24, "docs/FACTS.md and the README claim 24 systems")
+        self.assertEqual(len(systems), 26, "docs/FACTS.md and the README claim 26 systems")
         for category, name in systems:
             luau = list((self.kit / "systems" / category / name).rglob("*.lua"))
             self.assertTrue(luau, f"systems/{category}/{name} has no Luau in it")

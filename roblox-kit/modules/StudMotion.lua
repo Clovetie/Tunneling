@@ -28,6 +28,14 @@ M.REFERENCE = Vector2.new(1050, 620)
 M.MIN_SCALE, M.MAX_SCALE = 0.52, 1.18
 M.BLUR, M.FOV_PLUS = 18, 8
 
+-- Accessibility, v6.1.0: `ui/settings-menu` calls M.SetReduceMotion when a player asks for
+-- it. Off by default, so the reference timings above are untouched for every game that does
+-- not install that system. What it suppresses is decoration — hover/press springs, the
+-- refusal shake, floating text's rise, pop-ins and the continuous idle effects. Window
+-- open/close and tab slides keep their timing on purpose: those are the StudUI layout's
+-- load-bearing feel and the header above says not to "improve" them.
+M.REDUCE_MOTION = false
+
 -- Default sound set (ids from the reference game). Use M.CreateSounds(gui.Sons) to populate a "Sons" folder.
 M.SOUNDS = {
 	Survol = { "rbxassetid://6895079853", 0.5, 1 }, -- hover tick
@@ -48,6 +56,15 @@ function M.CreateSounds(folder: Instance)
 		end
 	end
 	return folder
+end
+
+-- One place decides whether a UIScale change animates or lands immediately.
+local function scaleTo(sc: UIScale, info: TweenInfo, target: number)
+	if M.REDUCE_MOTION then
+		sc.Scale = target
+		return
+	end
+	TweenService:Create(sc, info, { Scale = target }):Play()
 end
 
 local function play(sounds, name, speed)
@@ -84,16 +101,17 @@ function M.BindButton(button: GuiButton, hover: number?, sounds: Instance?, onAc
 	sc.Name = "ButtonScale"; sc.Parent = button
 	hover = hover or 1.05
 	local over = false
-	button.MouseEnter:Connect(function() over = true; play(sounds, "Survol"); TweenService:Create(sc, M.HOVER, { Scale = hover }):Play() end)
-	button.MouseLeave:Connect(function() over = false; TweenService:Create(sc, M.HOVER, { Scale = 1 }):Play() end)
-	button.MouseButton1Down:Connect(function() play(sounds, "Clic", 1); TweenService:Create(sc, M.PRESS, { Scale = 0.92 }):Play() end)
-	button.MouseButton1Up:Connect(function() TweenService:Create(sc, M.RELEASE, { Scale = if over then hover else 1 }):Play() end)
+	button.MouseEnter:Connect(function() over = true; play(sounds, "Survol"); scaleTo(sc, M.HOVER, hover) end)
+	button.MouseLeave:Connect(function() over = false; scaleTo(sc, M.HOVER, 1) end)
+	button.MouseButton1Down:Connect(function() play(sounds, "Clic", 1); scaleTo(sc, M.PRESS, 0.92) end)
+	button.MouseButton1Up:Connect(function() scaleTo(sc, M.RELEASE, if over then hover else 1) end)
 	if onActivated then button.Activated:Connect(onActivated) end
 	return sc
 end
 
 --- Refusal: horizontal shake -5,+5,-3,+3,0 px every 0.04s.
 function M.Shake(obj: GuiObject)
+	if M.REDUCE_MOTION then return end
 	local p = obj.Position
 	for i, dx in { -5, 5, -3, 3, 0 } do
 		task.delay(i * 0.04, function() obj.Position = p + UDim2.fromOffset(dx, 0) end)
@@ -114,6 +132,11 @@ function M.Float(obj: GuiObject, text: string, color: Color3?)
 	t.ZIndex = 60
 	local st = Instance.new("UIStroke"); st.Color = Color3.fromRGB(17, 23, 26); st.Thickness = 2.6; st.Parent = t
 	t.Parent = obj
+	if M.REDUCE_MOTION then
+		-- The message still shows and still goes away; it just does not travel.
+		task.delay(1.1, function() t:Destroy() end)
+		return
+	end
 	local info = TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	TweenService:Create(t, info, { Position = UDim2.new(0.5, 0, 0, -30), TextTransparency = 1 }):Play()
 	TweenService:Create(st, info, { Transparency = 1 }):Play()
@@ -124,6 +147,10 @@ end
 function M.PopIn(obj: GuiObject, duration: number?)
 	local sc = obj:FindFirstChild("ButtonScale") or obj:FindFirstChildOfClass("UIScale")
 	if not sc then return end
+	if M.REDUCE_MOTION then
+		sc.Scale = 1
+		return
+	end
 	sc.Scale = 0.4
 	TweenService:Create(sc, TweenInfo.new(duration or 0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
 end
@@ -139,8 +166,8 @@ local function ensureLoop()
 	if loop then return end
 	loop = RunService.RenderStepped:Connect(function(dt)
 		local t = os.clock()
-		for obj, speed in spins do
-			if obj.Parent then obj.Rotation = (obj.Rotation + speed * dt) % 360 else spins[obj] = nil end
+		for obj, s in spins do
+			if obj.Parent then obj.Rotation = (obj.Rotation + s.speed * dt) % 360 else spins[obj] = nil end
 		end
 		for obj, s in sways do
 			if obj.Parent then obj.Rotation = s.base + s.amp * math.sin(t * s.freq) else sways[obj] = nil end
@@ -153,17 +180,46 @@ local function ensureLoop()
 		end
 	end)
 end
-function M.Spin(img: GuiObject, speed: number?, reverse: boolean?) spins[img] = (speed or 20) * (if reverse then -1 else 1); ensureLoop() end
+function M.Spin(img: GuiObject, speed: number?, reverse: boolean?)
+	if M.REDUCE_MOTION then return end
+	spins[img] = { speed = (speed or 20) * (if reverse then -1 else 1), base = img.Rotation }
+	ensureLoop()
+end
 function M.SpinSunbursts(root: Instance, speed: number?)
 	local i = 0
 	for _, d in root:GetDescendants() do
 		if d:IsA("ImageLabel") and d.Name == "Soleil" then i += 1; M.Spin(d, speed or 20, i % 2 == 0) end
 	end
 end
-function M.Sway(img: GuiObject, amp: number?, freq: number?) sways[img] = { base = img.Rotation, amp = amp or 3, freq = freq or 1.6 }; ensureLoop() end
-function M.PulseScale(sc: UIScale, amp: number?, freq: number?) pulses[sc] = { amp = amp or 0.08, freq = freq or 4 }; ensureLoop() end
-function M.PulseStroke(st: UIStroke, base: number?, amp: number?, freq: number?) strokes[st] = { base = base or 2.2, amp = amp or 1.2, freq = freq or 6 }; ensureLoop() end
+function M.Sway(img: GuiObject, amp: number?, freq: number?)
+	if M.REDUCE_MOTION then return end
+	sways[img] = { base = img.Rotation, amp = amp or 3, freq = freq or 1.6 }
+	ensureLoop()
+end
+function M.PulseScale(sc: UIScale, amp: number?, freq: number?)
+	if M.REDUCE_MOTION then return end
+	pulses[sc] = { amp = amp or 0.08, freq = freq or 4 }
+	ensureLoop()
+end
+function M.PulseStroke(st: UIStroke, base: number?, amp: number?, freq: number?)
+	if M.REDUCE_MOTION then return end
+	strokes[st] = { base = base or 2.2, amp = amp or 1.2, freq = freq or 6 }
+	ensureLoop()
+end
 function M.StopIdle(obj) spins[obj] = nil; sways[obj] = nil; pulses[obj] = nil; strokes[obj] = nil end
+
+--- Accessibility switch. Turning it on stops the idle effects already running and puts
+--- their objects back where they started, so a sunburst is not left frozen at an arbitrary
+--- angle and a notification "!" is not left mid-pulse.
+function M.SetReduceMotion(on: boolean)
+	M.REDUCE_MOTION = on and true or false
+	if not M.REDUCE_MOTION then return end
+	for obj, s in spins do if obj.Parent then obj.Rotation = s.base end end
+	for obj, s in sways do if obj.Parent then obj.Rotation = s.base end end
+	for sc in pulses do if sc.Parent then sc.Scale = 1 end end
+	for st, s in strokes do if st.Parent then st.Thickness = s.base end end
+	spins, sways, pulses, strokes = {}, {}, {}, {}
+end
 
 --[[ Tabs: active tab is full color and slides 6px toward the window; inactive tabs are tinted #9696A6 through
 	Face.GroupColor3 / Biseau.BackgroundColor3 / Icone.ImageColor3, label #D6D6E0. 0.15s Quad Out. ]]

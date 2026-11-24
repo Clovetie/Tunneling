@@ -405,6 +405,96 @@ All notable changes for the Roblox Studio bridge are documented here.
   literal never appears in a tracked file — `tools/check_secrets.sh` would otherwise fail
   on the test itself.
 
+### Added (P5-K1 — `mechanics/checkpoint-respawn`)
+- **Server-authoritative checkpoints.** The kit had 24 systems and none of them answered
+  "where does this player come back?" — a genre gap for obbies, towers and any level-based
+  game. `CheckpointService` discovers checkpoints by the `Checkpoint` collection tag or a
+  `Workspace.Checkpoints` folder, orders them by an explicit `CheckpointOrder` attribute
+  (falling back to name), and records claims per player. Touching a checkpoint claims it
+  only when the toucher has a living `Humanoid`; the remote path adds a distance check
+  (`CLAIM_RADIUS` 24 studs) and a 0.5 s cooldown, and is rate-limited through
+  `NetGuard.allowRate(player, "CheckpointClaim", 8, 2)` — the first system in the kit to
+  ship with a network guard on its own remote. **The client never tells the server what it
+  has claimed**: it asks, and the server answers with state it computed itself.
+- **Strict order is a config switch, not a rewrite.** `STRICT_ORDER = true` refuses
+  out-of-order claims with a reason (`bad_id`, `unknown_checkpoint`, `already_claimed`,
+  `out_of_order`, `cooldown`), which is what a tower wants; `false` lets any checkpoint
+  claim, which is what a hub wants. Stale ids — a checkpoint renamed since the last save —
+  are ignored by `highestClaimed`, `progress` and `respawnId` rather than throwing, so a
+  level edit cannot corrupt a save.
+- **Respawning does not hijack the game's spawns.** `DEFAULT_CHECKPOINT_ID` is `nil` by
+  default, meaning a player who has claimed nothing respawns wherever the game's own
+  `SpawnLocation`s put them. Once something is claimed, respawn moves `HumanoidRootPart`
+  with a `RESPAWN_OFFSET_Y` of 3 so the player does not start inside the pad. `PARTY_SHARE`
+  (off by default, radius 60) extends a claim to nearby players, which is what a co-op
+  obby wants and what a competitive one does not.
+- **Claims survive, and survive a data-service outage.** They are written to
+  `data.checkpoints.claimed` through `shared.DataServiceAPI`; if that API has not appeared
+  after 10 s the system warns **once** and keeps an in-memory ledger instead of erroring in
+  a loop, and claims made before the profile loaded are merged in afterwards.
+- **`shared/CheckpointOrder.lua` is pure and `tests/CheckpointOrder.spec.lua` covers it** —
+  28 cases, 93 assertions in total across the new specs this release — including the audit
+  that warns on duplicate or non-integer orders: 28 cases and 63 assertions. It is the
+  first system under `roblox-kit/systems/**` to ship a spec, closing a gap the other
+  systems' READMEs had promised since before 6.1.0: 17 READMEs reference a
+  `tests/<name>.spec.lua`, 15 of them do not exist on disk, and three of those name a
+  module that never existed anywhere in the kit (`BadgeData`, `EconomyMath`, `HatchOdds`).
+
+### Added (P5-K2 — `ui/settings-menu`, plus reduce-motion switches)
+- **A settings window the kit can actually ship.** Volume sliders (master/music/SFX, driven
+  through `SoundGroup`s, the Roblox-idiomatic way), camera sensitivity
+  (`UserInputService.MouseDeltaSensitivity`), invert-Y, reduce motion, on-screen hints, a
+  colour-blind palette picker, rebindable actions, and a "Restore defaults" button that is
+  greyed out until something genuinely differs. Every change applies immediately, so a
+  player hears the volume they just set instead of guessing.
+- **`SettingsConfig.SCHEMA` is one table three consumers derive from** — what the menu
+  renders, what the server accepts and what a save may contain — so they cannot drift.
+  `SettingsData` (pure, no Roblox types) does every conversion and returns a *reason*
+  rather than silently storing garbage: `normalizeValue` refuses to coerce `"true"` or `1`
+  into a toggle, checks enums against their option list, and `normalize` repairs a corrupt
+  or older save by dropping unknown keys and defaulting missing ones.
+- **A snapping bug found while writing the spec.** `snap` clamps to `[min, max]` and then
+  snaps to `step`; when the step does not divide the range, snapping the top of the range
+  lands *under* max, so a `0..1` slider with `step = 0.3` could never reach `1.0`. Snapping
+  is now skipped at max. A volume control that cannot be maxed is the kind of defect no
+  playtest finds.
+- **The server is the authority for what is saved.** It re-normalises every incoming table,
+  writes it onto the live profile at `data.settings` so `core/data` auto-saves it with its
+  session lock, retries and `BindToClose` flush (a raw DataStore call would race all
+  three), and replies with the *normalised* table, so a client that sent `5` for a `0..1`
+  slider converges on what was stored. Saves cost one request per player per 0.5 s, plus an
+  optional `NetworkGuard` endpoint (1/s, burst 4) that warns once and carries on without it.
+- **A slider drag saves on release, not per move.** Applying locally per move and firing per
+  move would trip that rate limit, and the limiter could drop the *final* value — leaving
+  the player looking at `0.4` and stored at `0.2`. Two more client defects fixed while
+  writing it: `function render()` at file scope in a `.client.lua` creates a **global**
+  (now a forward-declared local), and `player:SetAttribute` from a client is a silent
+  no-op, not a write, so those calls were removed rather than kept as decoration.
+- **Key names are strings (`"LeftShift"`), not `Enum.KeyCode`,** and the palette values are
+  plain numbers, so `SettingsConfig` and `SettingsData` stay free of Roblox types — that is
+  what lets `tests/SettingsData.spec.lua` (33 cases, 93 assertions) run without a
+  DataModel. `Menu`
+  defaults to `F1` rather than `Escape`, because `Escape` opens Roblox's core menu, which
+  this window cannot draw over: the player would press it and see nothing happen.
+- **`SpringUI.ReduceMotion` / `SetReduceMotion(on)` and `StudMotion.REDUCE_MOTION` /
+  `SetReduceMotion(on)`.** Both default to **off**, so a game that never installs
+  `settings-menu` keeps the reference timings untouched. Suppressed: hover and press
+  springs, shake, float travel, pop-ins, and the idle spin/sway/pulse effects. Deliberately
+  **not** suppressed: `StudMotion.Window` open/close and `SelectTab` slides, which are the
+  load-bearing part of the Stud UI feel rather than decoration. Turning reduce motion on
+  also parks every idle object back at its recorded base scale before clearing the effect
+  tables, so nothing is left spinning at scale 0; that required `spins[obj]` to carry
+  `{ speed, base }` instead of a bare number.
+- **Optional `ui/kit` integration.** With the kit installed, the window registers with
+  `UIManager` (so `UIManager.open("Settings")` works, one panel shows at a time, and the
+  tutorial lock is honoured instead of the menu opening over a tutorial) and a HUD tile is
+  added. Without it the window still works standalone — the reason it draws its own GUI.
+- **Honest about the palette.** The colour-blind options are a coarse saturation/tint aid,
+  **not** a simulation of the deficiency: Roblox has no stock LUT effect, and shipping a
+  fake simulation would be worse than saying so. A game with real LUTs replaces
+  `PALETTE_ADJUSTMENTS` or drives its own effect from
+  `SettingsAPI.onChanged("ColorBlindPalette", fn)`.
+
 ### Added (P5-K4/K5 — kit modules)
 - **`roblox-kit/modules/Throttle.lua`** (`--!strict`) — the two rate-limiting primitives
   the kit shares. `Throttle.new(rate, burst)` is a token bucket (refills continuously,

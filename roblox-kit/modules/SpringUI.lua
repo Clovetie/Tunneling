@@ -7,6 +7,23 @@ local SpringUI = {}
 local FAST_OUT = TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 local POP_IN = TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 
+-- Accessibility, v6.1.0: `ui/settings-menu` calls SetReduceMotion when a player asks for
+-- it. Off by default, so nothing above changes for a game that never installs that system.
+SpringUI.ReduceMotion = false
+
+function SpringUI.SetReduceMotion(on)
+	SpringUI.ReduceMotion = on and true or false
+end
+
+-- One place decides whether a scale change animates or lands immediately.
+local function scaleTo(uiScale, info, target)
+	if SpringUI.ReduceMotion then
+		uiScale.Scale = target
+		return
+	end
+	TweenService:Create(uiScale, info, { Scale = target }):Play()
+end
+
 local function ensureScale(guiObj)
 	local s = guiObj:FindFirstChildOfClass("UIScale")
 	if not s then
@@ -23,16 +40,16 @@ function SpringUI.bindButton(button, opts)
 	local conns = {}
 
 	table.insert(conns, button.MouseEnter:Connect(function()
-		TweenService:Create(uiScale, FAST_OUT, { Scale = hoverScale }):Play()
+		scaleTo(uiScale, FAST_OUT, hoverScale)
 	end))
 	table.insert(conns, button.MouseLeave:Connect(function()
-		TweenService:Create(uiScale, FAST_OUT, { Scale = 1.0 }):Play()
+		scaleTo(uiScale, FAST_OUT, 1.0)
 	end))
 	table.insert(conns, button.MouseButton1Down:Connect(function()
-		TweenService:Create(uiScale, FAST_OUT, { Scale = pressScale }):Play()
+		scaleTo(uiScale, FAST_OUT, pressScale)
 	end))
 	table.insert(conns, button.MouseButton1Up:Connect(function()
-		TweenService:Create(uiScale, POP_IN, { Scale = hoverScale }):Play()
+		scaleTo(uiScale, POP_IN, hoverScale)
 	end))
 
 	return function()
@@ -44,8 +61,13 @@ end
 
 function SpringUI.popReveal(guiObj)
 	local uiScale = ensureScale(guiObj)
-	uiScale.Scale = 0.82
 	guiObj.Visible = true
+	if SpringUI.ReduceMotion then
+		-- Reveal without the pop: starting at 0.82 and jumping would still be a jump.
+		uiScale.Scale = 1.0
+		return
+	end
+	uiScale.Scale = 0.82
 	TweenService:Create(uiScale, POP_IN, { Scale = 1.0 }):Play()
 end
 

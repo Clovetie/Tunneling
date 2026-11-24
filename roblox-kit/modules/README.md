@@ -50,10 +50,10 @@ file to copy. Copy all three, or keep the older standalone versions.
 | `QuestTracker` | `--!nonstrict` | Multi-objective quest machine with per-player journals. |
 | `Signal` | — | Lightweight, zero-yield pure-Luau signal class. |
 | `SoundFX` | — | UI and 3D spatial sound player, cloud IDs or local assets. |
-| `SpringUI` | `--!strict` | TweenService micro-interactions, button scale springs, pop-in reveals. |
+| `SpringUI` | `--!strict` | TweenService micro-interactions, button scale springs, pop-in reveals. `ReduceMotion` / `SetReduceMotion(on)` suppress the decorative springs without changing any other timing. |
 | `StateMachine` | `--!nonstrict` | Hierarchical FSM with a state stack, guarded transitions, lifecycle hooks. |
 | `StateStore` | — | Observable key-value store for server session data or client UI state. |
-| `StudMotion` | `--!nonstrict` | Motion, sound and responsive behaviour of the Stud UI Clean Roblox style. |
+| `StudMotion` | `--!nonstrict` | Motion, sound and responsive behaviour of the Stud UI Clean Roblox style. `REDUCE_MOTION` / `SetReduceMotion(on)` park hover, shake, float, pop-in and the idle effects; window open/close and tab slides keep their timing. |
 | `StudUI` | `--!nonstrict` | The Stud UI Clean Roblox kit itself. |
 | `TagBinder` | — | `CollectionService` component lifecycle binder. |
 | **`Throttle`** | `--!strict` | **v6.1.0.** The two rate-limiting primitives the kit shares: a token bucket and a fixed window. |

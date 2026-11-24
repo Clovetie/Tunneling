@@ -36,8 +36,7 @@ facts:	## regenerate docs/FACTS.md
 
 luau:	## undefined-global scan over the bridge and the kit's Luau
 	bash $(BRIDGE)/tools/check_globals.sh $(BRIDGE)
-	bash $(BRIDGE)/tools/check_globals.sh roblox-kit/modules
-	bash $(BRIDGE)/tools/check_globals.sh roblox-kit/systems
+	bash $(BRIDGE)/tools/check_globals.sh roblox-kit
 
 kit:	## committed asset manifest matches the tree (writes nothing)
 	$(PYTHON) $(BRIDGE)/image_pipeline.py --check
