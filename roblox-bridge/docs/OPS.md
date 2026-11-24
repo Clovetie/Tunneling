@@ -509,7 +509,7 @@ Override with `--state-dir` or `BRIDGE_STATE_DIR`.
 ## 9. Tests
 
 ```bash
-python3 -B roblox-bridge/test_bridge_mcp.py          # 222 tests
+python3 -B roblox-bridge/test_bridge_mcp.py          # 236 tests
 bash roblox-bridge/tools/check_globals.sh roblox-bridge   # undefined Luau globals
 python3 -B tools/verify_licences.py                  # kit asset licence manifest
 python3 roblox-bridge/image_pipeline.py --check      # committed asset manifest
@@ -671,6 +671,50 @@ call run_testez_suite '{"testsDir":"roblox-kit/modules/tests","keepContainer":tr
 Afterwards `ServerStorage.ArenaTestSuites` must be gone (unless you passed
 `keepContainer`), and `git status --porcelain roblox-kit/` must still be empty — the tool
 writes into the place, never into the repository.
+
+### 10.4 Posture and triage prompts (P5-M2/M3, operator-verify)
+
+`GET /api/policy` (see 6.1) and `mcp://bridge/policy` are the measurement; the three v6.1.0
+prompts are what to *do* with it. Each one renders live state into the prompt text as it is
+fetched, so an agent reading it is reading the bridge rather than a document that went stale
+last release.
+
+```bash
+BRIDGE=http://127.0.0.1:8077
+prompt() { curl -sS -X POST "$BRIDGE/mcp" -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"prompts/get\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}"; }
+
+# The security review: posture rendered in, P0-S1..S6 checklist, evidence per claim.
+prompt security_review '{}'
+prompt security_review '{"focus":"cors and tunnel exposure"}'
+
+# Kit drift, safest repair first. Offline — this one renders real numbers with no peer at all.
+prompt kit_integrity_triage '{}'
+
+# Spec-first kit system: what to write, what CI can prove, what only Studio can.
+prompt testez_first_workflow '{"system":"liveops/leaderboard","behaviour":"page clamping"}'
+```
+
+| Line in the rendered prompt | What it tells you |
+|---|---|
+| `riskLevel: ok \| exposed: False \| actionable risks: 0` | the headline from `policy_report()`. `riskLevel` is the worst **actionable** severity, so `ok` here means no critical/high/medium risk — review and info rows are counted separately, not folded in |
+| `confirm gate: write covering 34 tools + job kinds ['run_luau']` | the mode **in force**, not the one you asked for. If you passed `--require-confirm=always` this line still reads `off`, because `mode_from_env` silently falls back; that mismatch is itself a `critical` risk (`gate_mode_unrecognised`) |
+| `bind: 127.0.0.1:8077 (loopback)` | read off the socket that was actually bound, not off the flag |
+| `CORS allowlist: []` | an empty allowlist means *same-origin only* — the bridge's own `Host` header plus the active tunnel URL — not "any origin" |
+| `hashes sampled: 0` | hashing was off for that read. **Zero mismatches here means nothing was hashed, not that nothing is wrong.** Re-run with `verifyHashes: true` |
+| `Specs CAN be executed against this peer with run_testez_suite` | a Studio peer is attached. Absent that line, the prompt says so explicitly instead of implying it |
+
+**Unverified from this repository.** The prompts are covered by tests that render them
+offline, against the mock peer, and against a dead bridge, but nothing here runs Luau or a
+real tunnel, so these claims need an operator:
+
+| Claim | Command to settle it | What a pass looks like |
+|---|---|---|
+| `security_review` reproduces the posture of a *real* deployment | start the bridge the way you run it (public bind and/or tunnel), then `prompt security_review '{}'` and compare with `GET /api/policy` | the rendered `riskLevel`, `bind:` and risk list match the JSON exactly, and each risk names the fix you actually applied |
+| `testez_first_workflow` produces a spec that passes in Studio | run §10.3 step 3 against a peer with TestEZ installed | `runner` is **not** `bundled-shim`, `shimGaps []`, and `session.suites` shows your suites passing |
+| The kit audits agree on a machine other than this one | `prompt kit_integrity_triage '{}'`, then §10.3 step 1 | the rendered counters match `audit_kit_integrity`, and `git status --porcelain roblox-kit/` is still empty afterwards |
+| A DataStore-backed kit system behaves under Studio | `run_testez_suite` for the system's `tests/`, then exercise the DataStore path by hand | specs pass under real TestEZ and the store survives a `require_fresh` cycle |
 
 ## 11. Latency budget (G2)
 

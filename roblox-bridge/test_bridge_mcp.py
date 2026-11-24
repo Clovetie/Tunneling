@@ -59,8 +59,9 @@ def record_tool_metric(name: str, elapsed: float, passed: bool = True):
 sys.path.insert(0, str(HERE))
 
 from mcp_core import (  # noqa: E402
-    PROMPTS, RESOURCES, RESOURCE_TEMPLATES, BridgeClient, MCPDispatcher, TOOL_SPECS,
-    UnsafePathError, audit_kit_integrity_report, execute_tool, fnv1a_32, fnv1a_hex,
+    KIT_INTEGRITY_FALLBACK, PEER_FALLBACK, POLICY_FALLBACK, PROMPTS, RESOURCES,
+    RESOURCE_TEMPLATES, BridgeClient, MCPDispatcher, TOOL_SPECS, UnsafePathError,
+    audit_kit_integrity_report, execute_tool, fnv1a_32, fnv1a_hex, get_mcp_prompt,
     read_mcp_resource, run_luau_check,
 )
 from mock_studio import run_mock_loop  # noqa: E402
@@ -1475,7 +1476,8 @@ class TestV5OpsPlatform(unittest.TestCase):
     def test_mcp_prompts_render_live_bus_state(self):
         from mcp_core import PROMPTS, get_mcp_prompt
         names = [p["name"] for p in PROMPTS]
-        self.assertEqual(len(PROMPTS), 7)
+        # No literal count: `tools/emit_facts.py --check` owns the number in prose, and
+        # TestV61M3Prompts owns the invariant that every advertised prompt renders.
         for name in ("multi_agent_handoff", "bus_standup", "task_triage"):
             self.assertIn(name, names)
 
@@ -8002,6 +8004,50 @@ class TestV61PolicyAndKitResources(unittest.TestCase):
         self.assertFalse(payload["available"])
         self.assertIn("no bridge connection", payload["reason"])
 
+    def test_prompts_list_advertises_all_ten_including_the_three_new_ones(self):
+        listed = self.rpc({"jsonrpc": "2.0", "id": "prompts", "method": "prompts/list",
+                           "params": {}})["result"]["prompts"]
+        names = [row["name"] for row in listed]
+        self.assertEqual(len(names), len(PROMPTS))
+        for expected in ("security_review", "kit_integrity_triage", "testez_first_workflow"):
+            self.assertIn(expected, names)
+            row = next(r for r in listed if r["name"] == expected)
+            self.assertTrue(row["description"])
+
+    def test_security_review_renders_the_live_posture_not_the_fallback(self):
+        body = self.rpc({"jsonrpc": "2.0", "id": "pr1", "method": "prompts/get",
+                         "params": {"name": "security_review", "arguments": {}}})
+        text = body["result"]["messages"][0]["content"]["text"]
+        self.assertNotIn(POLICY_FALLBACK, text)
+        self.assertIn("riskLevel: ok", text)
+        self.assertIn(f"bind: 127.0.0.1:{self.port}", text)
+        # This fixture runs --require-confirm=write, and the prompt must show the mode in
+        # force rather than the default.
+        self.assertIn("confirm gate: write covering", text)
+        self.assertIn("destructiveHint tools not gated: none", text)
+
+    def test_testez_workflow_renders_the_attached_peer(self):
+        body = self.rpc({"jsonrpc": "2.0", "id": "pr2", "method": "prompts/get",
+                         "params": {"name": "testez_first_workflow",
+                                    "arguments": {"system": "liveops/leaderboard"}}})
+        text = body["result"]["messages"][0]["content"]["text"]
+        self.assertNotIn(PEER_FALLBACK, text)
+        self.assertIn("studio_connected true", text)
+        self.assertIn("Specs CAN be executed against this peer with `run_testez_suite`", text)
+        # The peer row names the place; a None interpolated here reads like a measurement.
+        self.assertNotIn("] None", text)
+
+    def test_prompts_degrade_against_a_dead_bridge_instead_of_raising(self):
+        dead = BridgeClient(base_url=f"http://127.0.0.1:{_free_port()}", token=self.token)
+        for name, fallback in (("security_review", POLICY_FALLBACK),
+                               ("testez_first_workflow", PEER_FALLBACK)):
+            with self.subTest(prompt=name):
+                text = get_mcp_prompt(name, {}, dead)["messages"][0]["content"]["text"]
+                self.assertIn(fallback, text)
+        # The kit check needs no bridge at all, so it still renders measured numbers.
+        kit = get_mcp_prompt("kit_integrity_triage", {}, dead)["messages"][0]["content"]["text"]
+        self.assertIn("registry rows 4320", kit)
+
     def test_resources_list_advertises_both_and_pagination_still_covers_them(self):
         listed = self.rpc({"jsonrpc": "2.0", "id": "list", "method": "resources/list",
                            "params": {}})["result"]
@@ -8027,6 +8073,128 @@ class TestV61PolicyAndKitResources(unittest.TestCase):
             seen |= {r["uri"] for r in nxt["resources"]}
             cursor = nxt.get("nextCursor")
         self.assertEqual(seen, set(uris))
+
+
+
+class TestV61M3Prompts(unittest.TestCase):
+    """P5-M3 — three prompts that render live state and degrade without lying.
+
+    The requirement is not "three more prompts": it is that each one degrades when there is
+    no Studio peer *and does not imply it proved anything*. A prompt that renders an empty
+    posture section reads to an agent as "nothing wrong here", which is the opposite of the
+    truth, so the fallbacks say out loud that nothing was measured.
+    """
+
+    def render(self, name: str, args: dict = None, client=None) -> str:
+        prompt = get_mcp_prompt(name, args or {}, client)
+        text = prompt["messages"][0]["content"]["text"]
+        self.assertEqual(prompt["role"] if "role" in prompt else "user", "user")
+        self.assertEqual(prompt["messages"][0]["role"], "user")
+        spec = next(p for p in PROMPTS if p["name"] == name)
+        self.assertEqual(prompt["description"], spec["description"])
+        return text
+
+    def test_every_advertised_prompt_renders_without_a_client(self):
+        # The invariant that matters: a PROMPTS entry with no branch in `get_mcp_prompt` is a
+        # prompt that raises KeyError the moment a client asks for it. Derived, not a literal
+        # count, so adding a prompt cannot make this test stale.
+        self.assertEqual(len({p["name"] for p in PROMPTS}), len(PROMPTS), "duplicate prompt name")
+        for spec in PROMPTS:
+            with self.subTest(prompt=spec["name"]):
+                text = self.render(spec["name"])
+                self.assertTrue(text.strip())
+                self.assertTrue(spec["title"] and spec["description"])
+                for arg in spec.get("arguments") or []:
+                    self.assertIsInstance(arg.get("required"), bool, arg)
+                    self.assertTrue(arg.get("description"), arg)
+
+    def test_unknown_prompt_names_are_refused(self):
+        with self.assertRaises(KeyError):
+            get_mcp_prompt("not_a_prompt", {}, None)
+
+    def test_security_review_degrades_and_says_nothing_was_measured(self):
+        text = self.render("security_review")
+        self.assertIn("UNAVAILABLE", text)
+        self.assertIn("unverified", text)
+        # It must not read as a clean report just because the bridge was unreachable.
+        self.assertNotIn("riskLevel: ok", text)
+        self.assertIn("mcp://bridge/policy", text)
+        self.assertIn("/api/audit", text)
+        self.assertIn("/api/tokens", text)
+
+    def test_security_review_walks_the_whole_p0_checklist(self):
+        text = self.render("security_review")
+        for item in ("S1 gate parity", "S2 owner-token disclosure", "S3 dashboard XSS",
+                     "S4 path confinement", "S5 safe defaults", "S6 kit source"):
+            self.assertIn(item, text)
+        # The evidence rule is the point of the prompt.
+        self.assertIn("Every claim cites the call that produced it", text)
+        self.assertIn("exact command an operator must run", text)
+        # And it must not turn into a remediation run, or leak credentials into a report.
+        self.assertIn("read-only by intent", text)
+        self.assertIn("Never paste a token value, hash or prefix", text)
+
+    def test_security_review_substitutes_its_focus_argument(self):
+        self.assertIn("Focus: cors and tunnel exposure",
+                      self.render("security_review", {"focus": "cors and tunnel exposure"}))
+        self.assertIn("Focus: everything the posture report flags",
+                      self.render("security_review"))
+
+    def test_kit_integrity_triage_renders_the_real_report_offline(self):
+        # No peer and no bridge: the kit check is pure filesystem, so it must still render
+        # measured numbers rather than a fallback.
+        text = self.render("kit_integrity_triage")
+        self.assertNotIn(KIT_INTEGRITY_FALLBACK, text)
+        self.assertIn("registry rows 4320", text)
+        self.assertIn("lock entries 3800", text)
+        self.assertIn("Assets.lua URIs 3800", text)
+        self.assertIn("ok: True", text)
+        # Off by default, so the prompt must not let a 0 read as "nothing is wrong".
+        self.assertIn("hashes sampled: 0", text)
+        self.assertIn("not because nothing is wrong", text)
+
+    def test_kit_integrity_triage_carries_the_repairs_that_cannot_make_things_worse(self):
+        text = self.render("kit_integrity_triage")
+        # Generated file: regenerate, never hand-edit.
+        self.assertIn("GENERATED by `image_pipeline.py`", text)
+        self.assertIn("Never hand-edit it", text)
+        # Re-serialising a kit JSON with json.dumps explodes inline arrays across the file.
+        self.assertIn("Never re-serialise a kit JSON file with `json.dumps`", text)
+        # verify_licences failing means a file moved, not that the fetcher is broken.
+        self.assertIn("a file MOVED", text)
+        # Every finding class gets a repair, and the registry row is never deleted to silence one.
+        for finding in ("missingFromDisk", "unregisteredOnDisk", "rowProblems", "lockDrift",
+                        "assetsLuaDrift", "manifestDrift", "hashMismatches"):
+            self.assertIn(finding, text)
+        self.assertIn("Do NOT delete the registry row", text)
+        self.assertIn("git checkout --", text)
+        self.assertIn("verifyHashes: true", text)
+
+    def test_testez_first_workflow_is_spec_first_and_honest_about_its_limits(self):
+        text = self.render("testez_first_workflow")
+        self.assertIn(PEER_FALLBACK, text)
+        self.assertIn("FIRST", text)
+        self.assertIn("run_testez_suite", text)
+        # The shim verdict is not a TestEZ verdict, and shimGaps is the silent-green guard.
+        self.assertIn("bundled-shim", text)
+        self.assertIn("shimGaps", text)
+        self.assertIn("check_globals.sh", text)
+        # The limits, in the order the handoff demands: what is proved here, what is not.
+        self.assertIn("proved here", text)
+        self.assertIn("NOT proved here", text)
+        self.assertIn("operator-verify", text)
+        # TestEZ's `to.equal` is reference equality on tables: the trap is named, not implied.
+        self.assertIn("compares table *references*", text)
+
+    def test_testez_first_workflow_substitutes_its_arguments(self):
+        text = self.render("testez_first_workflow",
+                           {"system": "liveops/leaderboard", "behaviour": "page clamping"})
+        self.assertIn("Build `liveops/leaderboard` spec-first", text)
+        self.assertIn("Behaviour to pin down: page clamping", text)
+
+    def test_kit_integrity_triage_substitutes_its_kit_root(self):
+        self.assertIn("in /tmp/some-other-kit",
+                      self.render("kit_integrity_triage", {"kitRoot": "/tmp/some-other-kit"}))
 
 
 

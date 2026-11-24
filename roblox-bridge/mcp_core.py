@@ -5288,6 +5288,45 @@ PROMPTS = [
         ],
     },
     {
+        "name": "security_review",
+        "title": "Security Review of the Running Bridge",
+        "description": (
+            "Walk the P0-S1..S6 checklist against the *running* bridge (mcp://bridge/policy, "
+            "/api/audit, /api/tokens) and produce a report where every claim cites the call that "
+            "produced it. Anything you could not check is reported as unverified with the exact "
+            "command an operator should run - this prompt proves nothing by itself."
+        ),
+        "arguments": [
+            {"name": "focus", "description": "Optional area to go deep on (auth, gate, cors, tokens, exposure)", "required": False},
+        ],
+    },
+    {
+        "name": "kit_integrity_triage",
+        "title": "Kit Integrity Triage & Repair (safest first)",
+        "description": (
+            "Read the live audit_kit_integrity report and repair drift in the order that cannot "
+            "make things worse: classify the finding first, restore from git before regenerating "
+            "anything, and never hand-edit a generated file. Offline - needs no Studio peer."
+        ),
+        "arguments": [
+            {"name": "kitRoot", "description": "Optional kit directory (defaults to the repository's own roblox-kit)", "required": False},
+        ],
+    },
+    {
+        "name": "testez_first_workflow",
+        "title": "Spec-First Kit System Workflow",
+        "description": (
+            "Write the *.spec.lua first, then the feature, then run both through the static "
+            "toolchain and - if a Studio peer is attached - through run_testez_suite. States "
+            "plainly what CI can prove (parse, types, globals, arithmetic) and what only an "
+            "operator running Studio can."
+        ),
+        "arguments": [
+            {"name": "system", "description": "System directory under roblox-kit/systems (e.g. liveops/leaderboard)", "required": False},
+            {"name": "behaviour", "description": "The behaviour the spec must pin down", "required": False},
+        ],
+    },
+    {
         "name": "task_triage",
         "title": "Triage Open Agent Bus Tasks",
         "description": "Rank open Agent Bus tasks by priority and dependencies, propose a claim order, and flag tasks without acceptance criteria.",
@@ -8436,6 +8475,24 @@ BUS_FALLBACK = (
     "Work from the handoff brief you were given and state any assumption you had to make."
 )
 
+#: v6.1.0 (P5-M3). Same contract as `BUS_FALLBACK`: a prompt that cannot read live state
+#: says so in the text it hands the agent, rather than rendering an empty section that reads
+#: like "nothing wrong here". An absent measurement must never look like a clean one.
+POLICY_FALLBACK = (
+    "Live bridge posture is UNAVAILABLE (no bridge connection, or `mcp://bridge/policy` "
+    "refused). Nothing below is a measurement: read the resource yourself before concluding "
+    "anything, and mark every posture claim in your report `unverified` until you have."
+)
+KIT_INTEGRITY_FALLBACK = (
+    "The kit integrity check could not run (see the error above). Do not assume the kit is "
+    "clean: run `audit_kit_integrity` yourself and work from its counters."
+)
+PEER_FALLBACK = (
+    "No Studio peer state is available (no bridge connection, or no Studio is attached). "
+    "Specs can still be written and statically checked; they CANNOT be executed from here, "
+    "so any claim that a spec passes is a claim you must hand to an operator."
+)
+
 
 
 # ---------------------------------------------------------------------------
@@ -11332,6 +11389,119 @@ def _bus_lines(client, include_tasks: bool = True, tasks_include_done: bool = Fa
     return "\n".join(lines)
 
 
+def _policy_lines(client) -> str:
+    """Compact live posture for prompt rendering; never raises."""
+    if client is None:
+        return POLICY_FALLBACK
+    try:
+        policy = client.ops_action({"action": "policy"})
+    except Exception:  # noqa: BLE001 - a dead bridge degrades the prompt, it does not break it
+        return POLICY_FALLBACK
+    if not isinstance(policy, dict) or "riskLevel" not in policy:
+        return POLICY_FALLBACK
+    auth = policy.get("auth") or {}
+    gate = policy.get("confirmGate") or {}
+    net = policy.get("network") or {}
+    bind = net.get("bind") or {}
+    cors = net.get("cors") or {}
+    tunnel = policy.get("tunnel") or {}
+    tokens = auth.get("tokens") or {}
+    by_role = tokens.get("byRole") or {}
+    lines = [
+        "Bridge posture (read live when this prompt was rendered, so re-read before concluding):",
+        f"  riskLevel: {policy.get('riskLevel')} | exposed: {policy.get('exposed')} | "
+        f"actionable risks: {policy.get('actionableRisks')}",
+        f"  auth: {auth.get('mode')} | read-only: {auth.get('readOnly')} | tokens: "
+        f"{tokens.get('count')} ({tokens.get('active')} active, {tokens.get('revoked')} revoked, "
+        f"{tokens.get('expired')} expired) by role {by_role}",
+        f"  confirm gate: {gate.get('mode')} covering {gate.get('gatedToolCount')} tools"
+        + (f" + job kinds {gate.get('gatedJobKinds')}" if gate.get("gatedJobKinds") else "")
+        + f" | destructiveHint tools not gated: {gate.get('destructiveNotGated') or 'none'}",
+        f"  bind: {bind.get('host')}:{bind.get('port')} "
+        f"({'PUBLIC' if bind.get('public') else 'loopback'}) | tunnel: {tunnel.get('state')}"
+        + (f" at {tunnel.get('publicUrl')}" if tunnel.get("publicUrl") else ""),
+        f"  body cap: {net.get('maxBodyBytes')} bytes | CORS allowlist: "
+        f"{cors.get('allowlist') or '[]'} ({cors.get('policy')})",
+    ]
+    risks = policy.get("risks") or []
+    if risks:
+        lines.append("  risks, worst first:")
+        for risk in risks[:10]:
+            lines.append(f"    - [{risk.get('severity')}] {risk.get('id')}: {risk.get('message')}")
+            lines.append(f"      fix: {risk.get('fix')}")
+    else:
+        lines.append("  risks: none reported by policy_report().")
+    return "\n".join(lines)
+
+
+def _kit_integrity_lines() -> str:
+    """Compact live kit cross-check for prompt rendering; never raises. Offline: no peer."""
+    try:
+        got = kit_integrity_cached_report()
+    except Exception as exc:  # noqa: BLE001
+        return f"{KIT_INTEGRITY_FALLBACK}\n(error: {exc})"
+    report = got.get("report") or {}
+    checked = report.get("checked") or {}
+    counts = report.get("counts") or {}
+    findings = ", ".join(
+        f"{label} {report.get(key, 0)}" for label, key in (
+            ("missingFromDisk", "missingFromDiskTotal"),
+            ("unregisteredOnDisk", "unregisteredOnDiskTotal"),
+            ("rowProblems", "rowProblemsTotal"),
+            ("lockDrift", "lockDriftTotal"),
+            ("assetsLuaDrift", "assetsLuaDriftTotal"),
+            ("manifestDrift", "manifestDriftTotal"),
+            ("hashMismatches", "hashMismatchesTotal"),
+        )
+    )
+    manifest = ("checked" if report.get("manifestChecked")
+                else f"SKIPPED ({checked.get('manifest', 'reason not given')})")
+    lines = [
+        f"Kit integrity (checked live, offline - no Studio peer needed; "
+        f"cache age {got.get('ageSeconds')}s):",
+        f"  ok: {report.get('ok')} | registry rows {checked.get('registryRows')} | "
+        f"asset files on disk {checked.get('assetFilesOnDisk')} | lock entries "
+        f"{checked.get('lockEntries')} | Assets.lua URIs {checked.get('assetsLuaUris')}",
+        f"  asset types: {counts}",
+        f"  manifest leg: {manifest}"
+        + (f" (count {checked.get('manifestCount')}, audio {checked.get('manifestAudioCount')})"
+           if report.get("manifestChecked") else ""),
+        f"  hashes sampled: {checked.get('hashesChecked')} (verifyHashes is off by default, so "
+        f"hashMismatches below is 0 because nothing was hashed, not because nothing is wrong)",
+        f"  findings: {findings}",
+    ]
+    errors = report.get("errors") or []
+    if errors:
+        lines.append("  errors:")
+        lines.extend(f"    - {e}" for e in errors[:10])
+    return "\n".join(lines)
+
+
+def _peer_lines(client) -> str:
+    """Compact Studio peer state for prompt rendering; never raises."""
+    if client is None:
+        return PEER_FALLBACK
+    try:
+        health = client.health() or {}
+    except Exception:  # noqa: BLE001
+        return PEER_FALLBACK
+    peers = health.get("peers") or []
+    if not health.get("studio_connected"):
+        return (f"{PEER_FALLBACK}\n(bridge answers, but studio_connected is false and "
+                f"{len(peers)} peers are registered)")
+    lines = [f"Studio peers: {len(peers)} registered, studio_connected true."]
+    for peer in peers[:6]:
+        # The peer dict calls it `place`, not `placeName`; a None interpolated into a prompt
+        # reads like a measurement of nothing.
+        lines.append(
+            f"  - {peer.get('peerId')} [{peer.get('dm')}] {peer.get('place') or '<unnamed place>'} "
+            f"(placeId {peer.get('placeId')}, plugin {peer.get('pluginVersion')}, "
+            f"{'online' if peer.get('online') else 'offline'}, "
+            f"last poll {round(peer.get('ageSeconds') or 0, 1)}s ago)")
+    lines.append("Specs CAN be executed against this peer with `run_testez_suite`.")
+    return "\n".join(lines)
+
+
 def get_mcp_prompt(name: str, arguments: dict = None, client=None) -> dict:
     arguments = arguments or {}
     if name == "survey_and_architecture":
@@ -11399,6 +11569,160 @@ def get_mcp_prompt(name: str, arguments: dict = None, client=None) -> dict:
             "2. Summarise as exactly five lines: done / in progress / blocked / who is idle / next claim.\n"
             "3. Name task ids, not vibes. If nothing changed, say so in one line instead of padding.\n"
             "4. Post the standup with `agent_bus {action:'post', kind:'status', subject:'standup'}`."
+        )
+    elif name == "security_review":
+        focus = arguments.get("focus") or "everything the posture report flags"
+        posture = _policy_lines(client)
+        text = (
+            "Review the security posture of THIS bridge and produce a report with evidence.\n"
+            f"Focus: {focus}\n\n"
+            f"{posture}\n\n"
+            "Ground rules, which matter more than the checklist:\n"
+            "- Every claim cites the call that produced it. A line you cannot evidence is a line "
+            "you mark `unverified` and attach the exact command that would verify it.\n"
+            "- This prompt proved nothing when it rendered: it copied what the bridge reported at "
+            "that moment. Posture can change a second later, so re-read before you conclude.\n"
+            "- Never paste a token value, hash or prefix into the report. `/api/policy` "
+            "deliberately carries no per-token rows; do not go and fetch them to decorate it.\n\n"
+            "Do this in order:\n"
+            "1. `resources/read mcp://bridge/policy`. Record `riskLevel`, `exposed`, and every "
+            "`risks[].id`. If `risks` is empty, say so and move on - do not invent findings.\n"
+            "2. For each risk, run the check that would confirm or refute it:\n"
+            "   - `auth_open` / `gate_mode_unrecognised` -> `GET /api/health` (public) for "
+            "`authMode` and `confirmGate.mode`; compare with what the operator actually passed to "
+            "`--require-confirm`. The valid modes are off | destructive | write | all, and "
+            "anything else silently means off.\n"
+            "   - `public_bind` -> `GET /api/policy` `network.bind`, then confirm from the host "
+            "(`ss -ltnp` / `netstat -an`) that the port really is on that interface.\n"
+            "   - `tunnel_open` -> `GET /api/tunnel` for the live state and public URL.\n"
+            "   - `cors_wildcard` -> `GET /api/policy` `network.cors`, then send a request with a "
+            "hostile `Origin:` header and read back `Access-Control-Allow-Origin`.\n"
+            "   - `destructive_not_gated` -> diff `destructiveHint` annotations against "
+            "`confirmGate.gatedTools`; name each tool and what it can do.\n"
+            "3. `GET /api/audit?verify=1` (admin): the hash chain must verify. Report the verified "
+            "height and any break - a broken chain means the log itself is evidence you cannot use.\n"
+            "4. `GET /api/tokens` (admin): roles in circulation, revoked and expired counts, "
+            "rate limits. Flag any admin-scoped token nobody recognises. Quote ids and labels, "
+            "never prefixes.\n"
+            "5. Now the P0 checklist, one line each, pass / fail / unverified plus the evidence:\n"
+            "   - S1 gate parity: a write-scoped token cannot enqueue a gated job over "
+            "`POST /api/jobs` while the gate is on (expect 403 with a pending requestId).\n"
+            "   - S2 owner-token disclosure: no route hands the owner credential to a limited "
+            "caller; `?token=` works only on `/api/poll` and `/api/result`.\n"
+            "   - S3 dashboard XSS: no inline handler or inline script is served, and the CSP has "
+            "no `'unsafe-inline'` for script.\n"
+            "   - S4 path confinement: every file-shaped tool argument refuses absolute paths, "
+            "`~` and `..` (try one; a refusal is the pass condition).\n"
+            "   - S5 safe defaults: loopback bind, a generated `bridge.token` at mode 0600, and "
+            "no shipped placeholder token anywhere.\n"
+            "   - S6 kit source: `/api/kit/catalog` will not serve module or asset *source* to an "
+            "unauthenticated or read-only caller.\n"
+            "6. Output: one verdict line, then a table of item | status | evidence | fix, then a "
+            "section listing every unverified item with the exact command an operator must run and "
+            "what a pass looks like. If you changed nothing, say so - this prompt is read-only by "
+            "intent and must not become a remediation run."
+        )
+    elif name == "kit_integrity_triage":
+        kit_root = arguments.get("kitRoot") or "the repository's own roblox-kit"
+        integrity = _kit_integrity_lines()
+        text = (
+            f"Triage and repair kit integrity drift in {kit_root}, safest step first.\n\n"
+            f"{integrity}\n\n"
+            "Read this before touching anything:\n"
+            "- The kit describes itself four times: `assets/registry.json`, the files on disk, "
+            "`assets/asset-lock.json`, and `modules/Assets.lua`. A finding tells you which two "
+            "disagree - fix the disagreement, never the symptom.\n"
+            "- `modules/Assets.lua` is GENERATED by `image_pipeline.py`. Never hand-edit it; "
+            "regenerate it. A hand-edit survives until the next regeneration and then vanishes.\n"
+            "- Never re-serialise a kit JSON file with `json.dumps`: the committed files keep "
+            "short arrays inline, and a default dump explodes them across thousands of lines. "
+            "Edit surgically or restore from git.\n"
+            "- `roblox-kit/assets/**` is 4,677 files under a hashed licence registry. If "
+            "`tools/verify_licences.py` fails, a file MOVED - you did not need to touch the "
+            "fetcher, and re-fetching is not the repair.\n\n"
+            "Repair order, and stop as soon as the report is clean:\n"
+            "1. Re-run read-only with hashes on: `audit_kit_integrity {verifyHashes: true}`. "
+            "Without it, `hashMismatches` is 0 because nothing was hashed.\n"
+            "2. `git status --porcelain roblox-kit/` and `git log --oneline -5 -- roblox-kit/`. "
+            "If the drift is uncommitted churn, `git checkout -- <path>` is the whole repair and "
+            "nothing else should run.\n"
+            "3. Classify each finding before fixing any of them:\n"
+            "   - `missingFromDisk` -> a registered file is gone. Restore it from git or from the "
+            "upstream source named in its registry row (`sourceUrl`, `provenance`). Do NOT delete "
+            "the registry row to make the error go away: that is how an asset silently leaves the "
+            "licence registry.\n"
+            "   - `unregisteredOnDisk` -> a stray file. Either register it properly (path, name, "
+            "assetType, sha256, bytes, license, provenance, category, thumbnail) or remove it. "
+            "Decide which by asking where it came from; a generated file belongs in neither.\n"
+            "   - `rowProblems` -> a malformed registry row (missing field, short sha256, a path "
+            "listed twice). Fix the row; the sha256 must be 64 lowercase hex chars of the file "
+            "that is actually there.\n"
+            "   - `lockDrift` -> `asset-lock.json` disagrees with the registry: bytes, the 16-hex "
+            "short sha (which must be a prefix of the registry's), `localUri` convention, an "
+            "orphaned `relPath`, a bucket count that no longer matches its asset types, or one "
+            "`relPath` under two keys. The registry is the source of truth; regenerate the lock "
+            "rather than editing entries by hand.\n"
+            "   - `assetsLuaDrift` -> regenerate with `python3 roblox-bridge/image_pipeline.py` "
+            "and re-check. Note the two asymmetric URI prefixes: images are "
+            "`rbxasset://arena_assets/<relPath>` while audio keeps its directory "
+            "(`rbxasset://arena_assets/audio/<relPath>`).\n"
+            "   - `manifestDrift` -> `python3 roblox-bridge/image_pipeline.py --check` shows it; "
+            "regenerating the manifest is the repair.\n"
+            "   - `hashMismatches` -> the file on disk is not the file that was registered. Treat "
+            "it as a corrupted or substituted asset: restore from git, and if git agrees with the "
+            "wrong bytes, the registry row is what needs correcting - say which, and why.\n"
+            "4. After any change: `audit_kit_integrity {verifyHashes: true}` again, then "
+            "`python3 tools/verify_licences.py`, then `python3 roblox-bridge/image_pipeline.py "
+            "--check`, then `git status --porcelain roblox-kit/` to prove you changed only what "
+            "you meant to.\n"
+            "5. Report: the finding, its classification, the repair, and the four commands above "
+            "with their output. If you decided NOT to repair something, say what it was and what "
+            "an operator has to decide."
+        )
+    elif name == "testez_first_workflow":
+        system = arguments.get("system") or "<category>/<system>"
+        behaviour = arguments.get("behaviour") or "<the behaviour you are about to write>"
+        peers = _peer_lines(client)
+        text = (
+            f"Build `{system}` spec-first: the test exists and fails for the right reason before "
+            f"the feature does.\nBehaviour to pin down: {behaviour}\n\n"
+            f"{peers}\n\n"
+            "The layout `roblox-kit/systems/CONVENTIONS.md` defines, per system:\n"
+            "`README.md`, `shared/XxxConfig.lua`, `shared/XxxMath.lua`, "
+            "`server/XxxService.server.lua`, `client/XxxUI.client.lua`, `tests/Xxx.spec.lua`.\n\n"
+            "Do this in order:\n"
+            "1. Write `tests/Xxx.spec.lua` FIRST. `--!nonstrict`, tabs, `describe` blocks per "
+            "concern, `it` blocks that name a behaviour and not a function. Put the pure logic in "
+            "`shared/XxxMath.lua` so the spec can require it without a DataModel - a spec that "
+            "needs `game` to run cannot run in CI at all.\n"
+            "2. Assert values, not shapes. `expect(f(x)).to.equal({literal})` compares table "
+            "*references* in TestEZ and so asserts nothing: compare element by element, or use "
+            "`to.be.near(expected, tolerance)` for floats.\n"
+            "3. Static-check before you run anything: `luau_check {path: "
+            "'roblox-kit/systems/<system>'}` (syntax, undefined globals, unused locals), then "
+            "`bash roblox-bridge/tools/check_globals.sh roblox-kit`. `luau-analyze` on kit Lua "
+            "reports `Unknown global 'game'/'Instance'/'warn'/'task'` as baseline noise - "
+            "`check_globals.sh` is the gate that knows about them.\n"
+            "4. Only now write the feature, until the spec's expectations are the ones you want.\n"
+            "5. Execute it: `run_testez_suite {testsDir: "
+            "'roblox-kit/systems/<system>/tests'}`. Read `runner` in the report before believing "
+            "the result - `bundled-shim` means your place has no TestEZ and the run used the "
+            "subset shim, which is NOT the same verdict. Read `shimGaps` too: a spec using a "
+            "construct the shim lacks would report green with its assertions never having run. "
+            "The tool installs a scratch container and deletes it again; if `containerRemoved` is "
+            "not true, delete `ServerStorage.ArenaTestSuites` yourself.\n"
+            "6. Be honest about the limits, in this order of strength:\n"
+            "   - proved here: it parses, its types check, no undefined globals, and pure "
+            "arithmetic can be transliterated and replayed outside Studio;\n"
+            "   - NOT proved here: that any spec passes under TestEZ in Studio, anything needing "
+            "a DataModel, replication, `task.wait`, players, or DataStore. Those are "
+            "operator-verify - hand over the exact `run_testez_suite` call and say what a pass "
+            "looks like.\n"
+            "7. Finish with the system's `README.md`: what it does, what it depends on, how to "
+            "install, which remotes it creates, numbered Studio verification steps using real "
+            "tool calls (`start_stop_play`, `get_console_output`, `execute_luau`), and its "
+            "origin. Verify the README's steps against the code you wrote - a README that "
+            "describes an API you did not ship is worse than no README."
         )
     elif name == "task_triage":
         snapshot = _bus_lines(client)
