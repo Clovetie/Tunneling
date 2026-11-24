@@ -1,5 +1,12 @@
 -- NetGuard.lua — Server-side RemoteEvent / RemoteFunction rate-limiter
 -- and payload sanitizer (prevents NaN, Inf, oversized strings, and spam).
+-- v6.1.0: the fixed-window counter moved to its sibling Throttle.lua, which NetworkGuard
+-- also uses (it takes the token-bucket half). The kit has no linker, so copy both files:
+-- a missing sibling is a require error whose message says what to copy.
+local _throttleScript = script.Parent and script.Parent:FindFirstChild("Throttle")
+assert(_throttleScript, "NetGuard needs Throttle.lua beside it - copy roblox-kit/modules/Throttle.lua into the same parent")
+local Throttle = require(_throttleScript)
+
 local Players = game:GetService("Players")
 
 local NetGuard = {}
@@ -48,19 +55,29 @@ function NetGuard.allowRate(player, actionKey, maxCallsPerWindow, windowSeconds)
 		pMap = {}
 		buckets[player] = pMap
 	end
-	local now = os.clock()
-	local win = windowSeconds or 1.0
-	local limit = maxCallsPerWindow or 8
-	local state = pMap[actionKey]
-	if not state or (now - state.start) >= win then
-		pMap[actionKey] = { start = now, count = 1 }
-		return true
+	local limiter = pMap[actionKey]
+	if not limiter then
+		-- The first limit/window given for an actionKey is the one that governs it. Passing
+		-- different numbers for the same key later was already a caller bug (the old inline
+		-- counter mixed the new limit with the old window's start), so it is now ignored
+		-- rather than half-applied.
+		limiter = Throttle.fixedWindow(maxCallsPerWindow or 8, windowSeconds or 1.0)
+		pMap[actionKey] = limiter
 	end
-	if state.count >= limit then
-		return false
+	-- Parentheses drop the second return (retryAfter): allowRate has always returned a
+	-- bare boolean and callers depend on that.
+	return (limiter:attempt())
+end
+
+-- Seconds until this player/actionKey is allowed again (0 if it is allowed now).
+function NetGuard.rateRetryAfter(player, actionKey)
+	local pMap = buckets[player]
+	local limiter = pMap and pMap[actionKey]
+	if not limiter then
+		return 0
 	end
-	state.count = state.count + 1
-	return true
+	local _, retryAfter = limiter:attempt()
+	return retryAfter
 end
 
 function NetGuard.bindRemoteEvent(remote, opts, handler)

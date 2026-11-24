@@ -23,7 +23,7 @@ plugin against a 6.1.0 one, and 20 prefabs against 36.
 | `prompts` | 7 | `len(mcp_core.PROMPTS)` |
 | `promptNames` | survey_and_architecture, safe_module_edit, automated_playtest_debug, sync_repo_package, multi_agent_handoff, bus_standup, task_triage | `mcp_core.PROMPTS` |
 | `skills` | 33 | `search_skills_helper()` total |
-| `modules` | 33 | `roblox-kit/modules/*.lua` |
+| `modules` | 35 | `roblox-kit/modules/*.lua` |
 | `systemCategories` | core, liveops, mechanics, monetization, ui | `roblox-kit/systems/*` directories |
 | `systems` | 24 | system directories under those categories |
 | `uiTemplates` | 6 | `roblox-kit/templates/screens/*.lua` |

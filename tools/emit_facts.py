@@ -294,6 +294,17 @@ def check(f: dict) -> list:
         if not any(re.search(pattern, flat) for flat in flat_all.values()):
             problems.append(f"count pattern for {key} matches no doc any more: {pattern}")
 
+    # Gate 5: the module layer's own index cannot go stale. A new .lua that nobody indexed
+    # is the same class of drift as a wrong number, and this file exists to catch both.
+    index_doc = KIT / "modules" / "README.md"
+    if not index_doc.is_file():
+        problems.append(f"{index_doc.relative_to(ROOT)} does not exist - the module layer has no index")
+    else:
+        index = index_doc.read_text(encoding="utf-8")
+        for path in sorted((KIT / "modules").glob("*.lua")):
+            if f"`{path.stem}`" not in index and f"`{path.name}`" not in index:
+                problems.append(f"{index_doc.relative_to(ROOT)}: no index row for modules/{path.name}")
+
     # Gate 1: the committed FACTS.md must be what the generator produces now.
     fresh = render(f)
     if not FACTS_PATH.is_file():

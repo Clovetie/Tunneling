@@ -9,7 +9,7 @@
 > silently becoming empty, and snapshot restore reports per-script results. Tooling: `bash
 > tools/check_lint.sh` (ruff plus a blind-except ratchet). The dead NightLoop tree and its two
 > divergent bridge copies are gone. Current surface: **100 MCP tools**, 12 resources, 3 resource
-> templates, 7 prompts, 33 bundled skills (`.claude/skills/`), 33 Luau modules, 24 drop-in
+> templates, 7 prompts, 33 bundled skills (`.claude/skills/`), 35 Luau modules, 24 drop-in
 > systems, 6 UI templates, 36 JSON prefabs (+20 `.rbxmx` models) and 4,320 licensed kit assets.
 > The dated notes below are history, and their counts are the counts of their day.
 >

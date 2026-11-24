@@ -6698,7 +6698,8 @@ class TestV61KitIntegrity(unittest.TestCase):
             luau = list((self.kit / "systems" / category / name).rglob("*.lua"))
             self.assertTrue(luau, f"systems/{category}/{name} has no Luau in it")
         modules = sorted((self.kit / "modules").glob("*.lua"))
-        self.assertEqual(len(modules), 33, "docs/FACTS.md and the README claim 33 modules")
+        self.assertEqual(len(modules), 35, "docs/FACTS.md and the README claim 35 modules "
+                                          "(33 before v6.1.0 added FeatureFlags and Throttle)")
         self.assertEqual(len(list((self.kit / "templates" / "screens").glob("*.lua"))), 6)
         templates = json.loads((self.kit / "templates" / "systems.json").read_text(encoding="utf-8"))
         self.assertTrue(templates.get("version"))
@@ -6771,9 +6772,42 @@ class TestV61OperatorScriptSmoke(unittest.TestCase):
                          "roblox-bridge/tools/build_handoff_pdfs.py"):
             self.assertIn(expected, self.scripts, f"{expected} is gone or was renamed")
 
+    # What these scripts own, and the only thing this test watches. Scoped on purpose:
+    # `self_test` runs a *second concurrent copy* of this whole file as a subprocess, and
+    # that copy's tests legitimately rewrite `roblox-kit/assets/asset-lock.json`,
+    # `modules/Assets.lua` and the generated images. A repo-wide `git status --porcelain`
+    # diff therefore blamed the other process's writes on this test and failed a clean run.
+    # Every path below is written only by one of the scripts under test, so a change here
+    # really is `--help` doing the work.
+    OWNED_FILES = (
+        "docs/FACTS.md",                              # tools/emit_facts.py
+        "roblox-kit/assets/registry.json",            # tools/fetch_assets.py
+        "roblox-kit/assets/screenshots/self-test-viewport.png",   # build_self_test_viewport
+        "roblox-kit/assets/screenshots/self-test-viewport.json",  # build_self_test_viewport
+    )
+    OWNED_DIRS = (
+        "docs",                                       # + handoff PDFs land one level up
+        "handoff",                                    # roblox-bridge/tools/build_handoff_pdfs.py
+        "roblox-kit/assets/screenshots",
+        "roblox-kit/assets/images/arena_skies",       # tools/build_skies.py
+    )
+
+    def _owned_snapshot(self):
+        import hashlib
+        files = {}
+        for rel in self.OWNED_FILES:
+            path = self.repo / rel
+            files[rel] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+        dirs = {}
+        for rel in self.OWNED_DIRS:
+            root = self.repo / rel
+            dirs[rel] = (sorted((p.relative_to(root).as_posix(), p.stat().st_size)
+                                for p in root.rglob("*") if p.is_file())
+                         if root.is_dir() else None)
+        return files, dirs
+
     def test_help_works_and_writes_nothing(self):
-        before = subprocess.run(["git", "status", "--porcelain"], cwd=str(self.repo),
-                                capture_output=True, text=True, timeout=120).stdout
+        before_files, before_dirs = self._owned_snapshot()
         reportlab = _module_available("reportlab")
         for script in self.scripts:
             proc = subprocess.run([sys.executable, "-B", script, "--help"],
@@ -6791,11 +6825,18 @@ class TestV61OperatorScriptSmoke(unittest.TestCase):
                              f"{script} --help exited {proc.returncode}\n{proc.stdout}\n{proc.stderr}")
             self.assertIn("usage:", proc.stdout, f"{script} --help printed no usage")
             self.assertNotIn("Traceback", proc.stderr, f"{script} --help raised")
-        after = subprocess.run(["git", "status", "--porcelain"], cwd=str(self.repo),
-                               capture_output=True, text=True, timeout=120).stdout
-        self.assertEqual(before, after,
-                         "asking a script for --help changed the working tree:\n"
-                         f"{_diff_lines(before, after)}")
+            # A script that did its work announces it ("wrote docs/FACTS.md (21 facts)").
+            # Cheap second oracle: help text does not start a line with a write verb.
+            said = proc.stdout + proc.stderr
+            self.assertNotRegex(said, r"(?im)^\s*(wrote|written|regenerated)\b",
+                                f"{script} --help announced a write")
+        after_files, after_dirs = self._owned_snapshot()
+        self.assertEqual(before_files, after_files,
+                         "asking a script for --help rewrote a file it owns:\n"
+                         f"{_diff_lines(str(before_files), str(after_files))}")
+        self.assertEqual(before_dirs, after_dirs,
+                         "asking a script for --help added, removed or resized a file it owns:\n"
+                         f"{_diff_lines(str(before_dirs), str(after_dirs))}")
 
     def test_nothing_reaches_the_network_on_import(self):
         probe = (

@@ -3,6 +3,11 @@
 # that luau-analyze does not ship types for. This is the check that would have
 # caught `placeAt` being deleted out from under its last caller.
 KNOWN='game|workspace|script|plugin|version|loadstring|Enum|Instance|CFrame|Vector3|Vector2|Color3|UDim2|UDim|TweenInfo|RaycastParams|Random|NumberSequence|NumberSequenceKeypoint|NumberRange|ColorSequence|ColorSequenceKeypoint|BrickColor|Ray|Region3|Rect|Font|Content|vector|CatalogSearchParams|DockWidgetPluginGuiInfo|PathWaypoint|FloatCurveKey|RotationCurveKey|SharedTable|SecurityCapabilities|UserSettings|elapsedTime|task|warn|print|wait|spawn|delay|tick|time|typeof|require|shared|settings|DateTime|PhysicalProperties|OverlapParams|Axes|Faces|debug|utf8|bit32|buffer|os|math|string|table|coroutine|select|unpack|newproxy|gcinfo'
+# TestEZ injects these at spec-run time; roblox-kit/systems/CONVENTIONS.md requires
+# `tests/*.spec.lua` for every pure module, so the scanner has to know them or it
+# reports a clean spec as full of undefined globals.
+TESTEZ='describe|it|xit|fit|beforeEach|afterEach|beforeAll|afterAll|expect|beforeEachError|afterEachError'
+KNOWN="$KNOWN|$TESTEZ"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANALYZER=""

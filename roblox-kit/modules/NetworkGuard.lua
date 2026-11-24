@@ -18,14 +18,24 @@ export type EndpointConfig = {
 	schema: { [string]: FieldRule }?,
 }
 
+-- v6.1.0: the rate limiter moved to its sibling Throttle.lua, which NetGuard also uses.
+-- Copy both files; the kit has no linker, so a missing sibling is a require error and the
+-- message has to say what to copy.
+local _throttleScript = script.Parent and script.Parent:FindFirstChild("Throttle")
+assert(_throttleScript, "NetworkGuard needs Throttle.lua beside it - copy roblox-kit/modules/Throttle.lua into the same parent")
+local Throttle = require(_throttleScript)
+
 local NetworkGuard = {}
 NetworkGuard.__index = NetworkGuard
 
-function NetworkGuard.new()
+-- opts is optional and additive: `NetworkGuard.new()` still works, and `new({ now = fn })`
+-- lets a spec drive the bucket from a fake clock instead of sleeping.
+function NetworkGuard.new(opts: { now: (() -> number)? }?)
 	local self = setmetatable({}, NetworkGuard)
 	self._endpoints = {} :: { [string]: EndpointConfig }
-	self._buckets = {} :: { [string]: { tokens: number, lastRefill: number, violations: number } }
+	self._buckets = {} :: { [string]: any } -- key -> { limiter: Throttle.Limiter, violations: number }
 	self._anomalyLog = {} :: { { player: string, endpoint: string, reason: string, timestamp: number } }
+	self._clock = opts
 	return self
 end
 
@@ -72,24 +82,31 @@ function NetworkGuard:CheckRateLimit(playerKey: string, endpointName: string): (
 	local rate = (cfg and cfg.ratePerSecond) or 10
 	local burst = (cfg and cfg.burst) or math.max(3, rate * 2)
 	local key = playerKey .. "::" .. endpointName
-	local now = os.clock()
 	local bucket = self._buckets[key]
 	if not bucket then
-		bucket = { tokens = burst - 1, lastRefill = now, violations = 0 }
+		-- Throttle.new starts full and consumes one on the first attempt, which is the same
+		-- decision the inline bucket made here before v6.1.0 (tokens = burst - 1, allowed).
+		bucket = { limiter = Throttle.new(rate, burst, self._clock), violations = 0 }
 		self._buckets[key] = bucket
-		return true, nil
 	end
 
-	local elapsed = math.max(0, now - bucket.lastRefill)
-	bucket.tokens = math.min(burst, bucket.tokens + elapsed * rate)
-	bucket.lastRefill = now
-	if bucket.tokens < 1 then
+	local allowed = bucket.limiter:attempt()
+	if not allowed then
 		bucket.violations += 1
 		self:_recordAnomaly(playerKey, endpointName, "rate_limit_exceeded")
 		return false, "rate_limit_exceeded"
 	end
-	bucket.tokens -= 1
 	return true, nil
+end
+
+-- How long until this player/endpoint would be allowed again, in seconds (0 if now).
+function NetworkGuard:RetryAfter(playerKey: string, endpointName: string): number
+	local bucket = self._buckets[playerKey .. "::" .. endpointName]
+	if not bucket then
+		return 0
+	end
+	local _, retryAfter = bucket.limiter:attempt()
+	return retryAfter
 end
 
 function NetworkGuard:ValidatePayload(playerKey: string, endpointName: string, payload: any): (boolean, string?)

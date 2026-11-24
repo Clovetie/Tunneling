@@ -405,6 +405,100 @@ All notable changes for the Roblox Studio bridge are documented here.
   literal never appears in a tracked file — `tools/check_secrets.sh` would otherwise fail
   on the test itself.
 
+### Added (P5-K4/K5 — kit modules)
+- **`roblox-kit/modules/Throttle.lua`** (`--!strict`) — the two rate-limiting primitives
+  the kit shares. `Throttle.new(rate, burst)` is a token bucket (refills continuously,
+  allows a short burst); `Throttle.fixedWindow(limit, windowSeconds)` counts calls inside a
+  window and hard-stops at the limit. They are **not** two implementations of one thing —
+  they make different promises, which is exactly why both exist and both are named. Each
+  returns the same four methods, so a caller can swap one for the other: `:attempt()` →
+  `(allowed, retryAfter)` and never yields, `:wait()` yields until allowed and returns how
+  long it waited, `:peek()` reports capacity left without consuming, `:reset()`. Both take
+  an optional `{ now = fn }` clock, which is what makes them testable without sleeping.
+  Documented defaults when an argument is `nil`, `0`, negative, `NaN` or infinite: rate
+  `10`/s, burst `max(3, rate * 2)`, window limit `8`, window `1s` — a limiter that refuses
+  everything because someone passed `0` is a worse accident than one that runs at the
+  documented default, and an emergency stop is `FeatureFlags`' job.
+- **`roblox-kit/modules/FeatureFlags.lua`** (`--!strict`) — stage a system without editing
+  code. Flags are **attributes on `ReplicatedStorage.FeatureFlags`**, so the server writes
+  one attribute and normal replication carries it to every client: no remote, no polling,
+  nothing to keep in sync. `Flags.configure(defaults)` (additive, returns how many it
+  applied), `Flags.get(name)` (attribute → default → `false`; never yields, never creates
+  the Folder), `Flags.set(name, value)` (server-only, the only path that creates it),
+  `Flags.onChanged(name, fn)` → `{ Disconnect = … }`, `Flags.all()`, and a pure
+  `Flags.resolve(defaults, attributes)` so precedence is testable without a DataModel.
+  Non-boolean attributes are **ignored, not coerced** — in Lua the string `"false"` is
+  truthy, so an attribute set from a text field would otherwise switch a feature *on*. A
+  listener registered before the Folder replicates fires once when it appears (attributes
+  already set never fire `AttributeChanged`), and callbacks run in `pcall` so one throwing
+  listener cannot deafen the others. The convention for a system that ships flags is a
+  plain `{ FlagName = boolean }` table in `shared/FlagsConfig.lua`, required by both sides
+  so the client's defaults match the server's before anything is set.
+- **`NetGuard` and `NetworkGuard` refactored onto `Throttle`**, which is the point of
+  extracting it: `NetworkGuard:CheckRateLimit` was a hand-rolled bucket and
+  `NetGuard.allowRate` a hand-rolled window counter, and neither was reusable. Both public
+  APIs are unchanged and both make the same allow/deny decisions as before (a fresh bucket
+  starts full and the first `attempt` consumes one token — exactly the old
+  `tokens = burst - 1` first call). `NetworkGuard.new` gained an optional `{ now = fn }`
+  clock, `NetworkGuard:RetryAfter(playerKey, endpoint)` and
+  `NetGuard.rateRetryAfter(player, actionKey)` are new accessors, and per-player limiter
+  cleanup on `PlayerRemoving` is unchanged. **One deliberate behaviour change:** the first
+  limit and window given for an `actionKey` now govern it; passing different numbers for
+  the same key later used to mix the new limit with the old window's start, which half
+  applied a caller bug — now it is ignored. Because the kit has no linker, both guards
+  `require` their sibling `Throttle` through a `FindFirstChild` + `assert` whose message
+  names the file to copy; the kit's "every module is standalone" rule now has this one
+  documented exception.
+- **The kit's first TestEZ specs**: `roblox-kit/modules/tests/Throttle.spec.lua` — 11 cases,
+  47 `expect` calls: burst then refuse, refill timing, the burst cap however long it idles,
+  a shrinking `retryAfter`, `peek`/`reset`, nonsense-input defaults, a clock that goes
+  backwards, the window boundary at `start + window` rather than "a second after the last
+  call", no gradual refill, a floored fractional limit, the `0` → `8` fallback, and method
+  parity between the two primitives — and `FeatureFlags.spec.lua` — 14 cases, 26 `expect`
+  calls: precedence, junk rejection, the `"false"`-string trap, additive `configure`,
+  unknown/empty/`nil` names, `onChanged` argument checks and idempotent `Disconnect`. Both are written to need no running game —
+  the clock is injected and the flag names are ones no game would use, so the specs neither
+  create `ReplicatedStorage.FeatureFlags` nor mutate a place.
+  - They have **not been executed**: the sandbox has `luau-analyze` (parse, type and
+    undefined-global check — clean) but no Luau *runtime*, and GitHub release assets are
+    not reachable from here. The arithmetic was verified instead by transliterating
+    `Throttle.lua` and `FeatureFlags.resolve`/`configure`/`get` line by line into Python
+    and replaying **71 of their expectations** (57 for `Throttle`, 14 for `FeatureFlags`;
+    all reproduced — the transliteration checks the arithmetic the specs depend on, not
+    every `expect` line, since some assert Lua types rather than numbers).
+    Running them for real needs Studio, which is what P5-M1's `run_testez_suite` is for.
+- **`tools/check_globals.sh` learned TestEZ's injected globals** (`describe`, `it`, `xit`,
+  `fit`, `expect`, `beforeEach`/`afterEach`/`beforeAll`/`afterAll`). `CONVENTIONS.md`
+  already required `tests/*.spec.lua` for pure modules, so the `make luau` scan would have
+  reported every clean spec in the kit as full of undefined globals — a guard that rejects
+  the convention it is supposed to protect.
+- **`roblox-kit/modules/README.md`** (new): what the module layer is, the copy rule and its
+  one v6.1.0 exception, an index of all **35** modules with each one's strictness mode and
+  a line describing it, the rate-limiting consolidation with the before/after semantics,
+  the feature-flag rules, how to run the specs, and a checklist for adding a module.
+  `tools/emit_facts.py --check` gained **gate 5**: every `modules/*.lua` must appear in that
+  index, so a new module cannot ship undocumented. Proved by planting
+  `ZzUnindexedProbe.lua` (`no index row for modules/ZzUnindexedProbe.lua`, exit 1) and
+  removing it.
+- Module count 33 → **35** in `README.md` (both places), `CONNECT.md`, the generated
+  `docs/FACTS.md` and the P3-T6 golden in `test_bridge_mcp.py` (whose message now says what
+  the 33 was).
+- **A race in the P3-T7 `--help` oracle, found by running the gates.** That test proved
+  "`--help` writes nothing" by diffing a repo-wide `git status --porcelain` before and after
+  — but `self_test` runs a *second concurrent copy* of the whole suite as a subprocess, and
+  that copy's tests legitimately rewrite `roblox-kit/assets/asset-lock.json`,
+  `modules/Assets.lua` and the generated images. So the outer copy blamed the inner copy's
+  writes on `--help` and failed an otherwise clean run (one failure in `make ci`, gone on
+  the next run — the signature of a race, not of a regression). The oracle is now scoped to
+  the paths these eleven scripts actually own (`docs/FACTS.md`, `assets/registry.json`, the
+  two `screenshots/self-test-viewport.*` artifacts, and the file lists of `docs/`,
+  `handoff/`, `assets/screenshots/` and `assets/images/arena_skies/`), hashed by content,
+  plus a second cheap oracle: help output must not start a line with `wrote`/`written`/
+  `regenerated`. Both were proved to fire by sabotaging `emit_facts.py --help` twice — once
+  to append to `docs/FACTS.md` silently (caught by the hash diff) and once to print
+  `wrote docs/FACTS.md (21 facts)` before argparse ran (caught by the announcement check) —
+  then restoring the file byte-identically (`md5sum -c`).
+
 ### Removed (P2 — NightLoop)
 - **`nightloop/` is gone**, with its in-repo copies and every reference: 125
   tracked files, −37,441 lines. That is the reference horror-survival experience
