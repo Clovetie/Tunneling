@@ -832,6 +832,114 @@ All notable changes for the Roblox Studio bridge are documented here.
   substitution, offline rendering of the real kit numbers, live rendering of the posture and
   the attached peer, and degradation against a dead bridge.
 
+### Added (P5-SK1/SK2 — two skills, written against this repository's code)
+- **`.claude/skills/roblox-observability-and-telemetry/`** (+ `references/logging-patterns.md`,
+  `references/budgets-and-sampling.md`) — client and server logging discipline, FPS and memory
+  budget checks, crash detection, and what Studio's output window can and cannot tell you. The
+  organising idea is that observability here has **two halves** which a confusing report usually
+  conflates: Studio-side (`get_console_output`'s `level`/`source`/`search`/`sinceIndex`/`dm`
+  filters, and `get_studio_state`'s `memoryMb` from `Stats:GetTotalMemoryUsageMb()` and
+  `physicsFps` from `workspace:GetRealPhysicsFPS()`) and bridge-side (`/api/metrics`,
+  `studio://jobs`, `/api/events`, `/api/audit?verify=1`). A tool call that "took 12 seconds" is
+  either a slow script or a job queued behind a paused queue, and only both halves together say
+  which.
+  - **`nil` is not `0`.** Both samples are `pcall`-guarded in the plugin and come back `nil`
+    when the read failed, so reporting "0 FPS" from an absent field is a false negative exactly
+    where a budget check is supposed to catch one. The neighbouring `dm`/`isEdit`/`isRunning`/
+    `playtestActive` fields decide whether a number is a measurement at all.
+  - **Crash reporting is inference, and the skill says so.** The process that would have logged
+    a crash is the one that died, so the only signal is bridge-side: an orphaned job, the
+    reaper's ~30 s grace, `peer_crash_loop`, `job.crash_loop`, `bridge_jobs_crash_loop_total`,
+    and `bridge_peers_online` falling to 0. A crash inside your own `execute_luau` probe is
+    self-inflicted and must be declared as such, because the counter cannot tell the difference.
+  - **What `perf_audit` will not tell you**, from its implementation rather than its
+    description: `triangleCount` and `textureMemoryEstimateMB` are always `null` (its own
+    `warnings` field says the plugin does not expose that metadata), `uniqueMeshCount` counts
+    `MeshPart` *instances* rather than distinct meshes, `mobileVerdict` is a threshold over a
+    walk bounded by `depth: 20` and `maxChildren: 500` — so a `low` verdict on a deep or wide
+    place can be an artifact of the child cap — and it reads the **edit** DataModel, i.e. the
+    authored place rather than what a streaming client holds.
+- **`.claude/skills/roblox-save-migration/`** (+ `references/migration-steps.md`,
+  `references/datastoresafe-gaps.md`) — DataStore schema versioning, migration-step guarantees
+  and rollback, built on the kit's real engine in `systems/core/data` (`DataConfig`,
+  `DataTemplate`, `DataMigrations`, `SaveMigrations`, `DataService`, vendored `ProfileStore`).
+  Pairs with `roblox-data-reliability`, which covers persistence broadly and only mentions
+  migration; this is the deep end on versioning.
+  - **The central lesson is the kit's own comment:** *migrate before Reconcile, which would
+    fill a missing `dataVersion` from the template*. Reconcile first and the engine sees
+    `version == targetVersion`, returns `current`, and no step ever runs — every old save reads
+    as migrated while still holding the old shape.
+  - All six statuses documented against the engine that returns them (`current`, `migrated`,
+    `reset`, `newer`, `missingStep`, `failed`), with the guarantee that a refusal ends the
+    session **with the save untouched**; steps keyed by the version migrated *from*; the version
+    stamped after each successful step so a step never stamps itself; and `pcall` around each
+    step, which is why a step must not raise to signal a special row.
+  - **Rollback is the `newer` status, not a down-migration** — there is none here by design —
+    which makes writing the refusal path part of shipping a migration rather than part of
+    undoing it. `DataService` deliberately does *not* warn on `newer` while it does on
+    `missingStep`/`failed`, because during a staged rollback `newer` is expected traffic; a log
+    that treats it as an error trains everyone to ignore the two statuses that are real.
+  - **Studio never touches production:** the store gains `DataConfig.STUDIO_SUFFIX`, so a
+    playtest proves `PlayerData_Studio`, and with API access off ProfileStore falls back to
+    memory by itself. A migration "verified" that way never met a DataStore, and the skill
+    requires saying which of the two you had.
+  - `references/datastoresafe-gaps.md` covers the kit's *other* persistence module, which has no
+    migration hook at all, and three behaviours that silently defeat one: `reconcile` iterates
+    the template so it stamps a `dataVersion` before `Get` can return the row; `Save()` **returns
+    `true` after three failed cloud writes** (the retry loop falls through to `return true`), so
+    its return value is not evidence of persistence; and the memory copy is written *before* the
+    cloud attempt, so after a failed save `Get` shows the new data while the store still holds
+    the old row and the next session migrates it again. That is why idempotence is mandatory
+    here rather than tidy. In Studio the first failed `GetAsync` also latches `cloudAvailable`
+    false for the rest of the process.
+- **A gap stated rather than glossed:** `systems/core/data/README.md` promises
+  `tests/SaveMigrations.spec.lua` and says it fails until every version from
+  `MIGRATION_BASELINE` to `DATA_VERSION - 1` has a step, but the system ships **no `tests/`
+  directory**, so that guard does not run today. The skill says so, and
+  `references/migration-steps.md` supplies the spec to write — including the note that
+  `run_testez_suite` copies only `*.spec.lua` plus a runner into its scratch container, so a
+  spec resolving its subject via `script.Parent.Parent` needs the modules installed in the
+  place's ReplicatedStorage, and the two-branch `findShared` helper the other kit specs use is
+  what makes a spec work in both layouts.
+
+### Fixed (P5-SK1/SK2 — a frontmatter name nothing parsed)
+- `.claude/skills/roblox-stud-ui-design/SKILL.md` declared `name: stud-ui-clean-roblox`. Nothing
+  reads that field — `_skill_files()` keys skills by directory — so `search_skills` and
+  `apply_skill` were unaffected, and the mismatch was invisible to every existing test. An agent
+  that read the frontmatter and trusted it would have called `apply_skill("stud-ui-clean-roblox")`
+  and got `KeyError: Skill not found`. Corrected to match the directory, and the invariant
+  (frontmatter `name` == directory == the identifier the tools use) is now asserted for all 35
+  skills rather than assumed.
+
+### Test coverage (P5-SK1/SK2)
+- `TestV61NewSkills` (8 tests, 244 total) covers pack-wide frontmatter shape, the
+  `## Verification` requirement, topic discovery for both new skills, and the reference files
+  (listed, readable, and findable by reference search with `referenceSearch.complete` true).
+- Two tests tie each factual claim to the source that makes it true, so stale prose fails a
+  test instead of misleading an agent: the observability skill's claims against
+  `ArenaBridge.lua` (`GetTotalMemoryUsageMb`, `GetRealPhysicsFPS`, `memoryMb = okMem`),
+  `mcp_core.py` (`"triangleCount": None`, `"maxChildren": 500`) and `server.py`
+  (`peer_crash_loop`, `job.crash_loop`, `bridge_jobs_crash_loop_total`); the migration skill's
+  against `SaveMigrations.lua` (the six statuses, extracted with a regex so a renamed status
+  fails), `DataService.server.lua` (the migrate-before-Reconcile comment, the `~= "newer"` warn
+  guard), `DataConfig.lua` (`STUDIO_SUFFIX = "_Studio"`) and the README. Every tool either skill
+  names is asserted to be a registered `TOOL_SPECS` entry, and `run_luau` is asserted *not* to
+  be one — it is a job kind, verified through `policy_report()["confirmGate"]["gatedJobKinds"]`.
+- Adding a skill changes every IDF in the search index, so the pack's documented top hits are
+  re-asserted rather than assumed: "failed datastore load" and "persistence" still resolve to
+  `roblox-data-reliability`, "performance profiling" to `roblox-performance-profiling`,
+  "receipts and duplicate purchase rewards" to `roblox-monetization`. New: "telemetry",
+  "observability", "logging", "crash reporting" and "memory budget on mobile" resolve to
+  `roblox-observability-and-telemetry`; "migration", "schema version" and every natural
+  save-format phrasing resolve to `roblox-save-migration` with `roblox-data-reliability`
+  consistently second, so the pairing is visible instead of one skill hiding the other.
+- One assertion was scoped down after the pack disagreed with it: `## Verification` is **not**
+  universal — 14 of 35 skills have one (12 pre-existing plus these two) and 21 do not, while the
+  older test asserted it for three named skills only. Rewriting the other 21 is out of scope, so
+  the test pins the requirement where the handoff puts it, guards the skills that do carry one,
+  and asserts the count (14) so the number can only move deliberately. The gap and the ratchet
+  plan are recorded in `docs/SKILLS_ROADMAP.md` §5.
+
 ### Removed (P2 — NightLoop)
 - **`nightloop/` is gone**, with its in-repo copies and every reference: 125
   tracked files, −37,441 lines. That is the reference horror-survival experience

@@ -61,8 +61,9 @@ sys.path.insert(0, str(HERE))
 from mcp_core import (  # noqa: E402
     KIT_INTEGRITY_FALLBACK, PEER_FALLBACK, POLICY_FALLBACK, PROMPTS, RESOURCES,
     RESOURCE_TEMPLATES, BridgeClient, MCPDispatcher, TOOL_SPECS, UnsafePathError,
-    audit_kit_integrity_report, execute_tool, fnv1a_32, fnv1a_hex, get_mcp_prompt,
-    read_mcp_resource, run_luau_check,
+    apply_skill_helper, audit_kit_integrity_report, execute_tool, fnv1a_32,
+    fnv1a_hex, get_mcp_prompt, read_mcp_resource, run_luau_check,
+    search_skills_helper, skill_references_helper,
 )
 from mock_studio import run_mock_loop  # noqa: E402
 from scene_auditor import audit_3d_hierarchy  # noqa: E402
@@ -8195,6 +8196,203 @@ class TestV61M3Prompts(unittest.TestCase):
     def test_kit_integrity_triage_substitutes_its_kit_root(self):
         self.assertIn("in /tmp/some-other-kit",
                       self.render("kit_integrity_triage", {"kitRoot": "/tmp/some-other-kit"}))
+
+
+
+def _skill_files_for_count():
+    """Every skill's `SKILL.md`, for pack-wide shape assertions."""
+    from mcp_core import _skill_files
+    return _skill_files()
+
+
+class TestV61NewSkills(unittest.TestCase):
+    """P5-SK1/SK2 — two skills, and the invariant that every skill keeps its shape.
+
+    A skill is prose that an agent will act on, so the failure mode that matters is a skill
+    describing tools, fields or module behaviour that do not exist. The last two tests here
+    tie each factual claim to the source that makes it true.
+    """
+
+    NEW = ("roblox-observability-and-telemetry", "roblox-save-migration")
+    REPO = HERE.parent
+
+    def instructions(self, name: str) -> str:
+        return apply_skill_helper(name)["instructions"]
+
+    def test_every_skill_has_its_own_frontmatter(self):
+        from mcp_core import _skill_files, _skill_description
+        skills = _skill_files()
+        self.assertEqual(len(skills), 35)
+        self.assertEqual(len({n for n, _ in skills}), 35, "duplicate skill name")
+        for name, path in skills:
+            with self.subTest(skill=name):
+                self.assertEqual(path.name, "SKILL.md")
+                text = path.read_text(encoding="utf-8")
+                self.assertTrue(text.startswith("---\n"), "missing frontmatter")
+                # `_skill_files()` keys skills by directory, and nothing parses the
+                # frontmatter `name:`, so a mismatch is invisible to the tools and still a
+                # trap: an agent that reads the frontmatter calls apply_skill with a name
+                # that raises KeyError. `roblox-stud-ui-design` shipped that mismatch
+                # (`name: stud-ui-clean-roblox`) until this test found it.
+                self.assertIn(f"\nname: {name}\n", text, "frontmatter name != directory")
+                self.assertTrue(_skill_description(text), "empty description")
+
+    def test_the_new_skills_end_with_a_verification_section_that_states_limits(self):
+        # `## Verification` is NOT universal in this pack — 12 of the 33 pre-existing skills
+        # have one and 21 do not, and the older test at TestSkillDiscovery asserts it for three
+        # named skills only. Rewriting the other 21 is out of scope, so this pins the
+        # requirement where the handoff puts it (the new skills) and stops the skills that do
+        # carry one from silently losing it.
+        for name in self.NEW + ("roblox-cross-platform-accessibility",
+                                "roblox-multiplayer-interactions", "roblox-data-reliability"):
+            with self.subTest(skill=name):
+                text = self.instructions(name)
+                self.assertIn("\n## Verification", text)
+                self.assertTrue(text.rstrip().split("\n## Verification", 1)[1].strip(),
+                                "empty Verification section")
+        # A Verification section that does not admit a limit is decoration.
+        for name in self.NEW:
+            with self.subTest(skill=name):
+                limits = self.instructions(name).split("\n## Verification", 1)[1].casefold()
+                for phrase in ("unverified", "operator", "cannot"):
+                    self.assertIn(phrase, limits)
+        counted = sum(1 for n, path in _skill_files_for_count()
+                      if "\n## Verification" in path.read_text(encoding="utf-8"))
+        self.assertEqual(counted, 14, "a skill gained or lost its Verification section")
+
+    def test_the_new_skills_are_found_by_their_topic_words(self):
+        for query, expected in (("telemetry", "roblox-observability-and-telemetry"),
+                                ("migration", "roblox-save-migration"),
+                                ("observability", "roblox-observability-and-telemetry"),
+                                ("logging", "roblox-observability-and-telemetry"),
+                                ("schema version", "roblox-save-migration"),
+                                ("crash reporting", "roblox-observability-and-telemetry")):
+            with self.subTest(query=query):
+                results = search_skills_helper(query, limit=100)["results"]
+                self.assertEqual(results[0]["name"], expected)
+                self.assertTrue(results[0]["matchedFields"])
+        for query in ("roll back a save format change", "add a field to a live save",
+                      "why did studio crash", "memory budget on mobile"):
+            with self.subTest(query=query):
+                names = [r["name"] for r in search_skills_helper(query, limit=3)["results"]]
+                self.assertIn(names[0], self.NEW)
+
+    def test_the_new_skills_do_not_steal_the_existing_top_hits(self):
+        # Adding a skill changes every IDF in the index, so the pairs the pack already
+        # documents are re-asserted here rather than assumed.
+        for query, expected in (("how do I handle a failed datastore load", "roblox-data-reliability"),
+                                ("persistence", "roblox-data-reliability"),
+                                ("performance profiling", "roblox-performance-profiling"),
+                                ("receipts and duplicate purchase rewards", "roblox-monetization")):
+            with self.subTest(query=query):
+                self.assertEqual(search_skills_helper(query, limit=100)["results"][0]["name"], expected)
+
+    def test_save_migration_pairs_with_data_reliability_instead_of_replacing_it(self):
+        for query in ("migrate datastore schema safely", "how do I version player saves"):
+            with self.subTest(query=query):
+                names = [r["name"] for r in search_skills_helper(query, limit=100)["results"]]
+                self.assertEqual(names[0], "roblox-save-migration")
+                self.assertIn("roblox-data-reliability", names[:4])
+        # And the skill says so itself, rather than leaving a reader to guess the split.
+        self.assertIn("roblox-data-reliability", self.instructions("roblox-save-migration"))
+
+    def test_references_are_listed_searchable_and_bounded(self):
+        expected = {
+            "roblox-observability-and-telemetry": ["references/budgets-and-sampling.md",
+                                                   "references/logging-patterns.md"],
+            "roblox-save-migration": ["references/datastoresafe-gaps.md",
+                                      "references/migration-steps.md"],
+        }
+        for name, paths in expected.items():
+            with self.subTest(skill=name):
+                listing = skill_references_helper(name)
+                self.assertEqual(sorted(i["path"] for i in listing["items"]), sorted(paths))
+                for path in paths:
+                    body = skill_references_helper(name, "read", path)["content"]
+                    self.assertTrue(body.strip())
+        found = search_skills_helper("peer_crash_loop", limit=100, include_references=True)
+        self.assertTrue(found["referenceSearch"]["complete"])
+        self.assertEqual(found["results"][0]["name"], "roblox-observability-and-telemetry")
+        self.assertIn("references/budgets-and-sampling.md",
+                      [m["path"] for m in found["results"][0]["matchedReferences"]])
+        found = search_skills_helper("missingStep", limit=100, include_references=True)
+        self.assertEqual(found["results"][0]["name"], "roblox-save-migration")
+
+    def test_the_observability_skill_describes_the_plugin_that_exists(self):
+        plugin = (HERE / "ArenaBridge.lua").read_text(encoding="utf-8")
+        bridge = (HERE / "mcp_core.py").read_text(encoding="utf-8")
+        text = self.instructions("roblox-observability-and-telemetry")
+        # memoryMb / physicsFps come from these two calls, and both are pcall-guarded, which
+        # is why the skill insists `nil` means unmeasured rather than zero.
+        self.assertIn("GetTotalMemoryUsageMb", plugin)
+        self.assertIn("GetRealPhysicsFPS", plugin)
+        self.assertIn("memoryMb = okMem", plugin)
+        self.assertIn("physicsFps = okFps", plugin)
+        self.assertIn("memoryMb", text)
+        self.assertIn("physicsFps", text)
+        self.assertIn("`nil` means unmeasured, never zero", text)
+        # perf_audit's nulls and its bounds are real, not the skill's invention.
+        self.assertIn('"triangleCount": None', bridge)
+        self.assertIn('"textureMemoryEstimateMB": None', bridge)
+        self.assertIn('"maxChildren": 500', bridge)
+        for claim in ("triangleCount: null", "textureMemoryEstimateMB: null",
+                      "depth: 20", "maxChildren: 500", "uniqueMeshCount"):
+            self.assertIn(claim, text)
+        # The crash-loop path the skill tells operators to page on.
+        server = (HERE / "server.py").read_text(encoding="utf-8")
+        for needle in ("peer_crash_loop", "job.crash_loop", "bridge_jobs_crash_loop_total"):
+            self.assertIn(needle, server)
+            self.assertIn(needle, text)
+        # Every tool it names is a registered tool, and the one job kind it names is a real
+        # job kind rather than a tool that happens not to exist.
+        registered = {spec["name"] for spec in TOOL_SPECS}
+        for tool in ("get_console_output", "get_studio_state", "perf_audit", "survey_place",
+                     "luau_check", "execute_luau"):
+            self.assertIn(tool, text)
+            self.assertIn(tool, registered)
+        self.assertIn("`run_luau` job", text)
+        self.assertNotIn("run_luau", registered)
+        state = BridgeState(token="skill-claim-token-000",
+                            state_dir=tempfile.mkdtemp(prefix="arena-skill-"),
+                            require_confirm="write")
+        self.addCleanup(state._reaper_stop.set)
+        self.assertEqual(state.policy_report()["confirmGate"]["gatedJobKinds"], ["run_luau"])
+
+    def test_the_migration_skill_describes_the_kit_engine_that_exists(self):
+        data_dir = self.REPO / "roblox-kit" / "systems" / "core" / "data"
+        engine = (data_dir / "shared" / "SaveMigrations.lua").read_text(encoding="utf-8")
+        service = (data_dir / "server" / "DataService.server.lua").read_text(encoding="utf-8")
+        config = (data_dir / "shared" / "DataConfig.lua").read_text(encoding="utf-8")
+        readme = (data_dir / "README.md").read_text(encoding="utf-8")
+        text = self.instructions("roblox-save-migration")
+        # The six statuses the skill documents are the six the engine returns.
+        self.assertEqual(sorted(re.findall(r'"(\w+)", nil', engine) +
+                                re.findall(r'"(\w+)", (?:data|working)', engine)),
+                         ["current", "failed", "migrated", "missingStep", "newer", "reset"])
+        for status in ("current", "migrated", "reset", "newer", "missingStep", "failed"):
+            self.assertIn(f"`{status}`", text)
+        # Order is the whole lesson, and the kit's own comment is the evidence for it.
+        self.assertIn("migrate before Reconcile, which would fill a missing dataVersion", service)
+        self.assertIn("Migrate before reconcile", text)
+        # "the input is never modified" is the README's wording for the deep-copy guarantee,
+        # and the skill repeats it; the engine's `deepCopy` is what makes it true.
+        self.assertIn("the input is never modified", engine)
+        self.assertIn("never modifies its input", text)
+        self.assertIn("local function deepCopy", engine)
+        self.assertIn("Steps run on a deep copy", readme)
+        # `newer` is refused without a warn; the skill says that is deliberate.
+        self.assertIn('if status ~= "newer" then', service)
+        self.assertIn("does **not** `warn` on `newer`", text)
+        # The Studio store suffix is why a Studio test never touches production.
+        self.assertIn('STUDIO_SUFFIX = "_Studio"', config)
+        self.assertIn("DataConfig.STUDIO_SUFFIX", service)
+        self.assertIn("PlayerData_Studio", text)
+        # And the gap the skill states rather than glosses: the README promises a spec the
+        # system does not ship.
+        self.assertIn("SaveMigrations.spec.lua", readme)
+        self.assertFalse((data_dir / "tests").exists(),
+                         "the data system grew a tests/ dir — update the skill's stated gap")
+        self.assertIn("ships **no `tests/` directory**", text)
 
 
 

@@ -1,5 +1,5 @@
 ---
-name: stud-ui-clean-roblox
+name: roblox-stud-ui-design
 description: Build Roblox game UI in the "Stud UI" simulator style - chunky 3D stud buttons with bevel lip, gradient face, glass streaks and tiled studs; Heavy Montserrat/Gotham text with tinted outlines and 2px extrusion; translucent dark glass windows with colored stud headers and overflowing tilted icons; dark item slots with spinning sunbursts; rarity ladder Common to Cosmic; bouncy open/close with blur and FOV. Ships a tested Luau component kit (StudUI, StudMotion), a 1022-icon library (CheckUIIcons), exact design tokens, layouts, example builders and reference screenshots. Use this skill whenever the user wants to create, restyle, extend or fix any Roblox ScreenGui, HUD, menu, shop, inventory, hotbar, daily rewards, rebirth, season pass, index/collection, reward popup or button in this style or "like my game's UI", even if they only say "make a shop menu", "add a button to the HUD" or "UI simulator style" without naming the style.
 license: MIT
 ---

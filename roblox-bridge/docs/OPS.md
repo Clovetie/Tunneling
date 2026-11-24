@@ -509,7 +509,7 @@ Override with `--state-dir` or `BRIDGE_STATE_DIR`.
 ## 9. Tests
 
 ```bash
-python3 -B roblox-bridge/test_bridge_mcp.py          # 236 tests
+python3 -B roblox-bridge/test_bridge_mcp.py          # 244 tests
 bash roblox-bridge/tools/check_globals.sh roblox-bridge   # undefined Luau globals
 python3 -B tools/verify_licences.py                  # kit asset licence manifest
 python3 roblox-bridge/image_pipeline.py --check      # committed asset manifest

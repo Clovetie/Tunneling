@@ -22,7 +22,7 @@ plugin against a 6.1.0 one, and 20 prefabs against 36.
 | `templateUris` | studio://scripts/{path}, studio://instance/{path}, skill://{name} | `mcp_core.RESOURCE_TEMPLATES` |
 | `prompts` | 10 | `len(mcp_core.PROMPTS)` |
 | `promptNames` | survey_and_architecture, safe_module_edit, automated_playtest_debug, sync_repo_package, multi_agent_handoff, bus_standup, security_review, kit_integrity_triage, testez_first_workflow, task_triage | `mcp_core.PROMPTS` |
-| `skills` | 33 | `search_skills_helper()` total |
+| `skills` | 35 | `search_skills_helper()` total |
 | `modules` | 35 | `roblox-kit/modules/*.lua` |
 | `systemCategories` | core, liveops, mechanics, monetization, ui | `roblox-kit/systems/*` directories |
 | `systems` | 27 | system directories under those categories |
@@ -32,7 +32,7 @@ plugin against a 6.1.0 one, and 20 prefabs against 36.
 | `assets` | 4,320 | `roblox-kit/assets/registry.json` entries |
 | `assetFilesOnDisk` | 4,677 | files under `roblox-kit/assets/` (includes docs and contact sheets) |
 | `jobs` | 3 | `jobs/*.py` |
-| `tests` | 236 | `def test_` methods in `test_bridge_mcp.py` |
+| `tests` | 244 | `def test_` methods in `test_bridge_mcp.py` |
 
 ## Which prose is a *current* claim
 
