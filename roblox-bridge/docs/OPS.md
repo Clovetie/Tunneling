@@ -371,6 +371,7 @@ peers' tasks) and the per-task **Claim / Done** buttons that post as
 | Method & path | Role | Purpose |
 |---|---|---|
 | `GET /api/ops` | read | consolidated ops report |
+| `GET /api/policy` | read | effective security posture + computed risks (v6.1.0) |
 | `GET /api/metrics[?format=prometheus]` | read | metrics |
 | `GET /api/events[?once=1&since=&limit=&kinds=]` | read | SSE stream / snapshot |
 | `GET /api/audit[?limit=&verify=1]` | read | audit tail / chain verification |
@@ -389,6 +390,39 @@ peers' tasks) and the per-task **Claim / Done** buttons that post as
 
 `GET /api/health` stays public (no place data, no secrets) so tunnels and uptime
 monitors can probe it.
+
+### 6.1 `GET /api/policy` — read this before you expose the bridge (v6.1.0, P5-M2)
+
+```bash
+curl -sS -H "Authorization: Bearer $BRIDGE_TOKEN" http://127.0.0.1:8077/api/policy | python3 -m json.tool
+# same document three ways, from one function (BridgeState.policy_report):
+#   GET /api/policy      — REST, read scope (anonymous gets 401; /api/health stays the public probe)
+#   mcp://bridge/policy  — MCP resource
+#   bridge_ops {"action":"policy"} — MCP tool, classified as a read, so it stays ungated
+```
+
+| Field | What it answers |
+|---|---|
+| `riskLevel` | `ok` / `medium` / `high` / `critical` — **must the operator act now?** Only actionable severities set it; `review` and `info` items still appear in `risks` |
+| `exposed` | one boolean: open auth, a public bind, or a published tunnel without auth |
+| `risks[]` | `{id, severity, message, fix}` worst first. Every entry carries a `fix` that names a real flag |
+| `auth.mode` | `scoped` or `open`; `auth.tokens.byRole` counts by role. **No token values and no prefixes** — a prefix is `raw[:8]`, and this route is read-scope while `/api/tokens` is admin-only |
+| `confirmGate` | the mode *in force*, the tools it covers, and `destructiveNotGated` — tools annotated `destructiveHint` that the curated set misses |
+| `network.bind` | the host and port of the **bound socket**, plus `public`/`loopback` |
+| `network.cors` | the allowlist, and what an empty one means (same-origin: the bridge's own `Host` and the active tunnel URL — not "no origins") |
+| `network.maxBodyBytes` | the request body ceiling (`BRIDGE_MAX_BODY_BYTES`, default 32 MB) |
+
+Two findings this route exists to surface, both of which were invisible before it:
+
+- **`gate_mode_unrecognised` (critical).** `--require-confirm` accepts `off | destructive |
+  write | all` and silently falls back to `off` for anything else, so `--require-confirm=always`
+  leaves the bridge ungated while the operator believes a human is in the loop. The report
+  compares what was asked for with what is in force and says so.
+- **`destructive_not_gated` (review).** Annotation-versus-gate drift, computed live. It found
+  `require_fresh`: `destructiveHint: true`, its own description says "module initialization and
+  probe code can have side effects outside the clone … may need confirmation", and `write`/`all`
+  modes gated it — but `destructive` mode keys on `CONFIRM_GATED_TOOLS`, which did not list it,
+  so that mode let arbitrary probe code through. It is listed now.
 
 ---
 
@@ -475,7 +509,7 @@ Override with `--state-dir` or `BRIDGE_STATE_DIR`.
 ## 9. Tests
 
 ```bash
-python3 -B roblox-bridge/test_bridge_mcp.py          # 203 tests
+python3 -B roblox-bridge/test_bridge_mcp.py          # 222 tests
 bash roblox-bridge/tools/check_globals.sh roblox-bridge   # undefined Luau globals
 python3 -B tools/verify_licences.py                  # kit asset licence manifest
 python3 roblox-bridge/image_pipeline.py --check      # committed asset manifest

@@ -733,6 +733,53 @@ All notable changes for the Roblox Studio bridge are documented here.
   `run_testez_suite` — and any use of these tools against a live place — remain
   operator-verify.
 
+### Added (P5-M2 — two MCP resources, and the posture report behind one of them)
+- **`mcp://bridge/policy`** — the *effective* security posture, and the resource an operator
+  should read before exposing a bridge. `authMode`, gate mode, the tool set the gate
+  actually covers, token counts by role, the bound address, tunnel state, the request body
+  cap and the CORS allowlist, plus a computed `risks` list (`{id, severity, message, fix}`,
+  worst first, every entry naming a real flag), one `exposed` boolean, and a `riskLevel`
+  that answers "must the operator act now?" rather than "is anything worth reading" — so
+  `review` and `info` items are listed without owning the headline, because a level that can
+  never read `ok` trains everyone to ignore it. P0-S5 made an open bridge on a public bind
+  loud at *startup*; this makes it readable at any time, which is the difference between a
+  warning that scrolls past and one an operator can go and look at.
+- **One function, three surfaces.** `BridgeState.policy_report()` is read by
+  `mcp://bridge/policy`, `GET /api/policy` (read scope — anonymous gets 401, and
+  `/api/health` stays the minimal public probe) and `bridge_ops {"action": "policy"}`, which
+  is classified as a read so it stays ungated. They cannot disagree, which was the
+  requirement: a dashboard that computes its own posture is a second opinion.
+- **No secret material, and no prefix of any.** `/api/policy` is read-scope while
+  `/api/tokens` (which does show prefixes) is admin-only, and `TokenRecord.prefix` is
+  `raw[:8]` — the first eight characters of the real secret. So the report aggregates tokens
+  by role and exposes no per-token rows at all; `test_tokens_are_counted_by_role_and_never_quoted`
+  asserts neither a value nor a prefix appears anywhere in the JSON.
+- **Two findings this resource exists to surface, both invisible before it.**
+  `gate_mode_unrecognised` (critical): `--require-confirm` accepts `off | destructive | write
+  | all` and silently falls back to `off` for anything else, so `--require-confirm=always`
+  leaves the bridge ungated while the operator believes a human is in the loop — the report
+  compares the requested mode with the one in force. And `destructive_not_gated`, computed
+  live from `destructiveHint` annotations against `CONFIRM_GATED_TOOLS`, which found
+  **`require_fresh` outside the curated set**: annotated destructive, described as running a
+  probe whose "module initialization and probe code can have side effects outside the clone
+  … may need confirmation", gated in `write` and `all` modes but not in `destructive`, which
+  keys on that list. It is the same bug class P0-S1 closed for `run_luau`/`execute_luau`/
+  `probe`, and it is now gated too; the existing destructive-mode test covers it.
+- **`mcp://kit/integrity`** — the P5-M1 kit cross-check as a pollable resource: the same
+  `audit_kit_integrity_report()` the tool and CI use, cached 30 s because it re-reads 4,320
+  registry rows, 3,800 lock entries and all of `modules/Assets.lua` (~0.7 s). The payload
+  carries `cacheAgeSeconds`, `cacheSeconds` and `cached`, because a cached answer that does
+  not admit it is a stale report wearing a fresh timestamp. The computation happens outside
+  the cache lock: holding it for 0.7 s would serialise every concurrent reader behind one
+  filesystem walk, and the worst case of two overlapping misses is a duplicate computation,
+  not a wrong answer.
+- **19 new tests, 222 total**: the risk matrix offline (open auth, public bind, tunnel
+  published without auth, wildcard CORS, read-only mode, four unrecognised gate modes,
+  revoked tokens, worst-first ordering, every risk carrying a fix), and the transport claims
+  live (401 anonymous / 200 read-scoped, all three surfaces returning the same document, the
+  cache hitting and expiring, `resources/list` at 14 with both new URIs reachable through the
+  cursor).
+
 ### Removed (P2 — NightLoop)
 - **`nightloop/` is gone**, with its in-repo copies and every reference: 125
   tracked files, −37,441 lines. That is the reference horror-survival experience

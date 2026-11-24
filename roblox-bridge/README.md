@@ -181,7 +181,9 @@ See [Overhaul plan](docs/OVERHAUL.md) and [Skills roadmap and continuation promp
   - `lighting_cinematic_sunset`, `lighting_cyber_night`, `lighting_stylized_day`, `hud_modern_shell`, `interact_pad`, `spawn_plaza`, `world_sign_board`, `vfx_collectible_orb`
 
 ### MCP Resources & Prompts Also Exposed
-- **Resources (12)**: `studio://state`, `studio://peers`, `studio://console`, `studio://selection`, `studio://survey`, `studio://bus`, `studio://ops`, `studio://audit`, `studio://jobs`, `studio://studios`, `studio://handoff`, `mcp://server-card.json`
+- **Resources (14)**: `studio://state`, `studio://peers`, `studio://console`, `studio://selection`, `studio://survey`, `studio://bus`, `studio://ops`, `studio://audit`, `studio://jobs`, `studio://studios`, `studio://handoff`, `mcp://kit/integrity`, `mcp://bridge/policy`, `mcp://server-card.json`
+  - `mcp://kit/integrity` — `assets/registry.json` vs the files on disk vs `assets/asset-lock.json` vs `modules/Assets.lua`, plus the generated manifest. The same report `audit_kit_integrity` returns and CI asserts against, cached ~30 s; the payload carries `cacheAgeSeconds` so a cached answer never pretends to be fresh. No Studio peer needed.
+  - `mcp://bridge/policy` — the **effective** security posture: auth mode, gate mode and the tool set it covers, token counts by role (never token values, never a prefix — `/api/policy` is read-scope and a prefix is the first 8 characters of the secret), bound address, tunnel state, body cap, CORS allowlist, plus a computed `risks` list, one `exposed` boolean and a `riskLevel` that answers "must the operator act now?". Read it before publishing a bridge. `GET /api/policy` and the dashboard's policy panel call the same `BridgeState.policy_report()`, so the three surfaces cannot disagree.
 - **Resource Templates (3)**: `studio://scripts/{path}`, `studio://instance/{path}`, `skill://{name}`
 - **Prompts (7)**: `survey_and_architecture`, `safe_module_edit`, `automated_playtest_debug`, `sync_repo_package`, `multi_agent_handoff`, `bus_standup`, `task_triage`
 

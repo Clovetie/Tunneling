@@ -37,6 +37,7 @@ from urllib.parse import parse_qs, urlparse, urlsplit
 import uuid
 
 from confirm_gate import (  # noqa: E402
+    GATE_MODES,
     ConfirmGate,
     GateError,
     canonical_digest,
@@ -50,6 +51,9 @@ from mcp_core import (
     META_PROTOCOL_VERSION,
     MCPDispatcher,
     MODERN_PROTOCOL_VERSION,
+    PROMPTS,
+    RESOURCES,
+    RESOURCE_TEMPLATES,
     SUPPORTED_PROTOCOL_VERSIONS,
     TOOL_MAP,
     TOOL_SPECS,
@@ -255,6 +259,10 @@ class BridgeState:
             self.allowed_origins = {str(o).strip().rstrip("/") for o in raw_origins if str(o).strip()}
         else:
             self.allowed_origins = {o.strip().rstrip("/") for o in str(raw_origins).split(",") if o.strip()}
+        # Filled in by `create_http_server` from the *bound* socket, so a `--port 0`
+        # reports the port that is actually listening rather than the one requested.
+        self.bind_host = None
+        self.bind_port = None
         raw_max_body = max_body_bytes if max_body_bytes is not None else os.environ.get("BRIDGE_MAX_BODY_BYTES")
         try:
             self.max_body_bytes = max(4096, int(raw_max_body)) if raw_max_body else DEFAULT_MAX_BODY_BYTES
@@ -1674,6 +1682,8 @@ class BridgeState:
                         "publicUrl": self.tunnel.public_url,
                     },
                 }
+        if op == "policy":
+            return self.policy_report()
         if op == "studios":
             return self.fleet_snapshot()
         if op == "peers":
@@ -1812,6 +1822,182 @@ class BridgeState:
         t.gauge("bridge_queue_paused", 1 if self.queue_paused else 0)
         t.gauge("bridge_sweeps_total", self._sweeps)
         return t.snapshot(uptime=_now() - self.started)
+
+    def policy_report(self) -> dict:
+        """The *effective* security posture, computed once and read by every surface.
+
+        P5-M2: `mcp://bridge/policy`, `GET /api/policy` and the dashboard's policy panel all
+        call this, so they cannot disagree about whether the bridge is exposed. It reports
+        what is in force rather than what was asked for: the resolved auth mode, the gate
+        mode, which tools the gate actually covers, the token population by role, the bound
+        address, the tunnel, the body cap and the CORS allowlist.
+
+        It also computes `risks`. A posture report that makes the reader derive "am I
+        exposed?" from eight separate fields is a report nobody reads, and P0-S5's whole
+        point was that an open bridge on a public bind was only visible in a startup log
+        line. Nothing secret leaves this function: tokens appear as id/label/role/prefix
+        (what `TokenRecord.view()` already exposes), never as values.
+        """
+        auth_mode = "scoped" if self.token else "open"
+        gate = self.confirm_gate_summary()
+        tokens = self.tokens.list()
+        by_role = {}
+        revoked = expired = 0
+        now = _now()
+        for row in tokens["tokens"]:
+            role = row.get("role") or "unknown"
+            by_role[role] = by_role.get(role, 0) + 1
+            if row.get("revoked"):
+                revoked += 1
+            elif row.get("expires") and row["expires"] <= now:
+                expired += 1
+
+        gated_names = set(CONFIRM_GATED_TOOLS)
+        tool_names = {spec["name"] for spec in TOOL_SPECS}
+        destructive = sorted(spec["name"] for spec in TOOL_SPECS
+                             if spec["annotations"].get("destructiveHint"))
+        gated_tools = sorted(gated_names & tool_names)
+        # `run_luau` is a job kind, not a tool: the gate covers both, and reporting it as a
+        # tool would be a claim about a surface that does not exist.
+        gated_job_kinds = sorted(gated_names - tool_names)
+        ungated_destructive = sorted(set(destructive) - gated_names)
+
+        bind_public = _bind_is_public(self.bind_host or "127.0.0.1")
+        tunnel_state = self.tunnel.state
+        public_url = self.tunnel.public_url
+        allowlist = sorted(self.allowed_origins)
+
+        risks = []
+
+        def risk(rid, severity, message, fix):
+            risks.append({"id": rid, "severity": severity, "message": message, "fix": fix})
+
+        if auth_mode == "open":
+            risk("auth_open", "critical",
+                 "No credential is configured, so every route is open admin to anyone who "
+                 "can reach this process.",
+                 "Start without --no-auth so a bridge.token is generated (mode 0600), or "
+                 "pass --token.")
+        if bind_public:
+            risk("public_bind", "critical" if auth_mode == "open" else "high",
+                 f"Bound on {self.bind_host}, so anyone who can route to this machine can "
+                 "reach the bridge.",
+                 "Bind 127.0.0.1 and expose it with --tunnel (authenticated, TLS, "
+                 "revocable) instead of an interface.")
+        if public_url and auth_mode == "open":
+            risk("tunnel_open", "critical",
+                 f"A tunnel is publishing this bridge at {public_url} while authentication "
+                 "is off.",
+                 "Stop the tunnel, or configure a token before publishing it.")
+        if gate.get("mode") == "off":
+            risk("gate_off", "medium",
+                 "The confirmation gate is off, so a prompt-injected agent can call any of "
+                 f"the {len(gated_tools)} gated tools without a human deciding.",
+                 "Restart with --require-confirm=destructive (the curated set), =write "
+                 "(every non-read tool) or =all (lockdown); see docs/OPS.md 13.1.")
+        # `--require-confirm` silently falls back to "off" for a value that is not one of
+        # GATE_MODES, so an operator who typed `always` or `writes` believes a human is in
+        # the loop and none is. `self.confirm_mode` is what was asked for;
+        # `confirm_gate.mode` is what is in force. The gap is the finding.
+        requested_mode = str(self.confirm_mode or "off").strip().lower()
+        if requested_mode not in GATE_MODES:
+            risk("gate_mode_unrecognised", "critical",
+                 f"--require-confirm={requested_mode!r} is not one of "
+                 f"{', '.join(GATE_MODES)}, so the gate fell back to "
+                 f"{gate.get('mode')!r} — it is not protecting anything.",
+                 "Use one of: --require-confirm=off | destructive | write | all.")
+        if "*" in self.allowed_origins:
+            risk("cors_wildcard", "high",
+                 "The CORS allowlist contains '*', so any origin may drive the bridge from "
+                 "a browser.",
+                 "Remove '*' from BRIDGE_ALLOWED_ORIGINS; an empty allowlist already "
+                 "permits the bridge's own Host and the active tunnel URL.")
+        if ungated_destructive:
+            risk("destructive_not_gated", "review",
+                 "These tools are annotated destructiveHint but are not confirm-gated: "
+                 + ", ".join(ungated_destructive) + ".",
+                 "Either add them to CONFIRM_GATED_TOOLS or correct the annotation; this "
+                 "report computes the difference so the two cannot drift silently.")
+        if self.read_only:
+            risk("read_only", "info",
+                 "Read-only Inspector mode is on: mutating jobs and tools are refused.",
+                 "None needed; this is the safe posture.")
+
+        order = {"critical": 0, "high": 1, "medium": 2, "review": 3, "info": 4}
+        risks.sort(key=lambda r: (order.get(r["severity"], 9), r["id"]))
+        # `riskLevel` answers "must the operator act now?", so only actionable severities
+        # set it. A `review` or `info` item still appears in `risks` — a headline level that
+        # can never read "ok" trains everyone to ignore it.
+        actionable = [r for r in risks if r["severity"] in ("critical", "high", "medium")]
+        worst = actionable[0]["severity"] if actionable else "ok"
+
+        return {
+            "version": VERSION,
+            "generatedAt": now,
+            "riskLevel": worst,
+            "actionableRisks": len(actionable),
+            "exposed": bool(auth_mode == "open" or bind_public or (public_url and auth_mode == "open")),
+            "risks": risks,
+            "auth": {
+                "mode": auth_mode,
+                "readOnly": self.read_only,
+                "credentialConfigured": bool(self.token),
+                "tokens": {
+                    "count": tokens["count"],
+                    "active": tokens["active"],
+                    "revoked": revoked,
+                    "expired": expired,
+                    "byRole": dict(sorted(by_role.items())),
+                    "roles": tokens["roles"],
+                },
+            },
+            "confirmGate": {
+                **gate,
+                "enabled": gate.get("mode") != "off",
+                "gatedToolCount": len(gated_tools),
+                "gatedTools": gated_tools,
+                "gatedJobKinds": gated_job_kinds,
+                "destructiveToolCount": len(destructive),
+                "destructiveTools": destructive,
+                "destructiveNotGated": ungated_destructive,
+            },
+            "network": {
+                "bind": {
+                    "host": self.bind_host,
+                    "port": self.bind_port,
+                    "public": bind_public,
+                    "loopback": (self.bind_host or "127.0.0.1") in ("127.0.0.1", "localhost", "::1"),
+                },
+                "maxBodyBytes": self.max_body_bytes,
+                "cors": {
+                    "allowlist": allowlist,
+                    "wildcard": "*" in self.allowed_origins,
+                    # What an empty allowlist actually means, because "no origins allowed"
+                    # would be the wrong reading of the safe default.
+                    "policy": ("explicit allowlist" if allowlist else
+                               "same-origin only: the bridge's own Host header and the "
+                               "active tunnel URL"),
+                    # Exactly what `_cors_origin` does: a browser request whose Origin is
+                    # allowed gets that Origin echoed back, one that is not gets "null", and
+                    # a request with no Origin header (curl, Studio's HttpService, the CLI)
+                    # gets "*" - which is inert, since no browser is reading the response.
+                    "reflectsAllowedRequestOrigin": True,
+                    "wildcardWhenNoOriginHeader": True,
+                },
+            },
+            "tunnel": {
+                "state": tunnel_state,
+                "publicUrl": public_url,
+                "localUrl": self.tunnel.local_url,
+                "flavor": self.tunnel.flavor,
+            },
+            "surface": {
+                "mcpTools": len(TOOL_SPECS),
+                "mcpResources": len(RESOURCES),
+                "mcpResourceTemplates": len(RESOURCE_TEMPLATES),
+                "mcpPrompts": len(PROMPTS),
+            },
+        }
 
     def ops_report(self) -> dict:
         health = self.direct_dispatch("health", {})
@@ -2767,6 +2953,13 @@ def make_http_handler(state: BridgeState):
                 if not self._require(qs, "read"):
                     return
                 return self._send(200, state.ops_report())
+
+            if path == "/api/policy":
+                # The posture an operator should read *before* exposing the bridge. Read
+                # scope, never anonymous: /api/health stays the minimal public probe.
+                if not self._require(qs, "read"):
+                    return
+                return self._send(200, state.policy_report())
 
             if path == "/api/metrics":
                 if not self._require(qs, "read"):
@@ -3878,6 +4071,8 @@ def create_http_server(
     # Set before serving: `_report_saturation` reads it off the server instance.
     httpd.bridge_state = state
     bound_port = httpd.server_address[1]
+    state.bind_host = host
+    state.bind_port = int(bound_port)
     state.tunnel.port = int(bound_port)
     state.tunnel.local_url = f"http://127.0.0.1:{bound_port}"
     if auto_tunnel:

@@ -16,9 +16,9 @@ plugin against a 6.1.0 one, and 20 prefabs against 36.
 | `pluginVersion` | 6.1.0 | `ArenaBridge.lua` PLUGIN_VERSION |
 | `versionStamps` | ArenaBridge.lua 6.1.0, auth_core.py 6.1.0, bus_core.py 6.1.0, confirm_gate.py 6.1.0, mcp_core.py 6.1.0, mock_studio.py 6.1.0, server.py 6.1.0, telemetry.py 6.1.0, tunnel_manager.py 6.1.0 | every version literal in the release |
 | `tools` | 103 | `len(mcp_core.TOOL_SPECS)` |
-| `resources` | 12 | `len(mcp_core.RESOURCES)` |
+| `resources` | 14 | `len(mcp_core.RESOURCES)` |
 | `resourceTemplates` | 3 | `len(mcp_core.RESOURCE_TEMPLATES)` |
-| `resourceUris` | studio://state, studio://peers, studio://console, studio://selection, studio://survey, studio://bus, studio://ops, studio://audit, studio://jobs, studio://studios, studio://handoff, mcp://server-card.json | `mcp_core.RESOURCES` |
+| `resourceUris` | studio://state, studio://peers, studio://console, studio://selection, studio://survey, studio://bus, studio://ops, studio://audit, studio://jobs, studio://studios, studio://handoff, mcp://kit/integrity, mcp://bridge/policy, mcp://server-card.json | `mcp_core.RESOURCES` |
 | `templateUris` | studio://scripts/{path}, studio://instance/{path}, skill://{name} | `mcp_core.RESOURCE_TEMPLATES` |
 | `prompts` | 7 | `len(mcp_core.PROMPTS)` |
 | `promptNames` | survey_and_architecture, safe_module_edit, automated_playtest_debug, sync_repo_package, multi_agent_handoff, bus_standup, task_triage | `mcp_core.PROMPTS` |
@@ -32,7 +32,7 @@ plugin against a 6.1.0 one, and 20 prefabs against 36.
 | `assets` | 4,320 | `roblox-kit/assets/registry.json` entries |
 | `assetFilesOnDisk` | 4,677 | files under `roblox-kit/assets/` (includes docs and contact sheets) |
 | `jobs` | 3 | `jobs/*.py` |
-| `tests` | 203 | `def test_` methods in `test_bridge_mcp.py` |
+| `tests` | 222 | `def test_` methods in `test_bridge_mcp.py` |
 
 ## Which prose is a *current* claim
 

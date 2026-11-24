@@ -223,6 +223,14 @@ CONFIRM_GATED_TOOLS = (
     # v6.1.0: arbitrary-code execution and DataModel probes were missing from the
     # curated destructive set even though they carry `destructiveHint: true`.
     "run_luau", "execute_luau", "probe",
+    # v6.1.0 (P5-M2): `require_fresh` is the same class of risk and was still outside the
+    # curated set — it requires a cloned ModuleScript and can run a probe, and its own
+    # description says "module initialization and probe code can have side effects outside
+    # the clone … may need confirmation", with `destructiveHint: true` to match. In `write`
+    # and `all` modes it was already gated (every non-read tool is); `destructive` mode keys
+    # on this list, so that mode let arbitrary probe code through. `mcp://bridge/policy`
+    # computes annotation-versus-gate drift, which is how this was found.
+    "require_fresh",
 )
 
 #: Job kinds enqueued over `POST /api/jobs` mapped onto the MCP tool whose
@@ -1033,6 +1041,7 @@ class BridgeClient:
             mapping = {
                 "status": ("ops", {}),
                 "metrics": ("metrics", {}),
+                "policy": ("policy", {}),
                 "audit": ("audit", {"limit": p.get("limit", 50)}),
                 "audit_verify": ("audit", {"verify": True}),
                 "events": ("events", {"cursor": p.get("cursor", 0), "limit": p.get("limit", 50)}),
@@ -1064,6 +1073,8 @@ class BridgeClient:
 
         if action == "status":
             return self._http_request("GET", "/api/ops", timeout=20.0)
+        if action == "policy":
+            return self._http_request("GET", "/api/policy", timeout=20.0)
         if action == "metrics":
             fmt = p.get("format") or "json"
             if fmt == "prometheus":
@@ -2640,8 +2651,10 @@ TOOL_SPECS = [
         "description": (
             "Operate and observe the bridge itself: consolidated ops report (peers, queue, tunnel, bus, audit), "
             "Prometheus-style metrics, tamper-evident audit log verification, live event feed, and supervised "
-            "public-tunnel control (start/stop/restart). Read actions: status, metrics, audit, audit_verify, events, "
-            "tunnel, confirmations, subscriptions. Control: tunnel_start, tunnel_stop, tunnel_restart, queue_pause, "
+            "public-tunnel control (start/stop/restart). Read actions: status, metrics, policy (the effective "
+            "security posture: auth mode, gate mode, gated tool set, token roles, bind address, tunnel, body cap, "
+            "CORS allowlist, plus a computed risk list), audit, audit_verify, events, tunnel, confirmations, "
+            "subscriptions. Control: tunnel_start, tunnel_stop, tunnel_restart, queue_pause, "
             "queue_resume, queue_clear, sweep, reap, confirm_approve, confirm_deny. queue_pause stops handing jobs "
             "to Studio without dropping them. `confirmations` lists the pending human-approval requests of *this* "
             "MCP connection (the process answering the call). confirm_approve/confirm_deny answer one — but never "
@@ -2653,8 +2666,8 @@ TOOL_SPECS = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "metrics", "audit", "audit_verify", "events", "tunnel", "tunnel_probe",
-                             "tunnel_start", "tunnel_stop", "tunnel_restart", "queue_pause", "queue_resume",
+                    "enum": ["status", "metrics", "policy", "audit", "audit_verify", "events", "tunnel",
+                             "tunnel_probe", "tunnel_start", "tunnel_stop", "tunnel_restart", "queue_pause", "queue_resume",
                              "queue_clear", "sweep", "reap",
                              "confirmations", "confirm_approve", "confirm_deny", "subscriptions"],
                     "default": "status",
@@ -3549,7 +3562,7 @@ def is_tool_call_read_only(name: str, args: dict) -> bool:
         return True
     if name == "bridge_ops" and args.get("action", "status") in (
         "status", "metrics", "audit", "audit_verify", "events", "tunnel", "tunnel_probe",
-        "subscriptions", "confirmations",
+        "subscriptions", "confirmations", "policy",
     ):
         return True
     if name == "generate_dungeon_layout" and not args.get("buildInStudio"):
@@ -5167,6 +5180,31 @@ RESOURCES = [
         "mimeType": "text/markdown",
     },
     {
+        "uri": "mcp://kit/integrity",
+        "name": "Kit Integrity Report",
+        "title": "Kit Integrity Report",
+        "description": (
+            "The repository kit cross-checked against itself: assets/registry.json, the files on disk, "
+            "assets/asset-lock.json and modules/Assets.lua, plus the generated manifest. Same report the "
+            "`audit_kit_integrity` tool returns and CI asserts against, cached ~30 s (the payload reports "
+            "cacheAgeSeconds, so a cached answer never pretends to be fresh). Read-only, needs no Studio peer."
+        ),
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "mcp://bridge/policy",
+        "name": "Effective Bridge Security Posture",
+        "title": "Effective Bridge Security Posture",
+        "description": (
+            "What is actually in force on this bridge, not what was requested: auth mode, confirmation-gate "
+            "mode and the tool set it covers, token population by role (never token values), bound address, "
+            "tunnel state, request body cap and CORS allowlist — plus a computed `risks` list and one "
+            "`exposed` boolean. Read this before publishing a bridge. Emitted by the same function the "
+            "dashboard's policy panel and GET /api/policy use, so the three cannot disagree."
+        ),
+        "mimeType": "application/json",
+    },
+    {
         "uri": "mcp://server-card.json",
         "name": "MCP Server Card",
         "title": "MCP Server Card (SEP-1649)",
@@ -5503,6 +5541,35 @@ def complete_mcp_argument(client: BridgeClient, params: dict) -> dict:
     raise ValueError(f"Unsupported completion ref type: {ref_type!r}")
 
 
+#: `mcp://kit/integrity` re-reads 4,320 registry rows, 3,800 lock entries and the whole of
+#: modules/Assets.lua, which is ~0.7 s on this tree. Resources get polled, so the report is
+#: cached for 30 s — and the payload carries `cacheAgeSeconds`, because a cached answer that
+#: does not admit it is a stale report wearing a fresh timestamp.
+KIT_INTEGRITY_CACHE_SECONDS = 30.0
+_KIT_INTEGRITY_CACHE = {"at": 0.0, "report": None}
+_KIT_INTEGRITY_CACHE_LOCK = threading.Lock()
+
+
+def kit_integrity_cached_report(max_age: float = KIT_INTEGRITY_CACHE_SECONDS) -> dict:
+    """The kit integrity report, recomputed only when the cache is older than `max_age`.
+
+    The expensive work happens *outside* the lock: holding it for 0.7 s would serialise every
+    concurrent reader behind one filesystem walk, and the worst case of two overlapping
+    misses is one duplicate computation, not a wrong answer.
+    """
+    now = time.monotonic()
+    with _KIT_INTEGRITY_CACHE_LOCK:
+        report = _KIT_INTEGRITY_CACHE["report"]
+        age = now - _KIT_INTEGRITY_CACHE["at"]
+    if report is not None and age <= max_age:
+        return {"report": report, "ageSeconds": round(age, 2), "cached": True}
+    report = audit_kit_integrity_report()
+    with _KIT_INTEGRITY_CACHE_LOCK:
+        _KIT_INTEGRITY_CACHE["report"] = report
+        _KIT_INTEGRITY_CACHE["at"] = time.monotonic()
+    return {"report": report, "ageSeconds": 0.0, "cached": False}
+
+
 def read_mcp_resource(client: BridgeClient, uri: str) -> dict:
     if uri == "mcp://server-card.json":
         read_only = bool(client.read_only) if client is not None else False
@@ -5566,6 +5633,24 @@ def read_mcp_resource(client: BridgeClient, uri: str) -> dict:
     if uri == "studio://handoff":
         brief = client.bus_action({"action": "export", "summaryOnly": False})
         return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": brief.get("markdown", "")}]}
+    if uri == "mcp://kit/integrity":
+        got = kit_integrity_cached_report()
+        payload = {
+            **got["report"],
+            "cacheAgeSeconds": got["ageSeconds"],
+            "cacheSeconds": KIT_INTEGRITY_CACHE_SECONDS,
+            "cached": got["cached"],
+        }
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(payload, indent=2)}]}
+    if uri == "mcp://bridge/policy":
+        # `BridgeState.policy_report()` is the single source: the dashboard panel and
+        # `GET /api/policy` read the same function, so no surface can disagree with this one.
+        if client is None:
+            payload = {"available": False,
+                       "reason": "no bridge connection: the policy report describes a running bridge"}
+        else:
+            payload = client.ops_action({"action": "policy"})
+        return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(payload, indent=2)}]}
     if uri == "studio://audit":
         data = client.ops_action({"action": "audit", "limit": 25})
         verify = client.ops_action({"action": "audit_verify"})

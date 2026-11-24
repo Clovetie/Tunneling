@@ -59,8 +59,9 @@ def record_tool_metric(name: str, elapsed: float, passed: bool = True):
 sys.path.insert(0, str(HERE))
 
 from mcp_core import (  # noqa: E402
-    BridgeClient, MCPDispatcher, TOOL_SPECS, UnsafePathError,
-    audit_kit_integrity_report, execute_tool, fnv1a_32, fnv1a_hex, run_luau_check,
+    PROMPTS, RESOURCES, RESOURCE_TEMPLATES, BridgeClient, MCPDispatcher, TOOL_SPECS,
+    UnsafePathError, audit_kit_integrity_report, execute_tool, fnv1a_32, fnv1a_hex,
+    read_mcp_resource, run_luau_check,
 )
 from mock_studio import run_mock_loop  # noqa: E402
 from scene_auditor import audit_3d_hierarchy  # noqa: E402
@@ -1776,10 +1777,11 @@ class TestV5OpsPlatform(unittest.TestCase):
     def test_bridge_ops_control_actions_and_ops_resources(self):
         from mcp_core import MCPDispatcher, RESOURCES
         uris = [r["uri"] for r in RESOURCES]
-        self.assertEqual(len(uris), 12)
-        self.assertIn("mcp://server-card.json", uris)
-        self.assertIn("studio://jobs", uris)
-        self.assertIn("studio://handoff", uris)
+        for expected in ("mcp://server-card.json", "studio://jobs", "studio://handoff",
+                         # v6.1.0 (P5-M2): the kit cross-check and the posture report.
+                         "mcp://kit/integrity", "mcp://bridge/policy"):
+            self.assertIn(expected, uris)
+        self.assertEqual(len(uris), len(set(uris)), "a resource URI is registered twice")
 
         dispatcher = MCPDispatcher(self.state.mcp_client)
         paused = dispatcher.handle_payload({
@@ -2645,8 +2647,15 @@ class TestEndToEndBridgeAndMCP(unittest.TestCase):
         st_b, batch_resp, _ = self.mcp_http(batch)
         self.assertEqual(st_b, 200)
         self.assertEqual(len(batch_resp), 3)
-        self.assertEqual(len(batch_resp[1]["result"]["resources"]), 12)
-        self.assertEqual(len(batch_resp[2]["result"]["prompts"]), 7)
+        # Unpaginated, so the whole catalogue comes back in one call. Compared against
+        # RESOURCES rather than a literal: this asserts the transport, and the literal count
+        # is `tools/emit_facts.py --check`'s job against the docs.
+        listed_uris = [r["uri"] for r in batch_resp[1]["result"]["resources"]]
+        self.assertEqual(len(listed_uris), len(RESOURCES))
+        self.assertEqual(listed_uris, [r["uri"] for r in RESOURCES])
+        self.assertIn("mcp://kit/integrity", listed_uris)
+        self.assertIn("mcp://bridge/policy", listed_uris)
+        self.assertEqual(len(batch_resp[2]["result"]["prompts"]), len(PROMPTS))
 
     def test_02_all_core_studio_tools_end_to_end(self):
         # 0. v5 bridge-level tools (no Studio peer required)
@@ -5192,9 +5201,12 @@ class TestV61SecurityHardening(unittest.TestCase):
         """`execute_luau` and `probe` carry `destructiveHint: true` but were not
         members of `CONFIRM_GATED_TOOLS`, so mode `destructive` let them through."""
         from mcp_core import CONFIRM_GATED_TOOLS, TOOL_MAP, job_tool_name
-        for name in ("run_luau", "execute_luau", "probe"):
+        # P5-M2 added `require_fresh`: destructiveHint true, its own description says "may
+        # need confirmation", and it can run a probe - the same class of risk. `write` and
+        # `all` modes already gated it; `destructive` keys on this list and let it through.
+        for name in ("run_luau", "execute_luau", "probe", "require_fresh"):
             self.assertIn(name, CONFIRM_GATED_TOOLS, name)
-        for name in ("execute_luau", "probe"):
+        for name in ("execute_luau", "probe", "require_fresh"):
             self.assertTrue(TOOL_MAP[name]["annotations"]["destructiveHint"], name)
         # Negative control in the mode the curated set actually governs. The
         # fixture server runs `--require-confirm=all`, where `requires()` answers
@@ -5204,7 +5216,7 @@ class TestV61SecurityHardening(unittest.TestCase):
         from confirm_gate import ConfirmGate
         destructive = ConfirmGate(mode="destructive", secret="unit-test-secret",
                                   destructive_tools=CONFIRM_GATED_TOOLS)
-        for name in ("run_luau", "execute_luau", "probe"):
+        for name in ("run_luau", "execute_luau", "probe", "require_fresh"):
             # `run_luau` is a job *kind*; the tool it dispatches to is
             # `execute_luau`, and the gate keys on tool names.
             tool = job_tool_name(name) or name
@@ -5349,6 +5361,7 @@ class TestV61SecurityHardening(unittest.TestCase):
         ("/api/metrics", "GET", None),
         ("/api/ops", "GET", None),
         ("/api/peers", "GET", None),
+        ("/api/policy", "GET", None),
         ("/api/plugin-status", "GET", None),
         ("/api/plugin/download", "GET", None),
         # The plugin's long-poll. `wait=0` keeps the sweep from blocking and
@@ -7697,6 +7710,326 @@ class TestV61AssetReferencesLive(unittest.TestCase):
 
 
 
+class TestV61BridgePolicyReport(unittest.TestCase):
+    """P5-M2 — `BridgeState.policy_report()`, the one function behind `mcp://bridge/policy`,
+    `GET /api/policy` and the dashboard's policy panel.
+
+    Offline on purpose: the report is computed from state that a test can construct
+    directly, so every posture combination is checkable without binding a port. The point of
+    the resource is that an operator can read what is *in force* before exposing a bridge —
+    which is only worth anything if the risk list is right for the dangerous combinations,
+    not just the default one.
+    """
+
+    def state(self, token="policy-test-token-0000", require_confirm="off", read_only=False,
+              bind_host=None, allowed_origins=None, public_url=None):
+        st = BridgeState(token=token, state_dir=tempfile.mkdtemp(prefix="arena-policy-"),
+                         require_confirm=require_confirm, read_only=read_only,
+                         allowed_origins=allowed_origins if allowed_origins is not None else "")
+        self.addCleanup(st._reaper_stop.set)
+        if bind_host:
+            st.bind_host, st.bind_port = bind_host, 8077
+        if public_url:
+            st.tunnel.public_url = public_url
+            st.tunnel.state = "online"
+        return st
+
+    def risks_of(self, report: dict) -> list:
+        return [(r["id"], r["severity"]) for r in report["risks"]]
+
+    def test_a_correctly_configured_bridge_reports_ok_with_no_risks(self):
+        for mode in ("destructive", "write", "all"):
+            with self.subTest(gate=mode):
+                r = self.state(require_confirm=mode).policy_report()
+                self.assertEqual(r["riskLevel"], "ok", self.risks_of(r))
+                self.assertEqual(r["actionableRisks"], 0)
+                self.assertEqual(r["risks"], [])
+                self.assertFalse(r["exposed"])
+                self.assertEqual(r["auth"]["mode"], "scoped")
+
+    def test_open_auth_is_critical_and_says_how_to_fix_it(self):
+        r = self.state(token="").policy_report()
+        self.assertEqual(r["riskLevel"], "critical")
+        self.assertTrue(r["exposed"])
+        self.assertEqual(r["risks"][0]["id"], "auth_open")
+        self.assertEqual(r["auth"]["mode"], "open")
+        self.assertFalse(r["auth"]["credentialConfigured"])
+        # A fix instruction that names a flag which does not exist is worse than none.
+        self.assertIn("bridge.token", r["risks"][0]["fix"])
+
+    def test_a_public_bind_escalates_when_auth_is_also_open(self):
+        scoped = self.state(bind_host="0.0.0.0").policy_report()
+        self.assertEqual(scoped["riskLevel"], "high")
+        self.assertTrue(scoped["network"]["bind"]["public"])
+        self.assertFalse(scoped["network"]["bind"]["loopback"])
+        open_too = self.state(token="", bind_host="0.0.0.0").policy_report()
+        self.assertEqual(open_too["riskLevel"], "critical")
+        self.assertIn("public_bind", [i for i, _ in self.risks_of(open_too)])
+        self.assertEqual(dict(self.risks_of(open_too))["public_bind"], "critical")
+
+    def test_a_published_tunnel_without_auth_is_critical(self):
+        r = self.state(token="", public_url="https://mcp.example.com").policy_report()
+        self.assertTrue(r["exposed"])
+        self.assertIn("tunnel_open", [i for i, _ in self.risks_of(r)])
+        self.assertEqual(r["tunnel"]["publicUrl"], "https://mcp.example.com")
+
+    def test_an_unrecognised_gate_mode_is_reported_instead_of_falling_back_silently(self):
+        # `--require-confirm=always` is not one of GATE_MODES, so ConfirmGate falls back to
+        # "off". An operator who typed it believes a human is in the loop and none is: the
+        # report compares what was asked for with what is in force.
+        for bogus in ("always", "writes", "ON", "yes"):
+            with self.subTest(requested=bogus):
+                r = self.state(require_confirm=bogus).policy_report()
+                self.assertEqual(r["confirmGate"]["mode"], "off")
+                self.assertIn("gate_mode_unrecognised", [i for i, _ in self.risks_of(r)])
+                self.assertEqual(r["riskLevel"], "critical")
+                # BridgeState normalises the requested value (strip + lower) before storing
+                # it, so the message quotes the normalised form.
+                self.assertIn(bogus.strip().lower(), r["risks"][0]["message"])
+
+    def test_a_wildcard_cors_origin_is_a_finding(self):
+        r = self.state(allowed_origins="*").policy_report()
+        self.assertIn("cors_wildcard", [i for i, _ in self.risks_of(r)])
+        self.assertTrue(r["network"]["cors"]["wildcard"])
+        # The safe default is an empty allowlist, which means same-origin - not "no origins".
+        safe = self.state().policy_report()
+        self.assertEqual(safe["network"]["cors"]["allowlist"], [])
+        self.assertIn("same-origin", safe["network"]["cors"]["policy"])
+
+    def test_read_only_mode_is_reported_as_information_not_risk(self):
+        r = self.state(read_only=True, require_confirm="write").policy_report()
+        self.assertTrue(r["auth"]["readOnly"])
+        self.assertEqual(r["riskLevel"], "ok", self.risks_of(r))
+        self.assertEqual([i for i, _ in self.risks_of(r)], ["read_only"])
+        self.assertEqual(r["actionableRisks"], 0)
+
+    def test_every_destructive_tool_is_inside_the_confirmation_gate(self):
+        # The report computes annotation-versus-gate drift so the two cannot diverge
+        # silently. `require_fresh` was the live instance: destructiveHint true, its own
+        # description says "may need confirmation", and `destructive` mode let it through.
+        r = self.state().policy_report()
+        self.assertEqual(r["confirmGate"]["destructiveNotGated"], [])
+        self.assertIn("require_fresh", r["confirmGate"]["gatedTools"])
+        for name in r["confirmGate"]["destructiveTools"]:
+            self.assertIn(name, r["confirmGate"]["gatedTools"], name)
+        # `run_luau` is a job kind, not a tool, and must not be reported as one.
+        self.assertEqual(r["confirmGate"]["gatedJobKinds"], ["run_luau"])
+        self.assertNotIn("run_luau", r["confirmGate"]["gatedTools"])
+        tool_names = {spec["name"] for spec in TOOL_SPECS}
+        for name in r["confirmGate"]["gatedTools"]:
+            self.assertIn(name, tool_names, name)
+
+    def test_tokens_are_counted_by_role_and_never_quoted(self):
+        st = self.state()
+        reader = st.tokens.create("policy-reader", role="read", rate_limit=10, burst=10)["token"]
+        writer = st.tokens.create("policy-writer", role="write", rate_limit=10, burst=10)["token"]
+        r = st.policy_report()
+        self.assertEqual(r["auth"]["tokens"]["byRole"], {"admin": 1, "read": 1, "write": 1})
+        self.assertEqual(r["auth"]["tokens"]["count"], 3)
+        self.assertEqual(r["auth"]["tokens"]["active"], 3)
+        dumped = json.dumps(r)
+        for secret in (reader, writer, st.token):
+            self.assertNotIn(secret, dumped)
+        # Nor a prefix of one. `TokenRecord.prefix` is `raw[:8]` - the first eight
+        # characters of the real secret - and `/api/policy` is a *read-scope* route, while
+        # `/api/tokens` (which does show prefixes) is admin-only. So the report aggregates by
+        # role and exposes no per-token rows at all; do not "improve" it by adding them.
+        self.assertNotIn("prefix", dumped)
+        self.assertEqual(sorted(r["auth"]["tokens"]),
+                         ["active", "byRole", "count", "expired", "revoked", "roles"])
+        self.assertNotIn(reader[:8], dumped)
+        self.assertNotIn(writer[:8], dumped)
+
+    def test_a_revoked_and_an_expired_token_are_counted_separately(self):
+        st = self.state()
+        gone = st.tokens.create("policy-gone", role="read", rate_limit=10, burst=10)
+        st.tokens.revoke(gone["id"])
+        r = st.policy_report()
+        self.assertEqual(r["auth"]["tokens"]["revoked"], 1)
+        self.assertEqual(r["auth"]["tokens"]["active"], 1)
+
+    def test_the_report_describes_the_surface_it_is_part_of(self):
+        r = self.state().policy_report()
+        self.assertEqual(r["surface"]["mcpTools"], len(TOOL_SPECS))
+        self.assertEqual(r["surface"]["mcpResources"], len(RESOURCES))
+        self.assertEqual(r["surface"]["mcpResourceTemplates"], len(RESOURCE_TEMPLATES))
+        self.assertEqual(r["surface"]["mcpPrompts"], len(PROMPTS))
+        self.assertEqual(r["version"], "6.1.0")
+        self.assertEqual(r["network"]["maxBodyBytes"], 32 * 1024 * 1024)
+
+    def test_risks_are_ordered_worst_first_and_every_one_carries_a_fix(self):
+        st = self.state(token="", bind_host="0.0.0.0", allowed_origins="*", public_url="https://x.example")
+        r = st.policy_report()
+        order = {"critical": 0, "high": 1, "medium": 2, "review": 3, "info": 4}
+        severities = [order[x["severity"]] for x in r["risks"]]
+        self.assertEqual(severities, sorted(severities), self.risks_of(r))
+        for risk in r["risks"]:
+            self.assertTrue(risk["fix"], risk["id"])
+            self.assertTrue(risk["message"], risk["id"])
+            self.assertEqual(set(risk), {"id", "severity", "message", "fix"})
+
+
+class TestV61PolicyAndKitResources(unittest.TestCase):
+    """P5-M2 — the two new resources over the wire: `mcp://kit/integrity` and
+    `mcp://bridge/policy`.
+
+    Live because the claims worth testing are transport claims: the policy resource needs a
+    read-scoped credential and refuses an anonymous one, the three surfaces that read
+    `policy_report()` agree with each other, and the kit report's cache actually caches
+    without pretending the payload is fresh.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.port = _free_port()
+        cls.token = "policy-resource-secret"
+        cls.base_url = f"http://127.0.0.1:{cls.port}"
+        cls.state_dir = tempfile.mkdtemp(prefix="arena-v61-policy-")
+        cls.httpd, cls.state = create_http_server(
+            host="127.0.0.1", port=cls.port, token=cls.token, state_dir=cls.state_dir,
+            require_confirm="write")
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.stop_mock = threading.Event()
+        cls.mock_thread = threading.Thread(
+            target=run_mock_loop, args=(cls.base_url, cls.token, cls.stop_mock), daemon=True)
+        cls.mock_thread.start()
+        for _ in range(80):
+            if cls.state.direct_dispatch("health", {})["studio_connected"]:
+                break
+            threading.Event().wait(0.05)
+        cls.client = BridgeClient(base_url=cls.base_url, token=cls.token)
+        cls.read_token = cls.state.tokens.create(
+            "policy-reader", role="read", rate_limit=100, burst=100)["token"]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.stop_mock.set()
+        cls.state._reaper_stop.set()
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        shutil.rmtree(cls.state_dir, ignore_errors=True)
+
+    def get(self, path: str, token: str = None):
+        req = urllib.request.Request(f"{self.base_url}{path}", method="GET")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, None
+
+    def rpc(self, payload: dict) -> dict:
+        req = urllib.request.Request(
+            f"{self.base_url}/mcp", data=json.dumps(payload).encode("utf-8"), method="POST",
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {self.token}"})
+        with urllib.request.urlopen(req, timeout=40) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def read_resource(self, uri: str) -> dict:
+        body = self.rpc({"jsonrpc": "2.0", "id": f"read-{uri}", "method": "resources/read",
+                         "params": {"uri": uri}})
+        self.assertIn("result", body, json.dumps(body)[:400])
+        contents = body["result"]["contents"]
+        self.assertEqual(len(contents), 1)
+        self.assertEqual(contents[0]["uri"], uri)
+        return json.loads(contents[0]["text"])
+
+    def test_the_policy_route_needs_a_credential_and_a_read_scope_is_enough(self):
+        self.assertEqual(self.get("/api/policy")[0], 401)
+        status, body = self.get("/api/policy", self.read_token)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["auth"]["mode"], "scoped")
+        self.assertEqual(body["confirmGate"]["mode"], "write")
+        # The bound socket, not the requested one: create_http_server fills these in.
+        self.assertEqual(body["network"]["bind"]["host"], "127.0.0.1")
+        self.assertEqual(body["network"]["bind"]["port"], self.port)
+        self.assertNotIn(self.token, json.dumps(body))
+        self.assertNotIn(self.read_token, json.dumps(body))
+
+    def test_all_three_surfaces_read_the_same_policy_function(self):
+        via_rest = self.get("/api/policy", self.token)[1]
+        via_resource = self.read_resource("mcp://bridge/policy")
+        via_tool = execute_tool(self.client, "bridge_ops", {"action": "policy"})
+        via_dispatch = self.state.policy_report()
+        for label, payload in (("resource", via_resource), ("bridge_ops", via_tool),
+                               ("direct", via_dispatch)):
+            with self.subTest(surface=label):
+                self.assertEqual(payload["auth"], via_rest["auth"])
+                self.assertEqual(payload["confirmGate"]["gatedTools"],
+                                 via_rest["confirmGate"]["gatedTools"])
+                self.assertEqual(payload["network"]["bind"], via_rest["network"]["bind"])
+                self.assertEqual(payload["riskLevel"], via_rest["riskLevel"])
+                self.assertEqual([r["id"] for r in payload["risks"]],
+                                 [r["id"] for r in via_rest["risks"]])
+
+    def test_bridge_ops_policy_is_a_read_and_stays_ungated(self):
+        from mcp_core import is_tool_call_read_only
+        self.assertTrue(is_tool_call_read_only("bridge_ops", {"action": "policy"}))
+        # This fixture runs --require-confirm=write, so a write action would come back
+        # input_required; the policy read must not.
+        body = self.rpc({"jsonrpc": "2.0", "id": "ops-policy", "method": "tools/call",
+                         "params": {"name": "bridge_ops", "arguments": {"action": "policy"}}})
+        self.assertNotEqual(body["result"].get("resultType"), "input_required")
+        self.assertEqual(body["result"]["structuredContent"]["auth"]["mode"], "scoped")
+
+    def test_the_kit_integrity_resource_reports_the_real_kit_and_caches(self):
+        first = self.read_resource("mcp://kit/integrity")
+        self.assertTrue(first["ok"], json.dumps(first["errors"])[:400])
+        self.assertEqual(first["checked"]["registryRows"], 4320)
+        self.assertEqual(first["checked"]["lockEntries"], 3800)
+        self.assertTrue(first["manifestChecked"])
+        self.assertEqual(first["cacheSeconds"], 30.0)
+        second = self.read_resource("mcp://kit/integrity")
+        self.assertTrue(second["cached"], "the second read inside 30 s must come from cache")
+        self.assertEqual(second["checked"], first["checked"])
+        # A cached payload says how old it is rather than wearing a fresh timestamp.
+        self.assertGreaterEqual(second["cacheAgeSeconds"], 0.0)
+        self.assertLess(second["cacheAgeSeconds"], 30.0)
+
+    def test_the_cache_expires_and_recomputes(self):
+        from mcp_core import kit_integrity_cached_report
+        stale = kit_integrity_cached_report(max_age=0.0)
+        self.assertFalse(stale["cached"], "max_age=0 must force a recomputation")
+        self.assertTrue(stale["report"]["ok"])
+        fresh = kit_integrity_cached_report(max_age=0.0)
+        self.assertFalse(fresh["cached"])
+
+    def test_the_policy_resource_says_so_when_there_is_no_bridge(self):
+        payload = json.loads(read_mcp_resource(None, "mcp://bridge/policy")["contents"][0]["text"])
+        self.assertFalse(payload["available"])
+        self.assertIn("no bridge connection", payload["reason"])
+
+    def test_resources_list_advertises_both_and_pagination_still_covers_them(self):
+        listed = self.rpc({"jsonrpc": "2.0", "id": "list", "method": "resources/list",
+                           "params": {}})["result"]
+        uris = [r["uri"] for r in listed["resources"]]
+        self.assertEqual(len(uris), 14)
+        self.assertIn("mcp://kit/integrity", uris)
+        self.assertIn("mcp://bridge/policy", uris)
+        for row in listed["resources"]:
+            if row["uri"] in ("mcp://kit/integrity", "mcp://bridge/policy"):
+                self.assertEqual(row["mimeType"], "application/json")
+                self.assertTrue(row["name"] and row["description"])
+        # The default page size is 50, so an unpaginated client sees all 14; a paginating
+        # one must still reach the new two through the cursor.
+        page = self.rpc({"jsonrpc": "2.0", "id": "page", "method": "resources/list",
+                         "params": {"pageSize": 5}})["result"]
+        self.assertEqual(len(page["resources"]), 5)
+        cursor = page.get("nextCursor")
+        self.assertTrue(cursor)
+        seen = {r["uri"] for r in page["resources"]}
+        while cursor:
+            nxt = self.rpc({"jsonrpc": "2.0", "id": "page", "method": "resources/list",
+                            "params": {"pageSize": 5, "cursor": cursor}})["result"]
+            seen |= {r["uri"] for r in nxt["resources"]}
+            cursor = nxt.get("nextCursor")
+        self.assertEqual(seen, set(uris))
+
+
+
 LIVE_HTTP_CLASSES = (
     "TestConnectionDiagnostics",
     "TestEndToEndBridgeAndMCP",
@@ -7706,6 +8039,7 @@ LIVE_HTTP_CLASSES = (
     "TestV61SnapshotRestore",
     "TestV61RunTestezSuite",
     "TestV61AssetReferencesLive",
+    "TestV61PolicyAndKitResources",
     "TestV5OpsPlatform",
 )
 
